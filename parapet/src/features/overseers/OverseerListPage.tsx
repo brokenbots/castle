@@ -1,0 +1,32 @@
+import { useListOverseersQuery } from '../../api/castleApi';
+
+export function OverseerListPage() {
+  const { data, isLoading, error } = useListOverseersQuery(undefined, { pollingInterval: 2000 });
+  if (isLoading) return <p>Loading…</p>;
+  if (error) return <p className="text-rose-400">Failed to load.</p>;
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold mb-4">Overseers</h2>
+      <table className="w-full text-sm">
+        <thead className="text-left text-slate-400 border-b border-slate-800">
+          <tr>
+            <th className="py-2 pr-4">Name</th>
+            <th className="py-2 pr-4">Hostname</th>
+            <th className="py-2 pr-4">Status</th>
+            <th className="py-2 pr-4">Last seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(data ?? []).map((o) => (
+            <tr key={o.id} className="border-b border-slate-900">
+              <td className="py-2 pr-4">{o.name}</td>
+              <td className="py-2 pr-4 text-slate-400">{o.hostname}</td>
+              <td className={`py-2 pr-4 ${o.status === 'online' ? 'text-emerald-400' : 'text-slate-500'}`}>{o.status}</td>
+              <td className="py-2 pr-4 text-slate-400">{new Date(o.last_seen_at).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}

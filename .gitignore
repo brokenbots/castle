@@ -1,0 +1,29 @@
+# Build outputs
+/bin/
+overseer/cmd/overseer/overseer
+castle/cmd/castle/castle
+
+# Go
+*.test
+*.out
+coverage.*
+go.work.sum
+
+# Node / Parapet
+parapet/node_modules/
+parapet/dist/
+parapet/.vite/
+parapet/coverage/
+
+# Castle dev data
+*.db
+*.db-journal
+castle/data/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# OS
+.DS_Store
