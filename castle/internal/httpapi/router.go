@@ -2,8 +2,10 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,8 +22,13 @@ import (
 )
 
 type Server struct {
-	Store store.Store
-	Log   *slog.Logger
+	Store   store.Store
+	Log     *slog.Logger
+	Control ControlService
+}
+
+type ControlService interface {
+	StopRun(ctx context.Context, runID string) error
 }
 
 func (s *Server) Router() http.Handler {
@@ -38,6 +45,8 @@ func (s *Server) Router() http.Handler {
 		r.Get("/runs", s.listRuns)
 		r.Get("/runs/{id}", s.getRun)
 		r.Get("/runs/{id}/events", s.listEvents)
+		r.Get("/runs/{id}/steps/{step}/logs", s.listStepLogs)
+		r.Post("/runs/{id}/stop", s.stopRun)
 	})
 	return r
 }
@@ -92,6 +101,9 @@ func (s *Server) registerOverseer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !s.authorizeOverseer(w, r, id) {
+		return
+	}
 	if err := s.Store.UpdateOverseerSeen(r.Context(), id, time.Now().UTC()); err != nil {
 		writeErr(w, http.StatusInternalServerError, "store")
 		return
@@ -125,6 +137,9 @@ type createRunResp struct {
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	overseerID := chi.URLParam(r, "id")
+	if !s.authorizeOverseer(w, r, overseerID) {
+		return
+	}
 	if _, err := s.Store.GetOverseer(r.Context(), overseerID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "overseer not found")
@@ -187,4 +202,58 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) listStepLogs(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	step := chi.URLParam(r, "step")
+	since, _ := strconv.ParseUint(r.URL.Query().Get("since"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	list, err := s.Store.ListStepLogs(r.Context(), runID, step, since, limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store")
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) stopRun(w http.ResponseWriter, r *http.Request) {
+	if s.Control == nil {
+		writeErr(w, http.StatusNotImplemented, "stop control unavailable")
+		return
+	}
+	runID := chi.URLParam(r, "id")
+	if err := s.Control.StopRun(r.Context(), runID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "cancellation requested", "run_id": runID})
+}
+
+func (s *Server) authorizeOverseer(w http.ResponseWriter, r *http.Request, id string) bool {
+	o, err := s.Store.GetOverseer(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "overseer not found")
+			return false
+		}
+		writeErr(w, http.StatusInternalServerError, "store")
+		return false
+	}
+	token := r.Header.Get("X-Overseer-Token")
+	if token == "" {
+		writeErr(w, http.StatusUnauthorized, "missing token")
+		return false
+	}
+	hash := sha256.Sum256([]byte(token))
+	got := hex.EncodeToString(hash[:])
+	if subtle.ConstantTimeCompare([]byte(got), []byte(o.TokenHash)) != 1 {
+		writeErr(w, http.StatusUnauthorized, "invalid token")
+		return false
+	}
+	return true
 }

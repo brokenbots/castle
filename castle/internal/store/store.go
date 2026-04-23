@@ -25,15 +25,15 @@ type Overseer struct {
 }
 
 type Run struct {
-	ID            string
-	OverseerID    string
-	WorkflowName  string
-	WorkflowHCL   string
-	Status        string // "pending"|"running"|"succeeded"|"failed"|"awaiting_human"|"cancelled"
-	CurrentStep   string
-	LastSeq       uint64
-	CreatedAt     time.Time
-	EndedAt       *time.Time
+	ID           string
+	OverseerID   string
+	WorkflowName string
+	WorkflowHCL  string
+	Status       string // "pending"|"running"|"succeeded"|"failed"|"awaiting_human"|"cancelled"
+	CurrentStep  string
+	LastSeq      uint64
+	CreatedAt    time.Time
+	EndedAt      *time.Time
 }
 
 // Store is the persistence contract.
@@ -55,6 +55,7 @@ type Store interface {
 	// Events
 	AppendEvent(ctx context.Context, env events.Envelope) (uint64, error) // returns assigned seq
 	ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]events.Envelope, error)
+	ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]events.Envelope, error)
 
 	Close() error
 }

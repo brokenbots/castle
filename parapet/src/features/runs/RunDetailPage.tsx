@@ -7,10 +7,27 @@ function renderPayload(e: EventEnvelope) {
   return JSON.stringify(p);
 }
 
+type Edge = { from: string; to: string; via: string };
+
+function extractStepGraph(source: string): Edge[] {
+  const edges: Edge[] = [];
+  const stepBlocks = source.match(/step\s+"[^"]+"\s*\{[\s\S]*?\n\}/g) ?? [];
+  for (const block of stepBlocks) {
+    const stepName = block.match(/step\s+"([^"]+)"/)?.[1];
+    if (!stepName) continue;
+    const transitions = block.matchAll(/"([^"]+)"\s*=\s*"([^"]+)"/g);
+    for (const tr of transitions) {
+      edges.push({ from: stepName, via: tr[1], to: tr[2] });
+    }
+  }
+  return edges;
+}
+
 export function RunDetailPage() {
   const { id = '' } = useParams();
-  const run = useGetRunQuery(id, { pollingInterval: 1500 });
-  const events = useListEventsQuery({ runId: id }, { pollingInterval: 1000 });
+  const run = useGetRunQuery(id);
+  const events = useListEventsQuery({ runId: id });
+  const edges = run.data?.WorkflowHCL ? extractStepGraph(run.data.WorkflowHCL) : [];
 
   if (run.isLoading) return <p>Loading…</p>;
   if (run.error || !run.data) return <p className="text-rose-400">Run not found.</p>;
@@ -36,6 +53,28 @@ export function RunDetailPage() {
             </div>
           ))}
         </div>
+      </section>
+      <section>
+        <h3 className="text-lg font-semibold mb-2">Workflow source</h3>
+        <pre className="text-xs font-mono bg-slate-900 rounded p-3 overflow-auto max-h-[32vh]">
+          {run.data.WorkflowHCL}
+        </pre>
+      </section>
+      <section>
+        <h3 className="text-lg font-semibold mb-2">Step graph</h3>
+        {edges.length === 0 ? (
+          <p className="text-sm text-slate-400">No step transitions found.</p>
+        ) : (
+          <div className="bg-slate-900 rounded p-3 text-xs font-mono">
+            {edges.map((edge, i) => (
+              <div key={`${edge.from}:${edge.via}:${edge.to}:${i}`} className="py-1 border-b last:border-b-0 border-slate-800">
+                <span className="text-sky-300">{edge.from}</span>
+                <span className="text-slate-500"> --{edge.via}--&gt; </span>
+                <span className="text-emerald-300">{edge.to}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

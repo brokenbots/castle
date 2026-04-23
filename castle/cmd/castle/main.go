@@ -35,8 +35,8 @@ func main() {
 
 	h := hub.New()
 
-	api := &httpapi.Server{Store: st, Log: log}
 	ws := &wsapi.Server{Store: st, Hub: h, Log: log}
+	api := &httpapi.Server{Store: st, Log: log, Control: ws}
 
 	root := chi.NewRouter()
 	root.Mount("/", api.Router())

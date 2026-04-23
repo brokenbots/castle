@@ -6,10 +6,15 @@ package wsapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -25,6 +30,28 @@ type Server struct {
 	Store store.Store
 	Hub   *hub.Hub
 	Log   *slog.Logger
+
+	mu        sync.RWMutex
+	overseers map[string]*overseerConn
+}
+
+type overseerConn struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+type controlMessage struct {
+	Type   string `json:"type"`
+	RunID  string `json:"run_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+func (s *Server) ensureState() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.overseers == nil {
+		s.overseers = make(map[string]*overseerConn)
+	}
 }
 
 func (s *Server) Mount(r chi.Router) {
@@ -35,13 +62,23 @@ func (s *Server) Mount(r chi.Router) {
 // overseerWS ingests events from a connected Overseer.
 func (s *Server) overseerWS(w http.ResponseWriter, r *http.Request) {
 	overseerID := r.URL.Query().Get("overseer_id")
-	// TODO: validate token against stored hash.
 	if overseerID == "" {
 		http.Error(w, "overseer_id required", http.StatusBadRequest)
 		return
 	}
-	if _, err := s.Store.GetOverseer(r.Context(), overseerID); err != nil {
+	o, err := s.Store.GetOverseer(r.Context(), overseerID)
+	if err != nil {
 		http.Error(w, "unknown overseer", http.StatusUnauthorized)
+		return
+	}
+	token := r.Header.Get("X-Overseer-Token")
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+	hash := sha256.Sum256([]byte(token))
+	got := hex.EncodeToString(hash[:])
+	if subtle.ConstantTimeCompare([]byte(got), []byte(o.TokenHash)) != 1 {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -53,6 +90,16 @@ func (s *Server) overseerWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.Close(websocket.StatusInternalError, "shutdown")
+
+	s.ensureState()
+	s.mu.Lock()
+	s.overseers[overseerID] = &overseerConn{conn: c}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.overseers, overseerID)
+		s.mu.Unlock()
+	}()
 
 	ctx := r.Context()
 	for {
@@ -84,6 +131,26 @@ func (s *Server) overseerWS(w http.ResponseWriter, r *http.Request) {
 
 		s.Hub.Publish(env)
 	}
+}
+
+func (s *Server) StopRun(ctx context.Context, runID string) error {
+	run, err := s.Store.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	s.mu.RLock()
+	oc := s.overseers[run.OverseerID]
+	s.mu.RUnlock()
+	if oc == nil {
+		return fmt.Errorf("overseer %s not connected", run.OverseerID)
+	}
+	msg := controlMessage{Type: "run.cancel", RunID: runID, Reason: "requested by operator"}
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	if err := wsjson.Write(ctx, oc.conn, msg); err != nil {
+		return fmt.Errorf("send run.cancel: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) applyRunStatus(ctx context.Context, env events.Envelope) {

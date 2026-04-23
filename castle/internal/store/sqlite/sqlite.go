@@ -237,3 +237,42 @@ func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limi
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]events.Envelope, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT seq,type,ts,correlation_id,payload
+		 FROM events
+		 WHERE run_id=? AND seq>? AND type='step.log' AND json_extract(payload, '$.step')=?
+		 ORDER BY seq ASC LIMIT ?`,
+		runID, since, step, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []events.Envelope
+	for rows.Next() {
+		var e events.Envelope
+		var seq int64
+		var ts string
+		var payload string
+		var corr sql.NullString
+		var typ string
+		if err := rows.Scan(&seq, &typ, &ts, &corr, &payload); err != nil {
+			return nil, err
+		}
+		e.SchemaVersion = events.SchemaVersion
+		e.RunID = runID
+		e.Seq = uint64(seq)
+		e.Type = events.Type(typ)
+		e.Timestamp, _ = time.Parse(tsLayout, ts)
+		if corr.Valid {
+			e.CorrelationID = corr.String
+		}
+		e.Payload = json.RawMessage(payload)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

@@ -1,7 +1,7 @@
 import { useListOverseersQuery } from '../../api/castleApi';
 
 export function OverseerListPage() {
-  const { data, isLoading, error } = useListOverseersQuery(undefined, { pollingInterval: 2000 });
+  const { data, isLoading, error } = useListOverseersQuery();
   if (isLoading) return <p>Loading…</p>;
   if (error) return <p className="text-rose-400">Failed to load.</p>;
   return (

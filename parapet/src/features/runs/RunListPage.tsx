@@ -9,9 +9,7 @@ const statusColor: Record<string, string> = {
 };
 
 export function RunListPage() {
-  const { data, isLoading, error } = useListRunsQuery(undefined, {
-    pollingInterval: 2000,
-  });
+  const { data, isLoading, error } = useListRunsQuery();
   if (isLoading) return <p>Loading runs…</p>;
   if (error) return <p className="text-rose-400">Failed to load runs.</p>;
   return (
