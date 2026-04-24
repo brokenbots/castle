@@ -104,15 +104,24 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 		if convErr != nil {
 			return connect.NewError(connect.CodeInvalidArgument, convErr)
 		}
-		seq, appendErr := s.Store.AppendEvent(ctx, env)
+		seq, inserted, appendErr := s.Store.AppendEvent(ctx, env)
 		if appendErr != nil {
 			return connect.NewError(connect.CodeInternal, appendErr)
 		}
 		env.Seq = seq
-		s.applyRunStatus(ctx, env)
+		if inserted {
+			s.applyRunStatus(ctx, env)
 
-		// Publish before ack to preserve real-time observer ordering guarantees.
-		s.Hub.Publish(env)
+			// Publish before ack to preserve real-time observer ordering guarantees.
+			s.Hub.Publish(env)
+		} else {
+			// Duplicate (run_id, correlation_id): Overseer replayed an
+			// envelope whose prior ack we delivered on an earlier
+			// stream. Ack again (idempotent) without re-running
+			// side-effects. Logged at Debug so reconnect replays are
+			// observable without adding noise.
+			s.Log.Debug("duplicate event ignored", "run_id", env.RunID, "correlation_id", env.CorrelationID, "seq", seq)
+		}
 
 		if err := stream.Send(&pb.Ack{RunId: env.RunID, Seq: env.Seq, CorrelationId: env.CorrelationID}); err != nil {
 			return connect.NewError(connect.CodeUnknown, err)

@@ -20,6 +20,21 @@ import (
 //go:embed migrations/0001_init.sql
 var initSQL string
 
+//go:embed migrations/0002_events_correlation_unique.sql
+var migration0002 string
+
+// migrations is the ordered list of SQL scripts applied on Open. Each entry
+// runs exactly once per database (gated by the schema_migrations table).
+// New migrations MUST be appended with a strictly increasing version.
+var migrations = []struct {
+	Version int
+	Name    string
+	SQL     string
+}{
+	{1, "init", initSQL},
+	{2, "events_correlation_unique", migration0002},
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -30,11 +45,78 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(initSQL); err != nil {
+	if err := applyMigrations(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("init schema: %w", err)
+		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// applyMigrations runs each pending migration inside a transaction and
+// records its version in schema_migrations. Existing databases (which may
+// already have the 0001/0002 schema applied before this table existed) are
+// backfilled: if the events and overseers tables are present we assume
+// version 1, and if the partial unique index on (run_id, correlation_id)
+// exists we assume version 2.
+func applyMigrations(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		name    TEXT NOT NULL,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	// Backfill for pre-existing DBs created before schema_migrations existed.
+	var existing int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&existing); err != nil {
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
+	if existing == 0 {
+		var hasRuns int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='runs'`).Scan(&hasRuns)
+		if hasRuns > 0 {
+			if _, err := db.Exec(`INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)`,
+				1, "init", time.Now().UTC().Format(tsLayout)); err != nil {
+				return fmt.Errorf("backfill v1: %w", err)
+			}
+			var hasIdx int
+			_ = db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_events_run_correlation'`).Scan(&hasIdx)
+			if hasIdx > 0 {
+				if _, err := db.Exec(`INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)`,
+					2, "events_correlation_unique", time.Now().UTC().Format(tsLayout)); err != nil {
+					return fmt.Errorf("backfill v2: %w", err)
+				}
+			}
+		}
+	}
+
+	for _, m := range migrations {
+		var applied int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, m.Version).Scan(&applied); err != nil {
+			return fmt.Errorf("check migration %d: %w", m.Version, err)
+		}
+		if applied > 0 {
+			continue
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration %d: %w", m.Version, err)
+		}
+		if _, err := tx.Exec(m.SQL); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("apply migration %d (%s): %w", m.Version, m.Name, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)`,
+			m.Version, m.Name, time.Now().UTC().Format(tsLayout)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record migration %d: %w", m.Version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %d: %w", m.Version, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -168,16 +250,33 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 	return err
 }
 
-func (s *Store) AppendEvent(ctx context.Context, env events.Envelope) (uint64, error) {
+func (s *Store) AppendEvent(ctx context.Context, env events.Envelope) (uint64, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	// Idempotency on (run_id, correlation_id): if an event with this
+	// correlation id already exists for this run, return its seq without
+	// inserting again. Empty correlation ids skip this check.
+	if env.CorrelationID != "" {
+		var existing sql.NullInt64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT seq FROM events WHERE run_id=? AND correlation_id=? LIMIT 1`,
+			env.RunID, env.CorrelationID).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return 0, false, err
+		}
+		if existing.Valid {
+			// No commit necessary (read-only); release the tx.
+			_ = tx.Rollback()
+			return uint64(existing.Int64), false, nil
+		}
+	}
+
 	var lastSeq sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM events WHERE run_id=?`, env.RunID).Scan(&lastSeq); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	next := uint64(1)
 	if lastSeq.Valid {
@@ -191,15 +290,15 @@ func (s *Store) AppendEvent(ctx context.Context, env events.Envelope) (uint64, e
 		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES(?,?,?,?,?,?)`,
 		env.RunID, next, string(env.Type), env.Timestamp.Format(tsLayout), env.CorrelationID, string(payload))
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE runs SET last_seq=? WHERE id=? AND last_seq < ?`, next, env.RunID, next); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return next, nil
+	return next, true, nil
 }
 
 func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]events.Envelope, error) {

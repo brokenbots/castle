@@ -53,7 +53,12 @@ type Store interface {
 	UpdateRun(ctx context.Context, r *Run) error
 
 	// Events
-	AppendEvent(ctx context.Context, env events.Envelope) (uint64, error) // returns assigned seq
+	// AppendEvent persists env and returns the assigned seq. When env has a
+	// non-empty CorrelationID and a row already exists for
+	// (run_id, correlation_id), the existing seq is returned and inserted
+	// is false. This is the idempotency point for Overseer reconnect
+	// replays: a duplicate correlation id MUST NOT produce a new row.
+	AppendEvent(ctx context.Context, env events.Envelope) (seq uint64, inserted bool, err error)
 	ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]events.Envelope, error)
 	ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]events.Envelope, error)
 

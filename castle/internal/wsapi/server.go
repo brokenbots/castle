@@ -119,12 +119,19 @@ func (s *Server) overseerWS(w http.ResponseWriter, r *http.Request) {
 		if env.Timestamp.IsZero() {
 			env.Timestamp = time.Now().UTC()
 		}
-		seq, err := s.Store.AppendEvent(ctx, env)
+		seq, inserted, err := s.Store.AppendEvent(ctx, env)
 		if err != nil {
 			s.Log.Error("append event", "err", err, "run_id", env.RunID)
 			continue
 		}
 		env.Seq = seq
+		if !inserted {
+			// Duplicate (run_id, correlation_id): already processed on a
+			// prior stream. Logged at Debug so reconnect replays are
+			// observable without adding noise to normal operation.
+			s.Log.Debug("duplicate event ignored", "run_id", env.RunID, "correlation_id", env.CorrelationID, "seq", seq)
+			continue
+		}
 
 		// Apply run-status side effects from terminal events.
 		s.applyRunStatus(ctx, env)

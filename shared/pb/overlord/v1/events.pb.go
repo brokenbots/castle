@@ -775,6 +775,14 @@ func (x *StepLog) GetChunk() string {
 }
 
 // AdapterEvent — adapter-specific structured event.
+//
+// On-wire contract for `data`: adapter sinks SHOULD emit JSON objects
+// (top-level `{}`). For backward compatibility with Phase 0 adapters that
+// emitted scalars or arrays, the Overseer transport wraps non-object
+// payloads under a `value` key before conversion to Struct (e.g. the
+// wire payload for the array `[1,2,3]` becomes `{"value": [1,2,3]}`).
+// Subscribers MUST tolerate the wrapped shape. New adapters SHOULD
+// produce object payloads and avoid relying on the wrapping.
 type AdapterEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Step          string                 `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`

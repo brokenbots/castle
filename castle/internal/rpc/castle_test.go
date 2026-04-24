@@ -31,7 +31,7 @@ func TestCastleListRunEventsPaging(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -59,7 +59,7 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 	runID := run.Msg.RunId
 
 	replayEnv, _ := toStoreEnvelope(&pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}})
-	seq1, err := ts.store.AppendEvent(context.Background(), replayEnv)
+	seq1, _, err := ts.store.AppendEvent(context.Background(), replayEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 	}
 
 	liveEnv, _ := toStoreEnvelope(&pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r2", Adapter: "shell", Attempt: 1}}})
-	seq2, err := ts.store.AppendEvent(context.Background(), liveEnv)
+	seq2, _, err := ts.store.AppendEvent(context.Background(), liveEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 
 	terminal, _ := events.New(runID, events.TypeRunFailed, events.RunFailed{Reason: "x"})
 	terminal.Timestamp = time.Now().UTC()
-	seq3, err := ts.store.AppendEvent(context.Background(), terminal)
+	seq3, _, err := ts.store.AppendEvent(context.Background(), terminal)
 	if err != nil {
 		t.Fatal(err)
 	}
