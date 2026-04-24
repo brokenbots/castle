@@ -1,35 +1,49 @@
 import { render, screen } from '@testing-library/react';
+import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, test, vi } from 'vitest';
 import { RunDetailPage } from './RunDetailPage';
+import { store } from '../../store';
 
-vi.mock('../../api/castleApi', () => ({
-  useGetRunQuery: () => ({
-    isLoading: false,
-    error: undefined,
-    data: {
-      ID: 'run-1',
-      OverseerID: 'ov-1',
-      WorkflowName: 'hello',
-      WorkflowHCL:
-        'workflow "hello" {\n  start_at = "build"\n  step "build" {\n    transitions = {\n      "success" = "test"\n    }\n  }\n  step "test" {\n    transitions = {\n      "success" = "done"\n    }\n  }\n  state "done" { terminal = true }\n}',
-      Status: 'running',
-      CurrentStep: 'build',
-      LastSeq: 2,
-      CreatedAt: new Date().toISOString(),
-    },
-  }),
-  useListEventsQuery: () => ({ data: [] }),
+vi.mock('./watchRun', () => ({
+  startWatch: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock('../../api/castleApi', async () => {
+  const actual = await vi.importActual<typeof import('../../api/castleApi')>(
+    '../../api/castleApi',
+  );
+  return {
+    ...actual,
+    useGetRunQuery: () => ({
+      isLoading: false,
+      error: undefined,
+      data: {
+        runId: 'run-1',
+        overseerId: 'ov-1',
+        workflowName: 'hello',
+        workflowHash:
+          'workflow "hello" {\n  start_at = "build"\n  step "build" {\n    transitions = {\n      "success" = "test"\n    }\n  }\n  step "test" {\n    transitions = {\n      "success" = "done"\n    }\n  }\n  state "done" { terminal = true }\n}',
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        finalState: '',
+        failureReason: '',
+      },
+    }),
+    useListEventsQuery: () => ({ data: [] }),
+  };
+});
 
 describe('RunDetailPage', () => {
   test('renders workflow source and graph', async () => {
     render(
-      <MemoryRouter initialEntries={['/runs/run-1']}>
-        <Routes>
-          <Route path="/runs/:id" element={<RunDetailPage />} />
-        </Routes>
-      </MemoryRouter>,
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
     );
 
     expect(await screen.findByText('Workflow source')).toBeInTheDocument();

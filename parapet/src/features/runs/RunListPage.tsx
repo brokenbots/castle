@@ -6,6 +6,7 @@ const statusColor: Record<string, string> = {
   succeeded: 'text-emerald-400',
   failed: 'text-rose-400',
   pending: 'text-slate-400',
+  cancelled: 'text-slate-500',
 };
 
 export function RunListPage() {
@@ -21,22 +22,22 @@ export function RunListPage() {
             <th className="py-2 pr-4">ID</th>
             <th className="py-2 pr-4">Workflow</th>
             <th className="py-2 pr-4">Status</th>
-            <th className="py-2 pr-4">Current step</th>
             <th className="py-2 pr-4">Started</th>
           </tr>
         </thead>
         <tbody>
           {(data ?? []).map((r) => (
-            <tr key={r.ID} className="border-b border-slate-900 hover:bg-slate-900/40">
+            <tr key={r.runId} className="border-b border-slate-900 hover:bg-slate-900/40">
               <td className="py-2 pr-4 font-mono text-xs">
-                <Link className="text-sky-400 hover:underline" to={`/runs/${r.ID}`}>
-                  {r.ID.slice(0, 8)}
+                <Link className="text-sky-400 hover:underline" to={`/runs/${r.runId}`}>
+                  {r.runId.slice(0, 8)}
                 </Link>
               </td>
-              <td className="py-2 pr-4">{r.WorkflowName}</td>
-              <td className={`py-2 pr-4 ${statusColor[r.Status] ?? ''}`}>{r.Status}</td>
-              <td className="py-2 pr-4 font-mono text-xs">{r.CurrentStep}</td>
-              <td className="py-2 pr-4 text-slate-400">{new Date(r.CreatedAt).toLocaleString()}</td>
+              <td className="py-2 pr-4">{r.workflowName}</td>
+              <td className={`py-2 pr-4 ${statusColor[r.status] ?? ''}`}>{r.status}</td>
+              <td className="py-2 pr-4 text-slate-400">
+                {r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}
+              </td>
             </tr>
           ))}
         </tbody>

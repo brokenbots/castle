@@ -18,11 +18,13 @@ export function OverseerListPage() {
         </thead>
         <tbody>
           {(data ?? []).map((o) => (
-            <tr key={o.id} className="border-b border-slate-900">
+            <tr key={o.overseerId} className="border-b border-slate-900">
               <td className="py-2 pr-4">{o.name}</td>
-              <td className="py-2 pr-4 text-slate-400">{o.hostname}</td>
+              <td className="py-2 pr-4 text-slate-400">{o.labels.hostname ?? ''}</td>
               <td className={`py-2 pr-4 ${o.status === 'online' ? 'text-emerald-400' : 'text-slate-500'}`}>{o.status}</td>
-              <td className="py-2 pr-4 text-slate-400">{new Date(o.last_seen_at).toLocaleString()}</td>
+              <td className="py-2 pr-4 text-slate-400">
+                {o.lastSeenAt ? new Date(o.lastSeenAt).toLocaleString() : ''}
+              </td>
             </tr>
           ))}
         </tbody>

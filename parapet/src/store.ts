@@ -1,9 +1,11 @@
 import { configureStore } from '@reduxjs/toolkit';
 import { castleApi } from './api/castleApi';
+import { runsSlice } from './features/runs/runsSlice';
 
 export const store = configureStore({
   reducer: {
     [castleApi.reducerPath]: castleApi.reducer,
+    runs: runsSlice.reducer,
   },
   middleware: (getDefault) => getDefault().concat(castleApi.middleware),
 });

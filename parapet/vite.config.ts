@@ -6,7 +6,18 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:8080', changeOrigin: true, ws: true },
+      '/overlord.v1.CastleService': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/overlord.v1.OverseerService': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/grpc.health.v1.Health': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
   test: {

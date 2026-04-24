@@ -1,91 +1,157 @@
-import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
-import { getAuthToken } from '../authToken';
+import { createApi } from '@reduxjs/toolkit/query/react';
+import { fakeBaseQuery } from '@reduxjs/toolkit/query';
+import { ConnectError } from '@connectrpc/connect';
+import { Timestamp } from '@bufbuild/protobuf';
+import { castle } from './client';
+import type { Run as PbRun } from '../gen/overlord/v1/overseer_pb';
+import type { Overseer as PbOverseer } from '../gen/overlord/v1/castle_pb';
+import type { Envelope } from '../gen/overlord/v1/events_pb';
 
 export interface Run {
-  ID: string;
-  OverseerID: string;
-  WorkflowName: string;
-  WorkflowHCL: string;
-  Status: string;
-  CurrentStep: string;
-  LastSeq: number;
-  CreatedAt: string;
-  EndedAt?: string | null;
+  runId: string;
+  overseerId: string;
+  workflowName: string;
+  workflowHash: string;
+  status: string;
+  createdAt?: string;
+  startedAt?: string;
+  endedAt?: string;
+  finalState: string;
+  failureReason: string;
 }
 
 export interface Overseer {
-  id: string;
+  overseerId: string;
   name: string;
-  hostname?: string;
-  version?: string;
+  labels: Record<string, string>;
   status: string;
-  last_seen_at: string;
+  registeredAt?: string;
+  lastSeenAt?: string;
 }
 
 export interface EventEnvelope {
-  schema_version: number;
-  run_id: string;
+  schemaVersion: number;
+  runId: string;
   seq: number;
   type: string;
-  ts: string;
-  correlation_id?: string;
+  ts?: string;
+  correlationId: string;
   payload: unknown;
+}
+
+function tsToIso(ts?: Timestamp): string | undefined {
+  if (!ts) return undefined;
+  try {
+    return ts.toDate().toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
+function mapRun(r: PbRun): Run {
+  return {
+    runId: r.runId,
+    overseerId: r.overseerId,
+    workflowName: r.workflowName,
+    workflowHash: r.workflowHash,
+    status: r.status,
+    createdAt: tsToIso(r.createdAt),
+    startedAt: tsToIso(r.startedAt),
+    endedAt: tsToIso(r.endedAt),
+    finalState: r.finalState,
+    failureReason: r.failureReason,
+  };
+}
+
+function mapOverseer(o: PbOverseer): Overseer {
+  return {
+    overseerId: o.overseerId,
+    name: o.name,
+    labels: { ...o.labels },
+    status: o.status,
+    registeredAt: tsToIso(o.registeredAt),
+    lastSeenAt: tsToIso(o.lastSeenAt),
+  };
+}
+
+export function mapEnvelope(e: Envelope): EventEnvelope {
+  const payload = e.payload;
+  let type = '';
+  let value: unknown = undefined;
+  if (payload && payload.case) {
+    type = payload.case;
+    const msg = payload.value as { toJson?: () => unknown } | undefined;
+    value = typeof msg?.toJson === 'function' ? msg.toJson() : msg;
+  }
+  return {
+    schemaVersion: e.schemaVersion,
+    runId: e.runId,
+    seq: Number(e.seq),
+    type,
+    ts: tsToIso(e.ts),
+    correlationId: e.correlationId,
+    payload: value,
+  };
+}
+
+function toError(err: unknown) {
+  if (err instanceof ConnectError) {
+    return { status: err.code, data: err.rawMessage };
+  }
+  return { status: 'CUSTOM_ERROR', data: err instanceof Error ? err.message : String(err) };
 }
 
 export const castleApi = createApi({
   reducerPath: 'castleApi',
-  baseQuery: fetchBaseQuery({
-    baseUrl: '/api/v0/',
-    prepareHeaders: (headers) => {
-      const token = getAuthToken();
-      if (token) {
-        headers.set('X-Overseer-Token', token);
-      }
-      return headers;
-    },
-  }),
+  baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
   tagTypes: ['Run', 'Overseer', 'Events'],
   endpoints: (b) => ({
     listRuns: b.query<Run[], void>({
-      query: () => 'runs',
+      queryFn: async () => {
+        try {
+          const resp = await castle.listRuns({});
+          return { data: resp.runs.map(mapRun) };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
       providesTags: ['Run'],
     }),
     getRun: b.query<Run, string>({
-      query: (id) => `runs/${id}`,
+      queryFn: async (runId) => {
+        try {
+          const resp = await castle.getRun({ runId });
+          return { data: mapRun(resp) };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
       providesTags: (_r, _e, id) => [{ type: 'Run', id }],
     }),
     listOverseers: b.query<Overseer[], void>({
-      query: () => 'overseers',
+      queryFn: async () => {
+        try {
+          const resp = await castle.listOverseers({});
+          return { data: resp.overseers.map(mapOverseer) };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
       providesTags: ['Overseer'],
     }),
     listEvents: b.query<EventEnvelope[], { runId: string; since?: number }>({
-      query: ({ runId, since = 0 }) => `runs/${runId}/events?since=${since}`,
-      providesTags: (_r, _e, { runId }) => [{ type: 'Events', id: runId }],
-      async onCacheEntryAdded(arg, { updateCachedData, cacheDataLoaded, cacheEntryRemoved }) {
-        await cacheDataLoaded;
-
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const token = getAuthToken();
-        const params = new URLSearchParams();
-        if (token) {
-          params.set('token', token);
-        }
-        const query = params.toString();
-        const wsURL = `${protocol}//${window.location.host}/api/v0/runs/${arg.runId}/stream${query ? `?${query}` : ''}`;
-        const ws = new WebSocket(wsURL);
-
-        ws.onmessage = (event) => {
-          const incoming = JSON.parse(event.data) as EventEnvelope;
-          updateCachedData((draft) => {
-            if (!draft.find((e) => e.seq === incoming.seq)) {
-              draft.push(incoming);
-            }
+      queryFn: async ({ runId, since = 0 }) => {
+        try {
+          const resp = await castle.listRunEvents({
+            runId,
+            sinceSeq: BigInt(since),
           });
-        };
-
-        await cacheEntryRemoved;
-        ws.close();
+          return { data: resp.events.map(mapEnvelope) };
+        } catch (err) {
+          return { error: toError(err) };
+        }
       },
+      providesTags: (_r, _e, { runId }) => [{ type: 'Events', id: runId }],
     }),
   }),
 });
