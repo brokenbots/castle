@@ -19,9 +19,16 @@ import (
 	"github.com/brokenbots/overlord/castle/internal/wsapi"
 )
 
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func main() {
-	addr := flag.String("addr", ":8080", "listen address")
-	dbPath := flag.String("db", "./castle.db", "sqlite database path")
+	addr := flag.String("addr", envOrDefault("CASTLE_ADDR", ":8080"), "listen address (or CASTLE_ADDR)")
+	dbPath := flag.String("db", envOrDefault("CASTLE_DB_PATH", "./castle.db"), "sqlite database path (or CASTLE_DB_PATH)")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))

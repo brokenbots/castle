@@ -1,5 +1,7 @@
 .PHONY: help bootstrap tidy build build-overseer build-castle build-parapet \
-        test validate dev-castle dev-overseer dev-parapet clean
+	test validate dev-castle dev-overseer dev-parapet docker-build \
+	docker-build-overseer docker-build-castle compose-up compose-down \
+	compose-logs clean
 
 # Default target: list available targets.
 help:
@@ -45,6 +47,23 @@ dev-overseer: ## Run overseer against local castle with the build_and_test examp
 
 dev-parapet: ## Run parapet dev server
 	cd parapet && npm run dev
+
+docker-build: docker-build-castle docker-build-overseer ## Build local Docker images for castle and overseer
+
+docker-build-overseer: ## Build overseer Docker image
+	docker build -f Dockerfile.overseer -t overlord/overseer:dev .
+
+docker-build-castle: ## Build castle Docker image
+	docker build -f Dockerfile.castle -t overlord/castle:dev .
+
+compose-up: ## Build and start local castle+overseer compose stack
+	docker compose -f compose.local.yml up --build
+
+compose-down: ## Stop local compose stack and remove containers
+	docker compose -f compose.local.yml down
+
+compose-logs: ## Tail logs from local compose stack
+	docker compose -f compose.local.yml logs -f
 
 clean: ## Remove build outputs
 	rm -rf bin

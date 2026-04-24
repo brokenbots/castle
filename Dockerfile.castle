@@ -1,0 +1,19 @@
+FROM golang:1.26-alpine AS build
+
+WORKDIR /src
+COPY . .
+
+RUN cd castle && CGO_ENABLED=0 GOOS=linux go build -o /out/castle ./cmd/castle
+
+FROM alpine:3.20
+
+RUN adduser -D -u 10001 app && mkdir -p /data && chown -R app:app /data
+
+WORKDIR /app
+COPY --from=build /out/castle /usr/local/bin/castle
+
+EXPOSE 8080
+VOLUME ["/data"]
+
+USER app
+ENTRYPOINT ["castle"]

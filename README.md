@@ -1,8 +1,8 @@
 # Overlord
 
-![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/license-TBD-lightgrey)
-![Status](https://img.shields.io/badge/status-Phase%200%20prototype-orange)
+![Status](https://img.shields.io/badge/status-prototype-orange)
 
 Overlord is an agent management platform for orchestrating complex AI-assisted and automated workflows in a secure, scalable, and deterministic manner.
 
@@ -13,27 +13,6 @@ Overlord is an agent management platform for orchestrating complex AI-assisted a
 Modern AI-driven development workflows involve multiple agents, scripts, and validation steps that need to be coordinated reliably. Overlord provides a declarative, state-driven framework for defining what a workflow needs to accomplish and how to get there — while keeping humans in control of the outcomes.
 
 Workflows are described in **HCL** (HashiCorp Configuration Language), defining an initial state, a target state, and the steps to transition between them. Execution is managed by a lightweight local controller called the **Overseer**, which runs each workflow as a finite state machine (FSM). A central server — the **Castle** — tracks the state of all running workflows and provides APIs for tooling and interfaces. A separate web application — **Parapet** — provides the real-time user interface.
-
----
-
-## Repository Layout
-
-```
-overlord/
-├── api/                  # Source-of-truth wire contracts (OpenAPI + JSON Schema)
-├── castle/               # Castle server (Go)
-├── examples/             # Example workflow .hcl files
-├── overseer/             # Overseer CLI (Go)
-├── parapet/              # Web UI (Vite + React + TS + RTK + Tailwind)
-├── shared/               # Shared Go packages (events wire types)
-├── workflow/             # HCL workflow parser + FSM compiler
-├── go.work               # Go workspace tying all Go modules together
-├── Makefile              # Build / test / dev-* / validate targets
-├── PLAN.md               # Phased roadmap
-└── README.md
-```
-
-The four Go modules (`shared`, `workflow`, `overseer`, `castle`) are stitched together by `go.work` and use `replace` directives during prototype development.
 
 ---
 
@@ -51,123 +30,114 @@ A Job is the unit of work in Overlord. It is declared as:
 
 The Overseer is the local workflow executor. It:
 
-- Runs as a **single cross-platform Go binary**
+- Runs as a **single cross-platform Go binary** — easy to deploy anywhere
 - Executes the workflow as a **finite state machine (FSM)** graph, ensuring deterministic outcomes
-- Prevents runaway agent loops by enforcing state transition rules and a `MaxTotalSteps` ceiling
+- Prevents runaway agent loops by enforcing state transition rules
 - Gates on external actions (e.g., running tests) before advancing state
 - Uses a **pluggable adapter architecture** to interact with existing agent harnesses — it wraps them rather than replacing them
 
-Adapter status:
-- `shell` — implemented (Phase 0)
-- `copilot` — implemented behind the `copilot` build tag, using the GitHub Copilot Go SDK (`github.com/github/copilot-sdk/go`); each developer authenticates locally via `gh auth login`/Copilot CLI
-- `claude`, `gemini` — Phase 1
+Supported agent backends (planned):
+- Shell / script execution
+- Claude Code
+- GitHub Copilot CLI
+- Gemini CLI
 
 ### Castle
 
 The Castle is the central coordination server. It:
 
-- Maintains a registry of connected Overseers and their workflow runs in **SQLite** (pure-Go `modernc.org/sqlite`, no CGO)
-- Exposes a versioned **REST API** under `/api/v0` (chi router) for control-plane operations
-- Exposes two **WebSocket** endpoints: one bidirectional channel per connected Overseer at `/api/v0/ws`, plus per-run client streams at `/api/v0/runs/{id}/stream`
-- Assigns the run ID and a monotonic `seq` to every event, providing a single source of truth ordering
-- Is designed to scale up to HA deployment in Phase 2
+- Maintains a registry of connected Overseers and their workflow states
+- Exposes a **REST/HTTPS API** for control-plane operations (workflow inspection, file viewing, configuration)
+- Exposes a **WebSocket API** for real-time two-way communication (events, notifications, live state updates)
+- Is designed for **high availability** deployment
 
 ### Parapet
 
-Parapet is the web user interface. It:
+Parapet is the web user interface for Overlord. It:
 
-- Is a separate **Vite + React + TypeScript** application
-- Uses **Redux Toolkit Query** to talk to Castle's REST API and **WebSocket** for live event streams
-- Styled with **Tailwind CSS**
-- Displays workflow status, step history, and live updates
+- Is a separate **React/TypeScript** application
+- Connects to Castle APIs over HTTPS and WebSocket
+- Displays workflow status, step history, and live updates from Overseers
 
 ---
 
 ## Architecture
 
 ```
-                  ┌────────────────────────────┐
-                  │          Parapet           │
-                  │   (React + RTK + Tailwind) │
-                  └─────────────┬──────────────┘
-                                │ HTTP + WebSocket
-┌───────────────────────────────▼────────────────────────────┐
-│                           Castle                            │
-│                                                             │
-│  ┌──────────────┐   ┌──────────────┐  ┌─────────────────┐  │
-│  │   REST API   │   │  WS server   │  │  Per-run hub    │  │
-│  │ (chi router) │   │ (coder/ws)   │  │  fan-out        │  │
-│  └──────┬───────┘   └──────┬───────┘  └────────┬────────┘  │
-│         │                  │                   │           │
-│  ┌──────▼──────────────────▼───────────────────▼────────┐  │
-│  │  store.Store interface — SQLite impl (Phase 0)       │  │
-│  │  overseers, runs, events (PK run_id+seq)             │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────┬──────────────────────────────┘
-                              │  REST + single bidi WS per Overseer
-              ┌───────────────┼────────────────┐
-              │               │                │
-       ┌──────▼─────┐  ┌──────▼─────┐  ┌───────▼────┐
-       │  Overseer  │  │  Overseer  │  │  Overseer  │
-       │  FSM eng.  │  │  FSM eng.  │  │  FSM eng.  │
-       └──┬─────────┘  └────────────┘  └────────────┘
-          │
-          ├─► shell adapter
-          └─► copilot adapter (build tag)
+             ┌────────────────────────────┐
+             │          Parapet           │
+             │      (React / TypeScript)  │
+             └─────────────┬──────────────┘
+                           │ HTTPS + WebSocket
+┌──────────────────────────▼──────────────────────────┐
+│                        Castle                       │
+│                                                      │
+│  ┌──────────────┐   ┌──────────────┐                │
+│  │   REST API   │   │  WebSocket   │                │
+│  │   (HTTPS)    │   │    (WSS)     │                │
+│  └──────┬───────┘   └──────┬───────┘                │
+│         │                  │                        │
+│  ┌──────▼──────────────────▼───────┐                │
+│  │        Workflow State Store     │                │
+│  │        (Embedded DB)            │                │
+│  └─────────────────────────────────┘                │
+└──────────────────────┬───────────────────────────────┘
+                       │  HTTPS + WebSocket
+           ┌───────────┼───────────┐
+           │           │           │
+    ┌──────▼──┐  ┌─────▼───┐  ┌───▼─────┐
+    │Overseer │  │Overseer │  │Overseer │
+    │  (FSM)  │  │  (FSM)  │  │  (FSM)  │
+    └──┬──┬───┘  └─────────┘  └─────────┘
+       │  │
+       │  └──── Scripts / Tests
+       │
+    ┌──▼──────────────────────┐
+    │   Agent Adapters        │
+    │  Claude Code            │
+    │  Copilot CLI            │
+    │  Gemini CLI             │
+    └─────────────────────────┘
 ```
-
-### Wire contracts
-
-The contracts are frozen up front so Castle, Overseer and Parapet can be built in parallel:
-
-- **REST**: [api/openapi.yaml](api/openapi.yaml) (`/api/v0`)
-- **WebSocket events**: [api/events.schema.json](api/events.schema.json) — every envelope has `schema_version`, `run_id`, `seq`, `type`, `ts`, `correlation_id`, `payload`. Castle assigns `seq` (monotonic per run).
 
 ---
 
 ## Technology Stack
 
-| Component        | Technology                                                |
-|------------------|-----------------------------------------------------------|
-| Overseer         | Go 1.24 — single cross-platform binary, cobra CLI         |
-| Castle Server    | Go 1.24 — chi router, coder/websocket, modernc.org/sqlite |
-| Workflow DSL     | HCL v2 (`github.com/hashicorp/hcl/v2`)                    |
-| Castle REST API  | HTTP/JSON under `/api/v0`                                 |
-| Castle Events    | WebSocket (one bidi per Overseer, plus per-run streams)   |
-| Castle Storage   | SQLite (pure-Go, no CGO) behind `store.Store` interface   |
-| Parapet UI       | Vite + React 18 + TypeScript + Redux Toolkit (RTKQ) + Tailwind |
-| Build/dev tasks  | GNU `make` (`Makefile`)                                   |
+| Component        | Technology                          |
+|------------------|-------------------------------------|
+| Overseer         | Go — single cross-platform binary   |
+| Castle Server    | Go                                  |
+| Workflow DSL     | HCL (HashiCorp Configuration Language) |
+| Castle REST API  | HTTPS                               |
+| Castle Events    | WebSocket (WSS)                     |
+| Castle Storage   | Embedded DB (SQLite / bbolt)        |
+| Parapet UI       | React / TypeScript                  |
 
 ---
 
 ## Design Principles
 
-**Deterministic execution.** The FSM enforces explicit state transitions. Agents cannot loop indefinitely or skip validation gates. A `MaxTotalSteps` policy puts a hard ceiling on every run.
+**Deterministic execution** — The FSM enforces explicit state transitions. Agents cannot loop indefinitely or skip validation gates.
 
-**Pluggable agent backends.** Overlord wraps existing agent harnesses (Copilot, Claude, Gemini, etc.) rather than replacing them. Adapters implement a small `Adapter` interface and are registered with the dispatcher.
+**Pluggable agent backends** — Overlord wraps existing agent harnesses (Claude Code, Copilot CLI, Gemini, etc.) rather than replacing them. Adapters are swappable.
 
-**Declarative workflows.** Workflows are described in HCL: readable, version-controllable, auditable. A standalone `overseer validate` command verifies a workflow without running it.
+**Declarative workflows** — Workflows are described in HCL, making them readable, version-controllable, and auditable.
 
-**Castle is the source of truth.** Run IDs, event sequence numbers, and run status all originate at the Castle. Overseers may be restarted without losing the canonical history.
+**Simple deployment** — The Overseer is a single binary. No agent-side infrastructure required. Overseers can self-register to any reachable Castle given the right credentials.
 
-**Frozen wire contracts.** OpenAPI + JSON Schema are checked into `api/` and treated as authoritative. Generated code or hand-written clients in any language must conform.
-
-**Simple deployment.** The Overseer is a single binary. The Castle is a single binary plus a SQLite file.
+**Standard protocols** — HTTPS and WebSocket allow any compatible client to interact with the Castle, enabling diverse interfaces and integrations.
 
 ---
 
 ## Prototype Scope (v0)
 
-Phase 0 establishes the core loop end-to-end:
+The initial prototype establishes the core communication loop and workflow visibility:
 
-- HCL workflow definition with FSM compiler and reachability/terminal validation
-- `shell` adapter executes commands, streams stdout/stderr line-by-line into events
-- `copilot` adapter (build tag) drives the GitHub Copilot agent SDK
-- Castle REST + WS protocol versioned at `/api/v0`, persisted in SQLite
-- Castle assigns run IDs and monotonic per-run `seq`
-- Parapet: run list, run detail with live event tail, overseer list
-
-Communication is **plain HTTP/WS** in Phase 0; mTLS / SSH tunnels are Phase 1.
+- A simple HCL workflow definition that controls an agent and executes shell commands via the Overseer
+- Unsecured (plain HTTP/WS) communication between the Overseer and Castle for development convenience
+- The Castle tracks and stores current workflow state (active step, transitions)
+- A minimal Parapet UI (React/TypeScript) that queries Castle APIs and displays live workflow state
 
 ---
 
@@ -175,51 +145,91 @@ Communication is **plain HTTP/WS** in Phase 0; mTLS / SSH tunnels are Phase 1.
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.26+
 - Node.js 20+ (for Parapet)
-- GNU `make`
+- Docker (optional, for local container workflow)
 
-### Build everything
+### Bootstrap
 
 ```bash
-make build           # builds all Go modules + Parapet
-# or, manually:
-( cd castle  && go build -o castle  ./cmd/castle  )
-( cd overseer && go build -o overseer ./cmd/overseer )
-( cd parapet && npm install && npm run build )
+make bootstrap
 ```
 
-### Run the smoke test
+### Build
 
 ```bash
-# Terminal 1 — start the Castle
-./castle/castle --addr :8080 --db ./castle.db
-
-# Terminal 2 — run the hello workflow against it
-./overseer/overseer run --workflow examples/hello.hcl --castle http://localhost:8080
-
-# Terminal 3 — start the UI (proxies /api to localhost:8080)
-( cd parapet && npm run dev )
-# open http://localhost:5173
+# Build all components
+make build
 ```
 
-### Validate workflows without running them
+### Run (Native)
 
 ```bash
-./overseer/overseer validate examples/*.hcl
+# Start the Castle
+make dev-castle
+
+# Start an Overseer and register it to the Castle
+make dev-overseer
+
+# Optional: run the UI
+make dev-parapet
 ```
 
-### Build with the Copilot adapter
+### Run (Docker Compose)
 
 ```bash
-( cd overseer && go build -tags copilot -o overseer ./cmd/overseer )
+# Build and start Castle + Overseer
+make compose-up
+
+# Stop and remove containers
+make compose-down
+```
+
+The compose stack uses `compose.local.yml` and starts:
+- `castle` on `http://localhost:8080`
+- `overseer` configured to run `examples/hello.hcl`
+
+The default Overseer runtime image is intentionally minimal and contains only the Overseer binary plus example workflow files.
+
+### Runtime Configuration
+
+Both binaries support environment variables as additive fallback to existing flags.
+Precedence is:
+
+1. CLI flag
+2. Environment variable
+3. Built-in default
+
+Castle runtime variables:
+
+| Variable | Flag | Default |
+|---|---|---|
+| `CASTLE_ADDR` | `--addr` | `:8080` |
+| `CASTLE_DB_PATH` | `--db` | `./castle.db` |
+
+Overseer runtime variables:
+
+| Variable | Flag | Default |
+|---|---|---|
+| `OVERSEER_CASTLE_URL` | `--castle` | `http://localhost:8080` |
+| `OVERSEER_WORKFLOW` | `--workflow` | _(required if flag not set)_ |
+| `OVERSEER_NAME` | `--name` | hostname |
+
+Example env-based startup:
+
+```bash
+CASTLE_ADDR=:8080 CASTLE_DB_PATH=./castle.dev.db go run ./castle/cmd/castle
+
+OVERSEER_CASTLE_URL=http://localhost:8080 \
+OVERSEER_WORKFLOW=./examples/build_and_test.hcl \
+go run ./overseer/cmd/overseer run
 ```
 
 ---
 
 ## Contributing
 
-See [PLAN.md](PLAN.md) for the phased roadmap and current focus areas.
+Contribution guidelines will be added once the project structure is established.
 
 ## License
 

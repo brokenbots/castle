@@ -1,0 +1,20 @@
+# VCS
+.git
+.gitignore
+
+# Build outputs
+bin
+
+# Node artifacts
+parapet/node_modules
+parapet/dist
+parapet/.vite
+
+# Local/editor artifacts
+.vscode
+.idea
+.DS_Store
+
+# Local DB files
+*.db
+*.db-journal
