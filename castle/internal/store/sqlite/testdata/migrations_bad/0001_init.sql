@@ -1,0 +1,3 @@
+CREATE TABLE IF NOT EXISTS good_table (
+    id INTEGER PRIMARY KEY
+);
