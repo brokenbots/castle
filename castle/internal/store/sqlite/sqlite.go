@@ -6,15 +6,18 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	_ "modernc.org/sqlite"
 
 	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/shared/events"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
 
 //go:embed migrations/0001_init.sql
@@ -250,7 +253,14 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 	return err
 }
 
-func (s *Store) AppendEvent(ctx context.Context, env events.Envelope) (uint64, bool, error) {
+func (s *Store) AppendEvent(ctx context.Context, env *pb.Envelope) (uint64, bool, error) {
+	if env == nil {
+		return 0, false, errors.New("nil envelope")
+	}
+	if env.RunId == "" {
+		return 0, false, errors.New("run_id required")
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, false, err
@@ -260,48 +270,56 @@ func (s *Store) AppendEvent(ctx context.Context, env events.Envelope) (uint64, b
 	// Idempotency on (run_id, correlation_id): if an event with this
 	// correlation id already exists for this run, return its seq without
 	// inserting again. Empty correlation ids skip this check.
-	if env.CorrelationID != "" {
+	if env.CorrelationId != "" {
 		var existing sql.NullInt64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT seq FROM events WHERE run_id=? AND correlation_id=? LIMIT 1`,
-			env.RunID, env.CorrelationID).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			env.RunId, env.CorrelationId).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return 0, false, err
 		}
 		if existing.Valid {
 			// No commit necessary (read-only); release the tx.
 			_ = tx.Rollback()
-			return uint64(existing.Int64), false, nil
+			seq := uint64(existing.Int64)
+			env.Seq = seq
+			return seq, false, nil
 		}
 	}
 
 	var lastSeq sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM events WHERE run_id=?`, env.RunID).Scan(&lastSeq); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM events WHERE run_id=?`, env.RunId).Scan(&lastSeq); err != nil {
 		return 0, false, err
 	}
 	next := uint64(1)
 	if lastSeq.Valid {
 		next = uint64(lastSeq.Int64) + 1
 	}
-	payload := env.Payload
-	if payload == nil {
-		payload = json.RawMessage(`{}`)
-	}
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES(?,?,?,?,?,?)`,
-		env.RunID, next, string(env.Type), env.Timestamp.Format(tsLayout), env.CorrelationID, string(payload))
+	payload, err := marshalPayload(env)
 	if err != nil {
 		return 0, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET last_seq=? WHERE id=? AND last_seq < ?`, next, env.RunID, next); err != nil {
+	ts := time.Now().UTC()
+	if env.Ts != nil && !env.Ts.AsTime().IsZero() {
+		ts = env.Ts.AsTime().UTC()
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES(?,?,?,?,?,?)`,
+		env.RunId, next, events.TypeString(env), ts.Format(tsLayout), env.CorrelationId, string(payload))
+	if err != nil {
+		return 0, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET last_seq=? WHERE id=? AND last_seq < ?`, next, env.RunId, next); err != nil {
 		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, false, err
 	}
+	env.Seq = next
+	env.Ts = timestamppb.New(ts)
 	return next, true, nil
 }
 
-func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]events.Envelope, error) {
+func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*pb.Envelope, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
@@ -312,32 +330,10 @@ func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limi
 		return nil, err
 	}
 	defer rows.Close()
-	var out []events.Envelope
-	for rows.Next() {
-		var e events.Envelope
-		var seq int64
-		var ts string
-		var payload string
-		var corr sql.NullString
-		var typ string
-		if err := rows.Scan(&seq, &typ, &ts, &corr, &payload); err != nil {
-			return nil, err
-		}
-		e.SchemaVersion = events.SchemaVersion
-		e.RunID = runID
-		e.Seq = uint64(seq)
-		e.Type = events.Type(typ)
-		e.Timestamp, _ = time.Parse(tsLayout, ts)
-		if corr.Valid {
-			e.CorrelationID = corr.String
-		}
-		e.Payload = json.RawMessage(payload)
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return scanEventRows(rows, runID)
 }
 
-func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]events.Envelope, error) {
+func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*pb.Envelope, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
@@ -351,9 +347,12 @@ func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint
 		return nil, err
 	}
 	defer rows.Close()
-	var out []events.Envelope
+	return scanEventRows(rows, runID)
+}
+
+func scanEventRows(rows *sql.Rows, runID string) ([]*pb.Envelope, error) {
+	var out []*pb.Envelope
 	for rows.Next() {
-		var e events.Envelope
 		var seq int64
 		var ts string
 		var payload string
@@ -362,16 +361,119 @@ func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint
 		if err := rows.Scan(&seq, &typ, &ts, &corr, &payload); err != nil {
 			return nil, err
 		}
-		e.SchemaVersion = events.SchemaVersion
-		e.RunID = runID
-		e.Seq = uint64(seq)
-		e.Type = events.Type(typ)
-		e.Timestamp, _ = time.Parse(tsLayout, ts)
-		if corr.Valid {
-			e.CorrelationID = corr.String
+		env := &pb.Envelope{
+			SchemaVersion: events.SchemaVersion,
+			RunId:         runID,
+			Seq:           uint64(seq),
 		}
-		e.Payload = json.RawMessage(payload)
-		out = append(out, e)
+		if parsed, err := time.Parse(tsLayout, ts); err == nil {
+			env.Ts = timestamppb.New(parsed)
+		}
+		if corr.Valid {
+			env.CorrelationId = corr.String
+		}
+		if err := unmarshalPayload(env, typ, []byte(payload)); err != nil {
+			return nil, fmt.Errorf("unmarshal event %d: %w", seq, err)
+		}
+		out = append(out, env)
 	}
 	return out, rows.Err()
+}
+
+// marshalPayload serialises the payload message (the concrete value inside
+// env.Payload) as protojson. The envelope's discriminator string lives in the
+// `type` column so the payload blob only needs the inner message.
+func marshalPayload(env *pb.Envelope) ([]byte, error) {
+	msg := payloadMessage(env)
+	if msg == nil {
+		return []byte(`{}`), nil
+	}
+	return protojson.Marshal(msg)
+}
+
+// unmarshalPayload hydrates env.Payload from payload bytes according to typ.
+func unmarshalPayload(env *pb.Envelope, typ string, payload []byte) error {
+	if len(payload) == 0 {
+		payload = []byte(`{}`)
+	}
+	unmarshal := func(msg proto.Message, wrap func(proto.Message)) error {
+		u := protojson.UnmarshalOptions{DiscardUnknown: true}
+		if err := u.Unmarshal(payload, msg); err != nil {
+			return err
+		}
+		wrap(msg)
+		return nil
+	}
+	switch typ {
+	case "run.started":
+		return unmarshal(&pb.RunStarted{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_RunStarted{RunStarted: m.(*pb.RunStarted)}
+		})
+	case "run.completed":
+		return unmarshal(&pb.RunCompleted{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_RunCompleted{RunCompleted: m.(*pb.RunCompleted)}
+		})
+	case "run.failed":
+		return unmarshal(&pb.RunFailed{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_RunFailed{RunFailed: m.(*pb.RunFailed)}
+		})
+	case "step.entered":
+		return unmarshal(&pb.StepEntered{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_StepEntered{StepEntered: m.(*pb.StepEntered)}
+		})
+	case "step.outcome":
+		return unmarshal(&pb.StepOutcome{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_StepOutcome{StepOutcome: m.(*pb.StepOutcome)}
+		})
+	case "step.transition":
+		return unmarshal(&pb.StepTransition{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_StepTransition{StepTransition: m.(*pb.StepTransition)}
+		})
+	case "step.log":
+		return unmarshal(&pb.StepLog{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_StepLog{StepLog: m.(*pb.StepLog)}
+		})
+	case "adapter.event":
+		return unmarshal(&pb.AdapterEvent{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_AdapterEvent{AdapterEvent: m.(*pb.AdapterEvent)}
+		})
+	case "overseer.heartbeat":
+		return unmarshal(&pb.OverseerHeartbeat{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_OverseerHeartbeat{OverseerHeartbeat: m.(*pb.OverseerHeartbeat)}
+		})
+	case "overseer.disconnected":
+		return unmarshal(&pb.OverseerDisconnected{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_OverseerDisconnected{OverseerDisconnected: m.(*pb.OverseerDisconnected)}
+		})
+	default:
+		return fmt.Errorf("unknown event type %q", typ)
+	}
+}
+
+// payloadMessage returns the concrete payload message stored in env.Payload.
+func payloadMessage(env *pb.Envelope) proto.Message {
+	switch p := env.Payload.(type) {
+	case *pb.Envelope_RunStarted:
+		return p.RunStarted
+	case *pb.Envelope_RunCompleted:
+		return p.RunCompleted
+	case *pb.Envelope_RunFailed:
+		return p.RunFailed
+	case *pb.Envelope_StepEntered:
+		return p.StepEntered
+	case *pb.Envelope_StepOutcome:
+		return p.StepOutcome
+	case *pb.Envelope_StepTransition:
+		return p.StepTransition
+	case *pb.Envelope_StepLog:
+		return p.StepLog
+	case *pb.Envelope_AdapterEvent:
+		return p.AdapterEvent
+	case *pb.Envelope_OverseerHeartbeat:
+		return p.OverseerHeartbeat
+	case *pb.Envelope_OverseerDisconnected:
+		return p.OverseerDisconnected
+	default:
+		return nil
+	}
 }

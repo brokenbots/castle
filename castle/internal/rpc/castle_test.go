@@ -22,14 +22,11 @@ func TestCastleListRunEventsPaging(t *testing.T) {
 	}
 
 	for i := 0; i < 1100; i++ {
-		env, err := toStoreEnvelope(&pb.Envelope{
+		env := &pb.Envelope{
 			SchemaVersion: 1,
 			RunId:         run.Msg.RunId,
 			Ts:            timestamppb.Now(),
 			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s", Adapter: "shell", Attempt: 1}},
-		})
-		if err != nil {
-			t.Fatal(err)
 		}
 		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
 			t.Fatal(err)
@@ -58,7 +55,7 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 	}
 	runID := run.Msg.RunId
 
-	replayEnv, _ := toStoreEnvelope(&pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}})
+	replayEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}}
 	seq1, _, err := ts.store.AppendEvent(context.Background(), replayEnv)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +80,7 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 		t.Fatalf("replay seq=%d", watch.Msg().Seq)
 	}
 
-	liveEnv, _ := toStoreEnvelope(&pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r2", Adapter: "shell", Attempt: 1}}})
+	liveEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r2", Adapter: "shell", Attempt: 1}}}
 	seq2, _, err := ts.store.AppendEvent(context.Background(), liveEnv)
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +94,8 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 		t.Fatalf("live seq=%d", watch.Msg().Seq)
 	}
 
-	terminal, _ := events.New(runID, events.TypeRunFailed, events.RunFailed{Reason: "x"})
-	terminal.Timestamp = time.Now().UTC()
+	terminal := events.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
+	terminal.Ts = timestamppb.New(time.Now().UTC())
 	seq3, _, err := ts.store.AppendEvent(context.Background(), terminal)
 	if err != nil {
 		t.Fatal(err)

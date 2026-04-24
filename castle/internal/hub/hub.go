@@ -1,12 +1,12 @@
-// Package hub fans out events to subscribers (web clients) per run. Subscribers
-// receive only events that arrive AFTER they subscribe; for full history they
-// should call the REST events endpoint with `since=<seq>` to backfill.
+// Package hub fans out events to subscribers (Castle WatchRun clients) per
+// run. Subscribers receive only events that arrive AFTER they subscribe; for
+// full history they should call ListRunEvents with `since_seq` to backfill.
 package hub
 
 import (
 	"sync"
 
-	"github.com/brokenbots/overlord/shared/events"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
 
 type Hub struct {
@@ -15,16 +15,24 @@ type Hub struct {
 }
 
 type Subscriber struct {
-	C      chan events.Envelope
+	C      chan *pb.Envelope
 	hub    *Hub
 	runIDs []string
+
+	// mu guards closed and the non-blocking send in Publish. All sends to C
+	// happen under mu so Unsubscribe's close is mutually exclusive with any
+	// in-flight send; this prevents the `send on closed channel` race when
+	// Publish evicts a slow subscriber concurrently with a handler's
+	// deferred Unsubscribe.
+	mu     sync.Mutex
+	closed bool
 }
 
 func New() *Hub { return &Hub{subs: make(map[string]map[*Subscriber]struct{})} }
 
 // Subscribe to one or more runs. "*" subscribes to every run.
 func (h *Hub) Subscribe(runIDs ...string) *Subscriber {
-	s := &Subscriber{C: make(chan events.Envelope, 64), hub: h, runIDs: runIDs}
+	s := &Subscriber{C: make(chan *pb.Envelope, 64), hub: h, runIDs: runIDs}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, id := range runIDs {
@@ -36,7 +44,26 @@ func (h *Hub) Subscribe(runIDs ...string) *Subscriber {
 	return s
 }
 
+// Unsubscribe removes s from the hub and closes its channel. It is
+// idempotent: concurrent callers (e.g. Publish's slow-subscriber eviction
+// and the handler's deferred cleanup) are safe.
 func (h *Hub) Unsubscribe(s *Subscriber) {
+	if s == nil {
+		return
+	}
+	h.removeFromIndex(s)
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		close(s.C)
+	}
+	s.mu.Unlock()
+}
+
+// removeFromIndex drops s from the run->subscriber map. It does not touch
+// s.C; Unsubscribe / the slow-subscriber eviction path handle channel close
+// under s.mu.
+func (h *Hub) removeFromIndex(s *Subscriber) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, id := range s.runIDs {
@@ -47,15 +74,17 @@ func (h *Hub) Unsubscribe(s *Subscriber) {
 			}
 		}
 	}
-	close(s.C)
 }
 
-// Publish delivers env to all subscribers of env.RunID and to wildcard "*".
-// Slow subscribers are dropped (their channel is closed and they are removed).
-func (h *Hub) Publish(env events.Envelope) {
+// Publish delivers env to all subscribers of env.RunId and to wildcard "*".
+// Slow subscribers (buffer full) are dropped and their channel is closed.
+func (h *Hub) Publish(env *pb.Envelope) {
+	if env == nil {
+		return
+	}
 	h.mu.RLock()
 	targets := make([]*Subscriber, 0, 8)
-	if set, ok := h.subs[env.RunID]; ok {
+	if set, ok := h.subs[env.RunId]; ok {
 		for s := range set {
 			targets = append(targets, s)
 		}
@@ -66,12 +95,29 @@ func (h *Hub) Publish(env events.Envelope) {
 		}
 	}
 	h.mu.RUnlock()
+
+	var toEvict []*Subscriber
 	for _, s := range targets {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			continue
+		}
 		select {
 		case s.C <- env:
+			s.mu.Unlock()
 		default:
-			// Subscriber too slow; drop it.
-			h.Unsubscribe(s)
+			// Subscriber too slow; close the channel while still under
+			// mu so no other goroutine can send after the close, then
+			// schedule removal from the hub index outside of s.mu to
+			// avoid lock-order inversion (h.mu > s.mu).
+			s.closed = true
+			close(s.C)
+			s.mu.Unlock()
+			toEvict = append(toEvict, s)
 		}
+	}
+	for _, s := range toEvict {
+		h.removeFromIndex(s)
 	}
 }

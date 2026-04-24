@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"strconv"
@@ -83,6 +82,14 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 		if msg.SchemaVersion != int32(events.SchemaVersion) {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("schema_version mismatch"))
 		}
+		// Reject server-synthesised payloads that must never be ingested
+		// from an Overseer. WatchReady is emitted by Castle on WatchRun
+		// stream-open to flush response headers; allowing it through
+		// SubmitEvents would persist an un-decodable row (see
+		// sqlite.unmarshalPayload which has no watch.ready case).
+		if _, ok := msg.Payload.(*pb.Envelope_WatchReady); ok {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("watch.ready is server-only and cannot be submitted"))
+		}
 		if msg.Ts == nil || msg.Ts.AsTime().IsZero() {
 			msg.Ts = timestamppb.New(time.Now().UTC())
 		}
@@ -93,37 +100,33 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 				return connect.NewError(connect.CodeInternal, listErr)
 			}
 			for _, priorEvent := range prior {
-				if err := stream.Send(&pb.Ack{RunId: priorEvent.RunID, Seq: priorEvent.Seq, CorrelationId: priorEvent.CorrelationID}); err != nil {
+				if err := stream.Send(&pb.Ack{RunId: priorEvent.RunId, Seq: priorEvent.Seq, CorrelationId: priorEvent.CorrelationId}); err != nil {
 					return connect.NewError(connect.CodeUnknown, err)
 				}
 			}
 			replayed[msg.RunId] = true
 		}
 
-		env, convErr := toStoreEnvelope(msg)
-		if convErr != nil {
-			return connect.NewError(connect.CodeInvalidArgument, convErr)
-		}
-		seq, inserted, appendErr := s.Store.AppendEvent(ctx, env)
+		seq, inserted, appendErr := s.Store.AppendEvent(ctx, msg)
 		if appendErr != nil {
 			return connect.NewError(connect.CodeInternal, appendErr)
 		}
-		env.Seq = seq
+		msg.Seq = seq
 		if inserted {
-			s.applyRunStatus(ctx, env)
+			s.applyRunStatus(ctx, msg)
 
 			// Publish before ack to preserve real-time observer ordering guarantees.
-			s.Hub.Publish(env)
+			s.Hub.Publish(msg)
 		} else {
 			// Duplicate (run_id, correlation_id): Overseer replayed an
 			// envelope whose prior ack we delivered on an earlier
 			// stream. Ack again (idempotent) without re-running
 			// side-effects. Logged at Debug so reconnect replays are
 			// observable without adding noise.
-			s.Log.Debug("duplicate event ignored", "run_id", env.RunID, "correlation_id", env.CorrelationID, "seq", seq)
+			s.Log.Debug("duplicate event ignored", "run_id", msg.RunId, "correlation_id", msg.CorrelationId, "seq", seq)
 		}
 
-		if err := stream.Send(&pb.Ack{RunId: env.RunID, Seq: env.Seq, CorrelationId: env.CorrelationID}); err != nil {
+		if err := stream.Send(&pb.Ack{RunId: msg.RunId, Seq: msg.Seq, CorrelationId: msg.CorrelationId}); err != nil {
 			return connect.NewError(connect.CodeUnknown, err)
 		}
 	}
@@ -164,46 +167,48 @@ func (s *OverseerServer) Control(ctx context.Context, req *connect.Request[pb.Co
 	}
 }
 
-func (s *OverseerServer) applyRunStatus(ctx context.Context, env events.Envelope) {
-	switch env.Type {
-	case events.TypeRunStarted:
-		run, err := s.Store.GetRun(ctx, env.RunID)
+func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
+	switch p := env.Payload.(type) {
+	case *pb.Envelope_RunStarted:
+		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
 			return
 		}
 		run.Status = "running"
-		var p events.RunStarted
-		if json.Unmarshal(env.Payload, &p) == nil {
-			run.CurrentStep = p.InitialStep
+		if p.RunStarted != nil {
+			run.CurrentStep = p.RunStarted.InitialStep
 		}
 		_ = s.Store.UpdateRun(ctx, run)
-	case events.TypeStepEntered:
-		run, err := s.Store.GetRun(ctx, env.RunID)
+	case *pb.Envelope_StepEntered:
+		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
 			return
 		}
-		var p events.StepEntered
-		if json.Unmarshal(env.Payload, &p) == nil {
-			run.CurrentStep = p.Step
+		if p.StepEntered != nil {
+			run.CurrentStep = p.StepEntered.Step
 			_ = s.Store.UpdateRun(ctx, run)
 		}
-	case events.TypeRunCompleted, events.TypeRunFailed:
-		run, err := s.Store.GetRun(ctx, env.RunID)
+	case *pb.Envelope_RunCompleted:
+		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
 			return
 		}
 		now := time.Now().UTC()
 		run.EndedAt = &now
-		if env.Type == events.TypeRunCompleted {
-			var p events.RunCompleted
-			if json.Unmarshal(env.Payload, &p) == nil && p.Success {
-				run.Status = "succeeded"
-			} else {
-				run.Status = "failed"
-			}
+		if p.RunCompleted != nil && p.RunCompleted.Success {
+			run.Status = "succeeded"
 		} else {
 			run.Status = "failed"
 		}
+		_ = s.Store.UpdateRun(ctx, run)
+	case *pb.Envelope_RunFailed:
+		run, err := s.Store.GetRun(ctx, env.RunId)
+		if err != nil {
+			return
+		}
+		now := time.Now().UTC()
+		run.EndedAt = &now
+		run.Status = "failed"
 		_ = s.Store.UpdateRun(ctx, run)
 	}
 }

@@ -7,8 +7,6 @@ require (
 	connectrpc.com/grpchealth v1.4.0
 	connectrpc.com/grpcreflect v1.3.0
 	github.com/brokenbots/overlord/shared v0.0.0
-	github.com/coder/websocket v1.8.12
-	github.com/go-chi/chi/v5 v5.1.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/net v0.28.0
 	google.golang.org/protobuf v1.36.11

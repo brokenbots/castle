@@ -15,16 +15,13 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/grpchealth"
 	"connectrpc.com/grpcreflect"
-	"github.com/go-chi/chi/v5"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/brokenbots/overlord/castle/internal/auth"
-	"github.com/brokenbots/overlord/castle/internal/httpapi"
 	"github.com/brokenbots/overlord/castle/internal/hub"
 	"github.com/brokenbots/overlord/castle/internal/rpc"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	"github.com/brokenbots/overlord/castle/internal/wsapi"
 	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
 )
 
@@ -89,14 +86,8 @@ func main() {
 	h := hub.New()
 	controls := rpc.NewControlRegistry()
 
-	ws := &wsapi.Server{Store: st, Hub: h, Log: log}
-	api := &httpapi.Server{Store: st, Log: log, Control: ws}
 	overseerRPC := rpc.NewOverseerServer(st, h, log, controls)
 	castleRPC := rpc.NewCastleServer(st, h, log, controls)
-
-	legacy := chi.NewRouter()
-	legacy.Mount("/", api.Router())
-	ws.Mount(legacy)
 
 	interceptors := []connect.Interceptor{
 		auth.NewLoggingInterceptor(log),
@@ -125,9 +116,6 @@ func main() {
 		mux.Handle(rPathV1, rHandlerV1)
 		mux.Handle(rPathV1Alpha, rHandlerV1Alpha)
 	}
-
-	mux.Handle("/api/v0/", legacy)
-	mux.Handle("/api/v0/ws", legacy)
 
 	tlsCfg, err := auth.BuildTLSConfig(*tlsCert, *tlsKey, *tlsCA, *tlsClientCA)
 	if err != nil {

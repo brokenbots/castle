@@ -70,7 +70,7 @@ func (s *CastleServer) ListRunEvents(ctx context.Context, req *connect.Request[p
 
 	remaining := limit
 	since := req.Msg.SinceSeq
-	all := make([]events.Envelope, 0, limit)
+	all := make([]*pb.Envelope, 0, limit)
 	for remaining > 0 {
 		chunk := remaining
 		if chunk > 1000 {
@@ -91,14 +91,9 @@ func (s *CastleServer) ListRunEvents(ctx context.Context, req *connect.Request[p
 		}
 	}
 
-	resp := &pb.ListRunEventsResponse{Events: make([]*pb.Envelope, 0, len(all))}
-	for _, e := range all {
-		msg, err := toProtoEnvelope(e)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		resp.Events = append(resp.Events, msg)
-		resp.LastSeq = e.Seq
+	resp := &pb.ListRunEventsResponse{Events: all}
+	if len(all) > 0 {
+		resp.LastSeq = all[len(all)-1].Seq
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -136,14 +131,10 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 			continue
 		}
 		seen[env.Seq] = struct{}{}
-		msg, err := toProtoEnvelope(env)
-		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
-		}
-		if err := stream.Send(msg); err != nil {
+		if err := stream.Send(env); err != nil {
 			return connect.NewError(connect.CodeUnknown, err)
 		}
-		if isTerminalType(env.Type) {
+		if events.IsTerminal(env) {
 			return nil
 		}
 		since = env.Seq
@@ -164,14 +155,10 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 				continue
 			}
 			seen[env.Seq] = struct{}{}
-			msg, err := toProtoEnvelope(env)
-			if err != nil {
-				return connect.NewError(connect.CodeInternal, err)
-			}
-			if err := stream.Send(msg); err != nil {
+			if err := stream.Send(env); err != nil {
 				return connect.NewError(connect.CodeUnknown, err)
 			}
-			if isTerminalType(env.Type) {
+			if events.IsTerminal(env) {
 				return nil
 			}
 			since = env.Seq
@@ -207,8 +194,4 @@ func (s *CastleServer) StopRun(ctx context.Context, req *connect.Request[pb.Stop
 
 func (s *CastleServer) SendPrompt(context.Context, *connect.Request[pb.SendPromptRequest]) (*connect.Response[pb.SendPromptResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("send prompt is not implemented"))
-}
-
-func isTerminalType(t events.Type) bool {
-	return t == events.TypeRunCompleted || t == events.TypeRunFailed
 }

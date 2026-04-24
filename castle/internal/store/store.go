@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/brokenbots/overlord/shared/events"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -54,13 +54,16 @@ type Store interface {
 
 	// Events
 	// AppendEvent persists env and returns the assigned seq. When env has a
-	// non-empty CorrelationID and a row already exists for
+	// non-empty CorrelationId and a row already exists for
 	// (run_id, correlation_id), the existing seq is returned and inserted
 	// is false. This is the idempotency point for Overseer reconnect
 	// replays: a duplicate correlation id MUST NOT produce a new row.
-	AppendEvent(ctx context.Context, env events.Envelope) (seq uint64, inserted bool, err error)
-	ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]events.Envelope, error)
-	ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]events.Envelope, error)
+	//
+	// AppendEvent mutates env.Seq to the assigned sequence number on
+	// successful insert so callers can reuse the message for hub fan-out.
+	AppendEvent(ctx context.Context, env *pb.Envelope) (seq uint64, inserted bool, err error)
+	ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*pb.Envelope, error)
+	ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*pb.Envelope, error)
 
 	Close() error
 }

@@ -138,7 +138,7 @@ Parapet is the web user interface for Overlord. It:
 The initial prototype establishes the core communication loop and workflow visibility:
 
 - A simple HCL workflow definition that controls an agent and executes shell commands via the Overseer
-- Unsecured (plain HTTP/WS) communication between the Overseer and Castle for development convenience
+- Unsecured (cleartext HTTP/2 via h2c) Connect/gRPC communication between the Overseer and Castle for development convenience
 - The Castle tracks and stores current workflow state (active step, transitions)
 - A minimal Parapet UI (React/TypeScript) that queries Castle APIs and displays live workflow state
 
