@@ -11,7 +11,7 @@ services:
     volumes:
       - castle-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/api/v0/overseers || exit 1"]
+      test: ["CMD-SHELL", "wget -q --post-data='{}' --header='Content-Type: application/json' -O- http://localhost:8080/grpc.health.v1.Health/Check | grep -q '\"status\":\"SERVING_STATUS_SERVING\"'"]
       interval: 5s
       timeout: 3s
       retries: 12

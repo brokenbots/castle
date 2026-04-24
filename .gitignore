@@ -19,6 +19,7 @@ parapet/.vite/
 parapet/coverage/
 
 # Castle dev data
+# Keep SQLite sidecar files untracked; some were historically committed.
 *.db
 *.db-journal
 *.db-shm
