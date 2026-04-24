@@ -21,6 +21,8 @@ parapet/coverage/
 # Castle dev data
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 castle/data/
 
 # IDE
