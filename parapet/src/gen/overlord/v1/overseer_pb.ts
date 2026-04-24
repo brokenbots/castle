@@ -439,6 +439,17 @@ export class ControlMessage extends Message<ControlMessage> {
      */
     value: AgentPrompt;
     case: "agentPrompt";
+  } | {
+    /**
+     * ControlReady is sent once, immediately after the server accepts the
+     * Control subscription. It flushes the response headers so the Connect
+     * client's call returns to the caller, and signals that subsequent
+     * ControlMessages can be delivered. Clients must ignore it.
+     *
+     * @generated from field: overlord.v1.ControlReady control_ready = 3;
+     */
+    value: ControlReady;
+    case: "controlReady";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<ControlMessage>) {
@@ -451,6 +462,7 @@ export class ControlMessage extends Message<ControlMessage> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "run_cancel", kind: "message", T: RunCancel, oneof: "command" },
     { no: 2, name: "agent_prompt", kind: "message", T: AgentPrompt, oneof: "command" },
+    { no: 3, name: "control_ready", kind: "message", T: ControlReady, oneof: "command" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ControlMessage {
@@ -563,6 +575,40 @@ export class AgentPrompt extends Message<AgentPrompt> {
 
   static equals(a: AgentPrompt | PlainMessage<AgentPrompt> | undefined, b: AgentPrompt | PlainMessage<AgentPrompt> | undefined): boolean {
     return proto3.util.equals(AgentPrompt, a, b);
+  }
+}
+
+/**
+ * ControlReady is an attach acknowledgement sent once at stream start.
+ * It carries no payload.
+ *
+ * @generated from message overlord.v1.ControlReady
+ */
+export class ControlReady extends Message<ControlReady> {
+  constructor(data?: PartialMessage<ControlReady>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ControlReady";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ControlReady {
+    return new ControlReady().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ControlReady {
+    return new ControlReady().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ControlReady {
+    return new ControlReady().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ControlReady | PlainMessage<ControlReady> | undefined, b: ControlReady | PlainMessage<ControlReady> | undefined): boolean {
+    return proto3.util.equals(ControlReady, a, b);
   }
 }
 
