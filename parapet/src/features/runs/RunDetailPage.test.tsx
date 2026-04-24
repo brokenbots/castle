@@ -38,7 +38,7 @@ describe('RunDetailPage', () => {
   test('renders workflow source and graph', async () => {
     render(
       <Provider store={store}>
-        <MemoryRouter initialEntries={['/runs/run-1']}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <Routes>
             <Route path="/runs/:id" element={<RunDetailPage />} />
           </Routes>

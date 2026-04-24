@@ -9,7 +9,7 @@ describe('App login', () => {
   test('shows login form when token is missing', () => {
     render(
       <Provider store={store}>
-        <MemoryRouter initialEntries={['/']}>
+        <MemoryRouter initialEntries={['/']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <Routes>
             <Route path="/" element={<App />} />
           </Routes>
