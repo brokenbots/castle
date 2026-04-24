@@ -50,4 +50,26 @@ describe('RunDetailPage', () => {
     expect(await screen.findByText('Step graph')).toBeInTheDocument();
     expect((await screen.findAllByText(/build/)).length).toBeGreaterThan(0);
   });
+
+  test('supports both proto and json codec selection', async () => {
+    const { getRuntimeCodec } = await import('../../api/client');
+
+    // Test default codec (json)
+    expect(getRuntimeCodec()).toBe('json');
+
+    // Test window.__OVERLORD__.codec override (proto)
+    window.__OVERLORD__ = { codec: 'proto' };
+    expect(getRuntimeCodec()).toBe('proto');
+
+    // Test meta tag fallback (json)
+    window.__OVERLORD__ = undefined;
+    const meta = document.createElement('meta');
+    meta.name = 'overlord-codec';
+    meta.content = 'json';
+    document.head.appendChild(meta);
+    expect(getRuntimeCodec()).toBe('json');
+
+    // Cleanup
+    document.head.removeChild(meta);
+  });
 });
