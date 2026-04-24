@@ -95,14 +95,14 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 		}
 
 		if replayRequested && !replayed[msg.RunId] {
-			prior, listErr := s.Store.ListEvents(ctx, msg.RunId, sinceSeq, 5000)
-			if listErr != nil {
-				return connect.NewError(connect.CodeInternal, listErr)
-			}
-			for _, priorEvent := range prior {
+			_, listErr := forEachPersistedEventPage(ctx, s.Store, msg.RunId, sinceSeq, func(priorEvent *pb.Envelope) error {
 				if err := stream.Send(&pb.Ack{RunId: priorEvent.RunId, Seq: priorEvent.Seq, CorrelationId: priorEvent.CorrelationId}); err != nil {
 					return connect.NewError(connect.CodeUnknown, err)
 				}
+				return nil
+			})
+			if listErr != nil {
+				return mapListEventsError(listErr)
 			}
 			replayed[msg.RunId] = true
 		}

@@ -38,7 +38,11 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-const tsLayout = time.RFC3339Nano
+const (
+	tsLayout               = time.RFC3339Nano
+	ListEventsDefaultLimit = 500
+	ListEventsMaxLimit     = 2048
+)
 
 func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 	_, err := s.db.ExecContext(ctx,
@@ -234,12 +238,13 @@ func (s *Store) AppendEvent(ctx context.Context, env *pb.Envelope) (uint64, bool
 }
 
 func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*pb.Envelope, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 500
+	normalized, err := normalizeListLimit(limit)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT seq,type,ts,correlation_id,payload FROM events WHERE run_id=? AND seq>? ORDER BY seq ASC LIMIT ?`,
-		runID, since, limit)
+		runID, since, normalized)
 	if err != nil {
 		return nil, err
 	}
@@ -248,20 +253,31 @@ func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limi
 }
 
 func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*pb.Envelope, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 500
+	normalized, err := normalizeListLimit(limit)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT seq,type,ts,correlation_id,payload
 		 FROM events
 		 WHERE run_id=? AND seq>? AND type='step.log' AND json_extract(payload, '$.step')=?
 		 ORDER BY seq ASC LIMIT ?`,
-		runID, since, step, limit)
+		runID, since, step, normalized)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanEventRows(rows, runID)
+}
+
+func normalizeListLimit(limit int) (int, error) {
+	if limit <= 0 {
+		return ListEventsDefaultLimit, nil
+	}
+	if limit > ListEventsMaxLimit {
+		return 0, fmt.Errorf("%w: limit %d exceeds maximum %d", store.ErrInvalidLimit, limit, ListEventsMaxLimit)
+	}
+	return limit, nil
 }
 
 func scanEventRows(rows *sql.Rows, runID string) ([]*pb.Envelope, error) {

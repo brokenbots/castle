@@ -43,6 +43,66 @@ func TestCastleListRunEventsPaging(t *testing.T) {
 	if resp.Msg.LastSeq != 1050 {
 		t.Fatalf("last_seq=%d", resp.Msg.LastSeq)
 	}
+	if resp.Msg.NextSinceSeq != 1050 {
+		t.Fatalf("next_since_seq=%d", resp.Msg.NextSinceSeq)
+	}
+}
+
+func TestListRunEvents_RejectsOversizedLimit(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = cClient.ListRunEvents(context.Background(), connect.NewRequest(&pb.ListRunEventsRequest{RunId: run.Msg.RunId, SinceSeq: 0, Limit: 3000}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("expected invalid argument, got %v", err)
+	}
+}
+
+func TestListRunEvents_OverThreshold_PagesInternally(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 1500; i++ {
+		env := &pb.Envelope{
+			SchemaVersion: 1,
+			RunId:         run.Msg.RunId,
+			Ts:            timestamppb.Now(),
+			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s", Adapter: "shell", Attempt: 1}},
+		}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp, err := cClient.ListRunEvents(context.Background(), connect.NewRequest(&pb.ListRunEventsRequest{RunId: run.Msg.RunId, SinceSeq: 0, Limit: 1500}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(resp.Msg.Events); got != 1500 {
+		t.Fatalf("events=%d want 1500", got)
+	}
+	for i, env := range resp.Msg.Events {
+		want := uint64(i + 1)
+		if env.Seq != want {
+			t.Fatalf("seq[%d]=%d want %d", i, env.Seq, want)
+		}
+	}
+	if resp.Msg.LastSeq != 1500 {
+		t.Fatalf("last_seq=%d want 1500", resp.Msg.LastSeq)
+	}
+	if resp.Msg.NextSinceSeq != 1500 {
+		t.Fatalf("next_since_seq=%d want 1500", resp.Msg.NextSinceSeq)
+	}
 }
 
 func TestWatchRunReplayAndTail(t *testing.T) {
@@ -111,6 +171,59 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 	}
 	if watch.Receive() {
 		t.Fatal("expected stream close after terminal event")
+	}
+}
+
+func TestWatchRun_TerminalInReplay_ClosesImmediately(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	replayEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}}
+	if _, _, err := ts.store.AppendEvent(context.Background(), replayEnv); err != nil {
+		t.Fatal(err)
+	}
+	terminal := events.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
+	terminal.Ts = timestamppb.New(time.Now().UTC())
+	if _, _, err := ts.store.AppendEvent(context.Background(), terminal); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !watch.Receive() {
+		t.Fatalf("expected WatchReady, err=%v", watch.Err())
+	}
+	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
+		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
+	}
+	if !watch.Receive() {
+		t.Fatalf("expected replay event 1, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 1 {
+		t.Fatalf("replay seq=%d want 1", watch.Msg().Seq)
+	}
+	if !watch.Receive() {
+		t.Fatalf("expected replay terminal event, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 2 {
+		t.Fatalf("terminal seq=%d want 2", watch.Msg().Seq)
+	}
+	if watch.Receive() {
+		t.Fatal("expected stream close immediately after replayed terminal")
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("expected clean stream close, got err=%v", err)
 	}
 }
 

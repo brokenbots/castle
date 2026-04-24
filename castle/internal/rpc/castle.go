@@ -3,12 +3,14 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/overlord/castle/internal/store"
+	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
 	"github.com/brokenbots/overlord/shared/events"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
@@ -62,38 +64,23 @@ func (s *CastleServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRu
 func (s *CastleServer) ListRunEvents(ctx context.Context, req *connect.Request[pb.ListRunEventsRequest]) (*connect.Response[pb.ListRunEventsResponse], error) {
 	limit := int(req.Msg.Limit)
 	if limit <= 0 {
-		limit = 500
+		limit = sqlite.ListEventsDefaultLimit
 	}
-	if limit > 5000 {
-		limit = 5000
+	if limit > sqlite.ListEventsMaxLimit {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("limit %d exceeds maximum %d; page using since_seq", limit, sqlite.ListEventsMaxLimit))
 	}
 
-	remaining := limit
-	since := req.Msg.SinceSeq
-	all := make([]*pb.Envelope, 0, limit)
-	for remaining > 0 {
-		chunk := remaining
-		if chunk > 1000 {
-			chunk = 1000
-		}
-		list, err := s.Store.ListEvents(ctx, req.Msg.RunId, since, chunk)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		if len(list) == 0 {
-			break
-		}
-		all = append(all, list...)
-		since = list[len(list)-1].Seq
-		remaining -= len(list)
-		if len(list) < chunk {
-			break
-		}
+	all, err := s.Store.ListEvents(ctx, req.Msg.RunId, req.Msg.SinceSeq, limit)
+	if err != nil {
+		return nil, mapListEventsError(err)
 	}
 
 	resp := &pb.ListRunEventsResponse{Events: all}
 	if len(all) > 0 {
 		resp.LastSeq = all[len(all)-1].Seq
+		if len(all) == limit {
+			resp.NextSinceSeq = all[len(all)-1].Seq
+		}
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -121,23 +108,28 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 
 	seen := make(map[uint64]struct{})
 	since := req.Msg.SinceSeq
+	terminalInReplay := false
 
-	persisted, err := s.Store.ListEvents(ctx, runID, since, 5000)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
-	}
-	for _, env := range persisted {
+	_, err := forEachPersistedEventPage(ctx, s.Store, runID, since, func(env *pb.Envelope) error {
 		if _, ok := seen[env.Seq]; ok {
-			continue
+			return nil
 		}
 		seen[env.Seq] = struct{}{}
 		if err := stream.Send(env); err != nil {
 			return connect.NewError(connect.CodeUnknown, err)
 		}
-		if events.IsTerminal(env) {
-			return nil
-		}
 		since = env.Seq
+		if events.IsTerminal(env) {
+			terminalInReplay = true
+			return errStopEventPagination
+		}
+		return nil
+	})
+	if err != nil {
+		return mapListEventsError(err)
+	}
+	if terminalInReplay {
+		return nil
 	}
 
 	for {

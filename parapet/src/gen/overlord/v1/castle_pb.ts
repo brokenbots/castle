@@ -407,6 +407,13 @@ export class ListRunEventsResponse extends Message<ListRunEventsResponse> {
    */
   lastSeq = protoInt64.zero;
 
+  /**
+   * Continuation cursor. When set, pass this as since_seq in the next call.
+   *
+   * @generated from field: uint64 next_since_seq = 3;
+   */
+  nextSinceSeq = protoInt64.zero;
+
   constructor(data?: PartialMessage<ListRunEventsResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -417,6 +424,7 @@ export class ListRunEventsResponse extends Message<ListRunEventsResponse> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "events", kind: "message", T: Envelope, repeated: true },
     { no: 2, name: "last_seq", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 3, name: "next_since_seq", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListRunEventsResponse {

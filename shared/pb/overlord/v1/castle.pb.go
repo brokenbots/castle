@@ -482,9 +482,11 @@ func (x *ListRunEventsRequest) GetLimit() int32 {
 }
 
 type ListRunEventsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Events        []*Envelope            `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
-	LastSeq       uint64                 `protobuf:"varint,2,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Events  []*Envelope            `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	LastSeq uint64                 `protobuf:"varint,2,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
+	// Continuation cursor. When set, pass this as since_seq in the next call.
+	NextSinceSeq  uint64 `protobuf:"varint,3,opt,name=next_since_seq,json=nextSinceSeq,proto3" json:"next_since_seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -529,6 +531,13 @@ func (x *ListRunEventsResponse) GetEvents() []*Envelope {
 func (x *ListRunEventsResponse) GetLastSeq() uint64 {
 	if x != nil {
 		return x.LastSeq
+	}
+	return 0
+}
+
+func (x *ListRunEventsResponse) GetNextSinceSeq() uint64 {
+	if x != nil {
+		return x.NextSinceSeq
 	}
 	return 0
 }
@@ -829,10 +838,11 @@ const file_overlord_v1_castle_proto_rawDesc = "" +
 	"\x14ListRunEventsRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1b\n" +
 	"\tsince_seq\x18\x02 \x01(\x04R\bsinceSeq\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x05R\x05limit\"a\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\x87\x01\n" +
 	"\x15ListRunEventsResponse\x12-\n" +
 	"\x06events\x18\x01 \x03(\v2\x15.overlord.v1.EnvelopeR\x06events\x12\x19\n" +
-	"\blast_seq\x18\x02 \x01(\x04R\alastSeq\"E\n" +
+	"\blast_seq\x18\x02 \x01(\x04R\alastSeq\x12$\n" +
+	"\x0enext_since_seq\x18\x03 \x01(\x04R\fnextSinceSeq\"E\n" +
 	"\x0fWatchRunRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1b\n" +
 	"\tsince_seq\x18\x02 \x01(\x04R\bsinceSeq\"?\n" +

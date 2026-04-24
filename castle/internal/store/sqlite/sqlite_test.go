@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -212,5 +214,178 @@ func TestEventPayloadRoundTripAllVariants(t *testing.T) {
 				t.Fatalf("type string drift: want %q got %q", events.TypeString(env), events.TypeString(back))
 			}
 		})
+	}
+}
+
+func TestListEvents_HonorsLimit(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o1", Name: "x", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-limit", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30; i++ {
+		env := events.NewEnvelope("r-limit", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env.CorrelationId = fmt.Sprintf("limit-%d", i)
+		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.ListEvents(ctx, "r-limit", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 10 {
+		t.Fatalf("events=%d want 10", len(got))
+	}
+	if got[9].Seq != 10 {
+		t.Fatalf("last seq=%d want 10", got[9].Seq)
+	}
+}
+
+func TestListEvents_RejectsOversizedLimit(t *testing.T) {
+	s := tempStore(t)
+	_, err := s.ListEvents(context.Background(), "r-missing", 0, ListEventsMaxLimit+1)
+	if err == nil {
+		t.Fatal("expected oversize limit error")
+	}
+	if !errors.Is(err, store.ErrInvalidLimit) {
+		t.Fatalf("expected ErrInvalidLimit, got %v", err)
+	}
+}
+
+func TestListEvents_DefaultOnZero(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o1", Name: "x", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-default", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 700; i++ {
+		env := events.NewEnvelope("r-default", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env.CorrelationId = fmt.Sprintf("default-%d", i)
+		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.ListEvents(ctx, "r-default", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != ListEventsDefaultLimit {
+		t.Fatalf("events=%d want default %d", len(got), ListEventsDefaultLimit)
+	}
+}
+
+func TestListEvents_Pagination_OrderPreserved(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o1", Name: "x", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-page", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 1500; i++ {
+		env := events.NewEnvelope("r-page", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env.CorrelationId = fmt.Sprintf("page-%d", i)
+		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var (
+		since   uint64
+		seen    int
+		lastSeq uint64
+	)
+	for {
+		page, err := s.ListEvents(ctx, "r-page", since, ListEventsMaxLimit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, env := range page {
+			if env.Seq <= lastSeq {
+				t.Fatalf("sequence regressed: last=%d current=%d", lastSeq, env.Seq)
+			}
+			lastSeq = env.Seq
+			seen++
+		}
+		since = page[len(page)-1].Seq
+		if len(page) < ListEventsMaxLimit {
+			break
+		}
+	}
+	if seen != 1500 {
+		t.Fatalf("events seen=%d want 1500", seen)
+	}
+}
+
+func TestListStepLogs_Pagination(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o1", Name: "x", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-logs", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 900; i++ {
+		env := events.NewEnvelope("r-logs", &pb.StepLog{Step: "build", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("line-%d", i)})
+		env.CorrelationId = fmt.Sprintf("build-%d", i)
+		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		env := events.NewEnvelope("r-logs", &pb.StepLog{Step: "test", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("other-%d", i)})
+		env.CorrelationId = fmt.Sprintf("test-%d", i)
+		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var (
+		since uint64
+		seen  int
+	)
+	for {
+		page, err := s.ListStepLogs(ctx, "r-logs", "build", since, 300)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, env := range page {
+			logPayload, ok := env.Payload.(*pb.Envelope_StepLog)
+			if !ok {
+				t.Fatalf("expected step.log payload, got %T", env.Payload)
+			}
+			if logPayload.StepLog.Step != "build" {
+				t.Fatalf("unexpected step %q", logPayload.StepLog.Step)
+			}
+		}
+		seen += len(page)
+		since = page[len(page)-1].Seq
+		if len(page) < 300 {
+			break
+		}
+	}
+	if seen != 900 {
+		t.Fatalf("step.log count=%d want 900", seen)
 	}
 }

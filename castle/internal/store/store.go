@@ -13,6 +13,8 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+var ErrInvalidLimit = errors.New("invalid list limit")
+
 type Overseer struct {
 	ID         string
 	Name       string

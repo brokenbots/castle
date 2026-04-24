@@ -89,6 +89,8 @@ message ListRunEventsRequest {
 message ListRunEventsResponse {
   repeated Envelope events = 1;
   uint64 last_seq = 2;
+  // Continuation cursor. When set, pass this as since_seq in the next call.
+  uint64 next_since_seq = 3;
 }
 
 message WatchRunRequest {

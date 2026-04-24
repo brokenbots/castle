@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -34,6 +35,65 @@ func TestOverseerUnaryMethods(t *testing.T) {
 	if runResp.Msg.RunId == "" || runResp.Msg.Status != "pending" {
 		t.Fatalf("unexpected run response: %+v", runResp.Msg)
 	}
+}
+
+func TestSubmitEventsStream_ReplayPagesPersistedEvents(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, _ := ts.startServer(t)
+	overseerID, token := mustRegister(t, oClient)
+
+	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf", WorkflowHash: "hash"})
+	createReq.Header().Set("Authorization", "Bearer "+token)
+	runResp, err := oClient.CreateRun(context.Background(), createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := runResp.Msg.RunId
+
+	for i := 0; i < 1500; i++ {
+		env := &pb.Envelope{
+			SchemaVersion: int32(events.SchemaVersion),
+			RunId:         runID,
+			CorrelationId: fmt.Sprintf("seed-%d", i),
+			Ts:            timestamppb.Now(),
+			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "seed", Adapter: "shell", Attempt: 1}},
+		}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stream := oClient.SubmitEvents(context.Background())
+	stream.RequestHeader().Set("Authorization", "Bearer "+token)
+	stream.RequestHeader().Set("since_seq", "0")
+	if err := stream.Send(&pb.Envelope{
+		SchemaVersion: int32(events.SchemaVersion),
+		RunId:         runID,
+		CorrelationId: "live-event",
+		Ts:            timestamppb.Now(),
+		Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "live", Adapter: "shell", Attempt: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	replayCount := 0
+	for {
+		ack, err := stream.Receive()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ack.CorrelationId == "live-event" {
+			if ack.Seq != 1501 {
+				t.Fatalf("live ack seq=%d want 1501", ack.Seq)
+			}
+			break
+		}
+		replayCount++
+	}
+	if replayCount != 1500 {
+		t.Fatalf("replay ack count=%d want 1500", replayCount)
+	}
+	_ = stream.CloseRequest()
 }
 
 func TestSubmitEventsStream(t *testing.T) {
