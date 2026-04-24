@@ -1,0 +1,25 @@
+version: v1
+managed:
+  enabled: true
+  go_package_prefix:
+    default: github.com/brokenbots/overlord/shared/pb
+plugins:
+  - plugin: buf.build/protocolbuffers/go
+    out: shared/pb
+    opt:
+      - paths=source_relative
+  - plugin: buf.build/connectrpc/go
+    out: shared/pb
+    opt:
+      - paths=source_relative
+  # Pin protobuf-es and connect-es to the v1 line so the generated TS stays
+  # compatible with a single @bufbuild/protobuf + @connectrpc/connect version
+  # set. Bump together when upgrading.
+  - plugin: buf.build/bufbuild/es:v1.10.0
+    out: parapet/src/gen
+    opt:
+      - target=ts
+  - plugin: buf.build/connectrpc/es:v1.6.1
+    out: parapet/src/gen
+    opt:
+      - target=ts

@@ -1,7 +1,7 @@
 .PHONY: help bootstrap tidy build build-overseer build-castle build-parapet \
 	test validate dev-castle dev-overseer dev-parapet docker-build \
 	docker-build-overseer docker-build-castle compose-up compose-down \
-	compose-logs clean
+	compose-logs clean proto proto-lint proto-check proto-check-drift
 
 # Default target: list available targets.
 help:
@@ -69,3 +69,35 @@ clean: ## Remove build outputs
 	rm -rf bin
 	rm -f castle/*.db
 	rm -rf parapet/dist parapet/.vite
+
+# --- Protobuf / buf -----------------------------------------------------------
+# The proto schema under proto/overlord/v1 is the source of truth for every
+# wire-visible type and RPC (Phase 1.1). Generated Go lives in shared/pb and
+# generated TS in parapet/src/gen; both are checked in so consumers do not
+# need `buf` locally to build.
+
+proto: ## Regenerate Go and TS code from proto/overlord/v1
+	buf generate
+
+proto-lint: ## Lint the proto schema
+	buf lint
+
+proto-check: ## Check the proto schema for breaking changes against main
+	@out=$$(buf breaking --against '.git#branch=main' 2>&1); \
+	code=$$?; \
+	echo "$$out"; \
+	if [ $$code -ne 0 ]; then \
+		if echo "$$out" | grep -q 'had no .proto files'; then \
+			echo "note: main has no proto schema yet; skipping breaking check." >&2; \
+			exit 0; \
+		fi; \
+		exit $$code; \
+	fi
+
+proto-check-drift: ## Fail if generated code is out of date with the .proto files
+	buf generate
+	@if ! git diff --quiet -- shared/pb parapet/src/gen; then \
+		echo "Generated proto output is out of date. Run 'make proto' and commit the changes." >&2; \
+		git --no-pager diff --stat -- shared/pb parapet/src/gen >&2; \
+		exit 1; \
+	fi

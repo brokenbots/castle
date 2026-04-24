@@ -6,6 +6,50 @@ on:
   pull_request:
 
 jobs:
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ github.token }}
+
+      - name: buf lint
+        run: buf lint
+
+      - name: buf breaking (vs base)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Skip gracefully on the bootstrap PR that first introduces the
+          # proto module: buf reports "Module had no .proto files" when the
+          # base branch does not yet contain any .proto files. Once the
+          # schema lands on the base branch this becomes a hard check.
+          set +e
+          out=$(buf breaking --against "https://github.com/${{ github.repository }}.git#branch=${{ github.base_ref }}" 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            if echo "$out" | grep -q 'had no .proto files'; then
+              echo "::notice::Base branch has no proto schema yet; skipping breaking check."
+              exit 0
+            fi
+            exit $code
+          fi
+
+      - name: Check generated code is up to date
+        run: |
+          buf generate
+          if ! git diff --quiet -- shared/pb parapet/src/gen; then
+            echo "::error::Generated proto output is out of date. Run 'make proto' and commit."
+            git --no-pager diff --stat -- shared/pb parapet/src/gen
+            exit 1
+          fi
+
   go:
     runs-on: ubuntu-latest
     steps:

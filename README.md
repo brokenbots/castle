@@ -47,8 +47,9 @@ Supported agent backends (planned):
 The Castle is the central coordination server. It:
 
 - Maintains a registry of connected Overseers and their workflow states
-- Exposes a **REST/HTTPS API** for control-plane operations (workflow inspection, file viewing, configuration)
-- Exposes a **WebSocket API** for real-time two-way communication (events, notifications, live state updates)
+- Exposes a **Connect / gRPC API** (`connectrpc.com/connect`) for all control-plane and streaming operations; the same handlers speak gRPC, gRPC-Web, and the Connect protocol, so browsers, Go clients, and `curl` all work against one endpoint
+- Serves wire payloads as **protobuf or JSON** depending on the client's requested codec
+- Streams live workflow events to subscribers via server-streaming RPCs
 - Is designed for **high availability** deployment
 
 ### Parapet
@@ -56,8 +57,8 @@ The Castle is the central coordination server. It:
 Parapet is the web user interface for Overlord. It:
 
 - Is a separate **React/TypeScript** application
-- Connects to Castle APIs over HTTPS and WebSocket
-- Displays workflow status, step history, and live updates from Overseers
+- Talks to Castle over HTTPS using generated Connect clients (`@connectrpc/connect-web`) — no WebSocket or separate proxy required
+- Displays workflow status, step history, and live updates from Overseers via `CastleService.WatchRun` server-streaming RPCs
 
 ---
 
@@ -68,21 +69,21 @@ Parapet is the web user interface for Overlord. It:
              │          Parapet           │
              │      (React / TypeScript)  │
              └─────────────┬──────────────┘
-                           │ HTTPS + WebSocket
+                           │ HTTPS (Connect: JSON or protobuf)
 ┌──────────────────────────▼──────────────────────────┐
 │                        Castle                       │
 │                                                      │
-│  ┌──────────────┐   ┌──────────────┐                │
-│  │   REST API   │   │  WebSocket   │                │
-│  │   (HTTPS)    │   │    (WSS)     │                │
-│  └──────┬───────┘   └──────┬───────┘                │
-│         │                  │                        │
-│  ┌──────▼──────────────────▼───────┐                │
+│  ┌───────────────────────────────────┐                     │
+│  │ Connect / gRPC handlers       │                     │
+│  │ (unary + server-stream + bidi)│                     │
+│  └────────────────────────┬─────────────┘                     │
+│                           │                             │
+│  ┌─────────────────────────▼───────────┐                │
 │  │        Workflow State Store     │                │
-│  │        (Embedded DB)            │                │
+│  │        (SQLite)                 │                │
 │  └─────────────────────────────────┘                │
 └──────────────────────┬───────────────────────────────┘
-                       │  HTTPS + WebSocket
+                       │  gRPC over HTTP/2 (TLS or mTLS)
            ┌───────────┼───────────┐
            │           │           │
     ┌──────▼──┐  ┌─────▼───┐  ┌───▼─────┐
@@ -104,15 +105,17 @@ Parapet is the web user interface for Overlord. It:
 
 ## Technology Stack
 
-| Component        | Technology                          |
-|------------------|-------------------------------------|
-| Overseer         | Go — single cross-platform binary   |
-| Castle Server    | Go                                  |
-| Workflow DSL     | HCL (HashiCorp Configuration Language) |
-| Castle REST API  | HTTPS                               |
-| Castle Events    | WebSocket (WSS)                     |
-| Castle Storage   | Embedded DB (SQLite / bbolt)        |
-| Parapet UI       | React / TypeScript                  |
+| Component          | Technology                                                       |
+|--------------------|------------------------------------------------------------------|
+| Overseer           | Go — single cross-platform binary                                |
+| Castle Server      | Go                                                               |
+| Workflow DSL       | HCL (HashiCorp Configuration Language)                           |
+| Wire schema        | Protocol Buffers (`proto/overlord/v1`), managed with `buf`       |
+| Castle API         | Connect / gRPC / gRPC-Web (HTTPS, optional mTLS)                 |
+| Castle Events      | Server-streaming RPC (`CastleService.WatchRun`)                  |
+| Wire codec         | Runtime-selectable: JSON or binary protobuf                      |
+| Castle Storage     | Embedded DB (SQLite via pure-Go `modernc.org/sqlite`)            |
+| Parapet UI         | React / TypeScript + `@connectrpc/connect-web`                   |
 
 ---
 
@@ -126,7 +129,7 @@ Parapet is the web user interface for Overlord. It:
 
 **Simple deployment** — The Overseer is a single binary. No agent-side infrastructure required. Overseers can self-register to any reachable Castle given the right credentials.
 
-**Standard protocols** — HTTPS and WebSocket allow any compatible client to interact with the Castle, enabling diverse interfaces and integrations.
+**Standard protocols** — Connect / gRPC / gRPC-Web over HTTPS allow any compatible client (Go, browser, `grpcurl`, `curl`) to interact with the Castle from a single schema, enabling diverse interfaces and integrations.
 
 ---
 

@@ -1,0 +1,28 @@
+version: v2
+modules:
+  - path: proto
+    name: buf.build/brokenbots/overlord
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - STANDARD
+  except:
+    # The workstream schema intentionally uses Envelope, Run, Overseer, etc. as
+    # shared request/response types across RPCs rather than minting per-RPC
+    # wrapper messages. Opt out of the default strict naming + uniqueness rules
+    # for request/response types.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    # Skip docstring enforcement; schema is documented in WORKSTREAM + inline
+    # descriptive comments.
+    - COMMENT_ENUM
+    - COMMENT_MESSAGE
+    - COMMENT_FIELD
+    - COMMENT_ONEOF
+    - COMMENT_RPC
+    - COMMENT_SERVICE
+    - COMMENT_ENUM_VALUE
+  service_suffix: Service

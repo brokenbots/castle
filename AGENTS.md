@@ -24,21 +24,19 @@ Component-specific:
 
 ## Project map
 
-- Contracts: [api/README.md](api/README.md), [api/openapi.yaml](api/openapi.yaml), [api/events.schema.json](api/events.schema.json)
-- Castle server (REST + WS + SQLite): [castle/](castle)
+- Contracts (Phase 1+): `proto/overlord/v1/*.proto` (source of truth; generated Go in `shared/pb/`, TS in `parapet/src/gen/`). Managed with `buf`.
+- Legacy contracts (Phase 0, being retired in 1.1): [api/README.md](api/README.md), [api/openapi.yaml](api/openapi.yaml), [api/events.schema.json](api/events.schema.json)
+- Castle server (Connect/gRPC + SQLite): [castle/](castle)
 - Overseer CLI and execution engine: [overseer/](overseer)
 - Workflow parser/compiler (HCL -> FSM): [workflow/](workflow)
-- Shared event types: [shared/events/types.go](shared/events/types.go)
-- Frontend app (Vite/React/TS): [parapet/](parapet)
-- Architecture and phase details: [README.md](README.md), [PLAN.md](PLAN.md)
+- Shared event types (Phase 0 hand-written; being replaced by generated protobuf): [shared/events/types.go](shared/events/types.go)
+- Frontend app (Vite/React/TS, `@connectrpc/connect-web`): [parapet/](parapet)
+- Architecture and phase details: [README.md](README.md), [PLAN.md](PLAN.md), [WORKSTREAM.md](WORKSTREAM.md)
 
 ## Conventions agents should follow
 
 - Go workspace uses multiple modules via [go.work](go.work); run commands from repo root using `make` targets when possible.
-- Keep API changes synchronized across contracts and implementations:
-  - Update `api/*` first.
-  - Then update Castle handlers and WS/event handling.
-  - Then update shared Go types and frontend API usage.
+- **Wire contract changes (Phase 1+)**: edit `proto/overlord/v1/*.proto` first; run `make proto` to regenerate Go and TS clients; then update Castle handlers, Overseer client, and Parapet call sites.
 - Keep logs structured (`slog` JSON style in backend entrypoints).
 - Preserve existing adapter boundaries in Overseer (`internal/adapter`, `internal/adapters/*`, `internal/dispatcher`).
 
