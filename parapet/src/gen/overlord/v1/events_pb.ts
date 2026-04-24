@@ -155,6 +155,17 @@ export class Envelope extends Message<Envelope> {
      */
     value: OverseerDisconnected;
     case: "overseerDisconnected";
+  } | {
+    /**
+     * WatchReady is a protocol-level sentinel sent once at the start of a
+     * WatchRun server-stream, after any persisted-event replay, to flush
+     * response headers so the client's WatchRun call can return. It has no
+     * associated run state; clients MUST ignore it.
+     *
+     * @generated from field: overlord.v1.WatchReady watch_ready = 99;
+     */
+    value: WatchReady;
+    case: "watchReady";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<Envelope>) {
@@ -180,6 +191,7 @@ export class Envelope extends Message<Envelope> {
     { no: 17, name: "adapter_event", kind: "message", T: AdapterEvent, oneof: "payload" },
     { no: 18, name: "overseer_heartbeat", kind: "message", T: OverseerHeartbeat, oneof: "payload" },
     { no: 19, name: "overseer_disconnected", kind: "message", T: OverseerDisconnected, oneof: "payload" },
+    { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Envelope {
@@ -682,6 +694,42 @@ export class OverseerDisconnected extends Message<OverseerDisconnected> {
 
   static equals(a: OverseerDisconnected | PlainMessage<OverseerDisconnected> | undefined, b: OverseerDisconnected | PlainMessage<OverseerDisconnected> | undefined): boolean {
     return proto3.util.equals(OverseerDisconnected, a, b);
+  }
+}
+
+/**
+ * WatchReady is a protocol-level sentinel payload sent by WatchRun once at
+ * stream start. It has no fields and no run-semantic meaning; it exists
+ * solely to flush Connect server-stream response headers so the client's
+ * WatchRun call can return before any real event is published.
+ *
+ * @generated from message overlord.v1.WatchReady
+ */
+export class WatchReady extends Message<WatchReady> {
+  constructor(data?: PartialMessage<WatchReady>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.WatchReady";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WatchReady {
+    return new WatchReady().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WatchReady {
+    return new WatchReady().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WatchReady {
+    return new WatchReady().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WatchReady | PlainMessage<WatchReady> | undefined, b: WatchReady | PlainMessage<WatchReady> | undefined): boolean {
+    return proto3.util.equals(WatchReady, a, b);
   }
 }
 

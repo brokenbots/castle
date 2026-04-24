@@ -516,6 +516,7 @@ type ControlMessage struct {
 	//
 	//	*ControlMessage_RunCancel
 	//	*ControlMessage_AgentPrompt
+	//	*ControlMessage_ControlReady
 	Command       isControlMessage_Command `protobuf_oneof:"command"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -576,6 +577,15 @@ func (x *ControlMessage) GetAgentPrompt() *AgentPrompt {
 	return nil
 }
 
+func (x *ControlMessage) GetControlReady() *ControlReady {
+	if x != nil {
+		if x, ok := x.Command.(*ControlMessage_ControlReady); ok {
+			return x.ControlReady
+		}
+	}
+	return nil
+}
+
 type isControlMessage_Command interface {
 	isControlMessage_Command()
 }
@@ -588,9 +598,19 @@ type ControlMessage_AgentPrompt struct {
 	AgentPrompt *AgentPrompt `protobuf:"bytes,2,opt,name=agent_prompt,json=agentPrompt,proto3,oneof"` // Phase 2.3; stub in 1.1.
 }
 
+type ControlMessage_ControlReady struct {
+	// ControlReady is sent once, immediately after the server accepts the
+	// Control subscription. It flushes the response headers so the Connect
+	// client's call returns to the caller, and signals that subsequent
+	// ControlMessages can be delivered. Clients must ignore it.
+	ControlReady *ControlReady `protobuf:"bytes,3,opt,name=control_ready,json=controlReady,proto3,oneof"`
+}
+
 func (*ControlMessage_RunCancel) isControlMessage_Command() {}
 
 func (*ControlMessage_AgentPrompt) isControlMessage_Command() {}
+
+func (*ControlMessage_ControlReady) isControlMessage_Command() {}
 
 // RunCancel asks the Overseer to cancel an in-flight run.
 type RunCancel struct {
@@ -706,6 +726,44 @@ func (x *AgentPrompt) GetPrompt() string {
 	return ""
 }
 
+// ControlReady is an attach acknowledgement sent once at stream start.
+// It carries no payload.
+type ControlReady struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ControlReady) Reset() {
+	*x = ControlReady{}
+	mi := &file_overlord_v1_overseer_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ControlReady) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ControlReady) ProtoMessage() {}
+
+func (x *ControlReady) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_overseer_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ControlReady.ProtoReflect.Descriptor instead.
+func (*ControlReady) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_overseer_proto_rawDescGZIP(), []int{11}
+}
+
 var File_overlord_v1_overseer_proto protoreflect.FileDescriptor
 
 const file_overlord_v1_overseer_proto_rawDesc = "" +
@@ -754,11 +812,12 @@ const file_overlord_v1_overseer_proto_rawDesc = "" +
 	"\x0ecorrelation_id\x18\x03 \x01(\tR\rcorrelationId\":\n" +
 	"\x17ControlSubscribeRequest\x12\x1f\n" +
 	"\voverseer_id\x18\x01 \x01(\tR\n" +
-	"overseerId\"\x93\x01\n" +
+	"overseerId\"\xd5\x01\n" +
 	"\x0eControlMessage\x127\n" +
 	"\n" +
 	"run_cancel\x18\x01 \x01(\v2\x16.overlord.v1.RunCancelH\x00R\trunCancel\x12=\n" +
-	"\fagent_prompt\x18\x02 \x01(\v2\x18.overlord.v1.AgentPromptH\x00R\vagentPromptB\t\n" +
+	"\fagent_prompt\x18\x02 \x01(\v2\x18.overlord.v1.AgentPromptH\x00R\vagentPrompt\x12@\n" +
+	"\rcontrol_ready\x18\x03 \x01(\v2\x19.overlord.v1.ControlReadyH\x00R\fcontrolReadyB\t\n" +
 	"\acommand\":\n" +
 	"\tRunCancel\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x16\n" +
@@ -766,7 +825,8 @@ const file_overlord_v1_overseer_proto_rawDesc = "" +
 	"\vAgentPrompt\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04step\x18\x02 \x01(\tR\x04step\x12\x16\n" +
-	"\x06prompt\x18\x03 \x01(\tR\x06prompt2\xf1\x02\n" +
+	"\x06prompt\x18\x03 \x01(\tR\x06prompt\"\x0e\n" +
+	"\fControlReady2\xf1\x02\n" +
 	"\x0fOverseerService\x12G\n" +
 	"\bRegister\x12\x1c.overlord.v1.RegisterRequest\x1a\x1d.overlord.v1.RegisterResponse\x12J\n" +
 	"\tHeartbeat\x12\x1d.overlord.v1.HeartbeatRequest\x1a\x1e.overlord.v1.HeartbeatResponse\x12<\n" +
@@ -787,7 +847,7 @@ func file_overlord_v1_overseer_proto_rawDescGZIP() []byte {
 	return file_overlord_v1_overseer_proto_rawDescData
 }
 
-var file_overlord_v1_overseer_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_overlord_v1_overseer_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_overlord_v1_overseer_proto_goTypes = []any{
 	(*RegisterRequest)(nil),         // 0: overlord.v1.RegisterRequest
 	(*RegisterResponse)(nil),        // 1: overlord.v1.RegisterResponse
@@ -800,33 +860,35 @@ var file_overlord_v1_overseer_proto_goTypes = []any{
 	(*ControlMessage)(nil),          // 8: overlord.v1.ControlMessage
 	(*RunCancel)(nil),               // 9: overlord.v1.RunCancel
 	(*AgentPrompt)(nil),             // 10: overlord.v1.AgentPrompt
-	nil,                             // 11: overlord.v1.RegisterRequest.LabelsEntry
-	(*timestamppb.Timestamp)(nil),   // 12: google.protobuf.Timestamp
-	(*Envelope)(nil),                // 13: overlord.v1.Envelope
+	(*ControlReady)(nil),            // 11: overlord.v1.ControlReady
+	nil,                             // 12: overlord.v1.RegisterRequest.LabelsEntry
+	(*timestamppb.Timestamp)(nil),   // 13: google.protobuf.Timestamp
+	(*Envelope)(nil),                // 14: overlord.v1.Envelope
 }
 var file_overlord_v1_overseer_proto_depIdxs = []int32{
-	11, // 0: overlord.v1.RegisterRequest.labels:type_name -> overlord.v1.RegisterRequest.LabelsEntry
-	12, // 1: overlord.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
-	12, // 2: overlord.v1.Run.created_at:type_name -> google.protobuf.Timestamp
-	12, // 3: overlord.v1.Run.started_at:type_name -> google.protobuf.Timestamp
-	12, // 4: overlord.v1.Run.ended_at:type_name -> google.protobuf.Timestamp
+	12, // 0: overlord.v1.RegisterRequest.labels:type_name -> overlord.v1.RegisterRequest.LabelsEntry
+	13, // 1: overlord.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
+	13, // 2: overlord.v1.Run.created_at:type_name -> google.protobuf.Timestamp
+	13, // 3: overlord.v1.Run.started_at:type_name -> google.protobuf.Timestamp
+	13, // 4: overlord.v1.Run.ended_at:type_name -> google.protobuf.Timestamp
 	9,  // 5: overlord.v1.ControlMessage.run_cancel:type_name -> overlord.v1.RunCancel
 	10, // 6: overlord.v1.ControlMessage.agent_prompt:type_name -> overlord.v1.AgentPrompt
-	0,  // 7: overlord.v1.OverseerService.Register:input_type -> overlord.v1.RegisterRequest
-	2,  // 8: overlord.v1.OverseerService.Heartbeat:input_type -> overlord.v1.HeartbeatRequest
-	4,  // 9: overlord.v1.OverseerService.CreateRun:input_type -> overlord.v1.CreateRunRequest
-	13, // 10: overlord.v1.OverseerService.SubmitEvents:input_type -> overlord.v1.Envelope
-	7,  // 11: overlord.v1.OverseerService.Control:input_type -> overlord.v1.ControlSubscribeRequest
-	1,  // 12: overlord.v1.OverseerService.Register:output_type -> overlord.v1.RegisterResponse
-	3,  // 13: overlord.v1.OverseerService.Heartbeat:output_type -> overlord.v1.HeartbeatResponse
-	5,  // 14: overlord.v1.OverseerService.CreateRun:output_type -> overlord.v1.Run
-	6,  // 15: overlord.v1.OverseerService.SubmitEvents:output_type -> overlord.v1.Ack
-	8,  // 16: overlord.v1.OverseerService.Control:output_type -> overlord.v1.ControlMessage
-	12, // [12:17] is the sub-list for method output_type
-	7,  // [7:12] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	11, // 7: overlord.v1.ControlMessage.control_ready:type_name -> overlord.v1.ControlReady
+	0,  // 8: overlord.v1.OverseerService.Register:input_type -> overlord.v1.RegisterRequest
+	2,  // 9: overlord.v1.OverseerService.Heartbeat:input_type -> overlord.v1.HeartbeatRequest
+	4,  // 10: overlord.v1.OverseerService.CreateRun:input_type -> overlord.v1.CreateRunRequest
+	14, // 11: overlord.v1.OverseerService.SubmitEvents:input_type -> overlord.v1.Envelope
+	7,  // 12: overlord.v1.OverseerService.Control:input_type -> overlord.v1.ControlSubscribeRequest
+	1,  // 13: overlord.v1.OverseerService.Register:output_type -> overlord.v1.RegisterResponse
+	3,  // 14: overlord.v1.OverseerService.Heartbeat:output_type -> overlord.v1.HeartbeatResponse
+	5,  // 15: overlord.v1.OverseerService.CreateRun:output_type -> overlord.v1.Run
+	6,  // 16: overlord.v1.OverseerService.SubmitEvents:output_type -> overlord.v1.Ack
+	8,  // 17: overlord.v1.OverseerService.Control:output_type -> overlord.v1.ControlMessage
+	13, // [13:18] is the sub-list for method output_type
+	8,  // [8:13] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_overseer_proto_init() }
@@ -838,6 +900,7 @@ func file_overlord_v1_overseer_proto_init() {
 	file_overlord_v1_overseer_proto_msgTypes[8].OneofWrappers = []any{
 		(*ControlMessage_RunCancel)(nil),
 		(*ControlMessage_AgentPrompt)(nil),
+		(*ControlMessage_ControlReady)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -845,7 +908,7 @@ func file_overlord_v1_overseer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_overseer_proto_rawDesc), len(file_overlord_v1_overseer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

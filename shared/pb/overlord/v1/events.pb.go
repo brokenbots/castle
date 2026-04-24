@@ -112,6 +112,7 @@ type Envelope struct {
 	//	*Envelope_AdapterEvent
 	//	*Envelope_OverseerHeartbeat
 	//	*Envelope_OverseerDisconnected
+	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -279,6 +280,15 @@ func (x *Envelope) GetOverseerDisconnected() *OverseerDisconnected {
 	return nil
 }
 
+func (x *Envelope) GetWatchReady() *WatchReady {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
+			return x.WatchReady
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Payload interface {
 	isEnvelope_Payload()
 }
@@ -323,6 +333,14 @@ type Envelope_OverseerDisconnected struct {
 	OverseerDisconnected *OverseerDisconnected `protobuf:"bytes,19,opt,name=overseer_disconnected,json=overseerDisconnected,proto3,oneof"`
 }
 
+type Envelope_WatchReady struct {
+	// WatchReady is a protocol-level sentinel sent once at the start of a
+	// WatchRun server-stream, after any persisted-event replay, to flush
+	// response headers so the client's WatchRun call can return. It has no
+	// associated run state; clients MUST ignore it.
+	WatchReady *WatchReady `protobuf:"bytes,99,opt,name=watch_ready,json=watchReady,proto3,oneof"`
+}
+
 func (*Envelope_RunStarted) isEnvelope_Payload() {}
 
 func (*Envelope_RunCompleted) isEnvelope_Payload() {}
@@ -342,6 +360,8 @@ func (*Envelope_AdapterEvent) isEnvelope_Payload() {}
 func (*Envelope_OverseerHeartbeat) isEnvelope_Payload() {}
 
 func (*Envelope_OverseerDisconnected) isEnvelope_Payload() {}
+
+func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
 // RunStarted — a run has begun executing.
 type RunStarted struct {
@@ -921,11 +941,51 @@ func (x *OverseerDisconnected) GetReason() string {
 	return ""
 }
 
+// WatchReady is a protocol-level sentinel payload sent by WatchRun once at
+// stream start. It has no fields and no run-semantic meaning; it exists
+// solely to flush Connect server-stream response headers so the client's
+// WatchRun call can return before any real event is published.
+type WatchReady struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchReady) Reset() {
+	*x = WatchReady{}
+	mi := &file_overlord_v1_events_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchReady) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchReady) ProtoMessage() {}
+
+func (x *WatchReady) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchReady.ProtoReflect.Descriptor instead.
+func (*WatchReady) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{11}
+}
+
 var File_overlord_v1_events_proto protoreflect.FileDescriptor
 
 const file_overlord_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd5\x06\n" +
+	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x91\a\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -944,7 +1004,9 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\bstep_log\x18\x10 \x01(\v2\x14.overlord.v1.StepLogH\x00R\astepLog\x12@\n" +
 	"\radapter_event\x18\x11 \x01(\v2\x19.overlord.v1.AdapterEventH\x00R\fadapterEvent\x12O\n" +
 	"\x12overseer_heartbeat\x18\x12 \x01(\v2\x1e.overlord.v1.OverseerHeartbeatH\x00R\x11overseerHeartbeat\x12X\n" +
-	"\x15overseer_disconnected\x18\x13 \x01(\v2!.overlord.v1.OverseerDisconnectedH\x00R\x14overseerDisconnectedB\t\n" +
+	"\x15overseer_disconnected\x18\x13 \x01(\v2!.overlord.v1.OverseerDisconnectedH\x00R\x14overseerDisconnected\x12:\n" +
+	"\vwatch_ready\x18c \x01(\v2\x17.overlord.v1.WatchReadyH\x00R\n" +
+	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
 	"\n" +
 	"RunStarted\x12#\n" +
@@ -987,7 +1049,9 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\x14OverseerDisconnected\x12\x1f\n" +
 	"\voverseer_id\x18\x01 \x01(\tR\n" +
 	"overseerId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason*k\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\f\n" +
+	"\n" +
+	"WatchReady*k\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
@@ -1008,7 +1072,7 @@ func file_overlord_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_overlord_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_overlord_v1_events_proto_goTypes = []any{
 	(LogStream)(0),                // 0: overlord.v1.LogStream
 	(*Envelope)(nil),              // 1: overlord.v1.Envelope
@@ -1022,11 +1086,12 @@ var file_overlord_v1_events_proto_goTypes = []any{
 	(*AdapterEvent)(nil),          // 9: overlord.v1.AdapterEvent
 	(*OverseerHeartbeat)(nil),     // 10: overlord.v1.OverseerHeartbeat
 	(*OverseerDisconnected)(nil),  // 11: overlord.v1.OverseerDisconnected
-	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 13: google.protobuf.Struct
+	(*WatchReady)(nil),            // 12: overlord.v1.WatchReady
+	(*timestamppb.Timestamp)(nil), // 13: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),       // 14: google.protobuf.Struct
 }
 var file_overlord_v1_events_proto_depIdxs = []int32{
-	12, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	13, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: overlord.v1.Envelope.run_started:type_name -> overlord.v1.RunStarted
 	3,  // 2: overlord.v1.Envelope.run_completed:type_name -> overlord.v1.RunCompleted
 	4,  // 3: overlord.v1.Envelope.run_failed:type_name -> overlord.v1.RunFailed
@@ -1037,13 +1102,14 @@ var file_overlord_v1_events_proto_depIdxs = []int32{
 	9,  // 8: overlord.v1.Envelope.adapter_event:type_name -> overlord.v1.AdapterEvent
 	10, // 9: overlord.v1.Envelope.overseer_heartbeat:type_name -> overlord.v1.OverseerHeartbeat
 	11, // 10: overlord.v1.Envelope.overseer_disconnected:type_name -> overlord.v1.OverseerDisconnected
-	0,  // 11: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
-	13, // 12: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	12, // 11: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
+	0,  // 12: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
+	14, // 13: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_events_proto_init() }
@@ -1062,6 +1128,7 @@ func file_overlord_v1_events_proto_init() {
 		(*Envelope_AdapterEvent)(nil),
 		(*Envelope_OverseerHeartbeat)(nil),
 		(*Envelope_OverseerDisconnected)(nil),
+		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1069,7 +1136,7 @@ func file_overlord_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_events_proto_rawDesc), len(file_overlord_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   11,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
