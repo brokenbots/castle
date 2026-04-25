@@ -54,7 +54,7 @@ export const CastleService = {
       kind: MethodKind.Unary,
     },
     /**
-     * ListRunEvents replaces Phase 0's `GET /api/v0/runs/{id}/events`.
+     * ListRunEvents replaces the Phase 0 run-events HTTP endpoint.
      *
      * @generated from rpc overlord.v1.CastleService.ListRunEvents
      */
@@ -65,7 +65,7 @@ export const CastleService = {
       kind: MethodKind.Unary,
     },
     /**
-     * WatchRun replaces Phase 0's `/api/v0/runs/{id}/stream`. Emits any already
+     * WatchRun replaces the Phase 0 run-stream endpoint. Emits any already
      * persisted events (since `since_seq`) and then tails live events until the
      * client disconnects or the run reaches a terminal state.
      *

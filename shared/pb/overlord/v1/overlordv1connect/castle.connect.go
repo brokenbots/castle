@@ -64,9 +64,9 @@ type CastleServiceClient interface {
 	GetOverseer(context.Context, *connect.Request[v1.GetOverseerRequest]) (*connect.Response[v1.Overseer], error)
 	ListRuns(context.Context, *connect.Request[v1.ListRunsRequest]) (*connect.Response[v1.ListRunsResponse], error)
 	GetRun(context.Context, *connect.Request[v1.GetRunRequest]) (*connect.Response[v1.Run], error)
-	// ListRunEvents replaces Phase 0's `GET /api/v0/runs/{id}/events`.
+	// ListRunEvents replaces the Phase 0 run-events HTTP endpoint.
 	ListRunEvents(context.Context, *connect.Request[v1.ListRunEventsRequest]) (*connect.Response[v1.ListRunEventsResponse], error)
-	// WatchRun replaces Phase 0's `/api/v0/runs/{id}/stream`. Emits any already
+	// WatchRun replaces the Phase 0 run-stream endpoint. Emits any already
 	// persisted events (since `since_seq`) and then tails live events until the
 	// client disconnects or the run reaches a terminal state.
 	WatchRun(context.Context, *connect.Request[v1.WatchRunRequest]) (*connect.ServerStreamForClient[v1.Envelope], error)
@@ -199,9 +199,9 @@ type CastleServiceHandler interface {
 	GetOverseer(context.Context, *connect.Request[v1.GetOverseerRequest]) (*connect.Response[v1.Overseer], error)
 	ListRuns(context.Context, *connect.Request[v1.ListRunsRequest]) (*connect.Response[v1.ListRunsResponse], error)
 	GetRun(context.Context, *connect.Request[v1.GetRunRequest]) (*connect.Response[v1.Run], error)
-	// ListRunEvents replaces Phase 0's `GET /api/v0/runs/{id}/events`.
+	// ListRunEvents replaces the Phase 0 run-events HTTP endpoint.
 	ListRunEvents(context.Context, *connect.Request[v1.ListRunEventsRequest]) (*connect.Response[v1.ListRunEventsResponse], error)
-	// WatchRun replaces Phase 0's `/api/v0/runs/{id}/stream`. Emits any already
+	// WatchRun replaces the Phase 0 run-stream endpoint. Emits any already
 	// persisted events (since `since_seq`) and then tails live events until the
 	// client disconnects or the run reaches a terminal state.
 	WatchRun(context.Context, *connect.Request[v1.WatchRunRequest], *connect.ServerStream[v1.Envelope]) error
