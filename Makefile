@@ -1,4 +1,4 @@
-.PHONY: help bootstrap tidy build build-overseer build-castle build-parapet \
+.PHONY: help bootstrap tidy build build-overseer build-castle build-parapet plugins \
 	test validate dev-castle dev-overseer dev-parapet demo docker-build \
 	docker-build-overseer docker-build-castle compose-up compose-down \
 	compose-logs clean proto proto-lint proto-check proto-check-drift
@@ -17,7 +17,16 @@ tidy: ## Run go mod tidy across all Go modules
 	cd overseer && go mod tidy
 	cd castle   && go mod tidy
 
-build: build-overseer build-castle build-parapet ## Build all binaries
+build: build-overseer build-castle build-parapet plugins ## Build all binaries
+
+plugins: ## Build adapter plugin binaries
+	mkdir -p bin
+	cd overseer && for d in ./cmd/overlord-adapter-*; do \
+		if [ -d "$$d" ]; then \
+			name=$${d##*/}; \
+			go build -o ../bin/$$name $$d; \
+		fi; \
+	done
 
 build-overseer: ## Build overseer binary
 	mkdir -p bin
