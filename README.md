@@ -165,6 +165,30 @@ make bootstrap
 make build
 ```
 
+### Running your first agent workflow
+
+Phase 1.4 runs AI adapters as out-of-process plugins. Overseer discovers
+adapter binaries as `overlord-adapter-<name>` first from
+`${OVERLORD_PLUGINS}/` (if set), then from `~/.overlord/plugins/`.
+The full plugin walkthrough and troubleshooting guide is in
+[docs/plugins.md](docs/plugins.md).
+
+```bash
+# Build core binaries and plugin adapters
+make build && make plugins
+
+# Install adapters into the default discovery location
+mkdir -p ~/.overlord/plugins
+cp ./bin/overlord-adapter-* ~/.overlord/plugins/
+chmod +x ~/.overlord/plugins/overlord-adapter-*
+
+# Run a single-agent demo
+./bin/overseer run --workflow ./examples/agent_hello.hcl --castle http://localhost:8080
+
+# Run a two-agent lifecycle demo
+./bin/overseer run --workflow ./examples/two_agent_loop.hcl --castle http://localhost:8080
+```
+
 ### Run (Native)
 
 ```bash

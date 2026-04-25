@@ -36,12 +36,13 @@ Component-specific:
 
 - Go workspace uses multiple modules via [go.work](go.work); run commands from repo root using `make` targets when possible.
 - **Wire contract changes**: edit `proto/overlord/v1/*.proto` first; run `make proto` to regenerate Go and TS clients; then update Castle handlers, Overseer client, and Parapet call sites.
+- **Plugin model**: adapter plugins run out-of-process and are discovered as `overlord-adapter-<name>` from `${OVERLORD_PLUGINS}/` first, then `~/.overlord/plugins/`; use `make plugins` to build all adapter binaries.
 - Keep logs structured (`slog` JSON style in backend entrypoints).
 - Preserve existing adapter boundaries in Overseer (`internal/adapter`, `internal/adapters/*`, `internal/dispatcher`).
 
 ## Common pitfalls
 
-- Do not assume Copilot adapter code is active by default; real implementation is build-tagged (`copilot`) and default builds use a stub.
+- Copilot adapter execution requires installing `overlord-adapter-copilot` into `${OVERLORD_PLUGINS}/` or `~/.overlord/plugins/`; do not assume in-binary adapter code.
 - Castle run/event ordering depends on server-assigned monotonic `seq` per `run_id`; avoid client-side ordering assumptions.
 - Prefer `make test` over ad-hoc partial test runs unless task scope is clearly limited.
 - Avoid introducing CGO-only SQLite dependencies; current storage uses pure-Go `modernc.org/sqlite`.
@@ -51,5 +52,7 @@ Component-specific:
 - Build and dev workflows: [Makefile](Makefile)
 - Castle entrypoint: [castle/cmd/castle/main.go](castle/cmd/castle/main.go)
 - Overseer entrypoint: [overseer/cmd/overseer/main.go](overseer/cmd/overseer/main.go)
+- Plugin wire contract: [proto/overlord/v1/adapter_plugin.proto](proto/overlord/v1/adapter_plugin.proto)
+- Plugin loader/session manager: [overseer/internal/plugin/](overseer/internal/plugin)
 - Workflow schema/compiler surface: [workflow/schema.go](workflow/schema.go)
 - UI scripts/deps: [parapet/package.json](parapet/package.json)
