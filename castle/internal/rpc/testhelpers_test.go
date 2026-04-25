@@ -17,13 +17,14 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/brokenbots/overlord/castle/internal/hub"
+	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
 )
 
 type testStack struct {
-	store    *sqlite.Store
+	store    store.Store
 	hub      *hub.Hub
 	controls *ControlRegistry
 	overseer *OverseerServer

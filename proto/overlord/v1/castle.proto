@@ -96,6 +96,7 @@ message ListRunEventsResponse {
 message WatchRunRequest {
   string run_id = 1;
   uint64 since_seq = 2; // exclusive; 0 streams from the beginning
+  string subscriber_id = 3; // optional durable cursor key scoped by run_id
 }
 
 // --- Run control types ---

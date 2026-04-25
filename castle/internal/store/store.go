@@ -67,5 +67,11 @@ type Store interface {
 	ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*pb.Envelope, error)
 	ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*pb.Envelope, error)
 
+	// Subscriber cursors
+	// UpsertSubscriberCursor records progress for (subscriber_id, run_id) and
+	// stores max(existing, lastSeq) so stale reconnects cannot rewind cursors.
+	UpsertSubscriberCursor(ctx context.Context, subscriberID, runID string, lastSeq uint64) error
+	GetSubscriberCursor(ctx context.Context, subscriberID, runID string) (lastSeq uint64, found bool, err error)
+
 	Close() error
 }

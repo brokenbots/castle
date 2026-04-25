@@ -6,12 +6,13 @@ import { runsSlice } from './runsSlice';
 export async function startWatch(
   runId: string,
   sinceSeq: number,
+  subscriberId: string,
   dispatch: Dispatch,
   signal: AbortSignal,
 ): Promise<void> {
   try {
     for await (const env of castle.watchRun(
-      { runId, sinceSeq: BigInt(sinceSeq) },
+      { runId, sinceSeq: BigInt(sinceSeq), subscriberId },
       { signal },
     )) {
       // Skip the WatchReady sentinel — it has no run state.

@@ -48,7 +48,7 @@ describe('startWatch', () => {
     const dispatch = vi.fn();
     const ctrl = new AbortController();
 
-    await startWatch('r1', 0, dispatch, ctrl.signal);
+    await startWatch('r1', 0, 'sub-1', dispatch, ctrl.signal);
 
     const actions = dispatch.mock.calls.map((c) => c[0]);
     const received = actions.filter((a) => a.type === runsSlice.actions.eventReceived.type);
@@ -62,11 +62,11 @@ describe('startWatch', () => {
     const dispatch = vi.fn();
     const ctrl = new AbortController();
 
-    await startWatch('r1', 7, dispatch, ctrl.signal);
+    await startWatch('r1', 7, 'sub-7', dispatch, ctrl.signal);
 
     expect(watchRunMock).toHaveBeenCalledTimes(1);
     const [req, opts] = watchRunMock.mock.calls[0];
-    expect(req).toEqual({ runId: 'r1', sinceSeq: 7n });
+    expect(req).toEqual({ runId: 'r1', sinceSeq: 7n, subscriberId: 'sub-7' });
     expect(opts).toEqual({ signal: ctrl.signal });
   });
 
@@ -81,7 +81,7 @@ describe('startWatch', () => {
     const dispatch = vi.fn();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    await expect(startWatch('r1', 0, dispatch, ctrl.signal)).resolves.toBeUndefined();
+    await expect(startWatch('r1', 0, 'sub-1', dispatch, ctrl.signal)).resolves.toBeUndefined();
     expect(warn).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
     warn.mockRestore();
@@ -97,7 +97,7 @@ describe('startWatch', () => {
     const ctrl = new AbortController();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    await startWatch('r1', 0, dispatch, ctrl.signal);
+    await startWatch('r1', 0, 'sub-1', dispatch, ctrl.signal);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(dispatch).not.toHaveBeenCalled();
     warn.mockRestore();

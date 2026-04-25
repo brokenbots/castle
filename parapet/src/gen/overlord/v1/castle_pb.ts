@@ -460,6 +460,13 @@ export class WatchRunRequest extends Message<WatchRunRequest> {
    */
   sinceSeq = protoInt64.zero;
 
+  /**
+   * optional durable cursor key scoped by run_id
+   *
+   * @generated from field: string subscriber_id = 3;
+   */
+  subscriberId = "";
+
   constructor(data?: PartialMessage<WatchRunRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -470,6 +477,7 @@ export class WatchRunRequest extends Message<WatchRunRequest> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "since_seq", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 3, name: "subscriber_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WatchRunRequest {

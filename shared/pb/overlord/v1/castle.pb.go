@@ -545,7 +545,8 @@ func (x *ListRunEventsResponse) GetNextSinceSeq() uint64 {
 type WatchRunRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	SinceSeq      uint64                 `protobuf:"varint,2,opt,name=since_seq,json=sinceSeq,proto3" json:"since_seq,omitempty"` // exclusive; 0 streams from the beginning
+	SinceSeq      uint64                 `protobuf:"varint,2,opt,name=since_seq,json=sinceSeq,proto3" json:"since_seq,omitempty"`            // exclusive; 0 streams from the beginning
+	SubscriberId  string                 `protobuf:"bytes,3,opt,name=subscriber_id,json=subscriberId,proto3" json:"subscriber_id,omitempty"` // optional durable cursor key scoped by run_id
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -592,6 +593,13 @@ func (x *WatchRunRequest) GetSinceSeq() uint64 {
 		return x.SinceSeq
 	}
 	return 0
+}
+
+func (x *WatchRunRequest) GetSubscriberId() string {
+	if x != nil {
+		return x.SubscriberId
+	}
+	return ""
 }
 
 type StopRunRequest struct {
@@ -842,10 +850,11 @@ const file_overlord_v1_castle_proto_rawDesc = "" +
 	"\x15ListRunEventsResponse\x12-\n" +
 	"\x06events\x18\x01 \x03(\v2\x15.overlord.v1.EnvelopeR\x06events\x12\x19\n" +
 	"\blast_seq\x18\x02 \x01(\x04R\alastSeq\x12$\n" +
-	"\x0enext_since_seq\x18\x03 \x01(\x04R\fnextSinceSeq\"E\n" +
+	"\x0enext_since_seq\x18\x03 \x01(\x04R\fnextSinceSeq\"j\n" +
 	"\x0fWatchRunRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1b\n" +
-	"\tsince_seq\x18\x02 \x01(\x04R\bsinceSeq\"?\n" +
+	"\tsince_seq\x18\x02 \x01(\x04R\bsinceSeq\x12#\n" +
+	"\rsubscriber_id\x18\x03 \x01(\tR\fsubscriberId\"?\n" +
 	"\x0eStopRunRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"J\n" +

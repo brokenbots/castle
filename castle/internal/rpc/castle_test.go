@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/overlord/castle/internal/hub"
+	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
 	"github.com/brokenbots/overlord/shared/events"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
@@ -50,6 +51,65 @@ func (h *recordingSlogHandler) snapshot() []recordedLog {
 	out := make([]recordedLog, len(h.logs))
 	copy(out, h.logs)
 	return out
+}
+
+type cursorSpyStore struct {
+	store.Store
+
+	mu      sync.Mutex
+	upserts int
+	lastSeq map[string]uint64
+}
+
+func newCursorSpyStore(base store.Store) *cursorSpyStore {
+	return &cursorSpyStore{Store: base, lastSeq: make(map[string]uint64)}
+}
+
+func (s *cursorSpyStore) UpsertSubscriberCursor(ctx context.Context, subscriberID, runID string, lastSeq uint64) error {
+	err := s.Store.UpsertSubscriberCursor(ctx, subscriberID, runID, lastSeq)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upserts++
+	s.lastSeq[subscriberID+"/"+runID] = lastSeq
+	return nil
+}
+
+func (s *cursorSpyStore) UpsertCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upserts
+}
+
+func newCursorSpyStack(t *testing.T) (*testStack, *cursorSpyStore) {
+	t.Helper()
+	baseStore, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = baseStore.Close() })
+
+	wrapped := newCursorSpyStore(baseStore)
+	h := hub.New()
+	controls := NewControlRegistry()
+	log := slog.New(slog.NewTextHandler(testWriter{t: t}, nil))
+	stack := &testStack{
+		store:    wrapped,
+		hub:      h,
+		controls: controls,
+		overseer: NewOverseerServer(wrapped, h, log, controls),
+		castle:   NewCastleServer(wrapped, h, log, controls),
+	}
+	return stack, wrapped
+}
+
+type testWriter struct{ t *testing.T }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Logf("%s", p)
+	return len(p), nil
 }
 
 func TestCastleListRunEventsPaging(t *testing.T) {
@@ -560,6 +620,169 @@ func TestWatchRun_BufferCapacityLateSubscriberAndEvictionWarning(t *testing.T) {
 	}
 	if !warnFound {
 		t.Fatal("expected event buffer rotated warning with run_id and oldest_seq")
+	}
+}
+
+func TestWatchRun_CursorResolution_NoPriorCursor(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 3; i++ {
+		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	watch, err := cClient.WatchRun(context.Background(), connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SinceSeq: 0, SubscriberId: "sub-a"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !watch.Receive() {
+		t.Fatalf("expected first replay event, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 1 {
+		t.Fatalf("first replay seq=%d want 1", watch.Msg().Seq)
+	}
+	_ = watch.Close()
+}
+
+func TestWatchRun_CursorResolution_WithCursor(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 60; i++ {
+		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ts.store.UpsertSubscriberCursor(context.Background(), "sub-b", runID, 50); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+
+	watch, err := cClient.WatchRun(context.Background(), connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SinceSeq: 0, SubscriberId: "sub-b"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !watch.Receive() {
+		t.Fatalf("expected replay event, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 51 {
+		t.Fatalf("first replay seq=%d want 51", watch.Msg().Seq)
+	}
+	_ = watch.Close()
+}
+
+func TestWatchRun_CursorUpdate_Coalesced(t *testing.T) {
+	ts, spy := newCursorSpyStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 500; i++ {
+		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SubscriberId: "sub-c"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := 0
+	for seen < 501 { // 500 replay envelopes + WatchReady
+		if !watch.Receive() {
+			t.Fatalf("expected message %d, err=%v", seen+1, watch.Err())
+		}
+		seen++
+	}
+	_ = watch.Close()
+
+	seq, found, err := ts.store.GetSubscriberCursor(context.Background(), "sub-c", runID)
+	if err != nil {
+		t.Fatalf("get cursor: %v", err)
+	}
+	if !found {
+		t.Fatal("expected stored cursor row")
+	}
+	if seq != 500 {
+		t.Fatalf("cursor seq=%d want 500", seq)
+	}
+	// Coalescing policy is flush every 100 envelopes or 250ms. For 500 replay
+	// envelopes this should be near 5 writes; allow moderate timing variance.
+	const maxExpectedUpserts = 10
+	if calls := spy.UpsertCount(); calls > maxExpectedUpserts {
+		t.Fatalf("upsert calls=%d want <= %d", calls, maxExpectedUpserts)
+	}
+}
+
+func TestWatchRun_CursorUpdate_FinalValueFlushedOnClose(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 3; i++ {
+		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SubscriberId: "sub-d"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 4; i++ { // 3 replay envelopes + WatchReady
+		if !watch.Receive() {
+			t.Fatalf("expected message %d, err=%v", i+1, watch.Err())
+		}
+	}
+	_ = watch.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		seq, found, err := ts.store.GetSubscriberCursor(context.Background(), "sub-d", runID)
+		if err != nil {
+			t.Fatalf("get cursor: %v", err)
+		}
+		if found && seq == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for flushed cursor; found=%v seq=%d", found, seq)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

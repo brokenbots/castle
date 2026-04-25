@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -13,6 +14,11 @@ import (
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
 	"github.com/brokenbots/overlord/shared/events"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+)
+
+const (
+	cursorFlushInterval = 250 * time.Millisecond
+	cursorFlushBatch    = 100
 )
 
 func (s *CastleServer) ListOverseers(ctx context.Context, _ *connect.Request[pb.ListOverseersRequest]) (*connect.Response[pb.ListOverseersResponse], error) {
@@ -90,16 +96,32 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 	if runID == "" {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
 	}
+	subscriberID := req.Msg.SubscriberId
+	effectiveSince := req.Msg.SinceSeq
+	if subscriberID != "" && effectiveSince == 0 {
+		if cursor, found, err := s.Store.GetSubscriberCursor(ctx, subscriberID, runID); err != nil {
+			s.Log.Warn("watch cursor lookup failed", "run_id", runID, "subscriber_id", subscriberID, "error", err)
+		} else if found {
+			effectiveSince = cursor
+		}
+	}
+
+	updateCursor := func(uint64) {}
+	if subscriberID != "" {
+		writer := s.startCursorWriter(ctx, subscriberID, runID)
+		defer writer.stop()
+		updateCursor = writer.update
+	}
 
 	// Subscribe before replay so events published while replaying persisted rows
 	// are queued for the subsequent buffer/live phases.
 	sub := s.Hub.Subscribe(runID)
 	defer s.Hub.Unsubscribe(sub)
 
-	lastSent := req.Msg.SinceSeq
+	lastSent := effectiveSince
 	terminalInReplay := false
 
-	_, err := forEachPersistedEventPage(ctx, s.Store, runID, req.Msg.SinceSeq, func(env *pb.Envelope) error {
+	_, err := forEachPersistedEventPage(ctx, s.Store, runID, effectiveSince, func(env *pb.Envelope) error {
 		if env.Seq <= lastSent {
 			return nil
 		}
@@ -107,6 +129,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 			return err
 		}
 		lastSent = env.Seq
+		updateCursor(env.Seq)
 		if events.IsTerminal(env) {
 			terminalInReplay = true
 			return errStopEventPagination
@@ -136,6 +159,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 			return connect.NewError(connect.CodeUnknown, err)
 		}
 		lastSent = env.Seq
+		updateCursor(env.Seq)
 		if events.IsTerminal(env) {
 			return nil
 		}
@@ -155,11 +179,99 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 			if err := stream.Send(env); err != nil {
 				return connect.NewError(connect.CodeUnknown, err)
 			}
+			lastSent = env.Seq
+			updateCursor(env.Seq)
 			if events.IsTerminal(env) {
 				return nil
 			}
-			lastSent = env.Seq
 		}
+	}
+}
+
+type cursorWriter struct {
+	update func(uint64)
+	stop   func()
+}
+
+func (s *CastleServer) startCursorWriter(ctx context.Context, subscriberID, runID string) cursorWriter {
+	var (
+		mu           sync.Mutex
+		hasPending   bool
+		pendingSeq   uint64
+		pendingCount int
+		once         sync.Once
+	)
+
+	requestFlush := make(chan struct{}, 1)
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+
+	flush := func() {
+		mu.Lock()
+		if !hasPending {
+			mu.Unlock()
+			return
+		}
+		seq := pendingSeq
+		hasPending = false
+		pendingCount = 0
+		mu.Unlock()
+
+		writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := s.Store.UpsertSubscriberCursor(writeCtx, subscriberID, runID, seq)
+		cancel()
+		if err != nil {
+			s.Log.Warn("watch cursor persist failed", "run_id", runID, "subscriber_id", subscriberID, "seq", seq, "error", err)
+		}
+	}
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(cursorFlushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-requestFlush:
+				flush()
+			case <-ticker.C:
+				flush()
+			case <-ctx.Done():
+				flush()
+				return
+			case <-stopCh:
+				flush()
+				return
+			}
+		}
+	}()
+
+	requestFlushFn := func() {
+		select {
+		case requestFlush <- struct{}{}:
+		default:
+		}
+	}
+
+	return cursorWriter{
+		update: func(seq uint64) {
+			mu.Lock()
+			if !hasPending || seq > pendingSeq {
+				pendingSeq = seq
+			}
+			hasPending = true
+			pendingCount++
+			shouldFlush := pendingCount >= cursorFlushBatch
+			mu.Unlock()
+			if shouldFlush {
+				requestFlushFn()
+			}
+		},
+		stop: func() {
+			once.Do(func() {
+				close(stopCh)
+			})
+			<-done
+		},
 	}
 }
 

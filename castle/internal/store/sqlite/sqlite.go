@@ -270,6 +270,49 @@ func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint
 	return scanEventRows(rows, runID)
 }
 
+func (s *Store) UpsertSubscriberCursor(ctx context.Context, subscriberID, runID string, lastSeq uint64) error {
+	if subscriberID == "" {
+		return errors.New("subscriber_id required")
+	}
+	if runID == "" {
+		return errors.New("run_id required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO run_subscriptions(subscriber_id, run_id, last_seq, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(subscriber_id, run_id) DO UPDATE SET
+			last_seq = CASE
+				WHEN excluded.last_seq > run_subscriptions.last_seq THEN excluded.last_seq
+				ELSE run_subscriptions.last_seq
+			END,
+			updated_at = CASE
+				WHEN excluded.last_seq > run_subscriptions.last_seq THEN CURRENT_TIMESTAMP
+				ELSE run_subscriptions.updated_at
+			END
+	`, subscriberID, runID, lastSeq)
+	return err
+}
+
+func (s *Store) GetSubscriberCursor(ctx context.Context, subscriberID, runID string) (uint64, bool, error) {
+	if subscriberID == "" {
+		return 0, false, errors.New("subscriber_id required")
+	}
+	if runID == "" {
+		return 0, false, errors.New("run_id required")
+	}
+
+	var seq uint64
+	err := s.db.QueryRowContext(ctx, `SELECT last_seq FROM run_subscriptions WHERE subscriber_id=? AND run_id=?`, subscriberID, runID).Scan(&seq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return seq, true, nil
+}
+
 func normalizeListLimit(limit int) (int, error) {
 	if limit <= 0 {
 		return ListEventsDefaultLimit, nil

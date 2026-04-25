@@ -135,6 +135,60 @@ func TestEventAppendIdempotentOnCorrelationID(t *testing.T) {
 	}
 }
 
+func TestUpsertSubscriberCursor_RoundTrip(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+
+	if err := s.UpsertSubscriberCursor(ctx, "sub-1", "run-1", 42); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	seq, found, err := s.GetSubscriberCursor(ctx, "sub-1", "run-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !found {
+		t.Fatal("expected cursor row to exist")
+	}
+	if seq != 42 {
+		t.Fatalf("seq=%d want 42", seq)
+	}
+}
+
+func TestUpsertSubscriberCursor_AdvancesOnly(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+
+	if err := s.UpsertSubscriberCursor(ctx, "sub-1", "run-1", 50); err != nil {
+		t.Fatalf("upsert 50: %v", err)
+	}
+	if err := s.UpsertSubscriberCursor(ctx, "sub-1", "run-1", 40); err != nil {
+		t.Fatalf("upsert 40: %v", err)
+	}
+
+	seq, found, err := s.GetSubscriberCursor(ctx, "sub-1", "run-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !found {
+		t.Fatal("expected cursor row to exist")
+	}
+	if seq != 50 {
+		t.Fatalf("seq=%d want 50", seq)
+	}
+
+	if err := s.UpsertSubscriberCursor(ctx, "sub-1", "run-1", 80); err != nil {
+		t.Fatalf("upsert 80: %v", err)
+	}
+	seq, found, err = s.GetSubscriberCursor(ctx, "sub-1", "run-1")
+	if err != nil {
+		t.Fatalf("get after advance: %v", err)
+	}
+	if !found || seq != 80 {
+		t.Fatalf("seq=%d found=%v want seq=80 found=true", seq, found)
+	}
+}
+
 // TestEventPayloadRoundTripAllVariants locks in the protojson persistence
 // format across every payload variant that SubmitEvents accepts. Each
 // envelope is appended, read back, and compared with proto.Equal so that

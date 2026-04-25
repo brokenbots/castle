@@ -7,6 +7,7 @@ import {
   EventEnvelope,
 } from '../../api/castleApi';
 import { selectRunEvents, runsSlice } from './runsSlice';
+import { subscriberIdForSession } from './subscriberId';
 import { startWatch } from './watchRun';
 
 function renderPayload(e: EventEnvelope) {
@@ -37,28 +38,17 @@ export function RunDetailPage() {
   const initial = useListEventsQuery({ runId: id });
   const dispatch = useDispatch();
   const live = useSelector(selectRunEvents(id));
-
-  // Derive the resume point as a plain number so the effect depends on a
-  // stable scalar rather than the snapshot array's identity. A future
-  // refetch/polling change on ListRunEvents would otherwise churn WatchRun
-  // on every new array reference.
-  const initialMaxSeq = useMemo(
-    () => (initial.data ?? []).reduce((max, e) => (e.seq > max ? e.seq : max), 0),
-    [initial.data],
-  );
+  const subscriberId = useMemo(() => subscriberIdForSession(), []);
 
   useEffect(() => {
     if (!id) return;
-    // Resume from the highest persisted seq we already hold. Dedup in the
-    // slice still protects against overlap if the snapshot races with the
-    // first live event.
     const ctrl = new AbortController();
-    void startWatch(id, initialMaxSeq, dispatch, ctrl.signal);
+    void startWatch(id, 0, subscriberId, dispatch, ctrl.signal);
     return () => {
       ctrl.abort();
       dispatch(runsSlice.actions.runCleared(id));
     };
-  }, [id, dispatch, initialMaxSeq]);
+  }, [id, dispatch, subscriberId]);
 
   const events = useMemo(() => {
     const bySeq = new Map<number, EventEnvelope>();
