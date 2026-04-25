@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { Ack, ControlMessage, ControlSubscribeRequest, CreateRunRequest, HeartbeatRequest, HeartbeatResponse, RegisterRequest, RegisterResponse, Run } from "./overseer_pb.js";
+import { Ack, ControlMessage, ControlSubscribeRequest, CreateRunRequest, HeartbeatRequest, HeartbeatResponse, ReattachRunRequest, ReattachRunResponse, RegisterRequest, RegisterResponse, Run } from "./overseer_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 import { Envelope } from "./events_pb.js";
 
@@ -53,6 +53,19 @@ export const OverseerService = {
       name: "CreateRun",
       I: CreateRunRequest,
       O: Run,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ReattachRun lets an Overseer query Castle about an in-flight run after a
+     * crash or restart. Castle returns the current status, last active step,
+     * and whether the Overseer may resume execution.
+     *
+     * @generated from rpc overlord.v1.OverseerService.ReattachRun
+     */
+    reattachRun: {
+      name: "ReattachRun",
+      I: ReattachRunRequest,
+      O: ReattachRunResponse,
       kind: MethodKind.Unary,
     },
     /**

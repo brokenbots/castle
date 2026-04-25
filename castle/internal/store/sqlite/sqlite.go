@@ -313,6 +313,61 @@ func (s *Store) GetSubscriberCursor(ctx context.Context, subscriberID, runID str
 	return seq, true, nil
 }
 
+func (s *Store) RecordAttemptStart(ctx context.Context, ra *store.RunAttempt) error {
+	if ra.RunID == "" || ra.Step == "" || ra.Attempt <= 0 {
+		return errors.New("run_id, step, and attempt > 0 required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO run_attempts(run_id, step, attempt, started_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(run_id, step, attempt) DO NOTHING`,
+		ra.RunID, ra.Step, ra.Attempt, ra.StartedAt.UTC().Format(tsLayout))
+	return err
+}
+
+func (s *Store) RecordAttemptComplete(ctx context.Context, runID, step string, attempt int, outcome string) error {
+	if runID == "" || step == "" || attempt <= 0 {
+		return errors.New("run_id, step, and attempt > 0 required")
+	}
+	now := time.Now().UTC().Format(tsLayout)
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE run_attempts SET completed_at=?, outcome=?
+		WHERE run_id=? AND step=? AND attempt=?`,
+		now, outcome, runID, step, attempt)
+	return err
+}
+
+func (s *Store) GetLatestAttempt(ctx context.Context, runID, step string) (*store.RunAttempt, error) {
+	if runID == "" || step == "" {
+		return nil, errors.New("run_id and step required")
+	}
+	row := s.db.QueryRowContext(ctx,
+		`SELECT run_id, step, attempt, started_at, completed_at, outcome
+		 FROM run_attempts WHERE run_id=? AND step=?
+		 ORDER BY attempt DESC LIMIT 1`,
+		runID, step)
+	var ra store.RunAttempt
+	var started string
+	var completed sql.NullString
+	var outcome sql.NullString
+	err := row.Scan(&ra.RunID, &ra.Step, &ra.Attempt, &started, &completed, &outcome)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	ra.StartedAt, _ = time.Parse(tsLayout, started)
+	if completed.Valid {
+		t, _ := time.Parse(tsLayout, completed.String)
+		ra.CompletedAt = &t
+	}
+	if outcome.Valid {
+		ra.Outcome = outcome.String
+	}
+	return &ra, nil
+}
+
 func normalizeListLimit(limit int) (int, error) {
 	if limit <= 0 {
 		return ListEventsDefaultLimit, nil
@@ -418,6 +473,10 @@ func unmarshalPayload(env *pb.Envelope, typ string, payload []byte) error {
 		return unmarshal(&pb.OverseerDisconnected{}, func(m proto.Message) {
 			env.Payload = &pb.Envelope_OverseerDisconnected{OverseerDisconnected: m.(*pb.OverseerDisconnected)}
 		})
+	case "step.resumed":
+		return unmarshal(&pb.StepResumed{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_StepResumed{StepResumed: m.(*pb.StepResumed)}
+		})
 	default:
 		return fmt.Errorf("unknown event type %q", typ)
 	}
@@ -446,6 +505,8 @@ func payloadMessage(env *pb.Envelope) proto.Message {
 		return p.OverseerHeartbeat
 	case *pb.Envelope_OverseerDisconnected:
 		return p.OverseerDisconnected
+	case *pb.Envelope_StepResumed:
+		return p.StepResumed
 	default:
 		return nil
 	}

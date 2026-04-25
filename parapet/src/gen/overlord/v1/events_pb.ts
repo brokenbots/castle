@@ -157,6 +157,12 @@ export class Envelope extends Message<Envelope> {
     case: "overseerDisconnected";
   } | {
     /**
+     * @generated from field: overlord.v1.StepResumed step_resumed = 20;
+     */
+    value: StepResumed;
+    case: "stepResumed";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -191,6 +197,7 @@ export class Envelope extends Message<Envelope> {
     { no: 17, name: "adapter_event", kind: "message", T: AdapterEvent, oneof: "payload" },
     { no: 18, name: "overseer_heartbeat", kind: "message", T: OverseerHeartbeat, oneof: "payload" },
     { no: 19, name: "overseer_disconnected", kind: "message", T: OverseerDisconnected, oneof: "payload" },
+    { no: 20, name: "step_resumed", kind: "message", T: StepResumed, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -702,6 +709,60 @@ export class OverseerDisconnected extends Message<OverseerDisconnected> {
 
   static equals(a: OverseerDisconnected | PlainMessage<OverseerDisconnected> | undefined, b: OverseerDisconnected | PlainMessage<OverseerDisconnected> | undefined): boolean {
     return proto3.util.equals(OverseerDisconnected, a, b);
+  }
+}
+
+/**
+ * StepResumed is emitted by an Overseer before re-executing a step after a
+ * crash. It distinguishes a crash-restart rerun from a normal retry after a
+ * step failure. Castle stores and fans out this event identically to other
+ * envelopes; it has no run-status side-effects.
+ *
+ * @generated from message overlord.v1.StepResumed
+ */
+export class StepResumed extends Message<StepResumed> {
+  /**
+   * @generated from field: string step = 1;
+   */
+  step = "";
+
+  /**
+   * @generated from field: int32 attempt = 2;
+   */
+  attempt = 0;
+
+  /**
+   * @generated from field: string reason = 3;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<StepResumed>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.StepResumed";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "attempt", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StepResumed {
+    return new StepResumed().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): StepResumed {
+    return new StepResumed().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): StepResumed {
+    return new StepResumed().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: StepResumed | PlainMessage<StepResumed> | undefined, b: StepResumed | PlainMessage<StepResumed> | undefined): boolean {
+    return proto3.util.equals(StepResumed, a, b);
   }
 }
 

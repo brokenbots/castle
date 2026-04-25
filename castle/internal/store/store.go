@@ -15,6 +15,16 @@ var ErrNotFound = errors.New("not found")
 
 var ErrInvalidLimit = errors.New("invalid list limit")
 
+// RunAttempt records a single execution attempt for a (run_id, step) pair.
+type RunAttempt struct {
+	RunID       string
+	Step        string
+	Attempt     int
+	StartedAt   time.Time
+	CompletedAt *time.Time
+	Outcome     string
+}
+
 type Overseer struct {
 	ID         string
 	Name       string
@@ -72,6 +82,16 @@ type Store interface {
 	// stores max(existing, lastSeq) so stale reconnects cannot rewind cursors.
 	UpsertSubscriberCursor(ctx context.Context, subscriberID, runID string, lastSeq uint64) error
 	GetSubscriberCursor(ctx context.Context, subscriberID, runID string) (lastSeq uint64, found bool, err error)
+
+	// Run attempts
+	// RecordAttemptStart inserts a new attempt row for (run_id, step, attempt).
+	// It is idempotent: if the row already exists it is left unchanged.
+	RecordAttemptStart(ctx context.Context, ra *RunAttempt) error
+	// RecordAttemptComplete stamps completed_at and outcome for the given attempt.
+	RecordAttemptComplete(ctx context.Context, runID, step string, attempt int, outcome string) error
+	// GetLatestAttempt returns the highest-numbered attempt row for (run_id, step).
+	// Returns ErrNotFound when no rows exist.
+	GetLatestAttempt(ctx context.Context, runID, step string) (*RunAttempt, error)
 
 	Close() error
 }

@@ -167,6 +167,42 @@ func (s *OverseerServer) Control(ctx context.Context, req *connect.Request[pb.Co
 	}
 }
 
+func (s *OverseerServer) ReattachRun(ctx context.Context, req *connect.Request[pb.ReattachRunRequest]) (*connect.Response[pb.ReattachRunResponse], error) {
+	if req.Msg.RunId == "" || req.Msg.OverseerId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id and overseer_id required"))
+	}
+	run, err := s.Store.GetRun(ctx, req.Msg.RunId)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("run not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Cannot resume a terminal run or a run owned by a different Overseer.
+	isTerminal := run.Status == "succeeded" || run.Status == "failed" || run.Status == "cancelled"
+	if isTerminal || run.OverseerID != req.Msg.OverseerId {
+		return connect.NewResponse(&pb.ReattachRunResponse{
+			Status:    run.Status,
+			CanResume: false,
+		}), nil
+	}
+
+	resp := &pb.ReattachRunResponse{
+		Status:      run.Status,
+		CurrentStep: run.CurrentStep,
+		LastSeq:     run.LastSeq,
+		CanResume:   true,
+	}
+	if run.CurrentStep != "" {
+		latest, latestErr := s.Store.GetLatestAttempt(ctx, run.ID, run.CurrentStep)
+		if latestErr == nil && latest != nil {
+			resp.Attempt = int32(latest.Attempt)
+		}
+	}
+	return connect.NewResponse(resp), nil
+}
+
 func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 	switch p := env.Payload.(type) {
 	case *pb.Envelope_RunStarted:
@@ -187,6 +223,34 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 		if p.StepEntered != nil {
 			run.CurrentStep = p.StepEntered.Step
 			_ = s.Store.UpdateRun(ctx, run)
+			_ = s.Store.RecordAttemptStart(ctx, &store.RunAttempt{
+				RunID:     env.RunId,
+				Step:      p.StepEntered.Step,
+				Attempt:   int(p.StepEntered.Attempt),
+				StartedAt: time.Now().UTC(),
+			})
+		}
+	case *pb.Envelope_StepOutcome:
+		if p.StepOutcome == nil {
+			return
+		}
+		// Complete the latest attempt for this step.
+		latest, err := s.Store.GetLatestAttempt(ctx, env.RunId, p.StepOutcome.Step)
+		if err == nil && latest != nil {
+			outcome := p.StepOutcome.Outcome
+			if outcome == "" {
+				outcome = "error"
+			}
+			_ = s.Store.RecordAttemptComplete(ctx, env.RunId, p.StepOutcome.Step, latest.Attempt, outcome)
+		}
+	case *pb.Envelope_StepResumed:
+		// Informational only; no run-status side-effect.
+		if p.StepResumed != nil {
+			s.Log.Info("step resumed after crash",
+				"run_id", env.RunId,
+				"step", p.StepResumed.Step,
+				"attempt", p.StepResumed.Attempt,
+				"reason", p.StepResumed.Reason)
 		}
 	case *pb.Envelope_RunCompleted:
 		run, err := s.Store.GetRun(ctx, env.RunId)

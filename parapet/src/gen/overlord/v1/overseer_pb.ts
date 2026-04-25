@@ -326,6 +326,126 @@ export class Run extends Message<Run> {
 }
 
 /**
+ * ReattachRunRequest is sent by an Overseer on startup to query the state of
+ * a run it believes was in-flight before a crash.
+ *
+ * @generated from message overlord.v1.ReattachRunRequest
+ */
+export class ReattachRunRequest extends Message<ReattachRunRequest> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  /**
+   * @generated from field: string overseer_id = 2;
+   */
+  overseerId = "";
+
+  constructor(data?: PartialMessage<ReattachRunRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ReattachRunRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "overseer_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReattachRunRequest {
+    return new ReattachRunRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReattachRunRequest {
+    return new ReattachRunRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReattachRunRequest {
+    return new ReattachRunRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReattachRunRequest | PlainMessage<ReattachRunRequest> | undefined, b: ReattachRunRequest | PlainMessage<ReattachRunRequest> | undefined): boolean {
+    return proto3.util.equals(ReattachRunRequest, a, b);
+  }
+}
+
+/**
+ * ReattachRunResponse tells the Overseer whether it may resume a run.
+ *
+ * @generated from message overlord.v1.ReattachRunResponse
+ */
+export class ReattachRunResponse extends Message<ReattachRunResponse> {
+  /**
+   * Current status of the run: "running" | "succeeded" | "failed" | "cancelled".
+   *
+   * @generated from field: string status = 1;
+   */
+  status = "";
+
+  /**
+   * Empty when the run is terminal.
+   *
+   * @generated from field: string current_step = 2;
+   */
+  currentStep = "";
+
+  /**
+   * Last started attempt for current_step. 0 if no attempt has been recorded.
+   *
+   * @generated from field: int32 attempt = 3;
+   */
+  attempt = 0;
+
+  /**
+   * Last persisted envelope seq for the run.
+   *
+   * @generated from field: uint64 last_seq = 4;
+   */
+  lastSeq = protoInt64.zero;
+
+  /**
+   * Server's judgment: false when the run is terminal or belongs to a different
+   * overseer.
+   *
+   * @generated from field: bool can_resume = 5;
+   */
+  canResume = false;
+
+  constructor(data?: PartialMessage<ReattachRunResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ReattachRunResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "current_step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "attempt", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "last_seq", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 5, name: "can_resume", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReattachRunResponse {
+    return new ReattachRunResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReattachRunResponse {
+    return new ReattachRunResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReattachRunResponse {
+    return new ReattachRunResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReattachRunResponse | PlainMessage<ReattachRunResponse> | undefined, b: ReattachRunResponse | PlainMessage<ReattachRunResponse> | undefined): boolean {
+    return proto3.util.equals(ReattachRunResponse, a, b);
+  }
+}
+
+/**
  * Ack is the server's reply on SubmitEvents. One Ack per persisted Envelope.
  *
  * @generated from message overlord.v1.Ack

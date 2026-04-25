@@ -218,6 +218,19 @@ Overseer runtime variables:
 | `OVERSEER_WORKFLOW` | `--workflow` | _(required if flag not set)_ |
 | `OVERSEER_NAME` | `--name` | hostname |
 
+### Crash Recovery
+
+If an Overseer crashes mid-run, restart it against the same Castle and it will
+attempt to pick up where it left off by re-running the step that was in
+flight.
+
+Crash recovery behavior notes:
+
+- Resume re-executes the in-flight step from the beginning; partial step replay
+   is not supported.
+- Re-execution counts against `policy.max_step_retries`.
+- This model assumes workflow steps are idempotent.
+
 Example env-based startup:
 
 ```bash

@@ -48,6 +48,9 @@ const (
 	// OverseerServiceCreateRunProcedure is the fully-qualified name of the OverseerService's CreateRun
 	// RPC.
 	OverseerServiceCreateRunProcedure = "/overlord.v1.OverseerService/CreateRun"
+	// OverseerServiceReattachRunProcedure is the fully-qualified name of the OverseerService's
+	// ReattachRun RPC.
+	OverseerServiceReattachRunProcedure = "/overlord.v1.OverseerService/ReattachRun"
 	// OverseerServiceSubmitEventsProcedure is the fully-qualified name of the OverseerService's
 	// SubmitEvents RPC.
 	OverseerServiceSubmitEventsProcedure = "/overlord.v1.OverseerService/SubmitEvents"
@@ -66,6 +69,10 @@ type OverseerServiceClient interface {
 	// CreateRun mints a new run id for the Overseer. Castle is the sole source
 	// of run ids.
 	CreateRun(context.Context, *connect.Request[v1.CreateRunRequest]) (*connect.Response[v1.Run], error)
+	// ReattachRun lets an Overseer query Castle about an in-flight run after a
+	// crash or restart. Castle returns the current status, last active step,
+	// and whether the Overseer may resume execution.
+	ReattachRun(context.Context, *connect.Request[v1.ReattachRunRequest]) (*connect.Response[v1.ReattachRunResponse], error)
 	// SubmitEvents is a bidirectional stream. The client writes Envelopes and
 	// the server replies with an Ack per persisted envelope (run_id, seq,
 	// correlation_id). On reconnect the client may include `since_seq` in
@@ -106,6 +113,12 @@ func NewOverseerServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(overseerServiceMethods.ByName("CreateRun")),
 			connect.WithClientOptions(opts...),
 		),
+		reattachRun: connect.NewClient[v1.ReattachRunRequest, v1.ReattachRunResponse](
+			httpClient,
+			baseURL+OverseerServiceReattachRunProcedure,
+			connect.WithSchema(overseerServiceMethods.ByName("ReattachRun")),
+			connect.WithClientOptions(opts...),
+		),
 		submitEvents: connect.NewClient[v1.Envelope, v1.Ack](
 			httpClient,
 			baseURL+OverseerServiceSubmitEventsProcedure,
@@ -126,6 +139,7 @@ type overseerServiceClient struct {
 	register     *connect.Client[v1.RegisterRequest, v1.RegisterResponse]
 	heartbeat    *connect.Client[v1.HeartbeatRequest, v1.HeartbeatResponse]
 	createRun    *connect.Client[v1.CreateRunRequest, v1.Run]
+	reattachRun  *connect.Client[v1.ReattachRunRequest, v1.ReattachRunResponse]
 	submitEvents *connect.Client[v1.Envelope, v1.Ack]
 	control      *connect.Client[v1.ControlSubscribeRequest, v1.ControlMessage]
 }
@@ -143,6 +157,11 @@ func (c *overseerServiceClient) Heartbeat(ctx context.Context, req *connect.Requ
 // CreateRun calls overlord.v1.OverseerService.CreateRun.
 func (c *overseerServiceClient) CreateRun(ctx context.Context, req *connect.Request[v1.CreateRunRequest]) (*connect.Response[v1.Run], error) {
 	return c.createRun.CallUnary(ctx, req)
+}
+
+// ReattachRun calls overlord.v1.OverseerService.ReattachRun.
+func (c *overseerServiceClient) ReattachRun(ctx context.Context, req *connect.Request[v1.ReattachRunRequest]) (*connect.Response[v1.ReattachRunResponse], error) {
+	return c.reattachRun.CallUnary(ctx, req)
 }
 
 // SubmitEvents calls overlord.v1.OverseerService.SubmitEvents.
@@ -166,6 +185,10 @@ type OverseerServiceHandler interface {
 	// CreateRun mints a new run id for the Overseer. Castle is the sole source
 	// of run ids.
 	CreateRun(context.Context, *connect.Request[v1.CreateRunRequest]) (*connect.Response[v1.Run], error)
+	// ReattachRun lets an Overseer query Castle about an in-flight run after a
+	// crash or restart. Castle returns the current status, last active step,
+	// and whether the Overseer may resume execution.
+	ReattachRun(context.Context, *connect.Request[v1.ReattachRunRequest]) (*connect.Response[v1.ReattachRunResponse], error)
 	// SubmitEvents is a bidirectional stream. The client writes Envelopes and
 	// the server replies with an Ack per persisted envelope (run_id, seq,
 	// correlation_id). On reconnect the client may include `since_seq` in
@@ -202,6 +225,12 @@ func NewOverseerServiceHandler(svc OverseerServiceHandler, opts ...connect.Handl
 		connect.WithSchema(overseerServiceMethods.ByName("CreateRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	overseerServiceReattachRunHandler := connect.NewUnaryHandler(
+		OverseerServiceReattachRunProcedure,
+		svc.ReattachRun,
+		connect.WithSchema(overseerServiceMethods.ByName("ReattachRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	overseerServiceSubmitEventsHandler := connect.NewBidiStreamHandler(
 		OverseerServiceSubmitEventsProcedure,
 		svc.SubmitEvents,
@@ -222,6 +251,8 @@ func NewOverseerServiceHandler(svc OverseerServiceHandler, opts ...connect.Handl
 			overseerServiceHeartbeatHandler.ServeHTTP(w, r)
 		case OverseerServiceCreateRunProcedure:
 			overseerServiceCreateRunHandler.ServeHTTP(w, r)
+		case OverseerServiceReattachRunProcedure:
+			overseerServiceReattachRunHandler.ServeHTTP(w, r)
 		case OverseerServiceSubmitEventsProcedure:
 			overseerServiceSubmitEventsHandler.ServeHTTP(w, r)
 		case OverseerServiceControlProcedure:
@@ -245,6 +276,10 @@ func (UnimplementedOverseerServiceHandler) Heartbeat(context.Context, *connect.R
 
 func (UnimplementedOverseerServiceHandler) CreateRun(context.Context, *connect.Request[v1.CreateRunRequest]) (*connect.Response[v1.Run], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("overlord.v1.OverseerService.CreateRun is not implemented"))
+}
+
+func (UnimplementedOverseerServiceHandler) ReattachRun(context.Context, *connect.Request[v1.ReattachRunRequest]) (*connect.Response[v1.ReattachRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("overlord.v1.OverseerService.ReattachRun is not implemented"))
 }
 
 func (UnimplementedOverseerServiceHandler) SubmitEvents(context.Context, *connect.BidiStream[v1.Envelope, v1.Ack]) error {

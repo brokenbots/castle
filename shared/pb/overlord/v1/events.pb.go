@@ -112,6 +112,7 @@ type Envelope struct {
 	//	*Envelope_AdapterEvent
 	//	*Envelope_OverseerHeartbeat
 	//	*Envelope_OverseerDisconnected
+	//	*Envelope_StepResumed
 	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -280,6 +281,15 @@ func (x *Envelope) GetOverseerDisconnected() *OverseerDisconnected {
 	return nil
 }
 
+func (x *Envelope) GetStepResumed() *StepResumed {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_StepResumed); ok {
+			return x.StepResumed
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetWatchReady() *WatchReady {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
@@ -333,6 +343,10 @@ type Envelope_OverseerDisconnected struct {
 	OverseerDisconnected *OverseerDisconnected `protobuf:"bytes,19,opt,name=overseer_disconnected,json=overseerDisconnected,proto3,oneof"`
 }
 
+type Envelope_StepResumed struct {
+	StepResumed *StepResumed `protobuf:"bytes,20,opt,name=step_resumed,json=stepResumed,proto3,oneof"`
+}
+
 type Envelope_WatchReady struct {
 	// WatchReady is a protocol-level sentinel sent once at the start of a
 	// WatchRun server-stream, after any persisted-event replay, to flush
@@ -360,6 +374,8 @@ func (*Envelope_AdapterEvent) isEnvelope_Payload() {}
 func (*Envelope_OverseerHeartbeat) isEnvelope_Payload() {}
 
 func (*Envelope_OverseerDisconnected) isEnvelope_Payload() {}
+
+func (*Envelope_StepResumed) isEnvelope_Payload() {}
 
 func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
@@ -949,6 +965,70 @@ func (x *OverseerDisconnected) GetReason() string {
 	return ""
 }
 
+// StepResumed is emitted by an Overseer before re-executing a step after a
+// crash. It distinguishes a crash-restart rerun from a normal retry after a
+// step failure. Castle stores and fans out this event identically to other
+// envelopes; it has no run-status side-effects.
+type StepResumed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Step          string                 `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`
+	Attempt       int32                  `protobuf:"varint,2,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Reason        string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StepResumed) Reset() {
+	*x = StepResumed{}
+	mi := &file_overlord_v1_events_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StepResumed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StepResumed) ProtoMessage() {}
+
+func (x *StepResumed) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StepResumed.ProtoReflect.Descriptor instead.
+func (*StepResumed) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *StepResumed) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *StepResumed) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *StepResumed) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 // WatchReady is a protocol-level sentinel payload sent by WatchRun once at
 // stream start. It has no fields and no run-semantic meaning; it exists
 // solely to flush Connect server-stream response headers so the client's
@@ -961,7 +1041,7 @@ type WatchReady struct {
 
 func (x *WatchReady) Reset() {
 	*x = WatchReady{}
-	mi := &file_overlord_v1_events_proto_msgTypes[11]
+	mi := &file_overlord_v1_events_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -973,7 +1053,7 @@ func (x *WatchReady) String() string {
 func (*WatchReady) ProtoMessage() {}
 
 func (x *WatchReady) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_events_proto_msgTypes[11]
+	mi := &file_overlord_v1_events_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -986,14 +1066,14 @@ func (x *WatchReady) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchReady.ProtoReflect.Descriptor instead.
 func (*WatchReady) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_events_proto_rawDescGZIP(), []int{11}
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{12}
 }
 
 var File_overlord_v1_events_proto protoreflect.FileDescriptor
 
 const file_overlord_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x91\a\n" +
+	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd0\a\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -1012,7 +1092,8 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\bstep_log\x18\x10 \x01(\v2\x14.overlord.v1.StepLogH\x00R\astepLog\x12@\n" +
 	"\radapter_event\x18\x11 \x01(\v2\x19.overlord.v1.AdapterEventH\x00R\fadapterEvent\x12O\n" +
 	"\x12overseer_heartbeat\x18\x12 \x01(\v2\x1e.overlord.v1.OverseerHeartbeatH\x00R\x11overseerHeartbeat\x12X\n" +
-	"\x15overseer_disconnected\x18\x13 \x01(\v2!.overlord.v1.OverseerDisconnectedH\x00R\x14overseerDisconnected\x12:\n" +
+	"\x15overseer_disconnected\x18\x13 \x01(\v2!.overlord.v1.OverseerDisconnectedH\x00R\x14overseerDisconnected\x12=\n" +
+	"\fstep_resumed\x18\x14 \x01(\v2\x18.overlord.v1.StepResumedH\x00R\vstepResumed\x12:\n" +
 	"\vwatch_ready\x18c \x01(\v2\x17.overlord.v1.WatchReadyH\x00R\n" +
 	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
@@ -1057,7 +1138,11 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\x14OverseerDisconnected\x12\x1f\n" +
 	"\voverseer_id\x18\x01 \x01(\tR\n" +
 	"overseerId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"\f\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"S\n" +
+	"\vStepResumed\x12\x12\n" +
+	"\x04step\x18\x01 \x01(\tR\x04step\x12\x18\n" +
+	"\aattempt\x18\x02 \x01(\x05R\aattempt\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\f\n" +
 	"\n" +
 	"WatchReady*k\n" +
 	"\tLogStream\x12\x1a\n" +
@@ -1080,7 +1165,7 @@ func file_overlord_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_overlord_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_overlord_v1_events_proto_goTypes = []any{
 	(LogStream)(0),                // 0: overlord.v1.LogStream
 	(*Envelope)(nil),              // 1: overlord.v1.Envelope
@@ -1094,12 +1179,13 @@ var file_overlord_v1_events_proto_goTypes = []any{
 	(*AdapterEvent)(nil),          // 9: overlord.v1.AdapterEvent
 	(*OverseerHeartbeat)(nil),     // 10: overlord.v1.OverseerHeartbeat
 	(*OverseerDisconnected)(nil),  // 11: overlord.v1.OverseerDisconnected
-	(*WatchReady)(nil),            // 12: overlord.v1.WatchReady
-	(*timestamppb.Timestamp)(nil), // 13: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 14: google.protobuf.Struct
+	(*StepResumed)(nil),           // 12: overlord.v1.StepResumed
+	(*WatchReady)(nil),            // 13: overlord.v1.WatchReady
+	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),       // 15: google.protobuf.Struct
 }
 var file_overlord_v1_events_proto_depIdxs = []int32{
-	13, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	14, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: overlord.v1.Envelope.run_started:type_name -> overlord.v1.RunStarted
 	3,  // 2: overlord.v1.Envelope.run_completed:type_name -> overlord.v1.RunCompleted
 	4,  // 3: overlord.v1.Envelope.run_failed:type_name -> overlord.v1.RunFailed
@@ -1110,14 +1196,15 @@ var file_overlord_v1_events_proto_depIdxs = []int32{
 	9,  // 8: overlord.v1.Envelope.adapter_event:type_name -> overlord.v1.AdapterEvent
 	10, // 9: overlord.v1.Envelope.overseer_heartbeat:type_name -> overlord.v1.OverseerHeartbeat
 	11, // 10: overlord.v1.Envelope.overseer_disconnected:type_name -> overlord.v1.OverseerDisconnected
-	12, // 11: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
-	0,  // 12: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
-	14, // 13: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	12, // 11: overlord.v1.Envelope.step_resumed:type_name -> overlord.v1.StepResumed
+	13, // 12: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
+	0,  // 13: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
+	15, // 14: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_events_proto_init() }
@@ -1136,6 +1223,7 @@ func file_overlord_v1_events_proto_init() {
 		(*Envelope_AdapterEvent)(nil),
 		(*Envelope_OverseerHeartbeat)(nil),
 		(*Envelope_OverseerDisconnected)(nil),
+		(*Envelope_StepResumed)(nil),
 		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
@@ -1144,7 +1232,7 @@ func file_overlord_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_events_proto_rawDesc), len(file_overlord_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
