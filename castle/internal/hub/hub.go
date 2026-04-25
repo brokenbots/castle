@@ -4,14 +4,20 @@
 package hub
 
 import (
+	"log/slog"
 	"sync"
 
+	"github.com/brokenbots/overlord/shared/events"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
 
+const DefaultEventBufferCapacity = 1024
+
 type Hub struct {
-	mu   sync.RWMutex
-	subs map[string]map[*Subscriber]struct{} // runID -> subscribers
+	mu     sync.RWMutex
+	subs   map[string]map[*Subscriber]struct{} // runID -> subscribers
+	buffer *Buffer
+	log    *slog.Logger
 }
 
 type Subscriber struct {
@@ -28,7 +34,31 @@ type Subscriber struct {
 	closed bool
 }
 
-func New() *Hub { return &Hub{subs: make(map[string]map[*Subscriber]struct{})} }
+func New() *Hub {
+	return NewWithBuffer(DefaultEventBufferCapacity, nil)
+}
+
+func NewWithBuffer(capPerRun int, log *slog.Logger) *Hub {
+	if log == nil {
+		log = slog.Default()
+	}
+	b := NewBuffer(capPerRun)
+	b.onEvict = func(runID string, oldestSeq uint64) {
+		log.Warn("event buffer rotated", "run_id", runID, "oldest_seq", oldestSeq)
+	}
+	return &Hub{
+		subs:   make(map[string]map[*Subscriber]struct{}),
+		buffer: b,
+		log:    log,
+	}
+}
+
+func (h *Hub) Since(runID string, seq uint64) []*pb.Envelope {
+	if h == nil || h.buffer == nil {
+		return nil
+	}
+	return h.buffer.Since(runID, seq)
+}
 
 // Subscribe to one or more runs. "*" subscribes to every run.
 func (h *Hub) Subscribe(runIDs ...string) *Subscriber {
@@ -82,6 +112,8 @@ func (h *Hub) Publish(env *pb.Envelope) {
 	if env == nil {
 		return
 	}
+	h.appendToBuffer(env)
+
 	h.mu.RLock()
 	targets := make([]*Subscriber, 0, 8)
 	if set, ok := h.subs[env.RunId]; ok {
@@ -120,4 +152,20 @@ func (h *Hub) Publish(env *pb.Envelope) {
 	for _, s := range toEvict {
 		h.removeFromIndex(s)
 	}
+
+	if events.IsTerminal(env) && h.buffer != nil {
+		h.buffer.Forget(env.RunId)
+	}
+}
+
+func (h *Hub) appendToBuffer(env *pb.Envelope) {
+	if h == nil || h.buffer == nil || env == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			h.log.Error("event buffer append failed", "run_id", env.RunId, "panic", r)
+		}
+	}()
+	h.buffer.Append(env)
 }

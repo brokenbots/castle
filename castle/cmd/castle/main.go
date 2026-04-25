@@ -44,6 +44,18 @@ func envOrDefaultBool(key string, fallback bool) bool {
 	return b
 }
 
+func envOrDefaultInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	out, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return out
+}
+
 func flagWasSet(name string) bool {
 	set := false
 	flag.Visit(func(f *flag.Flag) {
@@ -64,6 +76,7 @@ func main() {
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
 	allowAnonReads := flag.Bool("allow-anon-reads", envOrDefaultBool("CASTLE_ALLOW_ANON_READS", !tlsDefault), "allow anonymous CastleService read RPCs")
+	eventBufferCapacity := flag.Int("event-buffer-capacity", envOrDefaultInt("CASTLE_EVENT_BUFFER_CAPACITY", hub.DefaultEventBufferCapacity), "in-memory events retained per run for WatchRun replay")
 	flag.Parse()
 
 	tlsEnabled := *tlsCert != "" || *tlsKey != ""
@@ -75,6 +88,10 @@ func main() {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if *eventBufferCapacity <= 0 {
+		log.Error("invalid event buffer capacity", "event_buffer_capacity", *eventBufferCapacity)
+		os.Exit(1)
+	}
 
 	st, err := sqlite.Open(*dbPath)
 	if err != nil {
@@ -83,7 +100,7 @@ func main() {
 	}
 	defer st.Close()
 
-	h := hub.New()
+	h := hub.NewWithBuffer(*eventBufferCapacity, log)
 	controls := rpc.NewControlRegistry()
 
 	overseerRPC := rpc.NewOverseerServer(st, h, log, controls)
@@ -153,7 +170,7 @@ func main() {
 	}()
 
 	go func() {
-		log.Info("castle listening", "addr", *addr, "db", *dbPath, "tls", tlsCfg != nil)
+		log.Info("castle listening", "addr", *addr, "db", *dbPath, "tls", tlsCfg != nil, "event_buffer_capacity", *eventBufferCapacity)
 		var err error
 		if tlsCfg != nil {
 			err = srv.ListenAndServeTLS("", "")

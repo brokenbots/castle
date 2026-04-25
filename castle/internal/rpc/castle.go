@@ -91,34 +91,22 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
 	}
 
-	// Subscribe to the hub BEFORE replay so that any event published while
-	// we're draining persisted rows is still delivered (de-duplicated below
-	// by seq). Unsubscribe on return.
+	// Subscribe before replay so events published while replaying persisted rows
+	// are queued for the subsequent buffer/live phases.
 	sub := s.Hub.Subscribe(runID)
 	defer s.Hub.Unsubscribe(sub)
 
-	// Flush response headers immediately so the Connect client's WatchRun
-	// call can return to the caller. Without this sentinel, net/http2 would
-	// not flush until the first body byte, which would deadlock any client
-	// subscribing to a run that has not yet emitted an event. Clients must
-	// ignore WatchReady payloads.
-	if err := stream.Send(&pb.Envelope{SchemaVersion: 1, RunId: runID, Payload: &pb.Envelope_WatchReady{WatchReady: &pb.WatchReady{}}}); err != nil {
-		return connect.NewError(connect.CodeUnknown, err)
-	}
-
-	seen := make(map[uint64]struct{})
-	since := req.Msg.SinceSeq
+	lastSent := req.Msg.SinceSeq
 	terminalInReplay := false
 
-	_, err := forEachPersistedEventPage(ctx, s.Store, runID, since, func(env *pb.Envelope) error {
-		if _, ok := seen[env.Seq]; ok {
+	_, err := forEachPersistedEventPage(ctx, s.Store, runID, req.Msg.SinceSeq, func(env *pb.Envelope) error {
+		if env.Seq <= lastSent {
 			return nil
 		}
-		seen[env.Seq] = struct{}{}
 		if err := stream.Send(env); err != nil {
-			return connect.NewError(connect.CodeUnknown, err)
+			return err
 		}
-		since = env.Seq
+		lastSent = env.Seq
 		if events.IsTerminal(env) {
 			terminalInReplay = true
 			return errStopEventPagination
@@ -132,6 +120,27 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		return nil
 	}
 
+	// WatchReady is sent once replay is complete so Connect flushes response
+	// headers even when no live event has arrived yet. Clients must ignore it.
+	if err := stream.Send(&pb.Envelope{SchemaVersion: 1, RunId: runID, Payload: &pb.Envelope_WatchReady{WatchReady: &pb.WatchReady{}}}); err != nil {
+		return connect.NewError(connect.CodeUnknown, err)
+	}
+
+	// Drain the in-memory gap-closure tier after durable replay and before
+	// tailing live fan-out.
+	for _, env := range s.Hub.Since(runID, lastSent) {
+		if env.Seq <= lastSent {
+			continue
+		}
+		if err := stream.Send(env); err != nil {
+			return connect.NewError(connect.CodeUnknown, err)
+		}
+		lastSent = env.Seq
+		if events.IsTerminal(env) {
+			return nil
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -140,20 +149,16 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 			if !ok {
 				return nil
 			}
-			if env.Seq <= since {
+			if env.Seq <= lastSent {
 				continue
 			}
-			if _, exists := seen[env.Seq]; exists {
-				continue
-			}
-			seen[env.Seq] = struct{}{}
 			if err := stream.Send(env); err != nil {
 				return connect.NewError(connect.CodeUnknown, err)
 			}
 			if events.IsTerminal(env) {
 				return nil
 			}
-			since = env.Seq
+			lastSent = env.Seq
 		}
 	}
 }

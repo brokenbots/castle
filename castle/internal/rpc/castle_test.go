@@ -2,15 +2,55 @@ package rpc
 
 import (
 	"context"
+	"log/slog"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/brokenbots/overlord/castle/internal/hub"
+	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
 	"github.com/brokenbots/overlord/shared/events"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
+
+type recordedLog struct {
+	Message string
+	Attrs   map[string]any
+}
+
+type recordingSlogHandler struct {
+	mu   sync.Mutex
+	logs []recordedLog
+}
+
+func (h *recordingSlogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]any)
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	h.logs = append(h.logs, recordedLog{Message: r.Message, Attrs: attrs})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *recordingSlogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingSlogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordingSlogHandler) snapshot() []recordedLog {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]recordedLog, len(h.logs))
+	copy(out, h.logs)
+	return out
+}
 
 func TestCastleListRunEventsPaging(t *testing.T) {
 	ts := newTestStack(t)
@@ -121,23 +161,24 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	replayEnv.Seq = seq1
+	ts.hub.Publish(replayEnv)
 
 	watch, err := cClient.WatchRun(context.Background(), connect.NewRequest(&pb.WatchRunRequest{RunId: runID}))
 	if err != nil {
 		t.Fatal(err)
-	}
-	// First frame is WatchReady (headers-flush sentinel); consume and skip.
-	if !watch.Receive() {
-		t.Fatalf("expected WatchReady, err=%v", watch.Err())
-	}
-	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
-		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
 	}
 	if !watch.Receive() {
 		t.Fatalf("expected replay event, err=%v", watch.Err())
 	}
 	if watch.Msg().Seq != 1 {
 		t.Fatalf("replay seq=%d", watch.Msg().Seq)
+	}
+	// WatchReady is emitted after durable replay and before live tailing.
+	if !watch.Receive() {
+		t.Fatalf("expected WatchReady, err=%v", watch.Err())
+	}
+	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
+		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
 	}
 
 	liveEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r2", Adapter: "shell", Attempt: 1}}}
@@ -185,12 +226,233 @@ func TestWatchRun_TerminalInReplay_ClosesImmediately(t *testing.T) {
 	runID := run.Msg.RunId
 
 	replayEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}}
-	if _, _, err := ts.store.AppendEvent(context.Background(), replayEnv); err != nil {
+	seq1, _, err := ts.store.AppendEvent(context.Background(), replayEnv)
+	if err != nil {
 		t.Fatal(err)
 	}
+	replayEnv.Seq = seq1
+	ts.hub.Publish(replayEnv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !watch.Receive() {
+		t.Fatalf("expected replay event 1, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 1 {
+		t.Fatalf("replay seq=%d want 1", watch.Msg().Seq)
+	}
+	if !watch.Receive() {
+		t.Fatalf("expected WatchReady after replay, err=%v", watch.Err())
+	}
+	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
+		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
+	}
+
 	terminal := events.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
 	terminal.Ts = timestamppb.New(time.Now().UTC())
-	if _, _, err := ts.store.AppendEvent(context.Background(), terminal); err != nil {
+	seq2, _, err := ts.store.AppendEvent(context.Background(), terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal.Seq = seq2
+	ts.hub.Publish(terminal)
+
+	if !watch.Receive() {
+		t.Fatalf("expected live terminal event, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 2 {
+		t.Fatalf("terminal seq=%d want 2", watch.Msg().Seq)
+	}
+	if watch.Receive() {
+		t.Fatal("expected stream close immediately after replayed terminal")
+	}
+	if err := watch.Err(); err != nil {
+		t.Fatalf("expected clean stream close, got err=%v", err)
+	}
+}
+
+func TestWatchRun_ReplaysFromBuffer(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 10; i++ {
+		env := &pb.Envelope{
+			SchemaVersion: 1,
+			RunId:         runID,
+			Ts:            timestamppb.Now(),
+			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}},
+		}
+		seq, _, err := ts.store.AppendEvent(context.Background(), env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.Seq = seq
+		ts.hub.Publish(env)
+	}
+
+	watch, err := cClient.WatchRun(context.Background(), connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SinceSeq: 0}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := uint64(1); i <= 10; i++ {
+		if !watch.Receive() {
+			t.Fatalf("expected seq %d, err=%v", i, watch.Err())
+		}
+		if watch.Msg().Seq != i {
+			t.Fatalf("seq=%d want %d", watch.Msg().Seq, i)
+		}
+	}
+	if !watch.Receive() {
+		t.Fatalf("expected WatchReady, err=%v", watch.Err())
+	}
+	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
+		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
+	}
+	_ = watch.Close()
+}
+
+func TestWatchRun_DeDupesBufferVsLive(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	env := &pb.Envelope{
+		SchemaVersion: 1,
+		RunId:         runID,
+		Ts:            timestamppb.Now(),
+		Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}},
+	}
+	seq, _, err := ts.store.AppendEvent(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.Seq = seq
+	ts.hub.Publish(env)
+
+	watch, err := cClient.WatchRun(context.Background(), connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SinceSeq: 0}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !watch.Receive() {
+		t.Fatalf("expected replay event, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 1 {
+		t.Fatalf("replay seq=%d want 1", watch.Msg().Seq)
+	}
+	if !watch.Receive() {
+		t.Fatalf("expected WatchReady, err=%v", watch.Err())
+	}
+	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
+		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
+	}
+
+	// Re-publish the same seq as a simulated drain/live overlap; the stream
+	// must not emit the same sequence twice.
+	ts.hub.Publish(env)
+
+	live := &pb.Envelope{
+		SchemaVersion: 1,
+		RunId:         runID,
+		Ts:            timestamppb.Now(),
+		Payload:       &pb.Envelope_RunFailed{RunFailed: &pb.RunFailed{Reason: "done"}},
+	}
+	seq2, _, err := ts.store.AppendEvent(context.Background(), live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.Seq = seq2
+	ts.hub.Publish(live)
+
+	if !watch.Receive() {
+		t.Fatalf("expected terminal event, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 2 {
+		t.Fatalf("terminal seq=%d want 2", watch.Msg().Seq)
+	}
+	if watch.Receive() {
+		t.Fatal("expected stream close after terminal")
+	}
+}
+
+func TestWatchRun_ReplaysPersistedWhenBufferEmpty(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 3; i++ {
+		env := &pb.Envelope{
+			SchemaVersion: 1,
+			RunId:         runID,
+			Ts:            timestamppb.Now(),
+			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}},
+		}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SinceSeq: 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !watch.Receive() {
+		t.Fatalf("expected persisted seq 2, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 2 {
+		t.Fatalf("first replay seq=%d want 2", watch.Msg().Seq)
+	}
+	if !watch.Receive() {
+		t.Fatalf("expected persisted seq 3, err=%v", watch.Err())
+	}
+	if watch.Msg().Seq != 3 {
+		t.Fatalf("second replay seq=%d want 3", watch.Msg().Seq)
+	}
+	if !watch.Receive() {
+		t.Fatalf("expected WatchReady, err=%v", watch.Err())
+	}
+	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
+		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
+	}
+	_ = watch.Close()
+}
+
+func TestWatchRun_WatchReadyAfterPersistedReplay(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	replayEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}}
+	if _, _, err := ts.store.AppendEvent(context.Background(), replayEnv); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,28 +464,102 @@ func TestWatchRun_TerminalInReplay_ClosesImmediately(t *testing.T) {
 	}
 
 	if !watch.Receive() {
+		t.Fatalf("expected replay event before WatchReady, err=%v", watch.Err())
+	}
+	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); ok {
+		t.Fatal("WatchReady arrived before persisted replay")
+	}
+	if watch.Msg().Seq != 1 {
+		t.Fatalf("replay seq=%d want 1", watch.Msg().Seq)
+	}
+
+	if !watch.Receive() {
+		t.Fatalf("expected WatchReady after replay, err=%v", watch.Err())
+	}
+	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
+		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
+	}
+	_ = watch.Close()
+}
+
+func TestWatchRun_BufferCapacityLateSubscriberAndEvictionWarning(t *testing.T) {
+	recordingHandler := &recordingSlogHandler{}
+	log := slog.New(recordingHandler)
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	h := hub.NewWithBuffer(1024, log)
+	controls := NewControlRegistry()
+	ts := &testStack{
+		store:    store,
+		hub:      h,
+		controls: controls,
+		overseer: NewOverseerServer(store, h, log, controls),
+		castle:   NewCastleServer(store, h, log, controls),
+	}
+
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 1500; i++ {
+		h.Publish(&pb.Envelope{
+			SchemaVersion: 1,
+			RunId:         runID,
+			Seq:           uint64(i),
+			Ts:            timestamppb.Now(),
+			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s", Adapter: "shell", Attempt: 1}},
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SinceSeq: 0}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !watch.Receive() {
 		t.Fatalf("expected WatchReady, err=%v", watch.Err())
 	}
 	if _, ok := watch.Msg().Payload.(*pb.Envelope_WatchReady); !ok {
 		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
 	}
-	if !watch.Receive() {
-		t.Fatalf("expected replay event 1, err=%v", watch.Err())
+
+	for i := 477; i <= 1500; i++ {
+		if !watch.Receive() {
+			t.Fatalf("expected seq %d, err=%v", i, watch.Err())
+		}
+		if watch.Msg().Seq != uint64(i) {
+			t.Fatalf("seq=%d want %d", watch.Msg().Seq, i)
+		}
 	}
-	if watch.Msg().Seq != 1 {
-		t.Fatalf("replay seq=%d want 1", watch.Msg().Seq)
+	_ = watch.Close()
+
+	warnFound := false
+	for _, entry := range recordingHandler.snapshot() {
+		if entry.Message != "event buffer rotated" {
+			continue
+		}
+		rid, okRID := entry.Attrs["run_id"].(string)
+		if !okRID || rid != runID {
+			continue
+		}
+		if _, ok := entry.Attrs["oldest_seq"]; ok {
+			warnFound = true
+			break
+		}
 	}
-	if !watch.Receive() {
-		t.Fatalf("expected replay terminal event, err=%v", watch.Err())
-	}
-	if watch.Msg().Seq != 2 {
-		t.Fatalf("terminal seq=%d want 2", watch.Msg().Seq)
-	}
-	if watch.Receive() {
-		t.Fatal("expected stream close immediately after replayed terminal")
-	}
-	if err := watch.Err(); err != nil {
-		t.Fatalf("expected clean stream close, got err=%v", err)
+	if !warnFound {
+		t.Fatal("expected event buffer rotated warning with run_id and oldest_seq")
 	}
 }
 

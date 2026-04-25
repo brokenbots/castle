@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/brokenbots/overlord/shared/events"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
 
@@ -56,4 +57,21 @@ func TestUnsubscribeRaceSlowSubscriber(t *testing.T) {
 func TestUnsubscribeNilSafe(t *testing.T) {
 	h := New()
 	h.Unsubscribe(nil)
+}
+
+func TestPublish_TerminalForgetsRunBuffer(t *testing.T) {
+	h := NewWithBuffer(8, nil)
+
+	h.Publish(&pb.Envelope{RunId: "r1", Seq: 1, Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s", Adapter: "shell", Attempt: 1}}})
+	if got := len(h.Since("r1", 0)); got != 1 {
+		t.Fatalf("before terminal, buffered=%d want 1", got)
+	}
+
+	terminal := events.NewEnvelope("r1", &pb.RunCompleted{Success: true})
+	terminal.Seq = 2
+	h.Publish(terminal)
+
+	if got := len(h.Since("r1", 0)); got != 0 {
+		t.Fatalf("after terminal, buffered=%d want 0", got)
+	}
 }
