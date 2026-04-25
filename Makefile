@@ -1,5 +1,5 @@
 .PHONY: help bootstrap tidy build build-overseer build-castle build-parapet \
-	test validate dev-castle dev-overseer dev-parapet docker-build \
+	test validate dev-castle dev-overseer dev-parapet demo docker-build \
 	docker-build-overseer docker-build-castle compose-up compose-down \
 	compose-logs clean proto proto-lint proto-check proto-check-drift
 
@@ -47,6 +47,9 @@ dev-overseer: ## Run overseer against local castle with the build_and_test examp
 
 dev-parapet: ## Run parapet dev server
 	cd parapet && npm run dev
+
+demo: ## Run end-to-end demo: castle + parapet + a multi-step looping workflow
+	./scripts/demo.sh
 
 docker-build: docker-build-castle docker-build-overseer ## Build local Docker images for castle and overseer
 
