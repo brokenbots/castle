@@ -17,6 +17,7 @@ parapet/node_modules/
 parapet/dist/
 parapet/.vite/
 parapet/coverage/
+parapet/*.tsbuildinfo
 
 # Castle dev data
 # Keep SQLite sidecar files untracked; some were historically committed.
