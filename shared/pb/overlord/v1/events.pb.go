@@ -119,6 +119,7 @@ type Envelope struct {
 	//	*Envelope_WaitResumed
 	//	*Envelope_ApprovalRequested
 	//	*Envelope_ApprovalDecision
+	//	*Envelope_BranchEvaluated
 	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -350,6 +351,15 @@ func (x *Envelope) GetApprovalDecision() *ApprovalDecision {
 	return nil
 }
 
+func (x *Envelope) GetBranchEvaluated() *BranchEvaluated {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_BranchEvaluated); ok {
+			return x.BranchEvaluated
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetWatchReady() *WatchReady {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
@@ -432,6 +442,12 @@ type Envelope_ApprovalDecision struct {
 	ApprovalDecision *ApprovalDecision `protobuf:"bytes,26,opt,name=approval_decision,json=approvalDecision,proto3,oneof"` // permanent (W05)
 }
 
+type Envelope_BranchEvaluated struct {
+	// BranchEvaluated — emitted when a branch node selects a transition arm (W06).
+	// Overseer-owned event; permanent field numbers.
+	BranchEvaluated *BranchEvaluated `protobuf:"bytes,27,opt,name=branch_evaluated,json=branchEvaluated,proto3,oneof"`
+}
+
 type Envelope_WatchReady struct {
 	// WatchReady is a protocol-level sentinel sent once at the start of a
 	// WatchRun server-stream, after any persisted-event replay, to flush
@@ -473,6 +489,8 @@ func (*Envelope_WaitResumed) isEnvelope_Payload() {}
 func (*Envelope_ApprovalRequested) isEnvelope_Payload() {}
 
 func (*Envelope_ApprovalDecision) isEnvelope_Payload() {}
+
+func (*Envelope_BranchEvaluated) isEnvelope_Payload() {}
 
 func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
@@ -1555,11 +1573,81 @@ func (x *ApprovalDecision) GetPayload() map[string]string {
 	return nil
 }
 
+// BranchEvaluated — emitted when a branch node selects a transition arm (W06).
+// Overseer-owned event; permanent field numbers.
+type BranchEvaluated struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`                               // branch node name; permanent
+	MatchedArm    string                 `protobuf:"bytes,2,opt,name=matched_arm,json=matchedArm,proto3" json:"matched_arm,omitempty"` // "arm[<index>]" | "default"; permanent
+	Target        string                 `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"`                           // transition target node name; permanent
+	Condition     string                 `protobuf:"bytes,4,opt,name=condition,proto3" json:"condition,omitempty"`                     // string-rendered condition for the matched arm; empty for default; permanent
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BranchEvaluated) Reset() {
+	*x = BranchEvaluated{}
+	mi := &file_overlord_v1_events_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BranchEvaluated) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BranchEvaluated) ProtoMessage() {}
+
+func (x *BranchEvaluated) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BranchEvaluated.ProtoReflect.Descriptor instead.
+func (*BranchEvaluated) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *BranchEvaluated) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *BranchEvaluated) GetMatchedArm() string {
+	if x != nil {
+		return x.MatchedArm
+	}
+	return ""
+}
+
+func (x *BranchEvaluated) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *BranchEvaluated) GetCondition() string {
+	if x != nil {
+		return x.Condition
+	}
+	return ""
+}
+
 var File_overlord_v1_events_proto protoreflect.FileDescriptor
 
 const file_overlord_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x81\v\n" +
+	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\v\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -1585,7 +1673,8 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\fwait_entered\x18\x17 \x01(\v2\x18.overlord.v1.WaitEnteredH\x00R\vwaitEntered\x12=\n" +
 	"\fwait_resumed\x18\x18 \x01(\v2\x18.overlord.v1.WaitResumedH\x00R\vwaitResumed\x12O\n" +
 	"\x12approval_requested\x18\x19 \x01(\v2\x1e.overlord.v1.ApprovalRequestedH\x00R\x11approvalRequested\x12L\n" +
-	"\x11approval_decision\x18\x1a \x01(\v2\x1d.overlord.v1.ApprovalDecisionH\x00R\x10approvalDecision\x12:\n" +
+	"\x11approval_decision\x18\x1a \x01(\v2\x1d.overlord.v1.ApprovalDecisionH\x00R\x10approvalDecision\x12I\n" +
+	"\x10branch_evaluated\x18\x1b \x01(\v2\x1c.overlord.v1.BranchEvaluatedH\x00R\x0fbranchEvaluated\x12:\n" +
 	"\vwatch_ready\x18c \x01(\v2\x17.overlord.v1.WatchReadyH\x00R\n" +
 	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
@@ -1671,7 +1760,13 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\apayload\x18\x04 \x03(\v2*.overlord.v1.ApprovalDecision.PayloadEntryR\apayload\x1a:\n" +
 	"\fPayloadEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*k\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"|\n" +
+	"\x0fBranchEvaluated\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x1f\n" +
+	"\vmatched_arm\x18\x02 \x01(\tR\n" +
+	"matchedArm\x12\x16\n" +
+	"\x06target\x18\x03 \x01(\tR\x06target\x12\x1c\n" +
+	"\tcondition\x18\x04 \x01(\tR\tcondition*k\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
@@ -1692,7 +1787,7 @@ func file_overlord_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_overlord_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_overlord_v1_events_proto_goTypes = []any{
 	(LogStream)(0),                // 0: overlord.v1.LogStream
 	(*Envelope)(nil),              // 1: overlord.v1.Envelope
@@ -1714,14 +1809,15 @@ var file_overlord_v1_events_proto_goTypes = []any{
 	(*WaitResumed)(nil),           // 17: overlord.v1.WaitResumed
 	(*ApprovalRequested)(nil),     // 18: overlord.v1.ApprovalRequested
 	(*ApprovalDecision)(nil),      // 19: overlord.v1.ApprovalDecision
-	nil,                           // 20: overlord.v1.StepOutputCaptured.OutputsEntry
-	nil,                           // 21: overlord.v1.WaitResumed.PayloadEntry
-	nil,                           // 22: overlord.v1.ApprovalDecision.PayloadEntry
-	(*timestamppb.Timestamp)(nil), // 23: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 24: google.protobuf.Struct
+	(*BranchEvaluated)(nil),       // 20: overlord.v1.BranchEvaluated
+	nil,                           // 21: overlord.v1.StepOutputCaptured.OutputsEntry
+	nil,                           // 22: overlord.v1.WaitResumed.PayloadEntry
+	nil,                           // 23: overlord.v1.ApprovalDecision.PayloadEntry
+	(*timestamppb.Timestamp)(nil), // 24: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),       // 25: google.protobuf.Struct
 }
 var file_overlord_v1_events_proto_depIdxs = []int32{
-	23, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	24, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: overlord.v1.Envelope.run_started:type_name -> overlord.v1.RunStarted
 	3,  // 2: overlord.v1.Envelope.run_completed:type_name -> overlord.v1.RunCompleted
 	4,  // 3: overlord.v1.Envelope.run_failed:type_name -> overlord.v1.RunFailed
@@ -1739,17 +1835,18 @@ var file_overlord_v1_events_proto_depIdxs = []int32{
 	17, // 15: overlord.v1.Envelope.wait_resumed:type_name -> overlord.v1.WaitResumed
 	18, // 16: overlord.v1.Envelope.approval_requested:type_name -> overlord.v1.ApprovalRequested
 	19, // 17: overlord.v1.Envelope.approval_decision:type_name -> overlord.v1.ApprovalDecision
-	13, // 18: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
-	0,  // 19: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
-	24, // 20: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	20, // 21: overlord.v1.StepOutputCaptured.outputs:type_name -> overlord.v1.StepOutputCaptured.OutputsEntry
-	21, // 22: overlord.v1.WaitResumed.payload:type_name -> overlord.v1.WaitResumed.PayloadEntry
-	22, // 23: overlord.v1.ApprovalDecision.payload:type_name -> overlord.v1.ApprovalDecision.PayloadEntry
-	24, // [24:24] is the sub-list for method output_type
-	24, // [24:24] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	20, // 18: overlord.v1.Envelope.branch_evaluated:type_name -> overlord.v1.BranchEvaluated
+	13, // 19: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
+	0,  // 20: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
+	25, // 21: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	21, // 22: overlord.v1.StepOutputCaptured.outputs:type_name -> overlord.v1.StepOutputCaptured.OutputsEntry
+	22, // 23: overlord.v1.WaitResumed.payload:type_name -> overlord.v1.WaitResumed.PayloadEntry
+	23, // 24: overlord.v1.ApprovalDecision.payload:type_name -> overlord.v1.ApprovalDecision.PayloadEntry
+	25, // [25:25] is the sub-list for method output_type
+	25, // [25:25] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_events_proto_init() }
@@ -1775,6 +1872,7 @@ func file_overlord_v1_events_proto_init() {
 		(*Envelope_WaitResumed)(nil),
 		(*Envelope_ApprovalRequested)(nil),
 		(*Envelope_ApprovalDecision)(nil),
+		(*Envelope_BranchEvaluated)(nil),
 		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
@@ -1783,7 +1881,7 @@ func file_overlord_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_events_proto_rawDesc), len(file_overlord_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   22,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

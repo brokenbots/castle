@@ -320,6 +320,12 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 		if p.ApprovalDecision == nil {
 			return
 		}
+	case *pb.Envelope_BranchEvaluated:
+		// No run-status side-effect. BranchEvaluated is informational; Castle
+		// stores and fans out the event without mutating run state (W06).
+		if p.BranchEvaluated == nil {
+			return
+		}
 	case *pb.Envelope_RunCompleted:
 		// Flush any pending scope mutations before marking the run terminal so
 		// the final scope is available to any post-run readers.

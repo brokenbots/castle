@@ -213,6 +213,15 @@ export class Envelope extends Message<Envelope> {
     case: "approvalDecision";
   } | {
     /**
+     * BranchEvaluated — emitted when a branch node selects a transition arm (W06).
+     * Overseer-owned event; permanent field numbers.
+     *
+     * @generated from field: overlord.v1.BranchEvaluated branch_evaluated = 27;
+     */
+    value: BranchEvaluated;
+    case: "branchEvaluated";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -254,6 +263,7 @@ export class Envelope extends Message<Envelope> {
     { no: 24, name: "wait_resumed", kind: "message", T: WaitResumed, oneof: "payload" },
     { no: 25, name: "approval_requested", kind: "message", T: ApprovalRequested, oneof: "payload" },
     { no: 26, name: "approval_decision", kind: "message", T: ApprovalDecision, oneof: "payload" },
+    { no: 27, name: "branch_evaluated", kind: "message", T: BranchEvaluated, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -1200,6 +1210,72 @@ export class ApprovalDecision extends Message<ApprovalDecision> {
 
   static equals(a: ApprovalDecision | PlainMessage<ApprovalDecision> | undefined, b: ApprovalDecision | PlainMessage<ApprovalDecision> | undefined): boolean {
     return proto3.util.equals(ApprovalDecision, a, b);
+  }
+}
+
+/**
+ * BranchEvaluated — emitted when a branch node selects a transition arm (W06).
+ * Overseer-owned event; permanent field numbers.
+ *
+ * @generated from message overlord.v1.BranchEvaluated
+ */
+export class BranchEvaluated extends Message<BranchEvaluated> {
+  /**
+   * branch node name; permanent
+   *
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * "arm[<index>]" | "default"; permanent
+   *
+   * @generated from field: string matched_arm = 2;
+   */
+  matchedArm = "";
+
+  /**
+   * transition target node name; permanent
+   *
+   * @generated from field: string target = 3;
+   */
+  target = "";
+
+  /**
+   * string-rendered condition for the matched arm; empty for default; permanent
+   *
+   * @generated from field: string condition = 4;
+   */
+  condition = "";
+
+  constructor(data?: PartialMessage<BranchEvaluated>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.BranchEvaluated";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "matched_arm", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "target", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "condition", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BranchEvaluated {
+    return new BranchEvaluated().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BranchEvaluated {
+    return new BranchEvaluated().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BranchEvaluated {
+    return new BranchEvaluated().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BranchEvaluated | PlainMessage<BranchEvaluated> | undefined, b: BranchEvaluated | PlainMessage<BranchEvaluated> | undefined): boolean {
+    return proto3.util.equals(BranchEvaluated, a, b);
   }
 }
 
