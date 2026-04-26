@@ -38,6 +38,7 @@ Component-specific:
 - **Wire contract changes**: edit `proto/overlord/v1/*.proto` first; run `make proto` to regenerate Go and TS clients; then update Castle handlers, Overseer client, and Parapet call sites.
 - **Plugin model**: adapter plugins run out-of-process and are discovered as `overlord-adapter-<name>` from `${OVERLORD_PLUGINS}/` first, then `~/.overlord/plugins/`; use `make plugins` to build all adapter binaries.
 - **HCL workflow syntax (Phase 1.5)**: step-level adapter input uses `input { ... }` blocks; agent-level configuration stays on the `agent { }` block. The legacy `config = {...}` shape for step input was removed in a hard break and is no longer accepted.
+- **Workstream Reviewer role**: the reviewer agent is an audit-only quality gate and must not edit code; it enforces quality, security, and acceptance bars, validates that tests prove intended behavior (not just that they pass), and requires the executor to remediate all findings including nits before approval.
 - Keep logs structured (`slog` JSON style in backend entrypoints).
 - Preserve existing adapter boundaries in Overseer (`internal/adapter`, `internal/adapters/*`, `internal/dispatcher`).
 
