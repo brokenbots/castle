@@ -469,7 +469,11 @@ type ReattachRunResponse struct {
 	LastSeq uint64 `protobuf:"varint,4,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
 	// Server's judgment: false when the run is terminal or belongs to a different
 	// overseer.
-	CanResume     bool `protobuf:"varint,5,opt,name=can_resume,json=canResume,proto3" json:"can_resume,omitempty"`
+	CanResume bool `protobuf:"varint,5,opt,name=can_resume,json=canResume,proto3" json:"can_resume,omitempty"`
+	// JSON-encoded variable scope snapshot at the time of the last persisted
+	// StepOutputCaptured or VariableSet event. Empty string means no scope has
+	// been persisted yet. Field is permanent (W04).
+	VariableScope string `protobuf:"bytes,6,opt,name=variable_scope,json=variableScope,proto3" json:"variable_scope,omitempty"` // permanent (W04)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -537,6 +541,13 @@ func (x *ReattachRunResponse) GetCanResume() bool {
 		return x.CanResume
 	}
 	return false
+}
+
+func (x *ReattachRunResponse) GetVariableScope() string {
+	if x != nil {
+		return x.VariableScope
+	}
+	return ""
 }
 
 // Ack is the server's reply on SubmitEvents. One Ack per persisted Envelope.
@@ -946,14 +957,15 @@ const file_overlord_v1_overseer_proto_rawDesc = "" +
 	"\x12ReattachRunRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1f\n" +
 	"\voverseer_id\x18\x02 \x01(\tR\n" +
-	"overseerId\"\xa4\x01\n" +
+	"overseerId\"\xcb\x01\n" +
 	"\x13ReattachRunResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12!\n" +
 	"\fcurrent_step\x18\x02 \x01(\tR\vcurrentStep\x12\x18\n" +
 	"\aattempt\x18\x03 \x01(\x05R\aattempt\x12\x19\n" +
 	"\blast_seq\x18\x04 \x01(\x04R\alastSeq\x12\x1d\n" +
 	"\n" +
-	"can_resume\x18\x05 \x01(\bR\tcanResume\"U\n" +
+	"can_resume\x18\x05 \x01(\bR\tcanResume\x12%\n" +
+	"\x0evariable_scope\x18\x06 \x01(\tR\rvariableScope\"U\n" +
 	"\x03Ack\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x10\n" +
 	"\x03seq\x18\x02 \x01(\x04R\x03seq\x12%\n" +

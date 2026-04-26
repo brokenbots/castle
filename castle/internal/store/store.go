@@ -46,6 +46,9 @@ type Run struct {
 	LastSeq      uint64
 	CreatedAt    time.Time
 	EndedAt      *time.Time
+	// VariableScope holds the JSON-serialised run vars map (W04). Empty string
+	// means the run has no captured variable state yet.
+	VariableScope string
 }
 
 // Store is the persistence contract.
@@ -92,6 +95,13 @@ type Store interface {
 	// GetLatestAttempt returns the highest-numbered attempt row for (run_id, step).
 	// Returns ErrNotFound when no rows exist.
 	GetLatestAttempt(ctx context.Context, runID, step string) (*RunAttempt, error)
+
+	// Variable scope
+	// SetRunVariableScope persists a JSON-encoded vars snapshot for runID (W04).
+	SetRunVariableScope(ctx context.Context, runID, scope string) error
+	// GetRunVariableScope returns the stored variable scope JSON for runID.
+	// Returns ("", nil) when no scope has been persisted yet.
+	GetRunVariableScope(ctx context.Context, runID string) (string, error)
 
 	Close() error
 }

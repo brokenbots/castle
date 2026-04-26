@@ -113,6 +113,8 @@ type Envelope struct {
 	//	*Envelope_OverseerHeartbeat
 	//	*Envelope_OverseerDisconnected
 	//	*Envelope_StepResumed
+	//	*Envelope_VariableSet
+	//	*Envelope_StepOutputCaptured
 	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -290,6 +292,24 @@ func (x *Envelope) GetStepResumed() *StepResumed {
 	return nil
 }
 
+func (x *Envelope) GetVariableSet() *VariableSet {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_VariableSet); ok {
+			return x.VariableSet
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetStepOutputCaptured() *StepOutputCaptured {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_StepOutputCaptured); ok {
+			return x.StepOutputCaptured
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetWatchReady() *WatchReady {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
@@ -347,6 +367,14 @@ type Envelope_StepResumed struct {
 	StepResumed *StepResumed `protobuf:"bytes,20,opt,name=step_resumed,json=stepResumed,proto3,oneof"`
 }
 
+type Envelope_VariableSet struct {
+	VariableSet *VariableSet `protobuf:"bytes,21,opt,name=variable_set,json=variableSet,proto3,oneof"` // permanent (W04)
+}
+
+type Envelope_StepOutputCaptured struct {
+	StepOutputCaptured *StepOutputCaptured `protobuf:"bytes,22,opt,name=step_output_captured,json=stepOutputCaptured,proto3,oneof"` // permanent (W04)
+}
+
 type Envelope_WatchReady struct {
 	// WatchReady is a protocol-level sentinel sent once at the start of a
 	// WatchRun server-stream, after any persisted-event replay, to flush
@@ -376,6 +404,10 @@ func (*Envelope_OverseerHeartbeat) isEnvelope_Payload() {}
 func (*Envelope_OverseerDisconnected) isEnvelope_Payload() {}
 
 func (*Envelope_StepResumed) isEnvelope_Payload() {}
+
+func (*Envelope_VariableSet) isEnvelope_Payload() {}
+
+func (*Envelope_StepOutputCaptured) isEnvelope_Payload() {}
 
 func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
@@ -1069,11 +1101,128 @@ func (*WatchReady) Descriptor() ([]byte, []int) {
 	return file_overlord_v1_events_proto_rawDescGZIP(), []int{12}
 }
 
+// VariableSet — emitted when a workflow variable value is established.
+// In W04 this fires at run start for each variable's default value.
+// All field numbers are permanent.
+type VariableSet struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`     // permanent
+	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`   // string-rendered cty value for log/UI; permanent
+	Source        string                 `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"` // "default" | "step_output:<step>"; permanent
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VariableSet) Reset() {
+	*x = VariableSet{}
+	mi := &file_overlord_v1_events_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VariableSet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VariableSet) ProtoMessage() {}
+
+func (x *VariableSet) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VariableSet.ProtoReflect.Descriptor instead.
+func (*VariableSet) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *VariableSet) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *VariableSet) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *VariableSet) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+// StepOutputCaptured — emitted after a step completes with captured outputs.
+// All field numbers are permanent.
+type StepOutputCaptured struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Step          string                 `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`                                                                                 // permanent
+	Outputs       map[string]string      `protobuf:"bytes,2,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // permanent
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StepOutputCaptured) Reset() {
+	*x = StepOutputCaptured{}
+	mi := &file_overlord_v1_events_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StepOutputCaptured) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StepOutputCaptured) ProtoMessage() {}
+
+func (x *StepOutputCaptured) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StepOutputCaptured.ProtoReflect.Descriptor instead.
+func (*StepOutputCaptured) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *StepOutputCaptured) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *StepOutputCaptured) GetOutputs() map[string]string {
+	if x != nil {
+		return x.Outputs
+	}
+	return nil
+}
+
 var File_overlord_v1_events_proto protoreflect.FileDescriptor
 
 const file_overlord_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd0\a\n" +
+	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe4\b\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -1093,7 +1242,9 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\radapter_event\x18\x11 \x01(\v2\x19.overlord.v1.AdapterEventH\x00R\fadapterEvent\x12O\n" +
 	"\x12overseer_heartbeat\x18\x12 \x01(\v2\x1e.overlord.v1.OverseerHeartbeatH\x00R\x11overseerHeartbeat\x12X\n" +
 	"\x15overseer_disconnected\x18\x13 \x01(\v2!.overlord.v1.OverseerDisconnectedH\x00R\x14overseerDisconnected\x12=\n" +
-	"\fstep_resumed\x18\x14 \x01(\v2\x18.overlord.v1.StepResumedH\x00R\vstepResumed\x12:\n" +
+	"\fstep_resumed\x18\x14 \x01(\v2\x18.overlord.v1.StepResumedH\x00R\vstepResumed\x12=\n" +
+	"\fvariable_set\x18\x15 \x01(\v2\x18.overlord.v1.VariableSetH\x00R\vvariableSet\x12S\n" +
+	"\x14step_output_captured\x18\x16 \x01(\v2\x1f.overlord.v1.StepOutputCapturedH\x00R\x12stepOutputCaptured\x12:\n" +
 	"\vwatch_ready\x18c \x01(\v2\x17.overlord.v1.WatchReadyH\x00R\n" +
 	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
@@ -1144,7 +1295,17 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\aattempt\x18\x02 \x01(\x05R\aattempt\x12\x16\n" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\"\f\n" +
 	"\n" +
-	"WatchReady*k\n" +
+	"WatchReady\"O\n" +
+	"\vVariableSet\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\x12\x16\n" +
+	"\x06source\x18\x03 \x01(\tR\x06source\"\xac\x01\n" +
+	"\x12StepOutputCaptured\x12\x12\n" +
+	"\x04step\x18\x01 \x01(\tR\x04step\x12F\n" +
+	"\aoutputs\x18\x02 \x03(\v2,.overlord.v1.StepOutputCaptured.OutputsEntryR\aoutputs\x1a:\n" +
+	"\fOutputsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*k\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
@@ -1165,7 +1326,7 @@ func file_overlord_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_overlord_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_overlord_v1_events_proto_goTypes = []any{
 	(LogStream)(0),                // 0: overlord.v1.LogStream
 	(*Envelope)(nil),              // 1: overlord.v1.Envelope
@@ -1181,11 +1342,14 @@ var file_overlord_v1_events_proto_goTypes = []any{
 	(*OverseerDisconnected)(nil),  // 11: overlord.v1.OverseerDisconnected
 	(*StepResumed)(nil),           // 12: overlord.v1.StepResumed
 	(*WatchReady)(nil),            // 13: overlord.v1.WatchReady
-	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 15: google.protobuf.Struct
+	(*VariableSet)(nil),           // 14: overlord.v1.VariableSet
+	(*StepOutputCaptured)(nil),    // 15: overlord.v1.StepOutputCaptured
+	nil,                           // 16: overlord.v1.StepOutputCaptured.OutputsEntry
+	(*timestamppb.Timestamp)(nil), // 17: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),       // 18: google.protobuf.Struct
 }
 var file_overlord_v1_events_proto_depIdxs = []int32{
-	14, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	17, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: overlord.v1.Envelope.run_started:type_name -> overlord.v1.RunStarted
 	3,  // 2: overlord.v1.Envelope.run_completed:type_name -> overlord.v1.RunCompleted
 	4,  // 3: overlord.v1.Envelope.run_failed:type_name -> overlord.v1.RunFailed
@@ -1197,14 +1361,17 @@ var file_overlord_v1_events_proto_depIdxs = []int32{
 	10, // 9: overlord.v1.Envelope.overseer_heartbeat:type_name -> overlord.v1.OverseerHeartbeat
 	11, // 10: overlord.v1.Envelope.overseer_disconnected:type_name -> overlord.v1.OverseerDisconnected
 	12, // 11: overlord.v1.Envelope.step_resumed:type_name -> overlord.v1.StepResumed
-	13, // 12: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
-	0,  // 13: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
-	15, // 14: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	14, // 12: overlord.v1.Envelope.variable_set:type_name -> overlord.v1.VariableSet
+	15, // 13: overlord.v1.Envelope.step_output_captured:type_name -> overlord.v1.StepOutputCaptured
+	13, // 14: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
+	0,  // 15: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
+	18, // 16: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	16, // 17: overlord.v1.StepOutputCaptured.outputs:type_name -> overlord.v1.StepOutputCaptured.OutputsEntry
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_events_proto_init() }
@@ -1224,6 +1391,8 @@ func file_overlord_v1_events_proto_init() {
 		(*Envelope_OverseerHeartbeat)(nil),
 		(*Envelope_OverseerDisconnected)(nil),
 		(*Envelope_StepResumed)(nil),
+		(*Envelope_VariableSet)(nil),
+		(*Envelope_StepOutputCaptured)(nil),
 		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
@@ -1232,7 +1401,7 @@ func file_overlord_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_events_proto_rawDesc), len(file_overlord_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

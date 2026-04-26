@@ -620,7 +620,8 @@ func (x *PermissionRequest) GetDetails() map[string]string {
 
 type ExecuteResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Outcome       string                 `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"` // permanent
+	Outcome       string                 `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`                                                                           // permanent
+	Outputs       map[string]string      `protobuf:"bytes,2,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // permanent (W04)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -660,6 +661,13 @@ func (x *ExecuteResult) GetOutcome() string {
 		return x.Outcome
 	}
 	return ""
+}
+
+func (x *ExecuteResult) GetOutputs() map[string]string {
+	if x != nil {
+		return x.Outputs
+	}
+	return nil
 }
 
 type PermitRequest struct {
@@ -902,9 +910,13 @@ const file_overlord_v1_adapter_plugin_proto_rawDesc = "" +
 	"\adetails\x18\x03 \x03(\v2+.overlord.v1.PermissionRequest.DetailsEntryR\adetails\x1a:\n" +
 	"\fDetailsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\")\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa8\x01\n" +
 	"\rExecuteResult\x12\x18\n" +
-	"\aoutcome\x18\x01 \x01(\tR\aoutcome\"\x81\x01\n" +
+	"\aoutcome\x18\x01 \x01(\tR\aoutcome\x12A\n" +
+	"\aoutputs\x18\x02 \x03(\v2'.overlord.v1.ExecuteResult.OutputsEntryR\aoutputs\x1a:\n" +
+	"\fOutputsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x81\x01\n" +
 	"\rPermitRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12#\n" +
@@ -936,7 +948,7 @@ func file_overlord_v1_adapter_plugin_proto_rawDescGZIP() []byte {
 	return file_overlord_v1_adapter_plugin_proto_rawDescData
 }
 
-var file_overlord_v1_adapter_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_overlord_v1_adapter_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_overlord_v1_adapter_plugin_proto_goTypes = []any{
 	(*InfoRequest)(nil),          // 0: overlord.v1.InfoRequest
 	(*ConfigFieldProto)(nil),     // 1: overlord.v1.ConfigFieldProto
@@ -957,7 +969,8 @@ var file_overlord_v1_adapter_plugin_proto_goTypes = []any{
 	nil,                          // 16: overlord.v1.OpenSessionRequest.ConfigEntry
 	nil,                          // 17: overlord.v1.ExecuteRequest.ConfigEntry
 	nil,                          // 18: overlord.v1.PermissionRequest.DetailsEntry
-	(*AdapterEvent)(nil),         // 19: overlord.v1.AdapterEvent
+	nil,                          // 19: overlord.v1.ExecuteResult.OutputsEntry
+	(*AdapterEvent)(nil),         // 20: overlord.v1.AdapterEvent
 }
 var file_overlord_v1_adapter_plugin_proto_depIdxs = []int32{
 	15, // 0: overlord.v1.AdapterSchemaProto.fields:type_name -> overlord.v1.AdapterSchemaProto.FieldsEntry
@@ -966,26 +979,27 @@ var file_overlord_v1_adapter_plugin_proto_depIdxs = []int32{
 	16, // 3: overlord.v1.OpenSessionRequest.config:type_name -> overlord.v1.OpenSessionRequest.ConfigEntry
 	17, // 4: overlord.v1.ExecuteRequest.config:type_name -> overlord.v1.ExecuteRequest.ConfigEntry
 	8,  // 5: overlord.v1.ExecuteEvent.log:type_name -> overlord.v1.LogEvent
-	19, // 6: overlord.v1.ExecuteEvent.adapter:type_name -> overlord.v1.AdapterEvent
+	20, // 6: overlord.v1.ExecuteEvent.adapter:type_name -> overlord.v1.AdapterEvent
 	9,  // 7: overlord.v1.ExecuteEvent.permission:type_name -> overlord.v1.PermissionRequest
 	10, // 8: overlord.v1.ExecuteEvent.result:type_name -> overlord.v1.ExecuteResult
 	18, // 9: overlord.v1.PermissionRequest.details:type_name -> overlord.v1.PermissionRequest.DetailsEntry
-	1,  // 10: overlord.v1.AdapterSchemaProto.FieldsEntry.value:type_name -> overlord.v1.ConfigFieldProto
-	0,  // 11: overlord.v1.AdapterPluginService.Info:input_type -> overlord.v1.InfoRequest
-	4,  // 12: overlord.v1.AdapterPluginService.OpenSession:input_type -> overlord.v1.OpenSessionRequest
-	6,  // 13: overlord.v1.AdapterPluginService.Execute:input_type -> overlord.v1.ExecuteRequest
-	11, // 14: overlord.v1.AdapterPluginService.Permit:input_type -> overlord.v1.PermitRequest
-	13, // 15: overlord.v1.AdapterPluginService.CloseSession:input_type -> overlord.v1.CloseSessionRequest
-	3,  // 16: overlord.v1.AdapterPluginService.Info:output_type -> overlord.v1.InfoResponse
-	5,  // 17: overlord.v1.AdapterPluginService.OpenSession:output_type -> overlord.v1.OpenSessionResponse
-	7,  // 18: overlord.v1.AdapterPluginService.Execute:output_type -> overlord.v1.ExecuteEvent
-	12, // 19: overlord.v1.AdapterPluginService.Permit:output_type -> overlord.v1.PermitResponse
-	14, // 20: overlord.v1.AdapterPluginService.CloseSession:output_type -> overlord.v1.CloseSessionResponse
-	16, // [16:21] is the sub-list for method output_type
-	11, // [11:16] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	19, // 10: overlord.v1.ExecuteResult.outputs:type_name -> overlord.v1.ExecuteResult.OutputsEntry
+	1,  // 11: overlord.v1.AdapterSchemaProto.FieldsEntry.value:type_name -> overlord.v1.ConfigFieldProto
+	0,  // 12: overlord.v1.AdapterPluginService.Info:input_type -> overlord.v1.InfoRequest
+	4,  // 13: overlord.v1.AdapterPluginService.OpenSession:input_type -> overlord.v1.OpenSessionRequest
+	6,  // 14: overlord.v1.AdapterPluginService.Execute:input_type -> overlord.v1.ExecuteRequest
+	11, // 15: overlord.v1.AdapterPluginService.Permit:input_type -> overlord.v1.PermitRequest
+	13, // 16: overlord.v1.AdapterPluginService.CloseSession:input_type -> overlord.v1.CloseSessionRequest
+	3,  // 17: overlord.v1.AdapterPluginService.Info:output_type -> overlord.v1.InfoResponse
+	5,  // 18: overlord.v1.AdapterPluginService.OpenSession:output_type -> overlord.v1.OpenSessionResponse
+	7,  // 19: overlord.v1.AdapterPluginService.Execute:output_type -> overlord.v1.ExecuteEvent
+	12, // 20: overlord.v1.AdapterPluginService.Permit:output_type -> overlord.v1.PermitResponse
+	14, // 21: overlord.v1.AdapterPluginService.CloseSession:output_type -> overlord.v1.CloseSessionResponse
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_adapter_plugin_proto_init() }
@@ -1006,7 +1020,7 @@ func file_overlord_v1_adapter_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_adapter_plugin_proto_rawDesc), len(file_overlord_v1_adapter_plugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   19,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

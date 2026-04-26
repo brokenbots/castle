@@ -109,12 +109,12 @@ func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 }
 
 func (s *Store) GetRun(ctx context.Context, id string) (*store.Run, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at FROM runs WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope FROM runs WHERE id=?`, id)
 	return scanRun(row.Scan)
 }
 
 func (s *Store) ListRuns(ctx context.Context, overseerID, status string) ([]*store.Run, error) {
-	q := `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at FROM runs WHERE 1=1`
+	q := `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope FROM runs WHERE 1=1`
 	args := []any{}
 	if overseerID != "" {
 		q += ` AND overseer_id=?`
@@ -145,7 +145,8 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var r store.Run
 	var created string
 	var ended sql.NullString
-	err := scan(&r.ID, &r.OverseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended)
+	var variableScope sql.NullString
+	err := scan(&r.ID, &r.OverseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -156,6 +157,9 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	if ended.Valid {
 		t, _ := time.Parse(tsLayout, ended.String)
 		r.EndedAt = &t
+	}
+	if variableScope.Valid {
+		r.VariableScope = variableScope.String
 	}
 	return &r, nil
 }
@@ -169,6 +173,30 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=? WHERE id=?`,
 		r.Status, r.CurrentStep, r.LastSeq, ended, r.ID)
 	return err
+}
+
+// SetRunVariableScope persists a JSON-encoded variable scope snapshot (W04).
+func (s *Store) SetRunVariableScope(ctx context.Context, runID, scope string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET variable_scope=? WHERE id=?`, scope, runID)
+	return err
+}
+
+// GetRunVariableScope returns the stored variable scope JSON for runID.
+// Returns ("", nil) when the run exists but has no scope yet (NULL column).
+func (s *Store) GetRunVariableScope(ctx context.Context, runID string) (string, error) {
+	var scope sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT variable_scope FROM runs WHERE id=?`, runID).Scan(&scope)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", store.ErrNotFound
+		}
+		return "", err
+	}
+	if !scope.Valid {
+		return "", nil
+	}
+	return scope.String, nil
 }
 
 func (s *Store) AppendEvent(ctx context.Context, env *pb.Envelope) (uint64, bool, error) {

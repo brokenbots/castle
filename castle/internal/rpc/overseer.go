@@ -189,10 +189,11 @@ func (s *OverseerServer) ReattachRun(ctx context.Context, req *connect.Request[p
 	}
 
 	resp := &pb.ReattachRunResponse{
-		Status:      run.Status,
-		CurrentStep: run.CurrentStep,
-		LastSeq:     run.LastSeq,
-		CanResume:   true,
+		Status:        run.Status,
+		CurrentStep:   run.CurrentStep,
+		LastSeq:       run.LastSeq,
+		CanResume:     true,
+		VariableScope: run.VariableScope,
 	}
 	if run.CurrentStep != "" {
 		latest, latestErr := s.Store.GetLatestAttempt(ctx, run.ID, run.CurrentStep)
@@ -252,7 +253,46 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 				"attempt", p.StepResumed.Attempt,
 				"reason", p.StepResumed.Reason)
 		}
+	case *pb.Envelope_VariableSet:
+		// Queue the scope mutation for coalesced persistence (W04).
+		if p.VariableSet == nil {
+			return
+		}
+		name, value := p.VariableSet.Name, p.VariableSet.Value
+		s.scope.Enqueue(env.RunId, func(scope map[string]interface{}) {
+			varMap, _ := scope["var"].(map[string]interface{})
+			if varMap == nil {
+				varMap = map[string]interface{}{}
+			}
+			varMap[name] = value
+			scope["var"] = varMap
+		})
+	case *pb.Envelope_StepOutputCaptured:
+		// Queue step output merge for coalesced persistence (W04).
+		if p.StepOutputCaptured == nil {
+			return
+		}
+		step := p.StepOutputCaptured.Step
+		outputs := make(map[string]string, len(p.StepOutputCaptured.Outputs))
+		for k, v := range p.StepOutputCaptured.Outputs {
+			outputs[k] = v
+		}
+		s.scope.Enqueue(env.RunId, func(scope map[string]interface{}) {
+			stepsMap, _ := scope["steps"].(map[string]interface{})
+			if stepsMap == nil {
+				stepsMap = map[string]interface{}{}
+			}
+			outputMap := make(map[string]interface{}, len(outputs))
+			for k, v := range outputs {
+				outputMap[k] = v
+			}
+			stepsMap[step] = outputMap
+			scope["steps"] = stepsMap
+		})
 	case *pb.Envelope_RunCompleted:
+		// Flush any pending scope mutations before marking the run terminal so
+		// the final scope is available to any post-run readers.
+		s.scope.FlushNow(ctx, env.RunId)
 		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
 			return
@@ -266,6 +306,8 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 		}
 		_ = s.Store.UpdateRun(ctx, run)
 	case *pb.Envelope_RunFailed:
+		// Flush pending scope before marking terminal.
+		s.scope.FlushNow(ctx, env.RunId)
 		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
 			return

@@ -413,6 +413,17 @@ export class ReattachRunResponse extends Message<ReattachRunResponse> {
    */
   canResume = false;
 
+  /**
+   * JSON-encoded variable scope snapshot at the time of the last persisted
+   * StepOutputCaptured or VariableSet event. Empty string means no scope has
+   * been persisted yet. Field is permanent (W04).
+   *
+   * permanent (W04)
+   *
+   * @generated from field: string variable_scope = 6;
+   */
+  variableScope = "";
+
   constructor(data?: PartialMessage<ReattachRunResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -426,6 +437,7 @@ export class ReattachRunResponse extends Message<ReattachRunResponse> {
     { no: 3, name: "attempt", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 4, name: "last_seq", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
     { no: 5, name: "can_resume", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 6, name: "variable_scope", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReattachRunResponse {

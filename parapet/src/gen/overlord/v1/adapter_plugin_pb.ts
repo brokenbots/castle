@@ -532,6 +532,13 @@ export class ExecuteResult extends Message<ExecuteResult> {
    */
   outcome = "";
 
+  /**
+   * permanent (W04)
+   *
+   * @generated from field: map<string, string> outputs = 2;
+   */
+  outputs: { [key: string]: string } = {};
+
   constructor(data?: PartialMessage<ExecuteResult>) {
     super();
     proto3.util.initPartial(data, this);
@@ -541,6 +548,7 @@ export class ExecuteResult extends Message<ExecuteResult> {
   static readonly typeName = "overlord.v1.ExecuteResult";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "outcome", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "outputs", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ExecuteResult {

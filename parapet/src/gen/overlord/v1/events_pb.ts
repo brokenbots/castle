@@ -163,6 +163,22 @@ export class Envelope extends Message<Envelope> {
     case: "stepResumed";
   } | {
     /**
+     * permanent (W04)
+     *
+     * @generated from field: overlord.v1.VariableSet variable_set = 21;
+     */
+    value: VariableSet;
+    case: "variableSet";
+  } | {
+    /**
+     * permanent (W04)
+     *
+     * @generated from field: overlord.v1.StepOutputCaptured step_output_captured = 22;
+     */
+    value: StepOutputCaptured;
+    case: "stepOutputCaptured";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -198,6 +214,8 @@ export class Envelope extends Message<Envelope> {
     { no: 18, name: "overseer_heartbeat", kind: "message", T: OverseerHeartbeat, oneof: "payload" },
     { no: 19, name: "overseer_disconnected", kind: "message", T: OverseerDisconnected, oneof: "payload" },
     { no: 20, name: "step_resumed", kind: "message", T: StepResumed, oneof: "payload" },
+    { no: 21, name: "variable_set", kind: "message", T: VariableSet, oneof: "payload" },
+    { no: 22, name: "step_output_captured", kind: "message", T: StepOutputCaptured, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -799,6 +817,115 @@ export class WatchReady extends Message<WatchReady> {
 
   static equals(a: WatchReady | PlainMessage<WatchReady> | undefined, b: WatchReady | PlainMessage<WatchReady> | undefined): boolean {
     return proto3.util.equals(WatchReady, a, b);
+  }
+}
+
+/**
+ * VariableSet — emitted when a workflow variable value is established.
+ * In W04 this fires at run start for each variable's default value.
+ * All field numbers are permanent.
+ *
+ * @generated from message overlord.v1.VariableSet
+ */
+export class VariableSet extends Message<VariableSet> {
+  /**
+   * permanent
+   *
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * string-rendered cty value for log/UI; permanent
+   *
+   * @generated from field: string value = 2;
+   */
+  value = "";
+
+  /**
+   * "default" | "step_output:<step>"; permanent
+   *
+   * @generated from field: string source = 3;
+   */
+  source = "";
+
+  constructor(data?: PartialMessage<VariableSet>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.VariableSet";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "value", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "source", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): VariableSet {
+    return new VariableSet().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): VariableSet {
+    return new VariableSet().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): VariableSet {
+    return new VariableSet().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: VariableSet | PlainMessage<VariableSet> | undefined, b: VariableSet | PlainMessage<VariableSet> | undefined): boolean {
+    return proto3.util.equals(VariableSet, a, b);
+  }
+}
+
+/**
+ * StepOutputCaptured — emitted after a step completes with captured outputs.
+ * All field numbers are permanent.
+ *
+ * @generated from message overlord.v1.StepOutputCaptured
+ */
+export class StepOutputCaptured extends Message<StepOutputCaptured> {
+  /**
+   * permanent
+   *
+   * @generated from field: string step = 1;
+   */
+  step = "";
+
+  /**
+   * permanent
+   *
+   * @generated from field: map<string, string> outputs = 2;
+   */
+  outputs: { [key: string]: string } = {};
+
+  constructor(data?: PartialMessage<StepOutputCaptured>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.StepOutputCaptured";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "outputs", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StepOutputCaptured {
+    return new StepOutputCaptured().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): StepOutputCaptured {
+    return new StepOutputCaptured().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): StepOutputCaptured {
+    return new StepOutputCaptured().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: StepOutputCaptured | PlainMessage<StepOutputCaptured> | undefined, b: StepOutputCaptured | PlainMessage<StepOutputCaptured> | undefined): boolean {
+    return proto3.util.equals(StepOutputCaptured, a, b);
   }
 }
 
