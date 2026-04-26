@@ -1,4 +1,4 @@
-import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { createSelector, createSlice, PayloadAction } from '@reduxjs/toolkit';
 import type { EventEnvelope } from '../../api/castleApi';
 
 export interface RunsState {
@@ -32,5 +32,31 @@ export const runsSlice = createSlice({
 
 export const selectRunEvents = (runId: string) => (state: { runs: RunsState }) =>
   state.runs.events[runId] ?? EMPTY;
+
+export const selectPauseState = (runId: string) =>
+  createSelector(
+    [(state: { runs: RunsState }) => state.runs.events[runId] ?? EMPTY],
+    (events) => {
+      // Walk events backwards to find the most recent pause-related event
+      for (let i = events.length - 1; i >= 0; i--) {
+        const event = events[i];
+        
+        if (event.type === 'waitEntered') {
+          return { isPaused: true, pauseEvent: event };
+        }
+        
+        if (event.type === 'approvalRequested') {
+          return { isPaused: true, pauseEvent: event };
+        }
+        
+        // Resume events clear the pause state
+        if (event.type === 'waitResumed' || event.type === 'approvalDecision') {
+          return { isPaused: false, pauseEvent: null };
+        }
+      }
+      
+      return { isPaused: false, pauseEvent: null };
+    }
+  );
 
 const EMPTY: EventEnvelope[] = [];

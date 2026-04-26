@@ -1,6 +1,7 @@
 import { createPromiseClient, Interceptor, PromiseClient } from '@connectrpc/connect';
 import { createConnectTransport } from '@connectrpc/connect-web';
 import { CastleService } from '../gen/overlord/v1/castle_connect';
+import { OverseerService } from '../gen/overlord/v1/overseer_connect';
 import { getAuthToken } from '../authToken';
 
 declare global {
@@ -49,5 +50,7 @@ export function createCastleTransport(codec: Codec = getRuntimeCodec()) {
 }
 
 export type CastleClient = PromiseClient<typeof CastleService>;
+export type OverseerClient = PromiseClient<typeof OverseerService>;
 
 export const castle: CastleClient = createPromiseClient(CastleService, createCastleTransport());
+export const overseer: OverseerClient = createPromiseClient(OverseerService, createCastleTransport());

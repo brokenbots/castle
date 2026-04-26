@@ -2,7 +2,7 @@ import { createApi } from '@reduxjs/toolkit/query/react';
 import { fakeBaseQuery } from '@reduxjs/toolkit/query';
 import { ConnectError } from '@connectrpc/connect';
 import { Timestamp } from '@bufbuild/protobuf';
-import { castle } from './client';
+import { castle, overseer } from './client';
 import type { Run as PbRun } from '../gen/overlord/v1/overseer_pb';
 import type { Overseer as PbOverseer } from '../gen/overlord/v1/castle_pb';
 import type { Envelope } from '../gen/overlord/v1/events_pb';
@@ -153,6 +153,23 @@ export const castleApi = createApi({
       },
       providesTags: (_r, _e, { runId }) => [{ type: 'Events', id: runId }],
     }),
+    resume: b.mutation<
+      { accepted: boolean; reason: string },
+      { runId: string; signal: string; payload?: Record<string, string> }
+    >({
+      queryFn: async ({ runId, signal, payload = {} }) => {
+        try {
+          const resp = await overseer.resume({ runId, signal, payload });
+          return { data: { accepted: resp.accepted, reason: resp.reason } };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      invalidatesTags: (_r, _e, { runId }) => [
+        { type: 'Run', id: runId },
+        { type: 'Events', id: runId },
+      ],
+    }),
   }),
 });
 
@@ -161,4 +178,5 @@ export const {
   useGetRunQuery,
   useListOverseersQuery,
   useListEventsQuery,
+  useResumeMutation,
 } = castleApi;

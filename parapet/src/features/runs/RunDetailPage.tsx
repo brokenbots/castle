@@ -6,9 +6,14 @@ import {
   useListEventsQuery,
   EventEnvelope,
 } from '../../api/castleApi';
-import { selectRunEvents, runsSlice } from './runsSlice';
+import { selectRunEvents, selectPauseState, runsSlice } from './runsSlice';
 import { subscriberIdForSession } from './subscriberId';
 import { startWatch } from './watchRun';
+import { StatusPill } from './StatusPill';
+import { PauseAffordance } from './eventLog/PauseAffordance';
+import { BranchDecisionEntry } from './eventLog/BranchDecisionEntry';
+import { ForEachStrip } from './eventLog/ForEachStrip';
+import { RunScopePanel } from './scopePanel/RunScopePanel';
 
 function renderPayload(e: EventEnvelope) {
   const p = e.payload as Record<string, unknown> | undefined;
@@ -38,6 +43,7 @@ export function RunDetailPage() {
   const initial = useListEventsQuery({ runId: id });
   const dispatch = useDispatch();
   const live = useSelector(selectRunEvents(id));
+  const pauseState = useSelector(selectPauseState(id));
   const subscriberId = useMemo(() => subscriberIdForSession(), []);
 
   useEffect(() => {
@@ -60,31 +66,70 @@ export function RunDetailPage() {
   const workflowSource = run.data?.workflowHash ?? '';
   const edges = workflowSource ? extractStepGraph(workflowSource) : [];
 
+  // Group events by for_each node
+  const forEachNodes = useMemo(() => {
+    const nodes = new Map<string, EventEnvelope[]>();
+    for (const e of events) {
+      if (e.type === 'forEachEntered' || e.type === 'forEachIteration' || e.type === 'forEachOutcome') {
+        const payload = e.payload as Record<string, unknown> | undefined;
+        const node = (payload?.node as string) ?? '';
+        if (node) {
+          if (!nodes.has(node)) nodes.set(node, []);
+          nodes.get(node)!.push(e);
+        }
+      }
+    }
+    return nodes;
+  }, [events]);
+
   if (run.isLoading) return <p>Loading…</p>;
   if (run.error || !run.data) return <p className="text-rose-400">Run not found.</p>;
 
   return (
     <div className="flex flex-col gap-4">
+      <RunScopePanel events={events} />
       <header>
         <h2 className="text-2xl font-semibold">{run.data.workflowName}</h2>
         <p className="text-sm text-slate-400 font-mono">{run.data.runId}</p>
-        <p className="mt-2 text-sm">
-          <span className="mr-4">status: <span className="font-semibold">{run.data.status}</span></span>
+        <div className="mt-2 flex items-start gap-4">
+          <StatusPill status={run.data.status} pauseEvent={pauseState.pauseEvent} />
           {run.data.finalState && (
-            <span>final: <span className="font-mono">{run.data.finalState}</span></span>
+            <span className="text-sm">
+              final: <span className="font-mono">{run.data.finalState}</span>
+            </span>
           )}
-        </p>
+        </div>
       </header>
+
+      {pauseState.isPaused && pauseState.pauseEvent && (
+        <section>
+          <PauseAffordance runId={id} pauseEvent={pauseState.pauseEvent} />
+        </section>
+      )}
+
+      {forEachNodes.size > 0 && (
+        <section>
+          {Array.from(forEachNodes.entries()).map(([node, nodeEvents]) => (
+            <ForEachStrip key={node} runId={id} events={nodeEvents} />
+          ))}
+        </section>
+      )}
+
       <section>
         <h3 className="text-lg font-semibold mb-2">Events</h3>
         <div className="font-mono text-xs bg-slate-900 rounded p-3 max-h-[60vh] overflow-auto">
-          {events.map((e) => (
-            <div key={e.seq} className="border-b border-slate-800/60 py-1 flex gap-3">
-              <span className="text-slate-500 w-12 shrink-0">#{e.seq}</span>
-              <span className="text-sky-400 w-40 shrink-0">{e.type}</span>
-              <span className="whitespace-pre-wrap break-all">{renderPayload(e)}</span>
-            </div>
-          ))}
+          {events.map((e) => {
+            if (e.type === 'branchEvaluated') {
+              return <BranchDecisionEntry key={e.seq} event={e} />;
+            }
+            return (
+              <div key={e.seq} className="border-b border-slate-800/60 py-1 flex gap-3">
+                <span className="text-slate-500 w-12 shrink-0">#{e.seq}</span>
+                <span className="text-sky-400 w-40 shrink-0">{e.type}</span>
+                <span className="whitespace-pre-wrap break-all">{renderPayload(e)}</span>
+              </div>
+            );
+          })}
         </div>
       </section>
       <section>

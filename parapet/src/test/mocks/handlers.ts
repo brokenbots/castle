@@ -11,6 +11,10 @@ function connectPath(method: string): string {
   return `/overlord.v1.CastleService/${method}`;
 }
 
+function overseerPath(method: string): string {
+  return `/overlord.v1.OverseerService/${method}`;
+}
+
 export const handlers = [
   http.post(connectPath('ListRuns'), () =>
     HttpResponse.json({
@@ -56,4 +60,10 @@ export const handlers = [
       next_page_token: '',
     }),
   ),
+  http.post(overseerPath('Resume'), async () => {
+    return HttpResponse.json({
+      accepted: true,
+      reason: 'ok',
+    });
+  }),
 ];
