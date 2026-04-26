@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strconv"
@@ -326,6 +327,42 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 		if p.BranchEvaluated == nil {
 			return
 		}
+	case *pb.Envelope_ForEachEntered:
+		// Informational event only. Cursor persistence is handled by
+		// ScopeIterCursorSet so Castle does not need to know IterCursor's
+		// schema (W07 split-readiness).
+		if p.ForEachEntered == nil {
+			return
+		}
+	case *pb.Envelope_ForEachIteration:
+		// Informational event only. See ForEachEntered comment above.
+		if p.ForEachIteration == nil {
+			return
+		}
+	case *pb.Envelope_ForEachOutcome:
+		// Informational event only. See ForEachEntered comment above.
+		if p.ForEachOutcome == nil {
+			return
+		}
+	case *pb.Envelope_ScopeIterCursorSet:
+		// Overseer serialises the full IterCursor as opaque JSON and emits this
+		// event whenever the cursor is created, advanced, or cleared. Castle
+		// stores cursor_json verbatim into scope["iter"] without interpreting
+		// field names, preserving 1.6 split independence (W07).
+		if p.ScopeIterCursorSet == nil {
+			return
+		}
+		blob := p.ScopeIterCursorSet.CursorJson
+		s.scope.Enqueue(env.RunId, func(scope map[string]interface{}) {
+			if blob == "" {
+				delete(scope, "iter")
+				return
+			}
+			var iterMap map[string]interface{}
+			if json.Unmarshal([]byte(blob), &iterMap) == nil {
+				scope["iter"] = iterMap
+			}
+		})
 	case *pb.Envelope_RunCompleted:
 		// Flush any pending scope mutations before marking the run terminal so
 		// the final scope is available to any post-run readers.

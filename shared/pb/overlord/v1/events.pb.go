@@ -120,6 +120,10 @@ type Envelope struct {
 	//	*Envelope_ApprovalRequested
 	//	*Envelope_ApprovalDecision
 	//	*Envelope_BranchEvaluated
+	//	*Envelope_ForEachEntered
+	//	*Envelope_ForEachIteration
+	//	*Envelope_ForEachOutcome
+	//	*Envelope_ScopeIterCursorSet
 	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -360,6 +364,42 @@ func (x *Envelope) GetBranchEvaluated() *BranchEvaluated {
 	return nil
 }
 
+func (x *Envelope) GetForEachEntered() *ForEachEntered {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_ForEachEntered); ok {
+			return x.ForEachEntered
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetForEachIteration() *ForEachIteration {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_ForEachIteration); ok {
+			return x.ForEachIteration
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetForEachOutcome() *ForEachOutcome {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_ForEachOutcome); ok {
+			return x.ForEachOutcome
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetScopeIterCursorSet() *ScopeIterCursorSet {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_ScopeIterCursorSet); ok {
+			return x.ScopeIterCursorSet
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetWatchReady() *WatchReady {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
@@ -448,6 +488,28 @@ type Envelope_BranchEvaluated struct {
 	BranchEvaluated *BranchEvaluated `protobuf:"bytes,27,opt,name=branch_evaluated,json=branchEvaluated,proto3,oneof"`
 }
 
+type Envelope_ForEachEntered struct {
+	// ForEach events — emitted by Overseer during for_each node execution (W07).
+	// Overseer-owned events; permanent field numbers.
+	ForEachEntered *ForEachEntered `protobuf:"bytes,28,opt,name=for_each_entered,json=forEachEntered,proto3,oneof"`
+}
+
+type Envelope_ForEachIteration struct {
+	ForEachIteration *ForEachIteration `protobuf:"bytes,29,opt,name=for_each_iteration,json=forEachIteration,proto3,oneof"`
+}
+
+type Envelope_ForEachOutcome struct {
+	ForEachOutcome *ForEachOutcome `protobuf:"bytes,30,opt,name=for_each_outcome,json=forEachOutcome,proto3,oneof"`
+}
+
+type Envelope_ScopeIterCursorSet struct {
+	// ScopeIterCursorSet — emitted by Overseer whenever the for_each iteration
+	// cursor changes. Castle stores cursor_json verbatim into the
+	// runs.variable_scope "iter" field without interpreting its contents,
+	// preserving 1.6 split independence (W07). Permanent field number.
+	ScopeIterCursorSet *ScopeIterCursorSet `protobuf:"bytes,31,opt,name=scope_iter_cursor_set,json=scopeIterCursorSet,proto3,oneof"`
+}
+
 type Envelope_WatchReady struct {
 	// WatchReady is a protocol-level sentinel sent once at the start of a
 	// WatchRun server-stream, after any persisted-event replay, to flush
@@ -491,6 +553,14 @@ func (*Envelope_ApprovalRequested) isEnvelope_Payload() {}
 func (*Envelope_ApprovalDecision) isEnvelope_Payload() {}
 
 func (*Envelope_BranchEvaluated) isEnvelope_Payload() {}
+
+func (*Envelope_ForEachEntered) isEnvelope_Payload() {}
+
+func (*Envelope_ForEachIteration) isEnvelope_Payload() {}
+
+func (*Envelope_ForEachOutcome) isEnvelope_Payload() {}
+
+func (*Envelope_ScopeIterCursorSet) isEnvelope_Payload() {}
 
 func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
@@ -1643,11 +1713,246 @@ func (x *BranchEvaluated) GetCondition() string {
 	return ""
 }
 
+// ForEachEntered — emitted when a for_each node begins iterating (W07).
+// Overseer-owned event; permanent field numbers.
+type ForEachEntered struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`    // for_each node name; permanent
+	Count         int32                  `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"` // number of items; permanent
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForEachEntered) Reset() {
+	*x = ForEachEntered{}
+	mi := &file_overlord_v1_events_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForEachEntered) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForEachEntered) ProtoMessage() {}
+
+func (x *ForEachEntered) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForEachEntered.ProtoReflect.Descriptor instead.
+func (*ForEachEntered) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ForEachEntered) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *ForEachEntered) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+// ForEachIteration — emitted at the start of each per-item iteration (W07).
+// Overseer-owned event; permanent field numbers.
+type ForEachIteration struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`                             // for_each node name; permanent
+	Index         int32                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`                          // zero-based iteration index; permanent
+	Value         string                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`                           // string-rendered cty value of the current item; permanent
+	AnyFailed     bool                   `protobuf:"varint,4,opt,name=any_failed,json=anyFailed,proto3" json:"any_failed,omitempty"` // true if any prior iteration produced a failure outcome; permanent.
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForEachIteration) Reset() {
+	*x = ForEachIteration{}
+	mi := &file_overlord_v1_events_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForEachIteration) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForEachIteration) ProtoMessage() {}
+
+func (x *ForEachIteration) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForEachIteration.ProtoReflect.Descriptor instead.
+func (*ForEachIteration) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ForEachIteration) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *ForEachIteration) GetIndex() int32 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *ForEachIteration) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *ForEachIteration) GetAnyFailed() bool {
+	if x != nil {
+		return x.AnyFailed
+	}
+	return false
+}
+
+// ForEachOutcome — emitted when a for_each node finishes iterating (W07).
+// Overseer-owned event; permanent field numbers.
+type ForEachOutcome struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`       // for_each node name; permanent
+	Outcome       string                 `protobuf:"bytes,2,opt,name=outcome,proto3" json:"outcome,omitempty"` // "all_succeeded" | "any_failed"; permanent
+	Target        string                 `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"`   // transition target node name; permanent
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForEachOutcome) Reset() {
+	*x = ForEachOutcome{}
+	mi := &file_overlord_v1_events_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForEachOutcome) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForEachOutcome) ProtoMessage() {}
+
+func (x *ForEachOutcome) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForEachOutcome.ProtoReflect.Descriptor instead.
+func (*ForEachOutcome) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ForEachOutcome) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *ForEachOutcome) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *ForEachOutcome) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+// ScopeIterCursorSet — emitted by Overseer whenever the for_each iteration
+// cursor is created, advanced, or cleared. cursor_json is the JSON-encoded
+// IterCursor blob; an empty string means the cursor has been cleared.
+// Castle stores this verbatim into the runs.variable_scope "iter" field
+// without parsing it, preserving schema independence at the 1.6 split (W07).
+type ScopeIterCursorSet struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CursorJson    string                 `protobuf:"bytes,1,opt,name=cursor_json,json=cursorJson,proto3" json:"cursor_json,omitempty"` // JSON-encoded IterCursor or "" to clear; permanent
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScopeIterCursorSet) Reset() {
+	*x = ScopeIterCursorSet{}
+	mi := &file_overlord_v1_events_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScopeIterCursorSet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScopeIterCursorSet) ProtoMessage() {}
+
+func (x *ScopeIterCursorSet) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScopeIterCursorSet.ProtoReflect.Descriptor instead.
+func (*ScopeIterCursorSet) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ScopeIterCursorSet) GetCursorJson() string {
+	if x != nil {
+		return x.CursorJson
+	}
+	return ""
+}
+
 var File_overlord_v1_events_proto protoreflect.FileDescriptor
 
 const file_overlord_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\v\n" +
+	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x83\x0e\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -1674,7 +1979,11 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\fwait_resumed\x18\x18 \x01(\v2\x18.overlord.v1.WaitResumedH\x00R\vwaitResumed\x12O\n" +
 	"\x12approval_requested\x18\x19 \x01(\v2\x1e.overlord.v1.ApprovalRequestedH\x00R\x11approvalRequested\x12L\n" +
 	"\x11approval_decision\x18\x1a \x01(\v2\x1d.overlord.v1.ApprovalDecisionH\x00R\x10approvalDecision\x12I\n" +
-	"\x10branch_evaluated\x18\x1b \x01(\v2\x1c.overlord.v1.BranchEvaluatedH\x00R\x0fbranchEvaluated\x12:\n" +
+	"\x10branch_evaluated\x18\x1b \x01(\v2\x1c.overlord.v1.BranchEvaluatedH\x00R\x0fbranchEvaluated\x12G\n" +
+	"\x10for_each_entered\x18\x1c \x01(\v2\x1b.overlord.v1.ForEachEnteredH\x00R\x0eforEachEntered\x12M\n" +
+	"\x12for_each_iteration\x18\x1d \x01(\v2\x1d.overlord.v1.ForEachIterationH\x00R\x10forEachIteration\x12G\n" +
+	"\x10for_each_outcome\x18\x1e \x01(\v2\x1b.overlord.v1.ForEachOutcomeH\x00R\x0eforEachOutcome\x12T\n" +
+	"\x15scope_iter_cursor_set\x18\x1f \x01(\v2\x1f.overlord.v1.ScopeIterCursorSetH\x00R\x12scopeIterCursorSet\x12:\n" +
 	"\vwatch_ready\x18c \x01(\v2\x17.overlord.v1.WatchReadyH\x00R\n" +
 	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
@@ -1766,7 +2075,23 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\vmatched_arm\x18\x02 \x01(\tR\n" +
 	"matchedArm\x12\x16\n" +
 	"\x06target\x18\x03 \x01(\tR\x06target\x12\x1c\n" +
-	"\tcondition\x18\x04 \x01(\tR\tcondition*k\n" +
+	"\tcondition\x18\x04 \x01(\tR\tcondition\":\n" +
+	"\x0eForEachEntered\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\x05R\x05count\"q\n" +
+	"\x10ForEachIteration\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x05R\x05index\x12\x14\n" +
+	"\x05value\x18\x03 \x01(\tR\x05value\x12\x1d\n" +
+	"\n" +
+	"any_failed\x18\x04 \x01(\bR\tanyFailed\"V\n" +
+	"\x0eForEachOutcome\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x18\n" +
+	"\aoutcome\x18\x02 \x01(\tR\aoutcome\x12\x16\n" +
+	"\x06target\x18\x03 \x01(\tR\x06target\"5\n" +
+	"\x12ScopeIterCursorSet\x12\x1f\n" +
+	"\vcursor_json\x18\x01 \x01(\tR\n" +
+	"cursorJson*k\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
@@ -1787,7 +2112,7 @@ func file_overlord_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_overlord_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_overlord_v1_events_proto_goTypes = []any{
 	(LogStream)(0),                // 0: overlord.v1.LogStream
 	(*Envelope)(nil),              // 1: overlord.v1.Envelope
@@ -1810,14 +2135,18 @@ var file_overlord_v1_events_proto_goTypes = []any{
 	(*ApprovalRequested)(nil),     // 18: overlord.v1.ApprovalRequested
 	(*ApprovalDecision)(nil),      // 19: overlord.v1.ApprovalDecision
 	(*BranchEvaluated)(nil),       // 20: overlord.v1.BranchEvaluated
-	nil,                           // 21: overlord.v1.StepOutputCaptured.OutputsEntry
-	nil,                           // 22: overlord.v1.WaitResumed.PayloadEntry
-	nil,                           // 23: overlord.v1.ApprovalDecision.PayloadEntry
-	(*timestamppb.Timestamp)(nil), // 24: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 25: google.protobuf.Struct
+	(*ForEachEntered)(nil),        // 21: overlord.v1.ForEachEntered
+	(*ForEachIteration)(nil),      // 22: overlord.v1.ForEachIteration
+	(*ForEachOutcome)(nil),        // 23: overlord.v1.ForEachOutcome
+	(*ScopeIterCursorSet)(nil),    // 24: overlord.v1.ScopeIterCursorSet
+	nil,                           // 25: overlord.v1.StepOutputCaptured.OutputsEntry
+	nil,                           // 26: overlord.v1.WaitResumed.PayloadEntry
+	nil,                           // 27: overlord.v1.ApprovalDecision.PayloadEntry
+	(*timestamppb.Timestamp)(nil), // 28: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),       // 29: google.protobuf.Struct
 }
 var file_overlord_v1_events_proto_depIdxs = []int32{
-	24, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	28, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: overlord.v1.Envelope.run_started:type_name -> overlord.v1.RunStarted
 	3,  // 2: overlord.v1.Envelope.run_completed:type_name -> overlord.v1.RunCompleted
 	4,  // 3: overlord.v1.Envelope.run_failed:type_name -> overlord.v1.RunFailed
@@ -1836,17 +2165,21 @@ var file_overlord_v1_events_proto_depIdxs = []int32{
 	18, // 16: overlord.v1.Envelope.approval_requested:type_name -> overlord.v1.ApprovalRequested
 	19, // 17: overlord.v1.Envelope.approval_decision:type_name -> overlord.v1.ApprovalDecision
 	20, // 18: overlord.v1.Envelope.branch_evaluated:type_name -> overlord.v1.BranchEvaluated
-	13, // 19: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
-	0,  // 20: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
-	25, // 21: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	21, // 22: overlord.v1.StepOutputCaptured.outputs:type_name -> overlord.v1.StepOutputCaptured.OutputsEntry
-	22, // 23: overlord.v1.WaitResumed.payload:type_name -> overlord.v1.WaitResumed.PayloadEntry
-	23, // 24: overlord.v1.ApprovalDecision.payload:type_name -> overlord.v1.ApprovalDecision.PayloadEntry
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	21, // 19: overlord.v1.Envelope.for_each_entered:type_name -> overlord.v1.ForEachEntered
+	22, // 20: overlord.v1.Envelope.for_each_iteration:type_name -> overlord.v1.ForEachIteration
+	23, // 21: overlord.v1.Envelope.for_each_outcome:type_name -> overlord.v1.ForEachOutcome
+	24, // 22: overlord.v1.Envelope.scope_iter_cursor_set:type_name -> overlord.v1.ScopeIterCursorSet
+	13, // 23: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
+	0,  // 24: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
+	29, // 25: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	25, // 26: overlord.v1.StepOutputCaptured.outputs:type_name -> overlord.v1.StepOutputCaptured.OutputsEntry
+	26, // 27: overlord.v1.WaitResumed.payload:type_name -> overlord.v1.WaitResumed.PayloadEntry
+	27, // 28: overlord.v1.ApprovalDecision.payload:type_name -> overlord.v1.ApprovalDecision.PayloadEntry
+	29, // [29:29] is the sub-list for method output_type
+	29, // [29:29] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_events_proto_init() }
@@ -1873,6 +2206,10 @@ func file_overlord_v1_events_proto_init() {
 		(*Envelope_ApprovalRequested)(nil),
 		(*Envelope_ApprovalDecision)(nil),
 		(*Envelope_BranchEvaluated)(nil),
+		(*Envelope_ForEachEntered)(nil),
+		(*Envelope_ForEachIteration)(nil),
+		(*Envelope_ForEachOutcome)(nil),
+		(*Envelope_ScopeIterCursorSet)(nil),
 		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
@@ -1881,7 +2218,7 @@ func file_overlord_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_events_proto_rawDesc), len(file_overlord_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   23,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

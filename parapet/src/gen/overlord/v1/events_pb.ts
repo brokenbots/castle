@@ -222,6 +222,38 @@ export class Envelope extends Message<Envelope> {
     case: "branchEvaluated";
   } | {
     /**
+     * ForEach events — emitted by Overseer during for_each node execution (W07).
+     * Overseer-owned events; permanent field numbers.
+     *
+     * @generated from field: overlord.v1.ForEachEntered for_each_entered = 28;
+     */
+    value: ForEachEntered;
+    case: "forEachEntered";
+  } | {
+    /**
+     * @generated from field: overlord.v1.ForEachIteration for_each_iteration = 29;
+     */
+    value: ForEachIteration;
+    case: "forEachIteration";
+  } | {
+    /**
+     * @generated from field: overlord.v1.ForEachOutcome for_each_outcome = 30;
+     */
+    value: ForEachOutcome;
+    case: "forEachOutcome";
+  } | {
+    /**
+     * ScopeIterCursorSet — emitted by Overseer whenever the for_each iteration
+     * cursor changes. Castle stores cursor_json verbatim into the
+     * runs.variable_scope "iter" field without interpreting its contents,
+     * preserving 1.6 split independence (W07). Permanent field number.
+     *
+     * @generated from field: overlord.v1.ScopeIterCursorSet scope_iter_cursor_set = 31;
+     */
+    value: ScopeIterCursorSet;
+    case: "scopeIterCursorSet";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -264,6 +296,10 @@ export class Envelope extends Message<Envelope> {
     { no: 25, name: "approval_requested", kind: "message", T: ApprovalRequested, oneof: "payload" },
     { no: 26, name: "approval_decision", kind: "message", T: ApprovalDecision, oneof: "payload" },
     { no: 27, name: "branch_evaluated", kind: "message", T: BranchEvaluated, oneof: "payload" },
+    { no: 28, name: "for_each_entered", kind: "message", T: ForEachEntered, oneof: "payload" },
+    { no: 29, name: "for_each_iteration", kind: "message", T: ForEachIteration, oneof: "payload" },
+    { no: 30, name: "for_each_outcome", kind: "message", T: ForEachOutcome, oneof: "payload" },
+    { no: 31, name: "scope_iter_cursor_set", kind: "message", T: ScopeIterCursorSet, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -1276,6 +1312,225 @@ export class BranchEvaluated extends Message<BranchEvaluated> {
 
   static equals(a: BranchEvaluated | PlainMessage<BranchEvaluated> | undefined, b: BranchEvaluated | PlainMessage<BranchEvaluated> | undefined): boolean {
     return proto3.util.equals(BranchEvaluated, a, b);
+  }
+}
+
+/**
+ * ForEachEntered — emitted when a for_each node begins iterating (W07).
+ * Overseer-owned event; permanent field numbers.
+ *
+ * @generated from message overlord.v1.ForEachEntered
+ */
+export class ForEachEntered extends Message<ForEachEntered> {
+  /**
+   * for_each node name; permanent
+   *
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * number of items; permanent
+   *
+   * @generated from field: int32 count = 2;
+   */
+  count = 0;
+
+  constructor(data?: PartialMessage<ForEachEntered>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ForEachEntered";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ForEachEntered {
+    return new ForEachEntered().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ForEachEntered {
+    return new ForEachEntered().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ForEachEntered {
+    return new ForEachEntered().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ForEachEntered | PlainMessage<ForEachEntered> | undefined, b: ForEachEntered | PlainMessage<ForEachEntered> | undefined): boolean {
+    return proto3.util.equals(ForEachEntered, a, b);
+  }
+}
+
+/**
+ * ForEachIteration — emitted at the start of each per-item iteration (W07).
+ * Overseer-owned event; permanent field numbers.
+ *
+ * @generated from message overlord.v1.ForEachIteration
+ */
+export class ForEachIteration extends Message<ForEachIteration> {
+  /**
+   * for_each node name; permanent
+   *
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * zero-based iteration index; permanent
+   *
+   * @generated from field: int32 index = 2;
+   */
+  index = 0;
+
+  /**
+   * string-rendered cty value of the current item; permanent
+   *
+   * @generated from field: string value = 3;
+   */
+  value = "";
+
+  /**
+   * true if any prior iteration produced a failure outcome; permanent.
+   *
+   * @generated from field: bool any_failed = 4;
+   */
+  anyFailed = false;
+
+  constructor(data?: PartialMessage<ForEachIteration>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ForEachIteration";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "index", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "value", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "any_failed", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ForEachIteration {
+    return new ForEachIteration().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ForEachIteration {
+    return new ForEachIteration().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ForEachIteration {
+    return new ForEachIteration().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ForEachIteration | PlainMessage<ForEachIteration> | undefined, b: ForEachIteration | PlainMessage<ForEachIteration> | undefined): boolean {
+    return proto3.util.equals(ForEachIteration, a, b);
+  }
+}
+
+/**
+ * ForEachOutcome — emitted when a for_each node finishes iterating (W07).
+ * Overseer-owned event; permanent field numbers.
+ *
+ * @generated from message overlord.v1.ForEachOutcome
+ */
+export class ForEachOutcome extends Message<ForEachOutcome> {
+  /**
+   * for_each node name; permanent
+   *
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * "all_succeeded" | "any_failed"; permanent
+   *
+   * @generated from field: string outcome = 2;
+   */
+  outcome = "";
+
+  /**
+   * transition target node name; permanent
+   *
+   * @generated from field: string target = 3;
+   */
+  target = "";
+
+  constructor(data?: PartialMessage<ForEachOutcome>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ForEachOutcome";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "outcome", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "target", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ForEachOutcome {
+    return new ForEachOutcome().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ForEachOutcome {
+    return new ForEachOutcome().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ForEachOutcome {
+    return new ForEachOutcome().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ForEachOutcome | PlainMessage<ForEachOutcome> | undefined, b: ForEachOutcome | PlainMessage<ForEachOutcome> | undefined): boolean {
+    return proto3.util.equals(ForEachOutcome, a, b);
+  }
+}
+
+/**
+ * ScopeIterCursorSet — emitted by Overseer whenever the for_each iteration
+ * cursor is created, advanced, or cleared. cursor_json is the JSON-encoded
+ * IterCursor blob; an empty string means the cursor has been cleared.
+ * Castle stores this verbatim into the runs.variable_scope "iter" field
+ * without parsing it, preserving schema independence at the 1.6 split (W07).
+ *
+ * @generated from message overlord.v1.ScopeIterCursorSet
+ */
+export class ScopeIterCursorSet extends Message<ScopeIterCursorSet> {
+  /**
+   * JSON-encoded IterCursor or "" to clear; permanent
+   *
+   * @generated from field: string cursor_json = 1;
+   */
+  cursorJson = "";
+
+  constructor(data?: PartialMessage<ScopeIterCursorSet>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ScopeIterCursorSet";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "cursor_json", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ScopeIterCursorSet {
+    return new ScopeIterCursorSet().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ScopeIterCursorSet {
+    return new ScopeIterCursorSet().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ScopeIterCursorSet {
+    return new ScopeIterCursorSet().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ScopeIterCursorSet | PlainMessage<ScopeIterCursorSet> | undefined, b: ScopeIterCursorSet | PlainMessage<ScopeIterCursorSet> | undefined): boolean {
+    return proto3.util.equals(ScopeIterCursorSet, a, b);
   }
 }
 
