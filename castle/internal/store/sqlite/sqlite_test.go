@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/shared/events"
@@ -189,12 +191,15 @@ func TestUpsertSubscriberCursor_AdvancesOnly(t *testing.T) {
 	}
 }
 
-// TestEventPayloadRoundTripAllVariants locks in the protojson persistence
-// format across every payload variant that SubmitEvents accepts. Each
-// envelope is appended, read back, and compared with proto.Equal so that
-// a future codec change (e.g. enum naming, struct field emission) is
-// caught by CI instead of by the first operator who reloads a dev DB.
-func TestEventPayloadRoundTripAllVariants(t *testing.T) {
+// TestExhaustive_PayloadRoundTrip enumerates every Envelope.payload oneof arm
+// via protoreflect and verifies that each type round-trips cleanly through
+// AppendEvent → ListEvents (the full SQLite persistence path). This is the
+// sides-3-and-4 drift gate for Castle: adding a new oneof arm to events.proto
+// without updating payloadMessage or unmarshalPayload fails this test.
+//
+// Each arm is exercised with non-zero field values so a codec regression on
+// any field is observable.
+func TestExhaustive_PayloadRoundTrip(t *testing.T) {
 	s := tempStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -205,70 +210,162 @@ func TestEventPayloadRoundTripAllVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adapterData, err := structpb.NewStruct(map[string]any{
-		"nested": map[string]any{"count": 3.0, "label": "ok"},
-		"list":   []any{"a", "b"},
-	})
-	if err != nil {
-		t.Fatalf("structpb: %v", err)
+	oneofs := (&pb.Envelope{}).ProtoReflect().Descriptor().Oneofs()
+	var payloadOO protoreflect.OneofDescriptor
+	for i := 0; i < oneofs.Len(); i++ {
+		if oneofs.Get(i).Name() == "payload" {
+			payloadOO = oneofs.Get(i)
+			break
+		}
+	}
+	if payloadOO == nil {
+		t.Fatal("payload oneof not found in Envelope descriptor")
 	}
 
-	cases := []struct {
-		name    string
-		payload any
-	}{
-		{"run.started", &pb.RunStarted{WorkflowName: "wf", InitialStep: "build"}},
-		{"run.completed", &pb.RunCompleted{FinalState: "done", Success: true}},
-		{"run.failed", &pb.RunFailed{Reason: "boom", Step: "build"}},
-		{"step.entered", &pb.StepEntered{Step: "test", Adapter: "shell", Attempt: 2}},
-		{"step.outcome", &pb.StepOutcome{Step: "test", Outcome: "success", DurationMs: 1234}},
-		{"step.transition", &pb.StepTransition{From: "build", To: "test", ViaOutcome: "success"}},
-		// Non-default enum value guards against a regression where
-		// protojson emits enums by name while legacy code compared
-		// against lowercase strings.
-		{"step.log.stderr", &pb.StepLog{Step: "test", Stream: pb.LogStream_LOG_STREAM_STDERR, Chunk: "warn: x\n"}},
-		{"step.log.agent", &pb.StepLog{Step: "test", Stream: pb.LogStream_LOG_STREAM_AGENT, Chunk: "hi"}},
-		// structpb round-trip: nested object, list, and numeric values
-		// all need to survive the protojson encode/decode pair.
-		{"adapter.event", &pb.AdapterEvent{Step: "test", Kind: "tool_call", Data: adapterData}},
-		{"overseer.heartbeat", &pb.OverseerHeartbeat{OverseerId: "o1"}},
-		{"overseer.disconnected", &pb.OverseerDisconnected{OverseerId: "o1", Reason: "idle"}},
-	}
+	fields := payloadOO.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		armName := string(fd.Name())
 
-	for i, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			env := events.NewEnvelope("r1", tc.payload)
-			if env.Payload == nil {
-				t.Fatalf("payload %T was not wrapped by NewEnvelope", tc.payload)
+		t.Run(armName, func(t *testing.T) {
+			mt, err := protoregistry.GlobalTypes.FindMessageByName(fd.Message().FullName())
+			if err != nil {
+				t.Fatalf("message type %q not registered: %v", fd.Message().FullName(), err)
 			}
-			// Distinct correlation id per case to avoid dedup.
-			env.CorrelationId = tc.name
+			msg := mt.New().Interface()
+			sqlitePopulateMessage(msg.ProtoReflect(), 0)
+
+			env := events.NewEnvelope("r1", msg)
+			if env.Payload == nil {
+				t.Fatalf("NewEnvelope produced nil payload for arm %q", armName)
+			}
+			// Use armName as correlation id to avoid dedup across subtests.
+			env.CorrelationId = armName
+
 			seq, inserted, err := s.AppendEvent(ctx, env)
 			if err != nil {
-				t.Fatalf("append: %v", err)
+				t.Fatalf("AppendEvent: %v", err)
 			}
 			if !inserted {
 				t.Fatalf("expected inserted=true")
 			}
+
 			got, err := s.ListEvents(ctx, "r1", seq-1, 1)
 			if err != nil {
-				t.Fatalf("list: %v", err)
+				t.Fatalf("ListEvents: %v", err)
 			}
 			if len(got) != 1 {
-				t.Fatalf("list len=%d want 1 (case %d)", len(got), i)
+				t.Fatalf("ListEvents returned %d events, want 1", len(got))
 			}
 			back := got[0]
-			// proto.Equal compares the full envelope including the
-			// oneof payload, which is the real contract we care
-			// about for clients.
+
+			// Side 3+4: proto.Equal across the full SQLite persistence path.
 			if !proto.Equal(env, back) {
-				t.Fatalf("round trip mismatch:\nwant: %+v\nback: %+v", env, back)
+				t.Fatalf("round-trip mismatch for arm %q:\nwant: %v\ngot:  %v", armName, env, back)
 			}
 			if events.TypeString(back) != events.TypeString(env) {
-				t.Fatalf("type string drift: want %q got %q", events.TypeString(env), events.TypeString(back))
+				t.Fatalf("TypeString drift for arm %q: want %q got %q",
+					armName, events.TypeString(env), events.TypeString(back))
 			}
 		})
 	}
+}
+
+// sqlitePopulateMessage sets every field in m to a deterministic non-zero
+// value. Duplicated from shared/events/exhaustive_test.go because shared/ and
+// castle/ are separate Go modules and cannot share test helpers directly.
+// depth guards against infinite recursion in self-referential message types.
+func sqlitePopulateMessage(m protoreflect.Message, depth int) {
+	if depth > 3 || sqliteIsWellKnown(m.Descriptor().FullName()) {
+		return
+	}
+	fds := m.Descriptor().Fields()
+	for i := 0; i < fds.Len(); i++ {
+		fd := fds.Get(i)
+		switch {
+		case fd.IsMap():
+			mp := m.Mutable(fd).Map()
+			k := sqliteMapKey(fd.MapKey().Kind())
+			v := sqliteDeterministicValue(fd.MapValue(), m, depth)
+			mp.Set(k, v)
+		case fd.IsList():
+			ls := m.Mutable(fd).List()
+			ls.Append(sqliteDeterministicValue(fd, m, depth))
+		case fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind:
+			sub := m.Mutable(fd).Message()
+			sqlitePopulateMessage(sub, depth+1)
+		default:
+			m.Set(fd, sqliteDeterministicScalar(fd))
+		}
+	}
+}
+
+func sqliteDeterministicValue(fd protoreflect.FieldDescriptor, parent protoreflect.Message, depth int) protoreflect.Value {
+	if fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind {
+		if sqliteIsWellKnown(fd.Message().FullName()) {
+			return parent.NewField(fd)
+		}
+		sub := parent.NewField(fd).Message()
+		sqlitePopulateMessage(sub, depth+1)
+		return protoreflect.ValueOfMessage(sub)
+	}
+	return sqliteDeterministicScalar(fd)
+}
+
+func sqliteDeterministicScalar(fd protoreflect.FieldDescriptor) protoreflect.Value {
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return protoreflect.ValueOfBool(true)
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return protoreflect.ValueOfInt32(1)
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return protoreflect.ValueOfInt64(1)
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		return protoreflect.ValueOfUint32(1)
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return protoreflect.ValueOfUint64(1)
+	case protoreflect.FloatKind:
+		return protoreflect.ValueOfFloat32(1.0)
+	case protoreflect.DoubleKind:
+		return protoreflect.ValueOfFloat64(1.0)
+	case protoreflect.StringKind:
+		return protoreflect.ValueOfString("x")
+	case protoreflect.BytesKind:
+		return protoreflect.ValueOfBytes([]byte("x"))
+	case protoreflect.EnumKind:
+		evs := fd.Enum().Values()
+		for j := 0; j < evs.Len(); j++ {
+			if evs.Get(j).Number() != 0 {
+				return protoreflect.ValueOfEnum(evs.Get(j).Number())
+			}
+		}
+		return protoreflect.ValueOfEnum(evs.Get(0).Number())
+	default:
+		return protoreflect.Value{}
+	}
+}
+
+func sqliteMapKey(k protoreflect.Kind) protoreflect.MapKey {
+	switch k {
+	case protoreflect.StringKind:
+		return protoreflect.ValueOfString("k").MapKey()
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return protoreflect.ValueOfInt32(1).MapKey()
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return protoreflect.ValueOfInt64(1).MapKey()
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		return protoreflect.ValueOfUint32(1).MapKey()
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return protoreflect.ValueOfUint64(1).MapKey()
+	case protoreflect.BoolKind:
+		return protoreflect.ValueOfBool(true).MapKey()
+	default:
+		return protoreflect.ValueOfString("k").MapKey()
+	}
+}
+
+func sqliteIsWellKnown(name protoreflect.FullName) bool {
+	return strings.HasPrefix(string(name), "google.protobuf.")
 }
 
 func TestListEvents_HonorsLimit(t *testing.T) {

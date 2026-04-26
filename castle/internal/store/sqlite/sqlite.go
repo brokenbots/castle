@@ -463,9 +463,14 @@ func scanEventRows(rows *sql.Rows, runID string) ([]*pb.Envelope, error) {
 // marshalPayload serialises the payload message (the concrete value inside
 // env.Payload) as protojson. The envelope's discriminator string lives in the
 // `type` column so the payload blob only needs the inner message.
+// Returns an error for envelopes whose payload arm is not covered by
+// payloadMessage — there is no silent fallback to "{}".
 func marshalPayload(env *pb.Envelope) ([]byte, error) {
 	msg := payloadMessage(env)
 	if msg == nil {
+		if env.Payload != nil {
+			return nil, fmt.Errorf("marshalPayload: unknown payload arm %T", env.Payload)
+		}
 		return []byte(`{}`), nil
 	}
 	return protojson.Marshal(msg)
@@ -529,6 +534,54 @@ func unmarshalPayload(env *pb.Envelope, typ string, payload []byte) error {
 		return unmarshal(&pb.StepResumed{}, func(m proto.Message) {
 			env.Payload = &pb.Envelope_StepResumed{StepResumed: m.(*pb.StepResumed)}
 		})
+	case "watch.ready":
+		return unmarshal(&pb.WatchReady{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_WatchReady{WatchReady: m.(*pb.WatchReady)}
+		})
+	case "variable.set":
+		return unmarshal(&pb.VariableSet{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_VariableSet{VariableSet: m.(*pb.VariableSet)}
+		})
+	case "step.output_captured":
+		return unmarshal(&pb.StepOutputCaptured{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_StepOutputCaptured{StepOutputCaptured: m.(*pb.StepOutputCaptured)}
+		})
+	case "wait.entered":
+		return unmarshal(&pb.WaitEntered{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_WaitEntered{WaitEntered: m.(*pb.WaitEntered)}
+		})
+	case "wait.resumed":
+		return unmarshal(&pb.WaitResumed{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_WaitResumed{WaitResumed: m.(*pb.WaitResumed)}
+		})
+	case "approval.requested":
+		return unmarshal(&pb.ApprovalRequested{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_ApprovalRequested{ApprovalRequested: m.(*pb.ApprovalRequested)}
+		})
+	case "approval.decision":
+		return unmarshal(&pb.ApprovalDecision{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_ApprovalDecision{ApprovalDecision: m.(*pb.ApprovalDecision)}
+		})
+	case "branch.evaluated":
+		return unmarshal(&pb.BranchEvaluated{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_BranchEvaluated{BranchEvaluated: m.(*pb.BranchEvaluated)}
+		})
+	case "for_each.entered":
+		return unmarshal(&pb.ForEachEntered{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_ForEachEntered{ForEachEntered: m.(*pb.ForEachEntered)}
+		})
+	case "for_each.iteration":
+		return unmarshal(&pb.ForEachIteration{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_ForEachIteration{ForEachIteration: m.(*pb.ForEachIteration)}
+		})
+	case "for_each.outcome":
+		return unmarshal(&pb.ForEachOutcome{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_ForEachOutcome{ForEachOutcome: m.(*pb.ForEachOutcome)}
+		})
+	case "scope.iter_cursor_set":
+		return unmarshal(&pb.ScopeIterCursorSet{}, func(m proto.Message) {
+			env.Payload = &pb.Envelope_ScopeIterCursorSet{ScopeIterCursorSet: m.(*pb.ScopeIterCursorSet)}
+		})
 	default:
 		return fmt.Errorf("unknown event type %q", typ)
 	}
@@ -559,6 +612,30 @@ func payloadMessage(env *pb.Envelope) proto.Message {
 		return p.OverseerDisconnected
 	case *pb.Envelope_StepResumed:
 		return p.StepResumed
+	case *pb.Envelope_WatchReady:
+		return p.WatchReady
+	case *pb.Envelope_VariableSet:
+		return p.VariableSet
+	case *pb.Envelope_StepOutputCaptured:
+		return p.StepOutputCaptured
+	case *pb.Envelope_WaitEntered:
+		return p.WaitEntered
+	case *pb.Envelope_WaitResumed:
+		return p.WaitResumed
+	case *pb.Envelope_ApprovalRequested:
+		return p.ApprovalRequested
+	case *pb.Envelope_ApprovalDecision:
+		return p.ApprovalDecision
+	case *pb.Envelope_BranchEvaluated:
+		return p.BranchEvaluated
+	case *pb.Envelope_ForEachEntered:
+		return p.ForEachEntered
+	case *pb.Envelope_ForEachIteration:
+		return p.ForEachIteration
+	case *pb.Envelope_ForEachOutcome:
+		return p.ForEachOutcome
+	case *pb.Envelope_ScopeIterCursorSet:
+		return p.ScopeIterCursorSet
 	default:
 		return nil
 	}
