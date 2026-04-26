@@ -51,6 +51,8 @@ const (
 	// OverseerServiceReattachRunProcedure is the fully-qualified name of the OverseerService's
 	// ReattachRun RPC.
 	OverseerServiceReattachRunProcedure = "/overlord.v1.OverseerService/ReattachRun"
+	// OverseerServiceResumeProcedure is the fully-qualified name of the OverseerService's Resume RPC.
+	OverseerServiceResumeProcedure = "/overlord.v1.OverseerService/Resume"
 	// OverseerServiceSubmitEventsProcedure is the fully-qualified name of the OverseerService's
 	// SubmitEvents RPC.
 	OverseerServiceSubmitEventsProcedure = "/overlord.v1.OverseerService/SubmitEvents"
@@ -73,6 +75,10 @@ type OverseerServiceClient interface {
 	// crash or restart. Castle returns the current status, last active step,
 	// and whether the Overseer may resume execution.
 	ReattachRun(context.Context, *connect.Request[v1.ReattachRunRequest]) (*connect.Response[v1.ReattachRunResponse], error)
+	// Resume delivers a named signal (or an approval decision) to a paused run.
+	// This RPC is SDK contract surface: field names, payload semantics, and
+	// error-reason strings are stable for third-party orchestrators.
+	Resume(context.Context, *connect.Request[v1.ResumeRequest]) (*connect.Response[v1.ResumeResponse], error)
 	// SubmitEvents is a bidirectional stream. The client writes Envelopes and
 	// the server replies with an Ack per persisted envelope (run_id, seq,
 	// correlation_id). On reconnect the client may include `since_seq` in
@@ -119,6 +125,12 @@ func NewOverseerServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(overseerServiceMethods.ByName("ReattachRun")),
 			connect.WithClientOptions(opts...),
 		),
+		resume: connect.NewClient[v1.ResumeRequest, v1.ResumeResponse](
+			httpClient,
+			baseURL+OverseerServiceResumeProcedure,
+			connect.WithSchema(overseerServiceMethods.ByName("Resume")),
+			connect.WithClientOptions(opts...),
+		),
 		submitEvents: connect.NewClient[v1.Envelope, v1.Ack](
 			httpClient,
 			baseURL+OverseerServiceSubmitEventsProcedure,
@@ -140,6 +152,7 @@ type overseerServiceClient struct {
 	heartbeat    *connect.Client[v1.HeartbeatRequest, v1.HeartbeatResponse]
 	createRun    *connect.Client[v1.CreateRunRequest, v1.Run]
 	reattachRun  *connect.Client[v1.ReattachRunRequest, v1.ReattachRunResponse]
+	resume       *connect.Client[v1.ResumeRequest, v1.ResumeResponse]
 	submitEvents *connect.Client[v1.Envelope, v1.Ack]
 	control      *connect.Client[v1.ControlSubscribeRequest, v1.ControlMessage]
 }
@@ -162,6 +175,11 @@ func (c *overseerServiceClient) CreateRun(ctx context.Context, req *connect.Requ
 // ReattachRun calls overlord.v1.OverseerService.ReattachRun.
 func (c *overseerServiceClient) ReattachRun(ctx context.Context, req *connect.Request[v1.ReattachRunRequest]) (*connect.Response[v1.ReattachRunResponse], error) {
 	return c.reattachRun.CallUnary(ctx, req)
+}
+
+// Resume calls overlord.v1.OverseerService.Resume.
+func (c *overseerServiceClient) Resume(ctx context.Context, req *connect.Request[v1.ResumeRequest]) (*connect.Response[v1.ResumeResponse], error) {
+	return c.resume.CallUnary(ctx, req)
 }
 
 // SubmitEvents calls overlord.v1.OverseerService.SubmitEvents.
@@ -189,6 +207,10 @@ type OverseerServiceHandler interface {
 	// crash or restart. Castle returns the current status, last active step,
 	// and whether the Overseer may resume execution.
 	ReattachRun(context.Context, *connect.Request[v1.ReattachRunRequest]) (*connect.Response[v1.ReattachRunResponse], error)
+	// Resume delivers a named signal (or an approval decision) to a paused run.
+	// This RPC is SDK contract surface: field names, payload semantics, and
+	// error-reason strings are stable for third-party orchestrators.
+	Resume(context.Context, *connect.Request[v1.ResumeRequest]) (*connect.Response[v1.ResumeResponse], error)
 	// SubmitEvents is a bidirectional stream. The client writes Envelopes and
 	// the server replies with an Ack per persisted envelope (run_id, seq,
 	// correlation_id). On reconnect the client may include `since_seq` in
@@ -231,6 +253,12 @@ func NewOverseerServiceHandler(svc OverseerServiceHandler, opts ...connect.Handl
 		connect.WithSchema(overseerServiceMethods.ByName("ReattachRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	overseerServiceResumeHandler := connect.NewUnaryHandler(
+		OverseerServiceResumeProcedure,
+		svc.Resume,
+		connect.WithSchema(overseerServiceMethods.ByName("Resume")),
+		connect.WithHandlerOptions(opts...),
+	)
 	overseerServiceSubmitEventsHandler := connect.NewBidiStreamHandler(
 		OverseerServiceSubmitEventsProcedure,
 		svc.SubmitEvents,
@@ -253,6 +281,8 @@ func NewOverseerServiceHandler(svc OverseerServiceHandler, opts ...connect.Handl
 			overseerServiceCreateRunHandler.ServeHTTP(w, r)
 		case OverseerServiceReattachRunProcedure:
 			overseerServiceReattachRunHandler.ServeHTTP(w, r)
+		case OverseerServiceResumeProcedure:
+			overseerServiceResumeHandler.ServeHTTP(w, r)
 		case OverseerServiceSubmitEventsProcedure:
 			overseerServiceSubmitEventsHandler.ServeHTTP(w, r)
 		case OverseerServiceControlProcedure:
@@ -280,6 +310,10 @@ func (UnimplementedOverseerServiceHandler) CreateRun(context.Context, *connect.R
 
 func (UnimplementedOverseerServiceHandler) ReattachRun(context.Context, *connect.Request[v1.ReattachRunRequest]) (*connect.Response[v1.ReattachRunResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("overlord.v1.OverseerService.ReattachRun is not implemented"))
+}
+
+func (UnimplementedOverseerServiceHandler) Resume(context.Context, *connect.Request[v1.ResumeRequest]) (*connect.Response[v1.ResumeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("overlord.v1.OverseerService.Resume is not implemented"))
 }
 
 func (UnimplementedOverseerServiceHandler) SubmitEvents(context.Context, *connect.BidiStream[v1.Envelope, v1.Ack]) error {

@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { Ack, ControlMessage, ControlSubscribeRequest, CreateRunRequest, HeartbeatRequest, HeartbeatResponse, ReattachRunRequest, ReattachRunResponse, RegisterRequest, RegisterResponse, Run } from "./overseer_pb.js";
+import { Ack, ControlMessage, ControlSubscribeRequest, CreateRunRequest, HeartbeatRequest, HeartbeatResponse, ReattachRunRequest, ReattachRunResponse, RegisterRequest, RegisterResponse, ResumeRequest, ResumeResponse, Run } from "./overseer_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 import { Envelope } from "./events_pb.js";
 
@@ -66,6 +66,19 @@ export const OverseerService = {
       name: "ReattachRun",
       I: ReattachRunRequest,
       O: ReattachRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Resume delivers a named signal (or an approval decision) to a paused run.
+     * This RPC is SDK contract surface: field names, payload semantics, and
+     * error-reason strings are stable for third-party orchestrators.
+     *
+     * @generated from rpc overlord.v1.OverseerService.Resume
+     */
+    resume: {
+      name: "Resume",
+      I: ResumeRequest,
+      O: ResumeResponse,
       kind: MethodKind.Unary,
     },
     /**

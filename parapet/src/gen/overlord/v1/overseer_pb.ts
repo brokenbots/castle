@@ -378,7 +378,7 @@ export class ReattachRunRequest extends Message<ReattachRunRequest> {
  */
 export class ReattachRunResponse extends Message<ReattachRunResponse> {
   /**
-   * Current status of the run: "running" | "succeeded" | "failed" | "cancelled".
+   * Current status of the run: "running" | "paused" | "succeeded" | "failed" | "cancelled".
    *
    * @generated from field: string status = 1;
    */
@@ -424,6 +424,18 @@ export class ReattachRunResponse extends Message<ReattachRunResponse> {
    */
   variableScope = "";
 
+  /**
+   * pending_signal is the signal name the run is waiting for when status="paused".
+   * The Overseer must re-enter the wait/approval node with this value set in
+   * RunState so it immediately re-issues ErrPaused (waiting for the signal
+   * to arrive via Resume). Empty when not paused. Permanent (W05).
+   *
+   * permanent (W05)
+   *
+   * @generated from field: string pending_signal = 7;
+   */
+  pendingSignal = "";
+
   constructor(data?: PartialMessage<ReattachRunResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -438,6 +450,7 @@ export class ReattachRunResponse extends Message<ReattachRunResponse> {
     { no: 4, name: "last_seq", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
     { no: 5, name: "can_resume", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 6, name: "variable_scope", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "pending_signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReattachRunResponse {
@@ -549,7 +562,7 @@ export class ControlSubscribeRequest extends Message<ControlSubscribeRequest> {
 }
 
 /**
- * ControlMessage is a command from Castle to a connected Overseer.
+ * ControlMessage is a command from the orchestrator to a connected Overseer.
  *
  * @generated from message overlord.v1.ControlMessage
  */
@@ -582,6 +595,18 @@ export class ControlMessage extends Message<ControlMessage> {
      */
     value: ControlReady;
     case: "controlReady";
+  } | {
+    /**
+     * ResumeRun delivers a resume signal from the orchestrator to the Overseer
+     * that owns the run. The Overseer should re-enter the paused node with the
+     * supplied payload. Permanent (W05).
+     *
+     * permanent (W05)
+     *
+     * @generated from field: overlord.v1.ResumeRun resume_run = 4;
+     */
+    value: ResumeRun;
+    case: "resumeRun";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<ControlMessage>) {
@@ -595,6 +620,7 @@ export class ControlMessage extends Message<ControlMessage> {
     { no: 1, name: "run_cancel", kind: "message", T: RunCancel, oneof: "command" },
     { no: 2, name: "agent_prompt", kind: "message", T: AgentPrompt, oneof: "command" },
     { no: 3, name: "control_ready", kind: "message", T: ControlReady, oneof: "command" },
+    { no: 4, name: "resume_run", kind: "message", T: ResumeRun, oneof: "command" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ControlMessage {
@@ -741,6 +767,170 @@ export class ControlReady extends Message<ControlReady> {
 
   static equals(a: ControlReady | PlainMessage<ControlReady> | undefined, b: ControlReady | PlainMessage<ControlReady> | undefined): boolean {
     return proto3.util.equals(ControlReady, a, b);
+  }
+}
+
+/**
+ * ResumeRun delivers a resume signal from the orchestrator to the Overseer (W05).
+ * The Overseer should re-enter the paused wait/approval node with the supplied
+ * payload and continue execution.
+ *
+ * @generated from message overlord.v1.ResumeRun
+ */
+export class ResumeRun extends Message<ResumeRun> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  /**
+   * signal matches the run's pending_signal; the Overseer should verify this.
+   *
+   * @generated from field: string signal = 2;
+   */
+  signal = "";
+
+  /**
+   * payload carries decision metadata (e.g. {"decision":"approved","actor":"alice"}).
+   *
+   * @generated from field: map<string, string> payload = 3;
+   */
+  payload: { [key: string]: string } = {};
+
+  constructor(data?: PartialMessage<ResumeRun>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ResumeRun";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "payload", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResumeRun {
+    return new ResumeRun().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResumeRun {
+    return new ResumeRun().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResumeRun {
+    return new ResumeRun().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResumeRun | PlainMessage<ResumeRun> | undefined, b: ResumeRun | PlainMessage<ResumeRun> | undefined): boolean {
+    return proto3.util.equals(ResumeRun, a, b);
+  }
+}
+
+/**
+ * ResumeRequest delivers a named signal (or an approval decision) to a paused
+ * run. This message is SDK contract surface: avoid orchestrator-specific names.
+ *
+ * @generated from message overlord.v1.ResumeRequest
+ */
+export class ResumeRequest extends Message<ResumeRequest> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  /**
+   * signal is the name of the pending signal to satisfy. For wait nodes with
+   * signal=<name> this is that signal name. For approval nodes this is the
+   * approval node name.
+   *
+   * @generated from field: string signal = 2;
+   */
+  signal = "";
+
+  /**
+   * payload carries optional key/value metadata.
+   * For approval: payload["decision"] = "approved" | "rejected"
+   *               payload["actor"]    = identity of approver (audit metadata).
+   *
+   * @generated from field: map<string, string> payload = 3;
+   */
+  payload: { [key: string]: string } = {};
+
+  constructor(data?: PartialMessage<ResumeRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ResumeRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "payload", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResumeRequest {
+    return new ResumeRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResumeRequest {
+    return new ResumeRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResumeRequest {
+    return new ResumeRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResumeRequest | PlainMessage<ResumeRequest> | undefined, b: ResumeRequest | PlainMessage<ResumeRequest> | undefined): boolean {
+    return proto3.util.equals(ResumeRequest, a, b);
+  }
+}
+
+/**
+ * ResumeResponse reports whether the Resume RPC was accepted.
+ *
+ * @generated from message overlord.v1.ResumeResponse
+ */
+export class ResumeResponse extends Message<ResumeResponse> {
+  /**
+   * @generated from field: bool accepted = 1;
+   */
+  accepted = false;
+
+  /**
+   * reason is one of: "ok" | "run_not_paused" | "signal_mismatch" | "no_pending_signal"
+   *
+   * @generated from field: string reason = 2;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<ResumeResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ResumeResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "accepted", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResumeResponse {
+    return new ResumeResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResumeResponse {
+    return new ResumeResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResumeResponse {
+    return new ResumeResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResumeResponse | PlainMessage<ResumeResponse> | undefined, b: ResumeResponse | PlainMessage<ResumeResponse> | undefined): boolean {
+    return proto3.util.equals(ResumeResponse, a, b);
   }
 }
 

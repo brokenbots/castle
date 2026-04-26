@@ -41,7 +41,7 @@ type Run struct {
 	OverseerID   string
 	WorkflowName string
 	WorkflowHCL  string
-	Status       string // "pending"|"running"|"succeeded"|"failed"|"awaiting_human"|"cancelled"
+	Status       string // "pending"|"running"|"succeeded"|"failed"|"paused"|"cancelled"
 	CurrentStep  string
 	LastSeq      uint64
 	CreatedAt    time.Time
@@ -49,6 +49,11 @@ type Run struct {
 	// VariableScope holds the JSON-serialised run vars map (W04). Empty string
 	// means the run has no captured variable state yet.
 	VariableScope string
+	// PendingSignal is the signal name the run is waiting for when paused (W05).
+	// Empty when not paused.
+	PendingSignal string
+	// PausedAt records when the run entered the paused state (W05). Nil when not paused.
+	PausedAt *time.Time
 }
 
 // Store is the persistence contract.
@@ -102,6 +107,12 @@ type Store interface {
 	// GetRunVariableScope returns the stored variable scope JSON for runID.
 	// Returns ("", nil) when no scope has been persisted yet.
 	GetRunVariableScope(ctx context.Context, runID string) (string, error)
+
+	// Pause/Resume (W05)
+	// SetRunPaused marks the run as paused with the given pending signal and timestamp.
+	SetRunPaused(ctx context.Context, runID, pendingSignal string, pausedAt time.Time) error
+	// ClearRunPaused clears the pending_signal and paused_at and sets status back to running.
+	ClearRunPaused(ctx context.Context, runID string) error
 
 	Close() error
 }

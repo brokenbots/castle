@@ -115,6 +115,10 @@ type Envelope struct {
 	//	*Envelope_StepResumed
 	//	*Envelope_VariableSet
 	//	*Envelope_StepOutputCaptured
+	//	*Envelope_WaitEntered
+	//	*Envelope_WaitResumed
+	//	*Envelope_ApprovalRequested
+	//	*Envelope_ApprovalDecision
 	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -310,6 +314,42 @@ func (x *Envelope) GetStepOutputCaptured() *StepOutputCaptured {
 	return nil
 }
 
+func (x *Envelope) GetWaitEntered() *WaitEntered {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_WaitEntered); ok {
+			return x.WaitEntered
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetWaitResumed() *WaitResumed {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_WaitResumed); ok {
+			return x.WaitResumed
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetApprovalRequested() *ApprovalRequested {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_ApprovalRequested); ok {
+			return x.ApprovalRequested
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetApprovalDecision() *ApprovalDecision {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_ApprovalDecision); ok {
+			return x.ApprovalDecision
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetWatchReady() *WatchReady {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
@@ -375,6 +415,23 @@ type Envelope_StepOutputCaptured struct {
 	StepOutputCaptured *StepOutputCaptured `protobuf:"bytes,22,opt,name=step_output_captured,json=stepOutputCaptured,proto3,oneof"` // permanent (W04)
 }
 
+type Envelope_WaitEntered struct {
+	// W05 wait/approval events — overseer-emitted; permanent (W05).
+	WaitEntered *WaitEntered `protobuf:"bytes,23,opt,name=wait_entered,json=waitEntered,proto3,oneof"` // permanent (W05)
+}
+
+type Envelope_WaitResumed struct {
+	WaitResumed *WaitResumed `protobuf:"bytes,24,opt,name=wait_resumed,json=waitResumed,proto3,oneof"` // permanent (W05)
+}
+
+type Envelope_ApprovalRequested struct {
+	ApprovalRequested *ApprovalRequested `protobuf:"bytes,25,opt,name=approval_requested,json=approvalRequested,proto3,oneof"` // permanent (W05)
+}
+
+type Envelope_ApprovalDecision struct {
+	ApprovalDecision *ApprovalDecision `protobuf:"bytes,26,opt,name=approval_decision,json=approvalDecision,proto3,oneof"` // permanent (W05)
+}
+
 type Envelope_WatchReady struct {
 	// WatchReady is a protocol-level sentinel sent once at the start of a
 	// WatchRun server-stream, after any persisted-event replay, to flush
@@ -408,6 +465,14 @@ func (*Envelope_StepResumed) isEnvelope_Payload() {}
 func (*Envelope_VariableSet) isEnvelope_Payload() {}
 
 func (*Envelope_StepOutputCaptured) isEnvelope_Payload() {}
+
+func (*Envelope_WaitEntered) isEnvelope_Payload() {}
+
+func (*Envelope_WaitResumed) isEnvelope_Payload() {}
+
+func (*Envelope_ApprovalRequested) isEnvelope_Payload() {}
+
+func (*Envelope_ApprovalDecision) isEnvelope_Payload() {}
 
 func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
@@ -1218,11 +1283,283 @@ func (x *StepOutputCaptured) GetOutputs() map[string]string {
 	return nil
 }
 
+// WaitEntered — emitted when the engine enters a wait node (W05).
+// Overseer-owned event; permanent field numbers.
+type WaitEntered struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	Mode          string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`         // "duration" | "signal"
+	Duration      string                 `protobuf:"bytes,3,opt,name=duration,proto3" json:"duration,omitempty"` // present when mode=duration; e.g. "30s"
+	Signal        string                 `protobuf:"bytes,4,opt,name=signal,proto3" json:"signal,omitempty"`     // present when mode=signal
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WaitEntered) Reset() {
+	*x = WaitEntered{}
+	mi := &file_overlord_v1_events_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WaitEntered) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitEntered) ProtoMessage() {}
+
+func (x *WaitEntered) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitEntered.ProtoReflect.Descriptor instead.
+func (*WaitEntered) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *WaitEntered) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *WaitEntered) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *WaitEntered) GetDuration() string {
+	if x != nil {
+		return x.Duration
+	}
+	return ""
+}
+
+func (x *WaitEntered) GetSignal() string {
+	if x != nil {
+		return x.Signal
+	}
+	return ""
+}
+
+// WaitResumed — emitted when a wait node is satisfied and execution continues (W05).
+// Overseer-owned event; permanent field numbers.
+type WaitResumed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	Mode          string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	Signal        string                 `protobuf:"bytes,3,opt,name=signal,proto3" json:"signal,omitempty"`
+	Payload       map[string]string      `protobuf:"bytes,4,rep,name=payload,proto3" json:"payload,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WaitResumed) Reset() {
+	*x = WaitResumed{}
+	mi := &file_overlord_v1_events_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WaitResumed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitResumed) ProtoMessage() {}
+
+func (x *WaitResumed) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitResumed.ProtoReflect.Descriptor instead.
+func (*WaitResumed) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *WaitResumed) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *WaitResumed) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *WaitResumed) GetSignal() string {
+	if x != nil {
+		return x.Signal
+	}
+	return ""
+}
+
+func (x *WaitResumed) GetPayload() map[string]string {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+// ApprovalRequested — emitted when the engine enters an approval node (W05).
+// Overseer-owned event; permanent field numbers.
+type ApprovalRequested struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	Approvers     []string               `protobuf:"bytes,2,rep,name=approvers,proto3" json:"approvers,omitempty"`
+	Reason        string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApprovalRequested) Reset() {
+	*x = ApprovalRequested{}
+	mi := &file_overlord_v1_events_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApprovalRequested) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApprovalRequested) ProtoMessage() {}
+
+func (x *ApprovalRequested) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApprovalRequested.ProtoReflect.Descriptor instead.
+func (*ApprovalRequested) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ApprovalRequested) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *ApprovalRequested) GetApprovers() []string {
+	if x != nil {
+		return x.Approvers
+	}
+	return nil
+}
+
+func (x *ApprovalRequested) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// ApprovalDecision — emitted when an approval node is resolved via Resume (W05).
+// Overseer-owned event; permanent field numbers.
+type ApprovalDecision struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	Decision      string                 `protobuf:"bytes,2,opt,name=decision,proto3" json:"decision,omitempty"` // "approved" | "rejected"
+	Actor         string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`       // audit metadata; not semantically load-bearing
+	Payload       map[string]string      `protobuf:"bytes,4,rep,name=payload,proto3" json:"payload,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApprovalDecision) Reset() {
+	*x = ApprovalDecision{}
+	mi := &file_overlord_v1_events_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApprovalDecision) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApprovalDecision) ProtoMessage() {}
+
+func (x *ApprovalDecision) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_events_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApprovalDecision.ProtoReflect.Descriptor instead.
+func (*ApprovalDecision) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_events_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ApprovalDecision) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *ApprovalDecision) GetDecision() string {
+	if x != nil {
+		return x.Decision
+	}
+	return ""
+}
+
+func (x *ApprovalDecision) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *ApprovalDecision) GetPayload() map[string]string {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
 var File_overlord_v1_events_proto protoreflect.FileDescriptor
 
 const file_overlord_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe4\b\n" +
+	"\x18overlord/v1/events.proto\x12\voverlord.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x81\v\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -1244,7 +1581,11 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\x15overseer_disconnected\x18\x13 \x01(\v2!.overlord.v1.OverseerDisconnectedH\x00R\x14overseerDisconnected\x12=\n" +
 	"\fstep_resumed\x18\x14 \x01(\v2\x18.overlord.v1.StepResumedH\x00R\vstepResumed\x12=\n" +
 	"\fvariable_set\x18\x15 \x01(\v2\x18.overlord.v1.VariableSetH\x00R\vvariableSet\x12S\n" +
-	"\x14step_output_captured\x18\x16 \x01(\v2\x1f.overlord.v1.StepOutputCapturedH\x00R\x12stepOutputCaptured\x12:\n" +
+	"\x14step_output_captured\x18\x16 \x01(\v2\x1f.overlord.v1.StepOutputCapturedH\x00R\x12stepOutputCaptured\x12=\n" +
+	"\fwait_entered\x18\x17 \x01(\v2\x18.overlord.v1.WaitEnteredH\x00R\vwaitEntered\x12=\n" +
+	"\fwait_resumed\x18\x18 \x01(\v2\x18.overlord.v1.WaitResumedH\x00R\vwaitResumed\x12O\n" +
+	"\x12approval_requested\x18\x19 \x01(\v2\x1e.overlord.v1.ApprovalRequestedH\x00R\x11approvalRequested\x12L\n" +
+	"\x11approval_decision\x18\x1a \x01(\v2\x1d.overlord.v1.ApprovalDecisionH\x00R\x10approvalDecision\x12:\n" +
 	"\vwatch_ready\x18c \x01(\v2\x17.overlord.v1.WatchReadyH\x00R\n" +
 	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
@@ -1305,6 +1646,31 @@ const file_overlord_v1_events_proto_rawDesc = "" +
 	"\aoutputs\x18\x02 \x03(\v2,.overlord.v1.StepOutputCaptured.OutputsEntryR\aoutputs\x1a:\n" +
 	"\fOutputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"i\n" +
+	"\vWaitEntered\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x12\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1a\n" +
+	"\bduration\x18\x03 \x01(\tR\bduration\x12\x16\n" +
+	"\x06signal\x18\x04 \x01(\tR\x06signal\"\xca\x01\n" +
+	"\vWaitResumed\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x12\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
+	"\x06signal\x18\x03 \x01(\tR\x06signal\x12?\n" +
+	"\apayload\x18\x04 \x03(\v2%.overlord.v1.WaitResumed.PayloadEntryR\apayload\x1a:\n" +
+	"\fPayloadEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"]\n" +
+	"\x11ApprovalRequested\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x1c\n" +
+	"\tapprovers\x18\x02 \x03(\tR\tapprovers\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\xda\x01\n" +
+	"\x10ApprovalDecision\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x1a\n" +
+	"\bdecision\x18\x02 \x01(\tR\bdecision\x12\x14\n" +
+	"\x05actor\x18\x03 \x01(\tR\x05actor\x12D\n" +
+	"\apayload\x18\x04 \x03(\v2*.overlord.v1.ApprovalDecision.PayloadEntryR\apayload\x1a:\n" +
+	"\fPayloadEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*k\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
@@ -1326,7 +1692,7 @@ func file_overlord_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_overlord_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_overlord_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_overlord_v1_events_proto_goTypes = []any{
 	(LogStream)(0),                // 0: overlord.v1.LogStream
 	(*Envelope)(nil),              // 1: overlord.v1.Envelope
@@ -1344,12 +1710,18 @@ var file_overlord_v1_events_proto_goTypes = []any{
 	(*WatchReady)(nil),            // 13: overlord.v1.WatchReady
 	(*VariableSet)(nil),           // 14: overlord.v1.VariableSet
 	(*StepOutputCaptured)(nil),    // 15: overlord.v1.StepOutputCaptured
-	nil,                           // 16: overlord.v1.StepOutputCaptured.OutputsEntry
-	(*timestamppb.Timestamp)(nil), // 17: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),       // 18: google.protobuf.Struct
+	(*WaitEntered)(nil),           // 16: overlord.v1.WaitEntered
+	(*WaitResumed)(nil),           // 17: overlord.v1.WaitResumed
+	(*ApprovalRequested)(nil),     // 18: overlord.v1.ApprovalRequested
+	(*ApprovalDecision)(nil),      // 19: overlord.v1.ApprovalDecision
+	nil,                           // 20: overlord.v1.StepOutputCaptured.OutputsEntry
+	nil,                           // 21: overlord.v1.WaitResumed.PayloadEntry
+	nil,                           // 22: overlord.v1.ApprovalDecision.PayloadEntry
+	(*timestamppb.Timestamp)(nil), // 23: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),       // 24: google.protobuf.Struct
 }
 var file_overlord_v1_events_proto_depIdxs = []int32{
-	17, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	23, // 0: overlord.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: overlord.v1.Envelope.run_started:type_name -> overlord.v1.RunStarted
 	3,  // 2: overlord.v1.Envelope.run_completed:type_name -> overlord.v1.RunCompleted
 	4,  // 3: overlord.v1.Envelope.run_failed:type_name -> overlord.v1.RunFailed
@@ -1363,15 +1735,21 @@ var file_overlord_v1_events_proto_depIdxs = []int32{
 	12, // 11: overlord.v1.Envelope.step_resumed:type_name -> overlord.v1.StepResumed
 	14, // 12: overlord.v1.Envelope.variable_set:type_name -> overlord.v1.VariableSet
 	15, // 13: overlord.v1.Envelope.step_output_captured:type_name -> overlord.v1.StepOutputCaptured
-	13, // 14: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
-	0,  // 15: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
-	18, // 16: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	16, // 17: overlord.v1.StepOutputCaptured.outputs:type_name -> overlord.v1.StepOutputCaptured.OutputsEntry
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	16, // 14: overlord.v1.Envelope.wait_entered:type_name -> overlord.v1.WaitEntered
+	17, // 15: overlord.v1.Envelope.wait_resumed:type_name -> overlord.v1.WaitResumed
+	18, // 16: overlord.v1.Envelope.approval_requested:type_name -> overlord.v1.ApprovalRequested
+	19, // 17: overlord.v1.Envelope.approval_decision:type_name -> overlord.v1.ApprovalDecision
+	13, // 18: overlord.v1.Envelope.watch_ready:type_name -> overlord.v1.WatchReady
+	0,  // 19: overlord.v1.StepLog.stream:type_name -> overlord.v1.LogStream
+	24, // 20: overlord.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	20, // 21: overlord.v1.StepOutputCaptured.outputs:type_name -> overlord.v1.StepOutputCaptured.OutputsEntry
+	21, // 22: overlord.v1.WaitResumed.payload:type_name -> overlord.v1.WaitResumed.PayloadEntry
+	22, // 23: overlord.v1.ApprovalDecision.payload:type_name -> overlord.v1.ApprovalDecision.PayloadEntry
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_events_proto_init() }
@@ -1393,6 +1771,10 @@ func file_overlord_v1_events_proto_init() {
 		(*Envelope_StepResumed)(nil),
 		(*Envelope_VariableSet)(nil),
 		(*Envelope_StepOutputCaptured)(nil),
+		(*Envelope_WaitEntered)(nil),
+		(*Envelope_WaitResumed)(nil),
+		(*Envelope_ApprovalRequested)(nil),
+		(*Envelope_ApprovalDecision)(nil),
 		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
@@ -1401,7 +1783,7 @@ func file_overlord_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_events_proto_rawDesc), len(file_overlord_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

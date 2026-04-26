@@ -194,6 +194,7 @@ func (s *OverseerServer) ReattachRun(ctx context.Context, req *connect.Request[p
 		LastSeq:       run.LastSeq,
 		CanResume:     true,
 		VariableScope: run.VariableScope,
+		PendingSignal: run.PendingSignal,
 	}
 	if run.CurrentStep != "" {
 		latest, latestErr := s.Store.GetLatestAttempt(ctx, run.ID, run.CurrentStep)
@@ -289,6 +290,36 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 			stepsMap[step] = outputMap
 			scope["steps"] = stepsMap
 		})
+	case *pb.Envelope_WaitEntered:
+		// Run entered a wait node; mark as paused only for signal-mode waits (W05).
+		// Duration-mode waits do not pause the run; the engine sleeps and resumes
+		// without a control-plane round-trip, so the DB status stays "running".
+		if p.WaitEntered == nil || p.WaitEntered.Signal == "" {
+			return
+		}
+		now := time.Now().UTC()
+		_ = s.Store.SetRunPaused(ctx, env.RunId, p.WaitEntered.Signal, now)
+	case *pb.Envelope_WaitResumed:
+		// Informational: the resume.go handler already called ClearRunPaused before
+		// enqueuing the ResumeRun control message. A second ClearRunPaused here
+		// would race against RunCompleted and could set status="running" after the
+		// run has already succeeded. No-op. (W05/F-04)
+		if p.WaitResumed == nil {
+			return
+		}
+	case *pb.Envelope_ApprovalRequested:
+		// Run entered an approval node; mark as paused with the node name as signal (W05).
+		if p.ApprovalRequested == nil {
+			return
+		}
+		now := time.Now().UTC()
+		_ = s.Store.SetRunPaused(ctx, env.RunId, p.ApprovalRequested.Node, now)
+	case *pb.Envelope_ApprovalDecision:
+		// Informational: same as WaitResumed — resume.go already cleared the pause.
+		// No-op here to avoid the double-clear race with RunCompleted. (W05/F-04)
+		if p.ApprovalDecision == nil {
+			return
+		}
 	case *pb.Envelope_RunCompleted:
 		// Flush any pending scope mutations before marking the run terminal so
 		// the final scope is available to any post-run readers.
@@ -316,6 +347,10 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 		run.EndedAt = &now
 		run.Status = "failed"
 		_ = s.Store.UpdateRun(ctx, run)
+	default:
+		// Log unknown payload types so any drift from the expected set is visible.
+		// This closes TD-14 (silent default in applyRunStatus).
+		s.Log.Debug("applyRunStatus: unhandled payload type", "run_id", env.RunId, "type", events.TypeString(env))
 	}
 }
 

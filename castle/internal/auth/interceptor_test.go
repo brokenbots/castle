@@ -83,6 +83,51 @@ func TestAuthInterceptorExemptions(t *testing.T) {
 	}
 }
 
+// TestAuthInterceptor_CallerIDInjected verifies that AuthInterceptor resolves
+// the caller's overseer ID and injects it into the handler context via
+// CallerOverseerID. This locks in the context-injection contract so future
+// refactors of the interceptor don't silently break run-ownership checks.
+func TestAuthInterceptor_CallerIDInjected(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "auth-id.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Now().UTC()
+	if err := db.CreateOverseer(context.Background(), &store.Overseer{
+		ID: "overseer-xyz", Name: "injected", TokenHash: HashToken("tok-inject"), Status: "online", CreatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedID string
+	h := connect.NewUnaryHandler(
+		overlordv1connect.CastleServiceGetRunProcedure,
+		func(ctx context.Context, _ *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {
+			capturedID = CallerOverseerID(ctx)
+			return connect.NewResponse(&pb.Run{RunId: "r1"}), nil
+		},
+		connect.WithInterceptors(NewInterceptor(db, false)),
+	)
+	mux := http.NewServeMux()
+	mux.Handle(overlordv1connect.CastleServiceGetRunProcedure, h)
+	tsrv := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
+	tsrv.Start()
+	t.Cleanup(tsrv.Close)
+
+	client := connect.NewClient[pb.GetRunRequest, pb.Run](httpClient(), tsrv.URL+overlordv1connect.CastleServiceGetRunProcedure)
+	req := connect.NewRequest(&pb.GetRunRequest{RunId: "r1"})
+	req.Header().Set("Authorization", "Bearer tok-inject")
+	if _, err := client.CallUnary(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	if capturedID != "overseer-xyz" {
+		t.Errorf("expected CallerOverseerID='overseer-xyz', got %q", capturedID)
+	}
+}
+
 func httpClient() *http.Client {
 	return &http.Client{Transport: &http2.Transport{
 		AllowHTTP: true,

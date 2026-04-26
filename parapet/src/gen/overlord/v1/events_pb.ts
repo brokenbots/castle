@@ -179,6 +179,40 @@ export class Envelope extends Message<Envelope> {
     case: "stepOutputCaptured";
   } | {
     /**
+     * W05 wait/approval events — overseer-emitted; permanent (W05).
+     *
+     * permanent (W05)
+     *
+     * @generated from field: overlord.v1.WaitEntered wait_entered = 23;
+     */
+    value: WaitEntered;
+    case: "waitEntered";
+  } | {
+    /**
+     * permanent (W05)
+     *
+     * @generated from field: overlord.v1.WaitResumed wait_resumed = 24;
+     */
+    value: WaitResumed;
+    case: "waitResumed";
+  } | {
+    /**
+     * permanent (W05)
+     *
+     * @generated from field: overlord.v1.ApprovalRequested approval_requested = 25;
+     */
+    value: ApprovalRequested;
+    case: "approvalRequested";
+  } | {
+    /**
+     * permanent (W05)
+     *
+     * @generated from field: overlord.v1.ApprovalDecision approval_decision = 26;
+     */
+    value: ApprovalDecision;
+    case: "approvalDecision";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -216,6 +250,10 @@ export class Envelope extends Message<Envelope> {
     { no: 20, name: "step_resumed", kind: "message", T: StepResumed, oneof: "payload" },
     { no: 21, name: "variable_set", kind: "message", T: VariableSet, oneof: "payload" },
     { no: 22, name: "step_output_captured", kind: "message", T: StepOutputCaptured, oneof: "payload" },
+    { no: 23, name: "wait_entered", kind: "message", T: WaitEntered, oneof: "payload" },
+    { no: 24, name: "wait_resumed", kind: "message", T: WaitResumed, oneof: "payload" },
+    { no: 25, name: "approval_requested", kind: "message", T: ApprovalRequested, oneof: "payload" },
+    { no: 26, name: "approval_decision", kind: "message", T: ApprovalDecision, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -926,6 +964,242 @@ export class StepOutputCaptured extends Message<StepOutputCaptured> {
 
   static equals(a: StepOutputCaptured | PlainMessage<StepOutputCaptured> | undefined, b: StepOutputCaptured | PlainMessage<StepOutputCaptured> | undefined): boolean {
     return proto3.util.equals(StepOutputCaptured, a, b);
+  }
+}
+
+/**
+ * WaitEntered — emitted when the engine enters a wait node (W05).
+ * Overseer-owned event; permanent field numbers.
+ *
+ * @generated from message overlord.v1.WaitEntered
+ */
+export class WaitEntered extends Message<WaitEntered> {
+  /**
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * "duration" | "signal"
+   *
+   * @generated from field: string mode = 2;
+   */
+  mode = "";
+
+  /**
+   * present when mode=duration; e.g. "30s"
+   *
+   * @generated from field: string duration = 3;
+   */
+  duration = "";
+
+  /**
+   * present when mode=signal
+   *
+   * @generated from field: string signal = 4;
+   */
+  signal = "";
+
+  constructor(data?: PartialMessage<WaitEntered>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.WaitEntered";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "mode", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "duration", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WaitEntered {
+    return new WaitEntered().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WaitEntered {
+    return new WaitEntered().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WaitEntered {
+    return new WaitEntered().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WaitEntered | PlainMessage<WaitEntered> | undefined, b: WaitEntered | PlainMessage<WaitEntered> | undefined): boolean {
+    return proto3.util.equals(WaitEntered, a, b);
+  }
+}
+
+/**
+ * WaitResumed — emitted when a wait node is satisfied and execution continues (W05).
+ * Overseer-owned event; permanent field numbers.
+ *
+ * @generated from message overlord.v1.WaitResumed
+ */
+export class WaitResumed extends Message<WaitResumed> {
+  /**
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * @generated from field: string mode = 2;
+   */
+  mode = "";
+
+  /**
+   * @generated from field: string signal = 3;
+   */
+  signal = "";
+
+  /**
+   * @generated from field: map<string, string> payload = 4;
+   */
+  payload: { [key: string]: string } = {};
+
+  constructor(data?: PartialMessage<WaitResumed>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.WaitResumed";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "mode", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "payload", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WaitResumed {
+    return new WaitResumed().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WaitResumed {
+    return new WaitResumed().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WaitResumed {
+    return new WaitResumed().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WaitResumed | PlainMessage<WaitResumed> | undefined, b: WaitResumed | PlainMessage<WaitResumed> | undefined): boolean {
+    return proto3.util.equals(WaitResumed, a, b);
+  }
+}
+
+/**
+ * ApprovalRequested — emitted when the engine enters an approval node (W05).
+ * Overseer-owned event; permanent field numbers.
+ *
+ * @generated from message overlord.v1.ApprovalRequested
+ */
+export class ApprovalRequested extends Message<ApprovalRequested> {
+  /**
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * @generated from field: repeated string approvers = 2;
+   */
+  approvers: string[] = [];
+
+  /**
+   * @generated from field: string reason = 3;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<ApprovalRequested>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ApprovalRequested";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "approvers", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 3, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ApprovalRequested {
+    return new ApprovalRequested().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ApprovalRequested {
+    return new ApprovalRequested().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ApprovalRequested {
+    return new ApprovalRequested().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ApprovalRequested | PlainMessage<ApprovalRequested> | undefined, b: ApprovalRequested | PlainMessage<ApprovalRequested> | undefined): boolean {
+    return proto3.util.equals(ApprovalRequested, a, b);
+  }
+}
+
+/**
+ * ApprovalDecision — emitted when an approval node is resolved via Resume (W05).
+ * Overseer-owned event; permanent field numbers.
+ *
+ * @generated from message overlord.v1.ApprovalDecision
+ */
+export class ApprovalDecision extends Message<ApprovalDecision> {
+  /**
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * "approved" | "rejected"
+   *
+   * @generated from field: string decision = 2;
+   */
+  decision = "";
+
+  /**
+   * audit metadata; not semantically load-bearing
+   *
+   * @generated from field: string actor = 3;
+   */
+  actor = "";
+
+  /**
+   * @generated from field: map<string, string> payload = 4;
+   */
+  payload: { [key: string]: string } = {};
+
+  constructor(data?: PartialMessage<ApprovalDecision>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ApprovalDecision";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "decision", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "actor", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "payload", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ApprovalDecision {
+    return new ApprovalDecision().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ApprovalDecision {
+    return new ApprovalDecision().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ApprovalDecision {
+    return new ApprovalDecision().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ApprovalDecision | PlainMessage<ApprovalDecision> | undefined, b: ApprovalDecision | PlainMessage<ApprovalDecision> | undefined): boolean {
+    return proto3.util.equals(ApprovalDecision, a, b);
   }
 }
 

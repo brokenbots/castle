@@ -61,14 +61,23 @@ func ConstantTimeEqual(token, expectedHash string) bool {
 
 // ValidateToken checks whether token matches any overseer token hash in store.
 func ValidateToken(ctx context.Context, st store.Store, token string) (bool, error) {
-	list, err := st.ListOverseers(ctx)
+	o, err := ResolveToken(ctx, st, token)
 	if err != nil {
 		return false, err
 	}
+	return o != nil, nil
+}
+
+// ResolveToken returns the Overseer whose token matches, or nil if none matches.
+func ResolveToken(ctx context.Context, st store.Store, token string) (*store.Overseer, error) {
+	list, err := st.ListOverseers(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, o := range list {
 		if ConstantTimeEqual(token, o.TokenHash) {
-			return true, nil
+			return o, nil
 		}
 	}
-	return false, nil
+	return nil, nil
 }

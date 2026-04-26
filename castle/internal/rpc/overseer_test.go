@@ -181,3 +181,45 @@ func TestSubmitEventsStream(t *testing.T) {
 		_ = stream.CloseRequest()
 	})
 }
+
+// TestSubmitEvents_DurationWaitDoesNotPause is a DB-layer regression test that
+// confirms a WaitEntered event with Mode="duration" (Signal="") does NOT set
+// the run to "paused". Previously the WaitEntered handler lacked the Signal
+// guard and would call SetRunPaused unconditionally, breaking duration waits.
+func TestSubmitEvents_DurationWaitDoesNotPause(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, _ := ts.startServer(t)
+	overseerID, token := mustRegister(t, oClient)
+
+	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf", WorkflowHash: "hash"})
+	createReq.Header().Set("Authorization", "Bearer "+token)
+	runResp, err := oClient.CreateRun(context.Background(), createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := runResp.Msg.RunId
+
+	stream := oClient.SubmitEvents(context.Background())
+	stream.RequestHeader().Set("Authorization", "Bearer "+token)
+	if err := stream.Send(&pb.Envelope{
+		SchemaVersion: int32(events.SchemaVersion),
+		RunId:         runID,
+		CorrelationId: "dur-1",
+		Ts:            timestamppb.Now(),
+		Payload:       &pb.Envelope_WaitEntered{WaitEntered: &pb.WaitEntered{Node: "pause", Mode: "duration", Duration: "30s", Signal: ""}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Receive(); err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.CloseRequest()
+
+	run, err := ts.store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status == "paused" {
+		t.Errorf("duration-mode WaitEntered must not set run status to paused, got %q", run.Status)
+	}
+}

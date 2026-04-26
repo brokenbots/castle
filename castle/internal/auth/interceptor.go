@@ -12,6 +12,16 @@ import (
 	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
 )
 
+// callerOverseerIDKey is the context key for the authenticated caller's overseer ID.
+type callerOverseerIDKey struct{}
+
+// CallerOverseerID returns the overseer ID injected by AuthInterceptor, or ""
+// if the request was not authenticated (e.g. exempt procedures).
+func CallerOverseerID(ctx context.Context) string {
+	v, _ := ctx.Value(callerOverseerIDKey{}).(string)
+	return v
+}
+
 var readOnlyCastleProcedures = map[string]struct{}{
 	overlordv1connect.CastleServiceListOverseersProcedure: {},
 	overlordv1connect.CastleServiceGetOverseerProcedure:   {},
@@ -36,10 +46,11 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if i.isExempt(req.Spec().Procedure) {
 			return next(ctx, req)
 		}
-		if err := i.authenticateHeaders(ctx, req.Header()); err != nil {
+		newCtx, err := i.authenticateHeaders(ctx, req.Header())
+		if err != nil {
 			return nil, err
 		}
-		return next(ctx, req)
+		return next(newCtx, req)
 	}
 }
 
@@ -52,26 +63,29 @@ func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 		if i.isExempt(conn.Spec().Procedure) {
 			return next(ctx, conn)
 		}
-		if err := i.authenticateHeaders(ctx, conn.RequestHeader()); err != nil {
+		newCtx, err := i.authenticateHeaders(ctx, conn.RequestHeader())
+		if err != nil {
 			return err
 		}
-		return next(ctx, conn)
+		return next(newCtx, conn)
 	}
 }
 
-func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header) error {
+// authenticateHeaders validates the token and returns a context with the
+// caller's overseer ID injected.
+func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header) (context.Context, error) {
 	tok, ok := TokenFromHeaders(h)
 	if !ok {
-		return connect.NewError(connect.CodeUnauthenticated, errors.New("missing token"))
+		return ctx, connect.NewError(connect.CodeUnauthenticated, errors.New("missing token"))
 	}
-	valid, err := ValidateToken(ctx, i.store, tok)
+	o, err := ResolveToken(ctx, i.store, tok)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return ctx, connect.NewError(connect.CodeInternal, err)
 	}
-	if !valid {
-		return connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token"))
+	if o == nil {
+		return ctx, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token"))
 	}
-	return nil
+	return context.WithValue(ctx, callerOverseerIDKey{}, o.ID), nil
 }
 
 func (i *AuthInterceptor) isExempt(procedure string) bool {

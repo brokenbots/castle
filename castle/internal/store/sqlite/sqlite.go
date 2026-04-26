@@ -109,12 +109,12 @@ func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 }
 
 func (s *Store) GetRun(ctx context.Context, id string) (*store.Run, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope FROM runs WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at FROM runs WHERE id=?`, id)
 	return scanRun(row.Scan)
 }
 
 func (s *Store) ListRuns(ctx context.Context, overseerID, status string) ([]*store.Run, error) {
-	q := `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope FROM runs WHERE 1=1`
+	q := `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at FROM runs WHERE 1=1`
 	args := []any{}
 	if overseerID != "" {
 		q += ` AND overseer_id=?`
@@ -146,7 +146,9 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var created string
 	var ended sql.NullString
 	var variableScope sql.NullString
-	err := scan(&r.ID, &r.OverseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope)
+	var pendingSignal sql.NullString
+	var pausedAt sql.NullString
+	err := scan(&r.ID, &r.OverseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -160,6 +162,13 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	}
 	if variableScope.Valid {
 		r.VariableScope = variableScope.String
+	}
+	if pendingSignal.Valid {
+		r.PendingSignal = pendingSignal.String
+	}
+	if pausedAt.Valid {
+		t, _ := time.Parse(tsLayout, pausedAt.String)
+		r.PausedAt = &t
 	}
 	return &r, nil
 }
@@ -197,6 +206,21 @@ func (s *Store) GetRunVariableScope(ctx context.Context, runID string) (string, 
 		return "", nil
 	}
 	return scope.String, nil
+}
+
+// SetRunPaused marks a run as paused with the given pending signal (W05).
+func (s *Store) SetRunPaused(ctx context.Context, runID, pendingSignal string, pausedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status='paused', pending_signal=?, paused_at=? WHERE id=?`,
+		pendingSignal, pausedAt.Format(tsLayout), runID)
+	return err
+}
+
+// ClearRunPaused clears the pause state and sets status back to running (W05).
+func (s *Store) ClearRunPaused(ctx context.Context, runID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status='running', pending_signal=NULL, paused_at=NULL WHERE id=?`, runID)
+	return err
 }
 
 func (s *Store) AppendEvent(ctx context.Context, env *pb.Envelope) (uint64, bool, error) {
