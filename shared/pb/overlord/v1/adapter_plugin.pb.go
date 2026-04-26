@@ -57,18 +57,131 @@ func (*InfoRequest) Descriptor() ([]byte, []int) {
 	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{0}
 }
 
+// ConfigFieldProto describes a single field in an adapter's config or input schema.
+// Added in W02; all field numbers are permanent.
+type ConfigFieldProto struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Required bool                   `protobuf:"varint,1,opt,name=required,proto3" json:"required,omitempty"` // permanent
+	// type is one of: "string", "number", "bool", "list_string"
+	Type          string `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"` // permanent
+	Doc           string `protobuf:"bytes,3,opt,name=doc,proto3" json:"doc,omitempty"`   // permanent
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigFieldProto) Reset() {
+	*x = ConfigFieldProto{}
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigFieldProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigFieldProto) ProtoMessage() {}
+
+func (x *ConfigFieldProto) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigFieldProto.ProtoReflect.Descriptor instead.
+func (*ConfigFieldProto) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ConfigFieldProto) GetRequired() bool {
+	if x != nil {
+		return x.Required
+	}
+	return false
+}
+
+func (x *ConfigFieldProto) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *ConfigFieldProto) GetDoc() string {
+	if x != nil {
+		return x.Doc
+	}
+	return ""
+}
+
+// AdapterSchemaProto holds a named set of config fields for schema validation.
+// Added in W02; all field numbers are permanent.
+type AdapterSchemaProto struct {
+	state         protoimpl.MessageState       `protogen:"open.v1"`
+	Fields        map[string]*ConfigFieldProto `protobuf:"bytes,1,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // permanent
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdapterSchemaProto) Reset() {
+	*x = AdapterSchemaProto{}
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdapterSchemaProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdapterSchemaProto) ProtoMessage() {}
+
+func (x *AdapterSchemaProto) ProtoReflect() protoreflect.Message {
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdapterSchemaProto.ProtoReflect.Descriptor instead.
+func (*AdapterSchemaProto) Descriptor() ([]byte, []int) {
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *AdapterSchemaProto) GetFields() map[string]*ConfigFieldProto {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
 type InfoResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                 // permanent
-	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`           // permanent
-	Capabilities  []string               `protobuf:"bytes,3,rep,name=capabilities,proto3" json:"capabilities,omitempty"` // permanent
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Name         string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                 // permanent
+	Version      string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`           // permanent
+	Capabilities []string               `protobuf:"bytes,3,rep,name=capabilities,proto3" json:"capabilities,omitempty"` // permanent
+	// config_schema and input_schema were added in W02. Legacy plugins that do
+	// not return these fields will be treated as permissive (any keys accepted).
+	ConfigSchema  *AdapterSchemaProto `protobuf:"bytes,4,opt,name=config_schema,json=configSchema,proto3" json:"config_schema,omitempty"` // permanent (W02)
+	InputSchema   *AdapterSchemaProto `protobuf:"bytes,5,opt,name=input_schema,json=inputSchema,proto3" json:"input_schema,omitempty"`    // permanent (W02)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *InfoResponse) Reset() {
 	*x = InfoResponse{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[1]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -80,7 +193,7 @@ func (x *InfoResponse) String() string {
 func (*InfoResponse) ProtoMessage() {}
 
 func (x *InfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[1]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -93,7 +206,7 @@ func (x *InfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoResponse.ProtoReflect.Descriptor instead.
 func (*InfoResponse) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{1}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *InfoResponse) GetName() string {
@@ -117,6 +230,20 @@ func (x *InfoResponse) GetCapabilities() []string {
 	return nil
 }
 
+func (x *InfoResponse) GetConfigSchema() *AdapterSchemaProto {
+	if x != nil {
+		return x.ConfigSchema
+	}
+	return nil
+}
+
+func (x *InfoResponse) GetInputSchema() *AdapterSchemaProto {
+	if x != nil {
+		return x.InputSchema
+	}
+	return nil
+}
+
 type OpenSessionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`                                                    // permanent
@@ -127,7 +254,7 @@ type OpenSessionRequest struct {
 
 func (x *OpenSessionRequest) Reset() {
 	*x = OpenSessionRequest{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[2]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -139,7 +266,7 @@ func (x *OpenSessionRequest) String() string {
 func (*OpenSessionRequest) ProtoMessage() {}
 
 func (x *OpenSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[2]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -152,7 +279,7 @@ func (x *OpenSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenSessionRequest.ProtoReflect.Descriptor instead.
 func (*OpenSessionRequest) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{2}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *OpenSessionRequest) GetSessionId() string {
@@ -177,7 +304,7 @@ type OpenSessionResponse struct {
 
 func (x *OpenSessionResponse) Reset() {
 	*x = OpenSessionResponse{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[3]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -189,7 +316,7 @@ func (x *OpenSessionResponse) String() string {
 func (*OpenSessionResponse) ProtoMessage() {}
 
 func (x *OpenSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[3]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -202,7 +329,7 @@ func (x *OpenSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenSessionResponse.ProtoReflect.Descriptor instead.
 func (*OpenSessionResponse) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{3}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{5}
 }
 
 type ExecuteRequest struct {
@@ -216,7 +343,7 @@ type ExecuteRequest struct {
 
 func (x *ExecuteRequest) Reset() {
 	*x = ExecuteRequest{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[4]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -228,7 +355,7 @@ func (x *ExecuteRequest) String() string {
 func (*ExecuteRequest) ProtoMessage() {}
 
 func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[4]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -241,7 +368,7 @@ func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteRequest) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{4}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ExecuteRequest) GetSessionId() string {
@@ -280,7 +407,7 @@ type ExecuteEvent struct {
 
 func (x *ExecuteEvent) Reset() {
 	*x = ExecuteEvent{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[5]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -292,7 +419,7 @@ func (x *ExecuteEvent) String() string {
 func (*ExecuteEvent) ProtoMessage() {}
 
 func (x *ExecuteEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[5]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -305,7 +432,7 @@ func (x *ExecuteEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteEvent.ProtoReflect.Descriptor instead.
 func (*ExecuteEvent) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{5}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ExecuteEvent) GetEvent() isExecuteEvent_Event {
@@ -389,7 +516,7 @@ type LogEvent struct {
 
 func (x *LogEvent) Reset() {
 	*x = LogEvent{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[6]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -401,7 +528,7 @@ func (x *LogEvent) String() string {
 func (*LogEvent) ProtoMessage() {}
 
 func (x *LogEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[6]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -414,7 +541,7 @@ func (x *LogEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogEvent.ProtoReflect.Descriptor instead.
 func (*LogEvent) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{6}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *LogEvent) GetStream() string {
@@ -442,7 +569,7 @@ type PermissionRequest struct {
 
 func (x *PermissionRequest) Reset() {
 	*x = PermissionRequest{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[7]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -454,7 +581,7 @@ func (x *PermissionRequest) String() string {
 func (*PermissionRequest) ProtoMessage() {}
 
 func (x *PermissionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[7]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -467,7 +594,7 @@ func (x *PermissionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PermissionRequest.ProtoReflect.Descriptor instead.
 func (*PermissionRequest) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{7}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PermissionRequest) GetId() string {
@@ -500,7 +627,7 @@ type ExecuteResult struct {
 
 func (x *ExecuteResult) Reset() {
 	*x = ExecuteResult{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[8]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -512,7 +639,7 @@ func (x *ExecuteResult) String() string {
 func (*ExecuteResult) ProtoMessage() {}
 
 func (x *ExecuteResult) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[8]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -525,7 +652,7 @@ func (x *ExecuteResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteResult.ProtoReflect.Descriptor instead.
 func (*ExecuteResult) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{8}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ExecuteResult) GetOutcome() string {
@@ -547,7 +674,7 @@ type PermitRequest struct {
 
 func (x *PermitRequest) Reset() {
 	*x = PermitRequest{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[9]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -559,7 +686,7 @@ func (x *PermitRequest) String() string {
 func (*PermitRequest) ProtoMessage() {}
 
 func (x *PermitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[9]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -572,7 +699,7 @@ func (x *PermitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PermitRequest.ProtoReflect.Descriptor instead.
 func (*PermitRequest) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{9}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PermitRequest) GetSessionId() string {
@@ -611,7 +738,7 @@ type PermitResponse struct {
 
 func (x *PermitResponse) Reset() {
 	*x = PermitResponse{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[10]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -623,7 +750,7 @@ func (x *PermitResponse) String() string {
 func (*PermitResponse) ProtoMessage() {}
 
 func (x *PermitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[10]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -636,7 +763,7 @@ func (x *PermitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PermitResponse.ProtoReflect.Descriptor instead.
 func (*PermitResponse) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{10}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{12}
 }
 
 type CloseSessionRequest struct {
@@ -648,7 +775,7 @@ type CloseSessionRequest struct {
 
 func (x *CloseSessionRequest) Reset() {
 	*x = CloseSessionRequest{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[11]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -660,7 +787,7 @@ func (x *CloseSessionRequest) String() string {
 func (*CloseSessionRequest) ProtoMessage() {}
 
 func (x *CloseSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[11]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -673,7 +800,7 @@ func (x *CloseSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseSessionRequest.ProtoReflect.Descriptor instead.
 func (*CloseSessionRequest) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{11}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CloseSessionRequest) GetSessionId() string {
@@ -691,7 +818,7 @@ type CloseSessionResponse struct {
 
 func (x *CloseSessionResponse) Reset() {
 	*x = CloseSessionResponse{}
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[12]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -703,7 +830,7 @@ func (x *CloseSessionResponse) String() string {
 func (*CloseSessionResponse) ProtoMessage() {}
 
 func (x *CloseSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[12]
+	mi := &file_overlord_v1_adapter_plugin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -716,7 +843,7 @@ func (x *CloseSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseSessionResponse.ProtoReflect.Descriptor instead.
 func (*CloseSessionResponse) Descriptor() ([]byte, []int) {
-	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{12}
+	return file_overlord_v1_adapter_plugin_proto_rawDescGZIP(), []int{14}
 }
 
 var File_overlord_v1_adapter_plugin_proto protoreflect.FileDescriptor
@@ -724,11 +851,22 @@ var File_overlord_v1_adapter_plugin_proto protoreflect.FileDescriptor
 const file_overlord_v1_adapter_plugin_proto_rawDesc = "" +
 	"\n" +
 	" overlord/v1/adapter_plugin.proto\x12\voverlord.v1\x1a\x18overlord/v1/events.proto\"\r\n" +
-	"\vInfoRequest\"`\n" +
+	"\vInfoRequest\"T\n" +
+	"\x10ConfigFieldProto\x12\x1a\n" +
+	"\brequired\x18\x01 \x01(\bR\brequired\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12\x10\n" +
+	"\x03doc\x18\x03 \x01(\tR\x03doc\"\xb3\x01\n" +
+	"\x12AdapterSchemaProto\x12C\n" +
+	"\x06fields\x18\x01 \x03(\v2+.overlord.v1.AdapterSchemaProto.FieldsEntryR\x06fields\x1aX\n" +
+	"\vFieldsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x123\n" +
+	"\x05value\x18\x02 \x01(\v2\x1d.overlord.v1.ConfigFieldProtoR\x05value:\x028\x01\"\xea\x01\n" +
 	"\fInfoResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
-	"\fcapabilities\x18\x03 \x03(\tR\fcapabilities\"\xb3\x01\n" +
+	"\fcapabilities\x18\x03 \x03(\tR\fcapabilities\x12D\n" +
+	"\rconfig_schema\x18\x04 \x01(\v2\x1f.overlord.v1.AdapterSchemaProtoR\fconfigSchema\x12B\n" +
+	"\finput_schema\x18\x05 \x01(\v2\x1f.overlord.v1.AdapterSchemaProtoR\vinputSchema\"\xb3\x01\n" +
 	"\x12OpenSessionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12C\n" +
@@ -798,49 +936,56 @@ func file_overlord_v1_adapter_plugin_proto_rawDescGZIP() []byte {
 	return file_overlord_v1_adapter_plugin_proto_rawDescData
 }
 
-var file_overlord_v1_adapter_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_overlord_v1_adapter_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_overlord_v1_adapter_plugin_proto_goTypes = []any{
 	(*InfoRequest)(nil),          // 0: overlord.v1.InfoRequest
-	(*InfoResponse)(nil),         // 1: overlord.v1.InfoResponse
-	(*OpenSessionRequest)(nil),   // 2: overlord.v1.OpenSessionRequest
-	(*OpenSessionResponse)(nil),  // 3: overlord.v1.OpenSessionResponse
-	(*ExecuteRequest)(nil),       // 4: overlord.v1.ExecuteRequest
-	(*ExecuteEvent)(nil),         // 5: overlord.v1.ExecuteEvent
-	(*LogEvent)(nil),             // 6: overlord.v1.LogEvent
-	(*PermissionRequest)(nil),    // 7: overlord.v1.PermissionRequest
-	(*ExecuteResult)(nil),        // 8: overlord.v1.ExecuteResult
-	(*PermitRequest)(nil),        // 9: overlord.v1.PermitRequest
-	(*PermitResponse)(nil),       // 10: overlord.v1.PermitResponse
-	(*CloseSessionRequest)(nil),  // 11: overlord.v1.CloseSessionRequest
-	(*CloseSessionResponse)(nil), // 12: overlord.v1.CloseSessionResponse
-	nil,                          // 13: overlord.v1.OpenSessionRequest.ConfigEntry
-	nil,                          // 14: overlord.v1.ExecuteRequest.ConfigEntry
-	nil,                          // 15: overlord.v1.PermissionRequest.DetailsEntry
-	(*AdapterEvent)(nil),         // 16: overlord.v1.AdapterEvent
+	(*ConfigFieldProto)(nil),     // 1: overlord.v1.ConfigFieldProto
+	(*AdapterSchemaProto)(nil),   // 2: overlord.v1.AdapterSchemaProto
+	(*InfoResponse)(nil),         // 3: overlord.v1.InfoResponse
+	(*OpenSessionRequest)(nil),   // 4: overlord.v1.OpenSessionRequest
+	(*OpenSessionResponse)(nil),  // 5: overlord.v1.OpenSessionResponse
+	(*ExecuteRequest)(nil),       // 6: overlord.v1.ExecuteRequest
+	(*ExecuteEvent)(nil),         // 7: overlord.v1.ExecuteEvent
+	(*LogEvent)(nil),             // 8: overlord.v1.LogEvent
+	(*PermissionRequest)(nil),    // 9: overlord.v1.PermissionRequest
+	(*ExecuteResult)(nil),        // 10: overlord.v1.ExecuteResult
+	(*PermitRequest)(nil),        // 11: overlord.v1.PermitRequest
+	(*PermitResponse)(nil),       // 12: overlord.v1.PermitResponse
+	(*CloseSessionRequest)(nil),  // 13: overlord.v1.CloseSessionRequest
+	(*CloseSessionResponse)(nil), // 14: overlord.v1.CloseSessionResponse
+	nil,                          // 15: overlord.v1.AdapterSchemaProto.FieldsEntry
+	nil,                          // 16: overlord.v1.OpenSessionRequest.ConfigEntry
+	nil,                          // 17: overlord.v1.ExecuteRequest.ConfigEntry
+	nil,                          // 18: overlord.v1.PermissionRequest.DetailsEntry
+	(*AdapterEvent)(nil),         // 19: overlord.v1.AdapterEvent
 }
 var file_overlord_v1_adapter_plugin_proto_depIdxs = []int32{
-	13, // 0: overlord.v1.OpenSessionRequest.config:type_name -> overlord.v1.OpenSessionRequest.ConfigEntry
-	14, // 1: overlord.v1.ExecuteRequest.config:type_name -> overlord.v1.ExecuteRequest.ConfigEntry
-	6,  // 2: overlord.v1.ExecuteEvent.log:type_name -> overlord.v1.LogEvent
-	16, // 3: overlord.v1.ExecuteEvent.adapter:type_name -> overlord.v1.AdapterEvent
-	7,  // 4: overlord.v1.ExecuteEvent.permission:type_name -> overlord.v1.PermissionRequest
-	8,  // 5: overlord.v1.ExecuteEvent.result:type_name -> overlord.v1.ExecuteResult
-	15, // 6: overlord.v1.PermissionRequest.details:type_name -> overlord.v1.PermissionRequest.DetailsEntry
-	0,  // 7: overlord.v1.AdapterPluginService.Info:input_type -> overlord.v1.InfoRequest
-	2,  // 8: overlord.v1.AdapterPluginService.OpenSession:input_type -> overlord.v1.OpenSessionRequest
-	4,  // 9: overlord.v1.AdapterPluginService.Execute:input_type -> overlord.v1.ExecuteRequest
-	9,  // 10: overlord.v1.AdapterPluginService.Permit:input_type -> overlord.v1.PermitRequest
-	11, // 11: overlord.v1.AdapterPluginService.CloseSession:input_type -> overlord.v1.CloseSessionRequest
-	1,  // 12: overlord.v1.AdapterPluginService.Info:output_type -> overlord.v1.InfoResponse
-	3,  // 13: overlord.v1.AdapterPluginService.OpenSession:output_type -> overlord.v1.OpenSessionResponse
-	5,  // 14: overlord.v1.AdapterPluginService.Execute:output_type -> overlord.v1.ExecuteEvent
-	10, // 15: overlord.v1.AdapterPluginService.Permit:output_type -> overlord.v1.PermitResponse
-	12, // 16: overlord.v1.AdapterPluginService.CloseSession:output_type -> overlord.v1.CloseSessionResponse
-	12, // [12:17] is the sub-list for method output_type
-	7,  // [7:12] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	15, // 0: overlord.v1.AdapterSchemaProto.fields:type_name -> overlord.v1.AdapterSchemaProto.FieldsEntry
+	2,  // 1: overlord.v1.InfoResponse.config_schema:type_name -> overlord.v1.AdapterSchemaProto
+	2,  // 2: overlord.v1.InfoResponse.input_schema:type_name -> overlord.v1.AdapterSchemaProto
+	16, // 3: overlord.v1.OpenSessionRequest.config:type_name -> overlord.v1.OpenSessionRequest.ConfigEntry
+	17, // 4: overlord.v1.ExecuteRequest.config:type_name -> overlord.v1.ExecuteRequest.ConfigEntry
+	8,  // 5: overlord.v1.ExecuteEvent.log:type_name -> overlord.v1.LogEvent
+	19, // 6: overlord.v1.ExecuteEvent.adapter:type_name -> overlord.v1.AdapterEvent
+	9,  // 7: overlord.v1.ExecuteEvent.permission:type_name -> overlord.v1.PermissionRequest
+	10, // 8: overlord.v1.ExecuteEvent.result:type_name -> overlord.v1.ExecuteResult
+	18, // 9: overlord.v1.PermissionRequest.details:type_name -> overlord.v1.PermissionRequest.DetailsEntry
+	1,  // 10: overlord.v1.AdapterSchemaProto.FieldsEntry.value:type_name -> overlord.v1.ConfigFieldProto
+	0,  // 11: overlord.v1.AdapterPluginService.Info:input_type -> overlord.v1.InfoRequest
+	4,  // 12: overlord.v1.AdapterPluginService.OpenSession:input_type -> overlord.v1.OpenSessionRequest
+	6,  // 13: overlord.v1.AdapterPluginService.Execute:input_type -> overlord.v1.ExecuteRequest
+	11, // 14: overlord.v1.AdapterPluginService.Permit:input_type -> overlord.v1.PermitRequest
+	13, // 15: overlord.v1.AdapterPluginService.CloseSession:input_type -> overlord.v1.CloseSessionRequest
+	3,  // 16: overlord.v1.AdapterPluginService.Info:output_type -> overlord.v1.InfoResponse
+	5,  // 17: overlord.v1.AdapterPluginService.OpenSession:output_type -> overlord.v1.OpenSessionResponse
+	7,  // 18: overlord.v1.AdapterPluginService.Execute:output_type -> overlord.v1.ExecuteEvent
+	12, // 19: overlord.v1.AdapterPluginService.Permit:output_type -> overlord.v1.PermitResponse
+	14, // 20: overlord.v1.AdapterPluginService.CloseSession:output_type -> overlord.v1.CloseSessionResponse
+	16, // [16:21] is the sub-list for method output_type
+	11, // [11:16] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_overlord_v1_adapter_plugin_proto_init() }
@@ -849,7 +994,7 @@ func file_overlord_v1_adapter_plugin_proto_init() {
 		return
 	}
 	file_overlord_v1_events_proto_init()
-	file_overlord_v1_adapter_plugin_proto_msgTypes[5].OneofWrappers = []any{
+	file_overlord_v1_adapter_plugin_proto_msgTypes[7].OneofWrappers = []any{
 		(*ExecuteEvent_Log)(nil),
 		(*ExecuteEvent_Adapter)(nil),
 		(*ExecuteEvent_Permission)(nil),
@@ -861,7 +1006,7 @@ func file_overlord_v1_adapter_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_overlord_v1_adapter_plugin_proto_rawDesc), len(file_overlord_v1_adapter_plugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

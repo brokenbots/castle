@@ -39,6 +39,108 @@ export class InfoRequest extends Message<InfoRequest> {
 }
 
 /**
+ * ConfigFieldProto describes a single field in an adapter's config or input schema.
+ * Added in W02; all field numbers are permanent.
+ *
+ * @generated from message overlord.v1.ConfigFieldProto
+ */
+export class ConfigFieldProto extends Message<ConfigFieldProto> {
+  /**
+   * permanent
+   *
+   * @generated from field: bool required = 1;
+   */
+  required = false;
+
+  /**
+   * type is one of: "string", "number", "bool", "list_string"
+   *
+   * permanent
+   *
+   * @generated from field: string type = 2;
+   */
+  type = "";
+
+  /**
+   * permanent
+   *
+   * @generated from field: string doc = 3;
+   */
+  doc = "";
+
+  constructor(data?: PartialMessage<ConfigFieldProto>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.ConfigFieldProto";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "required", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "doc", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ConfigFieldProto {
+    return new ConfigFieldProto().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ConfigFieldProto {
+    return new ConfigFieldProto().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ConfigFieldProto {
+    return new ConfigFieldProto().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ConfigFieldProto | PlainMessage<ConfigFieldProto> | undefined, b: ConfigFieldProto | PlainMessage<ConfigFieldProto> | undefined): boolean {
+    return proto3.util.equals(ConfigFieldProto, a, b);
+  }
+}
+
+/**
+ * AdapterSchemaProto holds a named set of config fields for schema validation.
+ * Added in W02; all field numbers are permanent.
+ *
+ * @generated from message overlord.v1.AdapterSchemaProto
+ */
+export class AdapterSchemaProto extends Message<AdapterSchemaProto> {
+  /**
+   * permanent
+   *
+   * @generated from field: map<string, overlord.v1.ConfigFieldProto> fields = 1;
+   */
+  fields: { [key: string]: ConfigFieldProto } = {};
+
+  constructor(data?: PartialMessage<AdapterSchemaProto>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "overlord.v1.AdapterSchemaProto";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "fields", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "message", T: ConfigFieldProto} },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdapterSchemaProto {
+    return new AdapterSchemaProto().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdapterSchemaProto {
+    return new AdapterSchemaProto().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdapterSchemaProto {
+    return new AdapterSchemaProto().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdapterSchemaProto | PlainMessage<AdapterSchemaProto> | undefined, b: AdapterSchemaProto | PlainMessage<AdapterSchemaProto> | undefined): boolean {
+    return proto3.util.equals(AdapterSchemaProto, a, b);
+  }
+}
+
+/**
  * @generated from message overlord.v1.InfoResponse
  */
 export class InfoResponse extends Message<InfoResponse> {
@@ -63,6 +165,23 @@ export class InfoResponse extends Message<InfoResponse> {
    */
   capabilities: string[] = [];
 
+  /**
+   * config_schema and input_schema were added in W02. Legacy plugins that do
+   * not return these fields will be treated as permissive (any keys accepted).
+   *
+   * permanent (W02)
+   *
+   * @generated from field: overlord.v1.AdapterSchemaProto config_schema = 4;
+   */
+  configSchema?: AdapterSchemaProto;
+
+  /**
+   * permanent (W02)
+   *
+   * @generated from field: overlord.v1.AdapterSchemaProto input_schema = 5;
+   */
+  inputSchema?: AdapterSchemaProto;
+
   constructor(data?: PartialMessage<InfoResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -74,6 +193,8 @@ export class InfoResponse extends Message<InfoResponse> {
     { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "version", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "capabilities", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 4, name: "config_schema", kind: "message", T: AdapterSchemaProto },
+    { no: 5, name: "input_schema", kind: "message", T: AdapterSchemaProto },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): InfoResponse {
