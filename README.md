@@ -165,13 +165,13 @@ make bootstrap
 make build
 ```
 
-### Running your first agent workflow
+### Running your first workflow
 
-Phase 1.4 runs AI adapters as out-of-process plugins. Overseer discovers
-adapter binaries as `overlord-adapter-<name>` first from
-`${OVERLORD_PLUGINS}/` (if set), then from `~/.overlord/plugins/`.
-The full plugin walkthrough and troubleshooting guide is in
-[docs/plugins.md](docs/plugins.md).
+Overlord workflows are HCL files that describe steps, transitions, and outcomes. The Overseer CLI provides three main commands:
+
+- **`overseer compile`** — parse and validate a workflow, output the compiled JSON or DOT graph
+- **`overseer plan`** — preview what the workflow will do (variables, agents, steps, transitions)
+- **`overseer apply`** — execute the workflow locally (no Castle required) or against a Castle instance
 
 ```bash
 # Build core binaries and plugin adapters
@@ -182,12 +182,29 @@ mkdir -p ~/.overlord/plugins
 cp ./bin/overlord-adapter-* ~/.overlord/plugins/
 chmod +x ~/.overlord/plugins/overlord-adapter-*
 
-# Run a single-agent demo
-./bin/overseer run --workflow ./examples/agent_hello.hcl --castle http://localhost:8080
+# Preview a workflow
+./bin/overseer plan examples/hello.hcl
 
-# Run a two-agent lifecycle demo
-./bin/overseer run --workflow ./examples/two_agent_loop.hcl --castle http://localhost:8080
+# Run locally (no Castle required)
+./bin/overseer apply examples/hello.hcl
+
+# Run against a Castle instance (requires Castle to be running)
+./bin/overseer apply examples/agent_hello.hcl --castle http://localhost:8080
 ```
+
+The `overseer run` command is deprecated but preserved as an alias for `apply --castle`.
+
+### Workflow language at a glance
+
+Workflows support:
+- **Variables** (`variable "name" { ... }`) with type and default value
+- **Step outputs** — adapters return key-value outputs that feed into downstream steps or branching logic
+- **Wait nodes** — pause for a duration (`wait { duration = "30s" }`) or an external signal (`wait { signal = "..." }`)
+- **Approval gates** — `approval { ... }` pauses until a user approves or rejects via Parapet
+- **Branching** — `branch { when ... { transition_to = "..." } }` evaluates HCL expressions to choose the next step
+- **Iteration** — `for_each { items = [...]; do = "step" }` runs a step multiple times with `each.value` and `each.index` bound
+
+The full language reference is in [docs/workflow.md](docs/workflow.md). Plugin and adapter contracts are documented in [docs/plugins.md](docs/plugins.md).
 
 ### Run (Native)
 

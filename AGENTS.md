@@ -37,6 +37,7 @@ Component-specific:
 - Go workspace uses multiple modules via [go.work](go.work); run commands from repo root using `make` targets when possible.
 - **Wire contract changes**: edit `proto/overlord/v1/*.proto` first; run `make proto` to regenerate Go and TS clients; then update Castle handlers, Overseer client, and Parapet call sites.
 - **Plugin model**: adapter plugins run out-of-process and are discovered as `overlord-adapter-<name>` from `${OVERLORD_PLUGINS}/` first, then `~/.overlord/plugins/`; use `make plugins` to build all adapter binaries.
+- **HCL workflow syntax (Phase 1.5)**: step-level adapter input uses `input { ... }` blocks; agent-level configuration stays on the `agent { }` block. The legacy `config = {...}` shape for step input was removed in a hard break and is no longer accepted.
 - Keep logs structured (`slog` JSON style in backend entrypoints).
 - Preserve existing adapter boundaries in Overseer (`internal/adapter`, `internal/adapters/*`, `internal/dispatcher`).
 
@@ -44,6 +45,7 @@ Component-specific:
 
 - Copilot adapter execution requires installing `overlord-adapter-copilot` into `${OVERLORD_PLUGINS}/` or `~/.overlord/plugins/`; do not assume in-binary adapter code.
 - Castle run/event ordering depends on server-assigned monotonic `seq` per `run_id`; avoid client-side ordering assumptions.
+- **Local mode constraints (Phase 1.5)**: `wait { signal = "..." }` and `approval { ... }` nodes require a Castle instance (`overseer apply --castle`). Local-only execution (`overseer apply` with no `--castle`) rejects these node types with a clear error message.
 - Prefer `make test` over ad-hoc partial test runs unless task scope is clearly limited.
 - Avoid introducing CGO-only SQLite dependencies; current storage uses pure-Go `modernc.org/sqlite`.
 
@@ -52,6 +54,9 @@ Component-specific:
 - Build and dev workflows: [Makefile](Makefile)
 - Castle entrypoint: [castle/cmd/castle/main.go](castle/cmd/castle/main.go)
 - Overseer entrypoint: [overseer/cmd/overseer/main.go](overseer/cmd/overseer/main.go)
+- Overseer CLI commands (Phase 1.5): [overseer/internal/cli/compile.go](overseer/internal/cli/compile.go), [overseer/internal/cli/plan.go](overseer/internal/cli/plan.go), [overseer/internal/cli/apply.go](overseer/internal/cli/apply.go)
+- Engine node execution (Phase 1.5): [overseer/internal/engine/node_step.go](overseer/internal/engine/node_step.go), [overseer/internal/engine/node_wait.go](overseer/internal/engine/node_wait.go), [overseer/internal/engine/node_branch.go](overseer/internal/engine/node_branch.go), [overseer/internal/engine/node_for_each.go](overseer/internal/engine/node_for_each.go), [overseer/internal/engine/node_approval.go](overseer/internal/engine/node_approval.go)
+- Workflow evaluation context (Phase 1.5): [workflow/eval.go](workflow/eval.go)
 - Plugin wire contract: [proto/overlord/v1/adapter_plugin.proto](proto/overlord/v1/adapter_plugin.proto)
 - Plugin loader/session manager: [overseer/internal/plugin/](overseer/internal/plugin)
 - Workflow schema/compiler surface: [workflow/schema.go](workflow/schema.go)
