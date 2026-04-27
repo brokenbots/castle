@@ -10,8 +10,8 @@ import (
 
 	"github.com/brokenbots/overlord/castle/internal/auth"
 	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 // createRunAtStep creates a run in "running" status with currentStep set.
@@ -232,7 +232,7 @@ func TestSubmitEvents_StepEntered_RecordsAttempt(t *testing.T) {
 
 	// Send StepEntered event.
 	if err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(events.SchemaVersion),
+		SchemaVersion: int32(overseer.SchemaVersion),
 		RunId:         runID,
 		CorrelationId: "se-1",
 		Ts:            timestamppb.Now(),
@@ -274,7 +274,7 @@ func TestSubmitEvents_StepResumed_StoredAndFannedOut(t *testing.T) {
 
 	// Send StepResumed event.
 	if err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(events.SchemaVersion),
+		SchemaVersion: int32(overseer.SchemaVersion),
 		RunId:         runID,
 		CorrelationId: "sr-1",
 		Ts:            timestamppb.Now(),

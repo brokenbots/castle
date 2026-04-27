@@ -9,8 +9,8 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 // applyAndFlushScope calls applyRunStatus with the given envelope and then
@@ -66,7 +66,7 @@ func mustRegisterAndCreateRun(t *testing.T, ts *testStack, overseerName string) 
 }
 
 func makeEnvForTest(runID string, payload *pb.Envelope) *pb.Envelope {
-	payload.SchemaVersion = int32(events.SchemaVersion)
+	payload.SchemaVersion = int32(overseer.SchemaVersion)
 	payload.RunId = runID
 	return payload
 }

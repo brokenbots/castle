@@ -10,7 +10,7 @@ import (
 
 	"github.com/brokenbots/overlord/castle/internal/hub"
 	"github.com/brokenbots/overlord/castle/internal/store"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 const controlBufferSize = 32

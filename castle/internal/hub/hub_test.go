@@ -4,8 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 // TestUnsubscribeIdempotent ensures the channel is closed at most once, so a
@@ -67,7 +66,7 @@ func TestPublish_TerminalForgetsRunBuffer(t *testing.T) {
 		t.Fatalf("before terminal, buffered=%d want 1", got)
 	}
 
-	terminal := events.NewEnvelope("r1", &pb.RunCompleted{Success: true})
+	terminal := pb.NewEnvelope("r1", &pb.RunCompleted{Success: true})
 	terminal.Seq = 2
 	h.Publish(terminal)
 

@@ -9,7 +9,8 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
+	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 // callerOverseerIDKey is the context key for the authenticated caller's overseer ID.
@@ -82,7 +83,7 @@ func NewInterceptor(st store.Store, allowAnonReads bool, opts ...InterceptorOpti
 
 func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if req.Spec().Procedure == overlordv1connect.OverseerServiceRegisterProcedure {
+		if req.Spec().Procedure == overseer.RegisterProcedure {
 			return i.handleRegister(ctx, req, next)
 		}
 		if i.isExempt(req.Spec().Procedure) {

@@ -14,8 +14,8 @@ import (
 
 	"github.com/brokenbots/overlord/castle/internal/auth"
 	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 func (s *OverseerServer) Register(ctx context.Context, req *connect.Request[pb.RegisterRequest]) (*connect.Response[pb.RegisterResponse], error) {
@@ -101,7 +101,7 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 		if err != nil {
 			return connect.NewError(connect.CodeUnknown, err)
 		}
-		if msg.SchemaVersion != int32(events.SchemaVersion) {
+		if msg.SchemaVersion != int32(overseer.SchemaVersion) {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("schema_version mismatch"))
 		}
 		// Reject server-synthesised payloads that must never be ingested
@@ -437,7 +437,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 	default:
 		// Log unknown payload types so any drift from the expected set is visible.
 		// This closes TD-14 (silent default in applyRunStatus).
-		s.Log.Debug("applyRunStatus: unhandled payload type", "run_id", env.RunId, "type", events.TypeString(env))
+		s.Log.Debug("applyRunStatus: unhandled payload type", "run_id", env.RunId, "type", overseer.TypeString(env))
 	}
 }
 

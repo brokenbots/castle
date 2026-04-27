@@ -22,7 +22,8 @@ import (
 	"github.com/brokenbots/overlord/castle/internal/hub"
 	"github.com/brokenbots/overlord/castle/internal/rpc"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
+	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 func envOrDefault(key, fallback string) string {
@@ -135,10 +136,10 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	ovPath, ovHandler := overlordv1connect.NewOverseerServiceHandler(overseerRPC, connect.WithInterceptors(interceptors...))
+	ovPath, ovHandler := overseer.NewServiceHandler(overseerRPC, connect.WithInterceptors(interceptors...))
 	csPath, csHandler := overlordv1connect.NewCastleServiceHandler(castleRPC, connect.WithInterceptors(interceptors...))
 	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
-		overlordv1connect.OverseerServiceName,
+		overseer.ServiceName,
 		overlordv1connect.CastleServiceName,
 	))
 	mux.Handle(ovPath, ovHandler)
@@ -147,7 +148,7 @@ func main() {
 
 	if *grpcReflection {
 		reflector := grpcreflect.NewStaticReflector(
-			overlordv1connect.OverseerServiceName,
+			overseer.ServiceName,
 			overlordv1connect.CastleServiceName,
 			grpchealth.HealthV1ServiceName,
 		)

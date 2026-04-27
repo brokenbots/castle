@@ -15,8 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 type Store struct {
@@ -274,7 +273,7 @@ func (s *Store) AppendEvent(ctx context.Context, env *pb.Envelope) (uint64, bool
 	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES(?,?,?,?,?,?)`,
-		env.RunId, next, events.TypeString(env), ts.Format(tsLayout), env.CorrelationId, string(payload))
+		env.RunId, next, pb.TypeString(env), ts.Format(tsLayout), env.CorrelationId, string(payload))
 	if err != nil {
 		return 0, false, err
 	}
@@ -442,7 +441,7 @@ func scanEventRows(rows *sql.Rows, runID string) ([]*pb.Envelope, error) {
 			return nil, err
 		}
 		env := &pb.Envelope{
-			SchemaVersion: events.SchemaVersion,
+			SchemaVersion: pb.SchemaVersion,
 			RunId:         runID,
 			Seq:           uint64(seq),
 		}

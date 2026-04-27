@@ -19,8 +19,9 @@ import (
 	"github.com/brokenbots/overlord/castle/internal/hub"
 	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 type testStack struct {
@@ -50,10 +51,10 @@ func newTestStack(t *testing.T) *testStack {
 	}
 }
 
-func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*httptest.Server, overlordv1connect.OverseerServiceClient, overlordv1connect.CastleServiceClient) {
+func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*httptest.Server, overseer.ServiceClient, overlordv1connect.CastleServiceClient) {
 	t.Helper()
 	mux := http.NewServeMux()
-	oPath, oHandler := overlordv1connect.NewOverseerServiceHandler(s.overseer, opts...)
+	oPath, oHandler := overseer.NewServiceHandler(s.overseer, opts...)
 	cPath, cHandler := overlordv1connect.NewCastleServiceHandler(s.castle, opts...)
 	mux.Handle(oPath, oHandler)
 	mux.Handle(cPath, cHandler)
@@ -61,7 +62,7 @@ func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*h
 	// Mount reflection so e2e tests can assert the endpoint is reachable
 	// and exempt from auth.
 	reflector := grpcreflect.NewStaticReflector(
-		overlordv1connect.OverseerServiceName,
+		overseer.ServiceName,
 		overlordv1connect.CastleServiceName,
 	)
 	rPath, rHandler := grpcreflect.NewHandlerV1(reflector)
@@ -75,7 +76,7 @@ func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*h
 
 	client := h2cClient()
 	return tsrv,
-		overlordv1connect.NewOverseerServiceClient(client, tsrv.URL),
+		overseer.NewServiceClient(client, tsrv.URL),
 		overlordv1connect.NewCastleServiceClient(client, tsrv.URL)
 }
 
@@ -88,7 +89,7 @@ func h2cClient() *http.Client {
 	}}
 }
 
-func mustRegister(t *testing.T, client overlordv1connect.OverseerServiceClient) (string, string) {
+func mustRegister(t *testing.T, client overseer.ServiceClient) (string, string) {
 	t.Helper()
 	resp, err := client.Register(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: "test-overseer"}))
 	if err != nil {

@@ -7,8 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 const DefaultEventBufferCapacity = 1024
@@ -21,7 +20,7 @@ type Hub struct {
 }
 
 type Subscriber struct {
-	C      chan *pb.Envelope
+	C      chan *overseer.Envelope
 	hub    *Hub
 	runIDs []string
 
@@ -53,7 +52,7 @@ func NewWithBuffer(capPerRun int, log *slog.Logger) *Hub {
 	}
 }
 
-func (h *Hub) Since(runID string, seq uint64) []*pb.Envelope {
+func (h *Hub) Since(runID string, seq uint64) []*overseer.Envelope {
 	if h == nil || h.buffer == nil {
 		return nil
 	}
@@ -62,7 +61,7 @@ func (h *Hub) Since(runID string, seq uint64) []*pb.Envelope {
 
 // Subscribe to one or more runs. "*" subscribes to every run.
 func (h *Hub) Subscribe(runIDs ...string) *Subscriber {
-	s := &Subscriber{C: make(chan *pb.Envelope, 64), hub: h, runIDs: runIDs}
+	s := &Subscriber{C: make(chan *overseer.Envelope, 64), hub: h, runIDs: runIDs}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, id := range runIDs {
@@ -108,7 +107,7 @@ func (h *Hub) removeFromIndex(s *Subscriber) {
 
 // Publish delivers env to all subscribers of env.RunId and to wildcard "*".
 // Slow subscribers (buffer full) are dropped and their channel is closed.
-func (h *Hub) Publish(env *pb.Envelope) {
+func (h *Hub) Publish(env *overseer.Envelope) {
 	if env == nil {
 		return
 	}
@@ -153,12 +152,12 @@ func (h *Hub) Publish(env *pb.Envelope) {
 		h.removeFromIndex(s)
 	}
 
-	if events.IsTerminal(env) && h.buffer != nil {
+	if overseer.IsTerminal(env) && h.buffer != nil {
 		h.buffer.Forget(env.RunId)
 	}
 }
 
-func (h *Hub) appendToBuffer(env *pb.Envelope) {
+func (h *Hub) appendToBuffer(env *overseer.Envelope) {
 	if h == nil || h.buffer == nil || env == nil {
 		return
 	}

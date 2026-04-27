@@ -9,7 +9,7 @@ import (
 
 	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 const maxListEventPagesPerRPC = 10

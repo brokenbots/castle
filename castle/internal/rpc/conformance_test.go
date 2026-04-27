@@ -13,8 +13,8 @@ import (
 
 	"github.com/brokenbots/overlord/castle/internal/auth"
 	"github.com/brokenbots/overlord/castle/internal/store"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 	"github.com/brokenbots/overlord/shared/sdk/overseer/conformance"
 )

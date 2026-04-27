@@ -3,9 +3,9 @@ import { fakeBaseQuery } from '@reduxjs/toolkit/query';
 import { ConnectError } from '@connectrpc/connect';
 import { Timestamp } from '@bufbuild/protobuf';
 import { castle, overseer } from './client';
-import type { Run as PbRun } from '../gen/overlord/v1/overseer_pb';
+import type { Run as PbRun } from '../sdk/overseer';
 import type { Overseer as PbOverseer } from '../gen/overlord/v1/castle_pb';
-import type { Envelope } from '../gen/overlord/v1/events_pb';
+import type { Envelope } from '../sdk/overseer';
 
 export interface Run {
   runId: string;

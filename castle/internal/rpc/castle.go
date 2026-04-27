@@ -12,8 +12,8 @@ import (
 
 	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 const (
@@ -130,7 +130,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		}
 		lastSent = env.Seq
 		updateCursor(env.Seq)
-		if events.IsTerminal(env) {
+		if overseer.IsTerminal(env) {
 			terminalInReplay = true
 			return errStopEventPagination
 		}
@@ -160,7 +160,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		}
 		lastSent = env.Seq
 		updateCursor(env.Seq)
-		if events.IsTerminal(env) {
+		if overseer.IsTerminal(env) {
 			return nil
 		}
 	}
@@ -181,7 +181,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 			}
 			lastSent = env.Seq
 			updateCursor(env.Seq)
-			if events.IsTerminal(env) {
+			if overseer.IsTerminal(env) {
 				return nil
 			}
 		}

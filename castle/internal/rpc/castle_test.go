@@ -14,8 +14,8 @@ import (
 	"github.com/brokenbots/overlord/castle/internal/hub"
 	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 type recordedLog struct {
@@ -255,7 +255,7 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 		t.Fatalf("live seq=%d", watch.Msg().Seq)
 	}
 
-	terminal := events.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
+	terminal := overseer.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
 	terminal.Ts = timestamppb.New(time.Now().UTC())
 	seq3, _, err := ts.store.AppendEvent(context.Background(), terminal)
 	if err != nil {
@@ -313,7 +313,7 @@ func TestWatchRun_TerminalInReplay_ClosesImmediately(t *testing.T) {
 		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
 	}
 
-	terminal := events.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
+	terminal := overseer.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
 	terminal.Ts = timestamppb.New(time.Now().UTC())
 	seq2, _, err := ts.store.AppendEvent(context.Background(), terminal)
 	if err != nil {

@@ -16,8 +16,8 @@ import (
 
 	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 func TestAuthInterceptorUnary(t *testing.T) {

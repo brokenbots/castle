@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -81,9 +81,9 @@ type Store interface {
 	//
 	// AppendEvent mutates env.Seq to the assigned sequence number on
 	// successful insert so callers can reuse the message for hub fan-out.
-	AppendEvent(ctx context.Context, env *pb.Envelope) (seq uint64, inserted bool, err error)
-	ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*pb.Envelope, error)
-	ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*pb.Envelope, error)
+	AppendEvent(ctx context.Context, env *overseer.Envelope) (seq uint64, inserted bool, err error)
+	ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*overseer.Envelope, error)
+	ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*overseer.Envelope, error)
 
 	// Subscriber cursors
 	// UpsertSubscriberCursor records progress for (subscriber_id, run_id) and

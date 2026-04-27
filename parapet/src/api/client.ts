@@ -1,7 +1,7 @@
 import { createPromiseClient, Interceptor, PromiseClient } from '@connectrpc/connect';
 import { createConnectTransport } from '@connectrpc/connect-web';
 import { CastleService } from '../gen/overlord/v1/castle_connect';
-import { OverseerService } from '../gen/overlord/v1/overseer_connect';
+import { OverseerService } from '../sdk/overseer';
 import { getAuthToken } from '../authToken';
 
 declare global {

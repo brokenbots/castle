@@ -9,15 +9,15 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/overlord/castle/internal/auth"
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 // ownershipHarness holds the pieces needed for ownership enforcement tests.
 type ownershipHarness struct {
 	ts          *testStack
-	oClient     overlordv1connect.OverseerServiceClient
+	oClient     overseer.ServiceClient
 	cClient     overlordv1connect.CastleServiceClient
 	ownerID     string
 	ownerToken  string
@@ -185,7 +185,7 @@ func TestOwnership_SubmitEvents_OtherOverseer_PermissionDenied(t *testing.T) {
 	stream.RequestHeader().Set("Authorization", "Bearer "+h.attackerTok)
 
 	err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(events.SchemaVersion),
+		SchemaVersion: int32(overseer.SchemaVersion),
 		RunId:         h.runID, // owned by owner, not attacker
 		CorrelationId: "neg-1",
 		Ts:            timestamppb.Now(),

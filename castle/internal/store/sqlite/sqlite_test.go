@@ -14,8 +14,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 func tempStore(t *testing.T) *Store {
@@ -61,7 +60,7 @@ func TestEventAppendAssignsMonotonicSeq(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		env := events.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env := pb.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 		seq, inserted, err := s.AppendEvent(ctx, env)
 		if err != nil {
 			t.Fatal(err)
@@ -96,7 +95,7 @@ func TestEventAppendIdempotentOnCorrelationID(t *testing.T) {
 	if err := s.CreateRun(ctx, &store.Run{ID: "r1", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	env := events.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+	env := pb.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 	env.CorrelationId = "corr-xyz"
 
 	seq1, inserted1, err := s.AppendEvent(ctx, env)
@@ -126,7 +125,7 @@ func TestEventAppendIdempotentOnCorrelationID(t *testing.T) {
 	}
 
 	// Different correlation id on the same run inserts a new row.
-	env2 := events.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+	env2 := pb.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 	env2.CorrelationId = "corr-abc"
 	seq3, inserted3, err := s.AppendEvent(ctx, env2)
 	if err != nil {
@@ -235,7 +234,7 @@ func TestExhaustive_PayloadRoundTrip(t *testing.T) {
 			msg := mt.New().Interface()
 			sqlitePopulateMessage(msg.ProtoReflect(), 0)
 
-			env := events.NewEnvelope("r1", msg)
+			env := pb.NewEnvelope("r1", msg)
 			if env.Payload == nil {
 				t.Fatalf("NewEnvelope produced nil payload for arm %q", armName)
 			}
@@ -263,9 +262,9 @@ func TestExhaustive_PayloadRoundTrip(t *testing.T) {
 			if !proto.Equal(env, back) {
 				t.Fatalf("round-trip mismatch for arm %q:\nwant: %v\ngot:  %v", armName, env, back)
 			}
-			if events.TypeString(back) != events.TypeString(env) {
+			if pb.TypeString(back) != pb.TypeString(env) {
 				t.Fatalf("TypeString drift for arm %q: want %q got %q",
-					armName, events.TypeString(env), events.TypeString(back))
+					armName, pb.TypeString(env), pb.TypeString(back))
 			}
 		})
 	}
@@ -379,7 +378,7 @@ func TestListEvents_HonorsLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 30; i++ {
-		env := events.NewEnvelope("r-limit", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env := pb.NewEnvelope("r-limit", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 		env.CorrelationId = fmt.Sprintf("limit-%d", i)
 		if _, _, err := s.AppendEvent(ctx, env); err != nil {
 			t.Fatal(err)
@@ -420,7 +419,7 @@ func TestListEvents_DefaultOnZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 700; i++ {
-		env := events.NewEnvelope("r-default", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env := pb.NewEnvelope("r-default", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 		env.CorrelationId = fmt.Sprintf("default-%d", i)
 		if _, _, err := s.AppendEvent(ctx, env); err != nil {
 			t.Fatal(err)
@@ -447,7 +446,7 @@ func TestListEvents_Pagination_OrderPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 1500; i++ {
-		env := events.NewEnvelope("r-page", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env := pb.NewEnvelope("r-page", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 		env.CorrelationId = fmt.Sprintf("page-%d", i)
 		if _, _, err := s.AppendEvent(ctx, env); err != nil {
 			t.Fatal(err)
@@ -495,14 +494,14 @@ func TestListStepLogs_Pagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 900; i++ {
-		env := events.NewEnvelope("r-logs", &pb.StepLog{Step: "build", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("line-%d", i)})
+		env := pb.NewEnvelope("r-logs", &pb.StepLog{Step: "build", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("line-%d", i)})
 		env.CorrelationId = fmt.Sprintf("build-%d", i)
 		if _, _, err := s.AppendEvent(ctx, env); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for i := 0; i < 50; i++ {
-		env := events.NewEnvelope("r-logs", &pb.StepLog{Step: "test", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("other-%d", i)})
+		env := pb.NewEnvelope("r-logs", &pb.StepLog{Step: "test", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("other-%d", i)})
 		env.CorrelationId = fmt.Sprintf("test-%d", i)
 		if _, _, err := s.AppendEvent(ctx, env); err != nil {
 			t.Fatal(err)

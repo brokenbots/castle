@@ -8,8 +8,8 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 // Resume delivers a named signal (or an approval decision) to a paused run.
@@ -58,14 +58,14 @@ func (s *OverseerServer) Resume(ctx context.Context, req *connect.Request[pb.Res
 	var resumeEnv *pb.Envelope
 	if decision == "approved" || decision == "rejected" {
 		actor := req.Msg.Payload["actor"]
-		resumeEnv = events.NewEnvelope(run.ID, &pb.ApprovalDecision{
+		resumeEnv = overseer.NewEnvelope(run.ID, &pb.ApprovalDecision{
 			Node:     req.Msg.Signal,
 			Decision: decision,
 			Actor:    actor,
 			Payload:  req.Msg.Payload,
 		})
 	} else {
-		resumeEnv = events.NewEnvelope(run.ID, &pb.WaitResumed{
+		resumeEnv = overseer.NewEnvelope(run.ID, &pb.WaitResumed{
 			Node:    req.Msg.Signal,
 			Mode:    "signal",
 			Signal:  req.Msg.Signal,

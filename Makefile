@@ -2,7 +2,7 @@
 	test validate validate-docs dev-castle dev-overseer dev-parapet demo docker-build \
 	docker-build-overseer docker-build-castle compose-up compose-down \
 	compose-logs clean proto proto-lint proto-check proto-check-drift \
-	test-conformance
+	test-conformance lint-imports lint-imports-ts lint-imports-ts-test
 
 # Default target: list available targets.
 help:
@@ -46,12 +46,15 @@ test: ## Run all Go tests
 	cd overseer && go test -race ./...
 	cd castle   && go test -race ./...
 	cd tools/validate-doc-examples && go test ./...
+	cd tools/import-lint && go test ./...
+	@$(MAKE) lint-imports-ts-test
 
 ci: build-overseer build-castle ## Run full CI suite: unit tests + example validation
 	cd shared   && go test ./...
 	cd workflow && go test ./...
 	cd overseer && go test -race ./...
 	cd castle   && go test -race ./...
+	cd tools/import-lint && go test ./...
 	$(MAKE) validate
 
 test-integration: build-overseer build-castle plugins ## Run integration tests against real Castle + Overseer processes
@@ -60,12 +63,21 @@ test-integration: build-overseer build-castle plugins ## Run integration tests a
 test-conformance: ## Run SDK conformance tests against Castle (heavy; live server required)
 	cd castle && go test -tags conformance -race -timeout 5m ./internal/rpc/...
 
-validate: build-overseer ## Validate all example workflows and doc examples
+validate: build-overseer lint-imports lint-imports-ts ## Validate all example workflows and doc examples
 	@for f in examples/*.hcl; do ./bin/overseer validate "$$f"; done
 	@$(MAKE) validate-docs
 
 validate-docs: build-overseer ## Validate HCL code blocks embedded in docs/*.md
 	@cd tools/validate-doc-examples && OVERSEER=$(CURDIR)/bin/overseer go run . $(CURDIR)/docs
+
+lint-imports: ## Check Go import-graph boundaries (castle/overseer/sdk must not cross-import)
+	@cd tools/import-lint && go run . $(CURDIR)
+
+lint-imports-ts: ## Check TS import-graph boundaries (parapet must use sdk/overseer shim)
+	@bash scripts/lint-imports-ts.sh $(CURDIR)
+
+lint-imports-ts-test: ## Run unit tests for the TS import linter
+	@bash scripts/lint-imports-ts-test.sh
 
 dev-castle: ## Run castle in dev mode
 	cd castle && go run ./cmd/castle --addr :8080 --db ./castle.dev.db

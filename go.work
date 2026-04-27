@@ -5,6 +5,7 @@ use (
 	./overseer
 	./shared
 	./tests/integration
+	./tools/import-lint
 	./tools/validate-doc-examples
 	./workflow
 )

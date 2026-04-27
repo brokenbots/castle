@@ -8,8 +8,8 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
 )
 
 func TestOverseerUnaryMethods(t *testing.T) {
@@ -52,7 +52,7 @@ func TestSubmitEventsStream_ReplayPagesPersistedEvents(t *testing.T) {
 
 	for i := 0; i < 1500; i++ {
 		env := &pb.Envelope{
-			SchemaVersion: int32(events.SchemaVersion),
+			SchemaVersion: int32(overseer.SchemaVersion),
 			RunId:         runID,
 			CorrelationId: fmt.Sprintf("seed-%d", i),
 			Ts:            timestamppb.Now(),
@@ -67,7 +67,7 @@ func TestSubmitEventsStream_ReplayPagesPersistedEvents(t *testing.T) {
 	stream.RequestHeader().Set("Authorization", "Bearer "+token)
 	stream.RequestHeader().Set("since_seq", "0")
 	if err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(events.SchemaVersion),
+		SchemaVersion: int32(overseer.SchemaVersion),
 		RunId:         runID,
 		CorrelationId: "live-event",
 		Ts:            timestamppb.Now(),
@@ -113,7 +113,7 @@ func TestSubmitEventsStream(t *testing.T) {
 		stream := oClient.SubmitEvents(context.Background())
 		stream.RequestHeader().Set("Authorization", "Bearer "+token)
 		err := stream.Send(&pb.Envelope{
-			SchemaVersion: int32(events.SchemaVersion),
+			SchemaVersion: int32(overseer.SchemaVersion),
 			RunId:         runID,
 			CorrelationId: "c1",
 			Ts:            timestamppb.Now(),
@@ -155,7 +155,7 @@ func TestSubmitEventsStream(t *testing.T) {
 		stream.RequestHeader().Set("Authorization", "Bearer "+token)
 		stream.RequestHeader().Set("since_seq", "0")
 		err := stream.Send(&pb.Envelope{
-			SchemaVersion: int32(events.SchemaVersion),
+			SchemaVersion: int32(overseer.SchemaVersion),
 			RunId:         runID,
 			CorrelationId: "c2",
 			Ts:            timestamppb.Now(),
@@ -202,7 +202,7 @@ func TestSubmitEvents_DurationWaitDoesNotPause(t *testing.T) {
 	stream := oClient.SubmitEvents(context.Background())
 	stream.RequestHeader().Set("Authorization", "Bearer "+token)
 	if err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(events.SchemaVersion),
+		SchemaVersion: int32(overseer.SchemaVersion),
 		RunId:         runID,
 		CorrelationId: "dur-1",
 		Ts:            timestamppb.Now(),

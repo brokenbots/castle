@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { Envelope, LogStream, StepLog, WatchReady } from '../../gen/overlord/v1/events_pb';
+import { Envelope, LogStream, StepLog, WatchReady } from '../../sdk/overseer';
 import { runsSlice } from './runsSlice';
 
 const watchRunMock = vi.fn();
