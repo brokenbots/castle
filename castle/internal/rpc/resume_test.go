@@ -184,7 +184,7 @@ func TestResume_WrongOverseerToken(t *testing.T) {
 
 	// Start a real HTTP server with the auth interceptor wired in.
 	tsrv, overseerClient, _ := stack.startServer(t,
-		connect.WithInterceptors(auth.NewInterceptor(stack.store, false)),
+		connect.WithInterceptors(auth.NewInterceptor(stack.store, false, auth.WithAnonRegister())),
 	)
 
 	// Register overseer-A (owns the run) and overseer-B (the attacker).

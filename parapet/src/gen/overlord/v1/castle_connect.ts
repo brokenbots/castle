@@ -79,8 +79,11 @@ export const CastleService = {
     },
     /**
      * StopRun cancels a run. If an Overseer is attached to the run via its
-     * Control stream, Castle pushes a RunCancel to it. Returns
+     * Control stream, the orchestrator pushes a RunCancel to it. Returns
      * FAILED_PRECONDITION if the Overseer is not connected.
+     *
+     * Implementations MUST reject the request with PERMISSION_DENIED if the
+     * authenticated caller does not own the target run's overseer.
      *
      * @generated from rpc overlord.v1.CastleService.StopRun
      */

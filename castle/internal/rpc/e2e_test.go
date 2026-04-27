@@ -19,7 +19,7 @@ func TestE2ELifecycleAndAuth(t *testing.T) {
 
 	opts := []connect.HandlerOption{connect.WithInterceptors(
 		auth.NewLoggingInterceptor(slog.Default()),
-		auth.NewInterceptor(ts.store, false),
+		auth.NewInterceptor(ts.store, false, auth.WithAnonRegister()),
 	)}
 	tsrv, oClient, cClient := ts.startServer(t, opts...)
 

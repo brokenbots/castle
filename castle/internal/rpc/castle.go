@@ -276,12 +276,9 @@ func (s *CastleServer) startCursorWriter(ctx context.Context, subscriberID, runI
 }
 
 func (s *CastleServer) StopRun(ctx context.Context, req *connect.Request[pb.StopRunRequest]) (*connect.Response[pb.StopRunResponse], error) {
-	run, err := s.Store.GetRun(ctx, req.Msg.RunId)
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, err)
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 	reason := req.Msg.Reason
 	if reason == "" {

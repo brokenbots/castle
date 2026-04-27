@@ -68,7 +68,9 @@ func TestAuthInterceptorExemptions(t *testing.T) {
 		func(context.Context, *connect.Request[pb.RegisterRequest]) (*connect.Response[pb.RegisterResponse], error) {
 			return connect.NewResponse(&pb.RegisterResponse{OverseerId: "o1"}), nil
 		},
-		connect.WithInterceptors(NewInterceptor(nil, true)),
+		// WithAnonRegister is required: Register now requires a bootstrap token unless
+		// anonymous registration is explicitly enabled (dev/test mode).
+		connect.WithInterceptors(NewInterceptor(nil, true, WithAnonRegister())),
 	)
 	mux := http.NewServeMux()
 	mux.Handle(overlordv1connect.OverseerServiceRegisterProcedure, h)

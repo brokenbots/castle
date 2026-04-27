@@ -39,24 +39,39 @@ func (s *OverseerServer) Register(ctx context.Context, req *connect.Request[pb.R
 }
 
 func (s *OverseerServer) Heartbeat(ctx context.Context, req *connect.Request[pb.HeartbeatRequest]) (*connect.Response[pb.HeartbeatResponse], error) {
-	if req.Msg.OverseerId == "" {
+	// CallerOverseerID wins; the request-supplied overseer_id is used only when
+	// the interceptor is not wired (direct-call tests). In production the
+	// caller's authenticated identity always determines which record is updated.
+	overseerID, err := requireCaller(ctx, req.Msg.OverseerId)
+	if err != nil {
+		return nil, err
+	}
+	if overseerID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("overseer_id required"))
 	}
 	now := time.Now().UTC()
-	if err := s.Store.UpdateOverseerSeen(ctx, req.Msg.OverseerId, now); err != nil {
+	if err := s.Store.UpdateOverseerSeen(ctx, overseerID, now); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&pb.HeartbeatResponse{ServerTime: timestamppb.New(now)}), nil
 }
 
 func (s *OverseerServer) CreateRun(ctx context.Context, req *connect.Request[pb.CreateRunRequest]) (*connect.Response[pb.Run], error) {
-	if req.Msg.OverseerId == "" || req.Msg.WorkflowName == "" {
+	// The run is always owned by the authenticated caller. The request-supplied
+	// overseer_id is treated as informational only; CallerOverseerID wins when
+	// the interceptor is wired. When the interceptor is not present (direct-call
+	// tests) the request field is used as a fallback.
+	overseerID, err := requireCaller(ctx, req.Msg.OverseerId)
+	if err != nil {
+		return nil, err
+	}
+	if overseerID == "" || req.Msg.WorkflowName == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("overseer_id and workflow_name required"))
 	}
 	now := time.Now().UTC()
 	r := &store.Run{
 		ID:           uuid.NewString(),
-		OverseerID:   req.Msg.OverseerId,
+		OverseerID:   overseerID,
 		WorkflowName: req.Msg.WorkflowName,
 		WorkflowHCL:  req.Msg.WorkflowHash,
 		Status:       "pending",
@@ -71,6 +86,12 @@ func (s *OverseerServer) CreateRun(ctx context.Context, req *connect.Request[pb.
 func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiStream[pb.Envelope, pb.Ack]) error {
 	sinceSeq, replayRequested := parseSinceSeq(stream.RequestHeader().Get("since_seq"), stream.RequestHeader().Get("since-seq"))
 	replayed := make(map[string]bool)
+
+	// Per-envelope ownership: cache run→owner lookups so we hit the DB once per
+	// run_id per stream, not once per envelope. Cache is stream-local (single
+	// goroutine) so no synchronisation is needed.
+	callerID := auth.CallerOverseerID(ctx)
+	runOwnerCache := make(map[string]string) // run_id → owner overseer_id
 
 	for {
 		msg, err := stream.Receive()
@@ -93,6 +114,27 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 		}
 		if msg.Ts == nil || msg.Ts.AsTime().IsZero() {
 			msg.Ts = timestamppb.New(time.Now().UTC())
+		}
+
+		// Enforce run ownership when the interceptor is wired. Reject the
+		// stream on the first envelope that belongs to a run the caller does
+		// not own; do not silently drop offending envelopes.
+		if callerID != "" {
+			ownerID, cached := runOwnerCache[msg.RunId]
+			if !cached {
+				run, getErr := s.Store.GetRun(ctx, msg.RunId)
+				if getErr != nil {
+					if errors.Is(getErr, store.ErrNotFound) {
+						return connect.NewError(connect.CodeNotFound, errors.New("run not found"))
+					}
+					return connect.NewError(connect.CodeInternal, getErr)
+				}
+				ownerID = run.OverseerID
+				runOwnerCache[msg.RunId] = ownerID
+			}
+			if ownerID != callerID {
+				return connect.NewError(connect.CodePermissionDenied, errors.New("caller does not own this run"))
+			}
 		}
 
 		if replayRequested && !replayed[msg.RunId] {
@@ -134,7 +176,12 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 }
 
 func (s *OverseerServer) Control(ctx context.Context, req *connect.Request[pb.ControlSubscribeRequest], stream *connect.ServerStream[pb.ControlMessage]) error {
-	overseerID := req.Msg.OverseerId
+	// CallerOverseerID wins for the registry key. The request-supplied
+	// overseer_id is used as fallback when the interceptor is not wired (tests).
+	overseerID, err := requireCaller(ctx, req.Msg.OverseerId)
+	if err != nil {
+		return err
+	}
 	if overseerID == "" {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("overseer_id required"))
 	}
@@ -169,20 +216,17 @@ func (s *OverseerServer) Control(ctx context.Context, req *connect.Request[pb.Co
 }
 
 func (s *OverseerServer) ReattachRun(ctx context.Context, req *connect.Request[pb.ReattachRunRequest]) (*connect.Response[pb.ReattachRunResponse], error) {
-	if req.Msg.RunId == "" || req.Msg.OverseerId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id and overseer_id required"))
+	if req.Msg.RunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
 	}
-	run, err := s.Store.GetRun(ctx, req.Msg.RunId)
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("run not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 
-	// Cannot resume a terminal run or a run owned by a different Overseer.
+	// Cannot resume a terminal run.
 	isTerminal := run.Status == "succeeded" || run.Status == "failed" || run.Status == "cancelled"
-	if isTerminal || run.OverseerID != req.Msg.OverseerId {
+	if isTerminal {
 		return connect.NewResponse(&pb.ReattachRunResponse{
 			Status:    run.Status,
 			CanResume: false,

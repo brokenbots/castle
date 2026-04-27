@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/brokenbots/overlord/castle/internal/auth"
 	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/shared/events"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
@@ -127,16 +128,14 @@ func TestReattachRun_WrongOwner_Rejected(t *testing.T) {
 
 	runID := createRunAtStep(t, ts, ownerID, "deploy")
 
-	// Other overseer tries to reattach.
-	resp, err := ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
+	// Other overseer tries to reattach — inject its identity as the caller.
+	callerCtx := auth.WithCallerOverseerID(ctx, otherID)
+	_, err := ts.overseer.ReattachRun(callerCtx, connect.NewRequest(&pb.ReattachRunRequest{
 		RunId:      runID,
 		OverseerId: otherID,
 	}))
-	if err != nil {
-		t.Fatalf("ReattachRun: %v", err)
-	}
-	if resp.Msg.CanResume {
-		t.Fatal("expected can_resume=false when overseer_id does not match run owner")
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("expected CodePermissionDenied, got code=%v err=%v", connect.CodeOf(err), err)
 	}
 }
 
@@ -144,14 +143,16 @@ func TestReattachRun_MissingArgs_ReturnsError(t *testing.T) {
 	ts := newTestStack(t)
 	ctx := context.Background()
 
-	_, err := ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{RunId: "x"}))
-	if err == nil {
-		t.Fatal("expected error for missing overseer_id")
-	}
-
-	_, err = ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{OverseerId: "x"}))
+	// run_id is required — a missing run_id must be rejected.
+	_, err := ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{OverseerId: "x"}))
 	if err == nil {
 		t.Fatal("expected error for missing run_id")
+	}
+
+	// run_id present but run does not exist — must also be rejected (NotFound).
+	_, err = ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{RunId: "nonexistent"}))
+	if err == nil {
+		t.Fatal("expected error for nonexistent run")
 	}
 }
 

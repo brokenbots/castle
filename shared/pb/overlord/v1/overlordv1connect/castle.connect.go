@@ -71,8 +71,11 @@ type CastleServiceClient interface {
 	// client disconnects or the run reaches a terminal state.
 	WatchRun(context.Context, *connect.Request[v1.WatchRunRequest]) (*connect.ServerStreamForClient[v1.Envelope], error)
 	// StopRun cancels a run. If an Overseer is attached to the run via its
-	// Control stream, Castle pushes a RunCancel to it. Returns
+	// Control stream, the orchestrator pushes a RunCancel to it. Returns
 	// FAILED_PRECONDITION if the Overseer is not connected.
+	//
+	// Implementations MUST reject the request with PERMISSION_DENIED if the
+	// authenticated caller does not own the target run's overseer.
 	StopRun(context.Context, *connect.Request[v1.StopRunRequest]) (*connect.Response[v1.StopRunResponse], error)
 	// SendPrompt — schema-only stub for Phase 2.3. Parapet can wire up UI
 	// against this method, but Castle currently returns UNIMPLEMENTED.
@@ -206,8 +209,11 @@ type CastleServiceHandler interface {
 	// client disconnects or the run reaches a terminal state.
 	WatchRun(context.Context, *connect.Request[v1.WatchRunRequest], *connect.ServerStream[v1.Envelope]) error
 	// StopRun cancels a run. If an Overseer is attached to the run via its
-	// Control stream, Castle pushes a RunCancel to it. Returns
+	// Control stream, the orchestrator pushes a RunCancel to it. Returns
 	// FAILED_PRECONDITION if the Overseer is not connected.
+	//
+	// Implementations MUST reject the request with PERMISSION_DENIED if the
+	// authenticated caller does not own the target run's overseer.
 	StopRun(context.Context, *connect.Request[v1.StopRunRequest]) (*connect.Response[v1.StopRunResponse], error)
 	// SendPrompt — schema-only stub for Phase 2.3. Parapet can wire up UI
 	// against this method, but Castle currently returns UNIMPLEMENTED.

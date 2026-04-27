@@ -8,17 +8,14 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/brokenbots/overlord/castle/internal/auth"
-	"github.com/brokenbots/overlord/castle/internal/store"
 	"github.com/brokenbots/overlord/shared/events"
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
 
 // Resume delivers a named signal (or an approval decision) to a paused run.
-// The caller's overseer token must match the run's owning overseer (auth is
-// enforced by the interceptor; here we verify run ownership at the run level).
-// Permission shape: any authenticated Overseer may resume its own runs; cross-
-// Overseer resume is out of scope for W05 — document this in reviewer notes.
+// The authenticated caller must own the run (enforced via requireCallerOwnsRun).
+// When the interceptor is not wired (direct-call tests) the ownership check is
+// skipped so existing positive-path tests continue to work unchanged.
 func (s *OverseerServer) Resume(ctx context.Context, req *connect.Request[pb.ResumeRequest]) (*connect.Response[pb.ResumeResponse], error) {
 	if req.Msg.RunId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
@@ -27,12 +24,9 @@ func (s *OverseerServer) Resume(ctx context.Context, req *connect.Request[pb.Res
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("signal required"))
 	}
 
-	run, err := s.Store.GetRun(ctx, req.Msg.RunId)
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("run not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, err
 	}
 
 	if run.Status != "paused" {
@@ -40,14 +34,6 @@ func (s *OverseerServer) Resume(ctx context.Context, req *connect.Request[pb.Res
 			Accepted: false,
 			Reason:   "run_not_paused",
 		}), nil
-	}
-
-	// Enforce run ownership: the caller's overseer token must match the run's
-	// owning overseer. auth.CallerOverseerID returns "" when the interceptor is
-	// not wired (e.g. unit tests calling the handler directly) — skip the check
-	// in that case so existing direct-call tests continue to work.
-	if callerID := auth.CallerOverseerID(ctx); callerID != "" && callerID != run.OverseerID {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("token does not own this run"))
 	}
 
 	if run.PendingSignal == "" {

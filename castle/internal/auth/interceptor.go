@@ -16,10 +16,18 @@ import (
 type callerOverseerIDKey struct{}
 
 // CallerOverseerID returns the overseer ID injected by AuthInterceptor, or ""
-// if the request was not authenticated (e.g. exempt procedures).
+// if the request was not authenticated (e.g. exempt procedures or direct
+// handler calls in tests without the interceptor wired).
 func CallerOverseerID(ctx context.Context) string {
 	v, _ := ctx.Value(callerOverseerIDKey{}).(string)
 	return v
+}
+
+// WithCallerOverseerID returns a context with the given overseer ID injected
+// as the authenticated caller. Use in tests that call handlers directly (no
+// HTTP stack) to simulate the identity the interceptor would inject.
+func WithCallerOverseerID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, callerOverseerIDKey{}, id)
 }
 
 var readOnlyCastleProcedures = map[string]struct{}{
@@ -31,18 +39,52 @@ var readOnlyCastleProcedures = map[string]struct{}{
 	overlordv1connect.CastleServiceWatchRunProcedure:      {},
 }
 
-// AuthInterceptor authenticates Connect calls using overseer tokens.
-type AuthInterceptor struct {
-	store          store.Store
-	allowAnonReads bool
+// InterceptorOption configures an AuthInterceptor.
+type InterceptorOption func(*AuthInterceptor)
+
+// WithBootstrapToken configures the raw bootstrap token required for Register.
+// The interceptor hashes it and validates incoming X-Castle-Bootstrap headers.
+// If not set, Register is disabled (returns Unimplemented).
+func WithBootstrapToken(token string) InterceptorOption {
+	return func(i *AuthInterceptor) {
+		if token != "" {
+			i.bootstrapTokenHash = HashToken(token)
+		}
+	}
 }
 
-func NewInterceptor(st store.Store, allowAnonReads bool) *AuthInterceptor {
-	return &AuthInterceptor{store: st, allowAnonReads: allowAnonReads}
+// WithAnonRegister allows Register without a bootstrap token. Use only in dev
+// mode (--dev-allow-anon-register flag) or in tests.
+func WithAnonRegister() InterceptorOption {
+	return func(i *AuthInterceptor) {
+		i.allowAnonRegister = true
+	}
+}
+
+// AuthInterceptor authenticates Connect calls using overseer tokens.
+type AuthInterceptor struct {
+	store              store.Store
+	allowAnonReads     bool
+	bootstrapTokenHash string // SHA-256 hex of the bootstrap token; empty = Register disabled
+	allowAnonRegister  bool   // dev mode: bypass bootstrap check on Register
+}
+
+// NewInterceptor creates an AuthInterceptor. Options are applied in order and
+// may override defaults. This function is variadic for backward compatibility;
+// existing callers that pass only (store, allowAnonReads) continue to work.
+func NewInterceptor(st store.Store, allowAnonReads bool, opts ...InterceptorOption) *AuthInterceptor {
+	i := &AuthInterceptor{store: st, allowAnonReads: allowAnonReads}
+	for _, opt := range opts {
+		opt(i)
+	}
+	return i
 }
 
 func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if req.Spec().Procedure == overlordv1connect.OverseerServiceRegisterProcedure {
+			return i.handleRegister(ctx, req, next)
+		}
 		if i.isExempt(req.Spec().Procedure) {
 			return next(ctx, req)
 		}
@@ -88,10 +130,29 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 	return context.WithValue(ctx, callerOverseerIDKey{}, o.ID), nil
 }
 
-func (i *AuthInterceptor) isExempt(procedure string) bool {
-	if procedure == overlordv1connect.OverseerServiceRegisterProcedure {
-		return true
+// handleRegister enforces the bootstrap-token gate for the Register RPC.
+//
+//   - allowAnonRegister=true (--dev-allow-anon-register): pass through.
+//   - bootstrapTokenHash set: require a matching X-Castle-Bootstrap header.
+//   - Neither: Register is disabled; Unimplemented is returned.
+func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyRequest, next connect.UnaryFunc) (connect.AnyResponse, error) {
+	if i.allowAnonRegister {
+		return next(ctx, req)
 	}
+	if i.bootstrapTokenHash == "" {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("register is disabled: no bootstrap token configured"))
+	}
+	tok := strings.TrimSpace(req.Header().Get("X-Castle-Bootstrap"))
+	if tok == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("X-Castle-Bootstrap header required for Register"))
+	}
+	if !ConstantTimeEqual(tok, i.bootstrapTokenHash) {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid bootstrap token"))
+	}
+	return next(ctx, req)
+}
+
+func (i *AuthInterceptor) isExempt(procedure string) bool {
 	if i.allowAnonReads {
 		if _, ok := readOnlyCastleProcedures[procedure]; ok {
 			return true

@@ -66,6 +66,16 @@ func flagWasSet(name string) bool {
 	return set
 }
 
+func buildInterceptorOpts(bootstrapToken string, allowAnonRegister bool) []auth.InterceptorOption {
+	var opts []auth.InterceptorOption
+	if allowAnonRegister {
+		opts = append(opts, auth.WithAnonRegister())
+	} else if bootstrapToken != "" {
+		opts = append(opts, auth.WithBootstrapToken(bootstrapToken))
+	}
+	return opts
+}
+
 func main() {
 	addr := flag.String("addr", envOrDefault("CASTLE_ADDR", ":8080"), "listen address (or CASTLE_ADDR)")
 	dbPath := flag.String("db", envOrDefault("CASTLE_DB_PATH", "./castle.db"), "sqlite database path (or CASTLE_DB_PATH)")
@@ -73,6 +83,8 @@ func main() {
 	tlsKey := flag.String("tls-key", envOrDefault("CASTLE_TLS_KEY", ""), "TLS key path (or CASTLE_TLS_KEY)")
 	tlsCA := flag.String("tls-ca", envOrDefault("CASTLE_TLS_CA", ""), "TLS CA bundle path (or CASTLE_TLS_CA)")
 	tlsClientCA := flag.String("tls-client-ca", envOrDefault("CASTLE_TLS_CLIENT_CA", ""), "mTLS client CA path (or CASTLE_TLS_CLIENT_CA)")
+	bootstrapToken := flag.String("bootstrap-token", envOrDefault("OVERLORD_CASTLE_BOOTSTRAP_TOKEN", ""), "bootstrap token for Register (or OVERLORD_CASTLE_BOOTSTRAP_TOKEN); empty = Register disabled")
+	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
 	allowAnonReads := flag.Bool("allow-anon-reads", envOrDefaultBool("CASTLE_ALLOW_ANON_READS", !tlsDefault), "allow anonymous CastleService read RPCs")
@@ -93,6 +105,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Deprecation notice: --allow-anon-reads and --grpc-reflection default to
+	// true in non-TLS (dev) mode. These defaults will be flipped to false in the
+	// next overlord phase (post-split cleanup). Operators relying on these
+	// defaults should set the flags explicitly before upgrading.
+	if *allowAnonReads && !tlsEnabled {
+		log.Warn("dev-mode default: --allow-anon-reads=true; this default will be flipped to false in a future release")
+	}
+	if *grpcReflection && !tlsEnabled {
+		log.Warn("dev-mode default: --grpc-reflection=true; this default will be flipped to false in a future release")
+	}
+
 	st, err := sqlite.Open(*dbPath)
 	if err != nil {
 		log.Error("open db", "err", err)
@@ -108,7 +131,7 @@ func main() {
 
 	interceptors := []connect.Interceptor{
 		auth.NewLoggingInterceptor(log),
-		auth.NewInterceptor(st, *allowAnonReads),
+		auth.NewInterceptor(st, *allowAnonReads, buildInterceptorOpts(*bootstrapToken, *devAllowAnonRegister)...),
 	}
 
 	mux := http.NewServeMux()
