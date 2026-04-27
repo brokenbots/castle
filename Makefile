@@ -1,5 +1,5 @@
 .PHONY: help bootstrap tidy build build-overseer build-castle build-parapet plugins \
-	test validate dev-castle dev-overseer dev-parapet demo docker-build \
+	test validate validate-docs dev-castle dev-overseer dev-parapet demo docker-build \
 	docker-build-overseer docker-build-castle compose-up compose-down \
 	compose-logs clean proto proto-lint proto-check proto-check-drift
 
@@ -44,19 +44,24 @@ test: ## Run all Go tests
 	cd workflow && go test ./...
 	cd overseer && go test -race ./...
 	cd castle   && go test -race ./...
+	cd tools/validate-doc-examples && go test ./...
 
 ci: build-overseer build-castle ## Run full CI suite: unit tests + example validation
 	cd shared   && go test ./...
 	cd workflow && go test ./...
 	cd overseer && go test -race ./...
 	cd castle   && go test -race ./...
-	@for f in examples/*.hcl; do ./bin/overseer validate "$$f"; done
+	$(MAKE) validate
 
 test-integration: build-overseer build-castle plugins ## Run integration tests against real Castle + Overseer processes
 	@go test -tags integration -timeout 5m ./tests/integration/...
 
-validate: build-overseer ## Validate all example workflows
+validate: build-overseer ## Validate all example workflows and doc examples
 	@for f in examples/*.hcl; do ./bin/overseer validate "$$f"; done
+	@$(MAKE) validate-docs
+
+validate-docs: build-overseer ## Validate HCL code blocks embedded in docs/*.md
+	@cd tools/validate-doc-examples && OVERSEER=$(CURDIR)/bin/overseer go run . $(CURDIR)/docs
 
 dev-castle: ## Run castle in dev mode
 	cd castle && go run ./cmd/castle --addr :8080 --db ./castle.dev.db
