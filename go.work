@@ -1,8 +1,9 @@
 go 1.26
 
 use (
-	./shared
-	./workflow
-	./overseer
 	./castle
+	./overseer
+	./shared
+	./tests/integration
+	./workflow
 )

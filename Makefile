@@ -45,6 +45,9 @@ test: ## Run all Go tests
 	cd overseer && go test -race ./...
 	cd castle   && go test ./...
 
+test-integration: build ## Run integration tests against real Castle + Overseer processes
+	@go test -tags integration -timeout 5m ./tests/integration/...
+
 validate: build-overseer ## Validate all example workflows
 	@for f in examples/*.hcl; do ./bin/overseer validate "$$f"; done
 
