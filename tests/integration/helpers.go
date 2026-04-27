@@ -41,6 +41,11 @@ func repoRoot() string {
 }
 
 // freePort temporarily binds to :0 to obtain an unused port and returns it.
+// There is a short TOCTOU window between Close() and Castle binding the port;
+// this is acceptable here because (a) Castle is started immediately after on the
+// same loopback address, (b) waitForCastleReady retries for 30 s and surfaces any
+// bind failure clearly, and (c) CI runners are not shared environments where
+// another process would race for the same port in that sub-millisecond window.
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
