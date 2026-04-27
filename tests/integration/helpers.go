@@ -67,8 +67,9 @@ func portFromAddr(rawURL string) int {
 
 // CastleHandle holds a running Castle process and its connection details.
 type CastleHandle struct {
-	URL    string
-	DBPath string
+	URL     string
+	DBPath  string
+	LogPath string // path of the on-disk process log written for CI artifact upload
 
 	cmd      *exec.Cmd
 	logLines []string
@@ -92,6 +93,11 @@ func startCastleOnDB(t *testing.T, dbPath string, port int) *CastleHandle {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	url := "http://" + addr
 
+	logFile, err := os.CreateTemp(os.TempDir(), "castle-*.log")
+	if err != nil {
+		t.Fatalf("startCastleOnDB: create log file: %v", err)
+	}
+
 	bin := filepath.Join(repoRoot(), "bin", "castle")
 	cmd := exec.Command(bin,
 		"--addr", addr,
@@ -100,9 +106,10 @@ func startCastleOnDB(t *testing.T, dbPath string, port int) *CastleHandle {
 	)
 
 	h := &CastleHandle{
-		URL:    url,
-		DBPath: dbPath,
-		cmd:    cmd,
+		URL:     url,
+		DBPath:  dbPath,
+		LogPath: logFile.Name(),
+		cmd:     cmd,
 	}
 
 	// Stream stderr for log capture.
@@ -114,28 +121,33 @@ func startCastleOnDB(t *testing.T, dbPath string, port int) *CastleHandle {
 		t.Fatalf("startCastleOnDB: Start: %v", err)
 	}
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
+		defer logFile.Close()
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			line := sc.Text()
 			h.logMu.Lock()
 			h.logLines = append(h.logLines, line)
 			h.logMu.Unlock()
+			fmt.Fprintln(logFile, line)
 		}
 	}()
 
 	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		<-done // ensure goroutine has drained all log lines before reading them
 		if t.Failed() {
+			t.Logf("=== castle logs (path: %s) ===", h.LogPath)
 			h.logMu.Lock()
-			t.Logf("=== castle logs ===")
 			for _, l := range h.logLines {
 				t.Log(l)
 			}
 			h.logMu.Unlock()
-		}
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
 		}
 	})
 
@@ -181,6 +193,7 @@ func waitForCastleReady(t *testing.T, url string) {
 // OverseerHandle holds a running Overseer process.
 type OverseerHandle struct {
 	StateDir string
+	LogPath  string // path of the on-disk process log written for CI artifact upload
 
 	cmd      *exec.Cmd
 	logLines []string
@@ -193,12 +206,18 @@ func StartOverseer(t *testing.T, castleURL, workflowPath string) *OverseerHandle
 	t.Helper()
 	stateDir := t.TempDir()
 
+	logFile, err := os.CreateTemp(os.TempDir(), "overseer-*.log")
+	if err != nil {
+		t.Fatalf("StartOverseer: create log file: %v", err)
+	}
+
 	bin := filepath.Join(repoRoot(), "bin", "overseer")
 	cmd := exec.Command(bin, "apply", "--castle", castleURL, workflowPath)
 	cmd.Env = append(os.Environ(), "OVERSEER_STATE_DIR="+stateDir)
 
 	h := &OverseerHandle{
 		StateDir: stateDir,
+		LogPath:  logFile.Name(),
 		cmd:      cmd,
 	}
 
@@ -210,28 +229,33 @@ func StartOverseer(t *testing.T, castleURL, workflowPath string) *OverseerHandle
 		t.Fatalf("StartOverseer: Start: %v", err)
 	}
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
+		defer logFile.Close()
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			line := sc.Text()
 			h.logMu.Lock()
 			h.logLines = append(h.logLines, line)
 			h.logMu.Unlock()
+			fmt.Fprintln(logFile, line)
 		}
 	}()
 
 	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		<-done // ensure goroutine has drained all log lines before reading them
 		if t.Failed() {
+			t.Logf("=== overseer logs (path: %s) ===", h.LogPath)
 			h.logMu.Lock()
-			t.Logf("=== overseer logs ===")
 			for _, l := range h.logLines {
 				t.Log(l)
 			}
 			h.logMu.Unlock()
-		}
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
 		}
 	})
 

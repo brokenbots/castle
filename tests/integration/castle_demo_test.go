@@ -5,7 +5,6 @@ package integration
 import (
 	"bufio"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
 )
@@ -130,7 +130,7 @@ func TestCastle_DemoTour(t *testing.T) {
 						waitEntered = e
 					}
 				case *pb.Envelope_WaitResumed:
-					if waitEntered != nil {
+					if e.GetWaitResumed().GetNode() == "wait_for_window" {
 						waitResumed = e
 					}
 				}
@@ -220,8 +220,8 @@ func TestCastle_DemoTour(t *testing.T) {
 			}
 			watchEvents = append(watchEvents, env)
 		}
-		if err := stream.Err(); err != nil && err != io.EOF {
-			t.Logf("WatchRun stream closed with: %v (expected on completed run)", err)
+		if err := stream.Err(); err != nil {
+			t.Errorf("WatchRun stream closed with unexpected error: %v", err)
 		}
 
 		// Same length.
@@ -243,11 +243,18 @@ func TestCastle_DemoTour(t *testing.T) {
 				t.Errorf("event[%d]: watch type %q != list type %q",
 					i, EventTypeString(watchEvents[i]), EventTypeString(listEvents[i]))
 			}
+			if !proto.Equal(watchEvents[i], listEvents[i]) {
+				t.Errorf("event[%d] (seq=%d, type=%q): watch and list payloads differ",
+					i, listEvents[i].GetSeq(), EventTypeString(listEvents[i]))
+			}
 		}
 
-		// Assert required event types are present.
+		// Assert required event types are present (superset of the workflow's expected emit set).
 		requiredTypes := []string{
 			"run.started",
+			"step.entered",
+			"step.outcome",
+			"variable.set",
 			"for_each.entered",
 			"for_each.iteration",
 			"for_each.outcome",
