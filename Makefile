@@ -1,7 +1,8 @@
 .PHONY: help bootstrap tidy build build-overseer build-castle build-parapet plugins \
 	test validate validate-docs dev-castle dev-overseer dev-parapet demo docker-build \
 	docker-build-overseer docker-build-castle compose-up compose-down \
-	compose-logs clean proto proto-lint proto-check proto-check-drift
+	compose-logs clean proto proto-lint proto-check proto-check-drift \
+	test-conformance
 
 # Default target: list available targets.
 help:
@@ -55,6 +56,9 @@ ci: build-overseer build-castle ## Run full CI suite: unit tests + example valid
 
 test-integration: build-overseer build-castle plugins ## Run integration tests against real Castle + Overseer processes
 	@go test -tags integration -timeout 5m ./tests/integration/...
+
+test-conformance: ## Run SDK conformance tests against Castle (heavy; live server required)
+	cd castle && go test -tags conformance -race -timeout 5m ./internal/rpc/...
 
 validate: build-overseer ## Validate all example workflows and doc examples
 	@for f in examples/*.hcl; do ./bin/overseer validate "$$f"; done
