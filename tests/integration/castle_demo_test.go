@@ -254,6 +254,8 @@ func TestCastle_DemoTour(t *testing.T) {
 			"run.started",
 			"step.entered",
 			"step.outcome",
+			"step.output_captured",
+			"step.transition",
 			"variable.set",
 			"for_each.entered",
 			"for_each.iteration",
