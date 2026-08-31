@@ -1,4 +1,4 @@
-module github.com/brokenbots/overlord/shared
+module github.com/brokenbots/castle/shared
 
 go 1.26
 

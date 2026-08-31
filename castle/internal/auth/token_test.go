@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
+	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 )
 
 func TestTokenFromHeaders(t *testing.T) {

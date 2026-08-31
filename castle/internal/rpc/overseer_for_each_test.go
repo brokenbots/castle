@@ -8,9 +8,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/brokenbots/overlord/castle/internal/store"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	"github.com/brokenbots/castle/castle/internal/store"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 // applyAndFlushScope calls applyRunStatus with the given envelope and then

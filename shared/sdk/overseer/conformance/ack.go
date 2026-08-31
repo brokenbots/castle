@@ -8,8 +8,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1"
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 // testAckOrdering verifies that SubmitEvents acks arrive with monotonically

@@ -10,8 +10,8 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/brokenbots/overlord/castle/internal/auth"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/castle/castle/internal/auth"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 func TestE2ELifecycleAndAuth(t *testing.T) {

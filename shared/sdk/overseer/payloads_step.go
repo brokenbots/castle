@@ -1,6 +1,6 @@
 package overseer
 
-import pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+import pb "github.com/brokenbots/castle/shared/pb/overlord/v1"
 
 // StepEntered is emitted when execution enters a step node.
 type StepEntered = pb.StepEntered

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	pb "github.com/brokenbots/overlord/shared/sdk/overseer"
+	pb "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 // TestUnsubscribeIdempotent ensures the channel is closed at most once, so a

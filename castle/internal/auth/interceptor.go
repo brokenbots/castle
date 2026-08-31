@@ -8,9 +8,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 // callerOverseerIDKey is the context key for the authenticated caller's overseer ID.

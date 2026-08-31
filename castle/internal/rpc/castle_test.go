@@ -11,11 +11,11 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/brokenbots/overlord/castle/internal/hub"
-	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	"github.com/brokenbots/castle/castle/internal/hub"
+	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/sqlite"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 type recordedLog struct {

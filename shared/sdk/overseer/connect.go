@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	connect "connectrpc.com/connect"
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect"
+	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect"
 )
 
 // ServiceClient is the Connect client interface for the OverseerService.

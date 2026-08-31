@@ -16,12 +16,12 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/brokenbots/overlord/castle/internal/hub"
-	"github.com/brokenbots/overlord/castle/internal/store"
-	"github.com/brokenbots/overlord/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	"github.com/brokenbots/overlord/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	"github.com/brokenbots/castle/castle/internal/hub"
+	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/sqlite"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 type testStack struct {

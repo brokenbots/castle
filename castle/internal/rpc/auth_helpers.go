@@ -6,8 +6,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/brokenbots/overlord/castle/internal/auth"
-	"github.com/brokenbots/overlord/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/auth"
+	"github.com/brokenbots/castle/castle/internal/store"
 )
 
 // requireCaller enforces that the authenticated caller is the same as

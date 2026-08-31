@@ -1,4 +1,4 @@
-module github.com/brokenbots/overlord/castle
+module github.com/brokenbots/castle/castle
 
 go 1.26
 
@@ -6,7 +6,6 @@ require (
 	connectrpc.com/connect v1.19.2
 	connectrpc.com/grpchealth v1.4.0
 	connectrpc.com/grpcreflect v1.3.0
-	github.com/brokenbots/overlord/shared v0.0.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/net v0.49.0
 	google.golang.org/protobuf v1.36.11

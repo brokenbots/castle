@@ -1,6 +1,6 @@
 package overseer
 
-import pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+import pb "github.com/brokenbots/castle/shared/pb/overlord/v1"
 
 // OverseerHeartbeat is emitted periodically by the overseer to signal liveness.
 type OverseerHeartbeat = pb.OverseerHeartbeat

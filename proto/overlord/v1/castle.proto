@@ -8,7 +8,7 @@ import "google/protobuf/timestamp.proto";
 import "overlord/v1/events.proto";
 import "overlord/v1/overseer.proto";
 
-option go_package = "github.com/brokenbots/overlord/shared/pb/overlord/v1;overlordv1";
+option go_package = "github.com/brokenbots/castle/shared/pb/overlord/v1;overlordv1";
 
 service CastleService {
   rpc ListOverseers(ListOverseersRequest) returns (ListOverseersResponse);

@@ -14,8 +14,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	_ "modernc.org/sqlite"
 
-	"github.com/brokenbots/overlord/castle/internal/store"
-	pb "github.com/brokenbots/overlord/shared/sdk/overseer"
+	"github.com/brokenbots/castle/castle/internal/store"
+	pb "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 type Store struct {

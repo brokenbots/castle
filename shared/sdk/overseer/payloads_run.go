@@ -1,6 +1,6 @@
 package overseer
 
-import pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+import pb "github.com/brokenbots/castle/shared/pb/overlord/v1"
 
 // RunStarted is emitted when a run begins execution.
 type RunStarted = pb.RunStarted

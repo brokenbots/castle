@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 const DefaultEventBufferCapacity = 1024

@@ -17,18 +17,5 @@ services:
       retries: 12
       start_period: 3s
 
-  overseer:
-    build:
-      context: .
-      dockerfile: Dockerfile.overseer
-    environment:
-      OVERSEER_CASTLE_URL: http://castle:8080
-      OVERSEER_WORKFLOW: /workflows/hello.hcl
-      OVERSEER_NAME: compose-overseer
-    depends_on:
-      castle:
-        condition: service_healthy
-    restart: "no"
-
 volumes:
   castle-data:

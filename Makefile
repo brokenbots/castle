@@ -1,143 +1,66 @@
-.PHONY: help bootstrap tidy build build-overseer build-castle build-parapet plugins \
-	test validate validate-docs dev-castle dev-overseer dev-parapet demo docker-build \
-	docker-build-overseer docker-build-castle compose-up compose-down \
-	compose-logs clean proto proto-lint proto-check proto-check-drift \
-	test-conformance lint-imports lint-imports-ts lint-imports-ts-test
+.PHONY: help bootstrap tidy build build-castle build-parapet test ci dev-castle \
+	dev-parapet docker-build compose-up compose-down compose-logs clean proto \
+	proto-lint proto-check proto-check-drift
 
-# Default target: list available targets.
 help:
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-bootstrap: ## Install dependencies for all components
+bootstrap: ## Install backend and frontend dependencies
 	go work sync
-	cd parapet && npm install
+	cd parapet && npm ci
 
-tidy: ## Run go mod tidy across all Go modules
-	cd shared   && go mod tidy
-	cd workflow && go mod tidy
-	cd overseer && go mod tidy
-	cd castle   && go mod tidy
+tidy: ## Tidy all Go modules
+	cd shared && go mod tidy
+	cd castle && go mod tidy
 
-build: build-overseer build-castle build-parapet plugins ## Build all binaries
+build: build-castle build-parapet ## Build Castle and Parapet
 
-plugins: ## Build adapter plugin binaries
-	mkdir -p bin
-	cd overseer && for d in ./cmd/overlord-adapter-*; do \
-		if [ -d "$$d" ]; then \
-			name=$${d##*/}; \
-			go build -o ../bin/$$name $$d; \
-		fi; \
-	done
-
-build-overseer: ## Build overseer binary
-	mkdir -p bin
-	cd overseer && go build -o ../bin/overseer ./cmd/overseer
-
-build-castle: ## Build castle binary
+build-castle: ## Build the Castle server
 	mkdir -p bin
 	cd castle && go build -o ../bin/castle ./cmd/castle
 
-build-parapet: ## Build parapet UI
+build-parapet: ## Build the Parapet UI
 	cd parapet && npm run build
 
-test: ## Run all Go tests
-	cd shared   && go test ./...
-	cd workflow && go test ./...
-	cd overseer && go test -race ./...
-	cd castle   && go test -race ./...
-	cd tools/validate-doc-examples && go test ./...
-	cd tools/import-lint && go test ./...
-	@$(MAKE) lint-imports-ts-test
+test: ## Run backend and frontend tests
+	cd shared && go test ./...
+	cd castle && go test -race ./...
+	cd parapet && npm run test:run
 
-ci: build-overseer build-castle ## Run full CI suite: unit tests + example validation
-	cd shared   && go test ./...
-	cd workflow && go test ./...
-	cd overseer && go test -race ./...
-	cd castle   && go test -race ./...
-	cd tools/import-lint && go test ./...
-	$(MAKE) validate
+ci: build test proto-lint proto-check-drift ## Run all repository gates
 
-test-integration: build-overseer build-castle plugins ## Run integration tests against real Castle + Overseer processes
-	@go test -tags integration -timeout 5m ./tests/integration/...
-
-test-conformance: ## Run SDK conformance tests against Castle (heavy; live server required)
-	cd castle && go test -tags conformance -race -timeout 5m ./internal/rpc/...
-
-validate: build-overseer lint-imports lint-imports-ts ## Validate all example workflows and doc examples
-	@for f in examples/*.hcl; do ./bin/overseer validate "$$f"; done
-	@$(MAKE) validate-docs
-
-validate-docs: build-overseer ## Validate HCL code blocks embedded in docs/*.md
-	@cd tools/validate-doc-examples && OVERSEER=$(CURDIR)/bin/overseer go run . $(CURDIR)/docs
-
-lint-imports: ## Check Go import-graph boundaries (castle/overseer/sdk must not cross-import)
-	@cd tools/import-lint && go run . $(CURDIR)
-
-lint-imports-ts: ## Check TS import-graph boundaries (parapet must use sdk/overseer shim)
-	@bash scripts/lint-imports-ts.sh $(CURDIR)
-
-lint-imports-ts-test: ## Run unit tests for the TS import linter
-	@bash scripts/lint-imports-ts-test.sh
-
-dev-castle: ## Run castle in dev mode
+dev-castle: ## Run Castle on localhost:8080
 	cd castle && go run ./cmd/castle --addr :8080 --db ./castle.dev.db
 
-dev-overseer: ## Run overseer against local castle with the build_and_test example
-	cd overseer && go run ./cmd/overseer run --castle http://localhost:8080 --workflow ../examples/build_and_test.hcl
-
-dev-parapet: ## Run parapet dev server
+dev-parapet: ## Run the Parapet development server
 	cd parapet && npm run dev
 
-demo: ## Run end-to-end demo: castle + parapet + a multi-step looping workflow
-	./scripts/demo.sh
+docker-build: ## Build the Castle container image
+	docker build -f Dockerfile.castle -t castle:dev .
 
-docker-build: docker-build-castle docker-build-overseer ## Build local Docker images for castle and overseer
-
-docker-build-overseer: ## Build overseer Docker image
-	docker build -f Dockerfile.overseer -t overlord/overseer:dev .
-
-docker-build-castle: ## Build castle Docker image
-	docker build -f Dockerfile.castle -t overlord/castle:dev .
-
-compose-up: ## Build and start local castle+overseer compose stack
+compose-up: ## Build and start Castle
 	docker compose -f compose.local.yml up --build
 
-compose-down: ## Stop local compose stack and remove containers
+compose-down: ## Stop Castle
 	docker compose -f compose.local.yml down
 
-compose-logs: ## Tail logs from local compose stack
+compose-logs: ## Follow Castle logs
 	docker compose -f compose.local.yml logs -f
 
-clean: ## Remove build outputs
-	rm -rf bin
+clean: ## Remove build outputs and local state
+	rm -rf bin parapet/dist parapet/.vite
 	rm -f castle/*.db
-	rm -rf parapet/dist parapet/.vite
 
-# --- Protobuf / buf -----------------------------------------------------------
-# The proto schema under proto/overlord/v1 is the source of truth for every
-# wire-visible type and RPC (Phase 1.1). Generated Go lives in shared/pb and
-# generated TS in parapet/src/gen; both are checked in so consumers do not
-# need `buf` locally to build.
-
-proto: ## Regenerate Go and TS code from proto/overlord/v1
+proto: ## Regenerate Go and TypeScript bindings
 	buf generate
 
-proto-lint: ## Lint the proto schema
+proto-lint: ## Lint protobuf schemas
 	buf lint
 
-proto-check: ## Check the proto schema for breaking changes against main
-	@out=$$(buf breaking --against '.git#branch=main' 2>&1); \
-	code=$$?; \
-	echo "$$out"; \
-	if [ $$code -ne 0 ]; then \
-		if echo "$$out" | grep -q 'had no .proto files'; then \
-			echo "note: main has no proto schema yet; skipping breaking check." >&2; \
-			exit 0; \
-		fi; \
-		exit $$code; \
-	fi
+proto-check: ## Check protobuf compatibility against main
+	buf breaking --against '.git#branch=main'
 
-proto-check-drift: ## Fail if generated code is out of date with the .proto files
+proto-check-drift: ## Fail when generated bindings are stale
 	buf generate
 	@if ! git diff --quiet -- shared/pb parapet/src/gen; then \
 		echo "Generated proto output is out of date. Run 'make proto' and commit the changes." >&2; \

@@ -2,7 +2,7 @@ version: v1
 managed:
   enabled: true
   go_package_prefix:
-    default: github.com/brokenbots/overlord/shared/pb
+    default: github.com/brokenbots/castle/shared/pb
 plugins:
   - plugin: buf.build/protocolbuffers/go
     out: shared/pb

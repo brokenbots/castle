@@ -12,10 +12,10 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/brokenbots/overlord/castle/internal/auth"
-	"github.com/brokenbots/overlord/castle/internal/store"
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/castle/castle/internal/auth"
+	"github.com/brokenbots/castle/castle/internal/store"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 func (s *OverseerServer) Register(ctx context.Context, req *connect.Request[pb.RegisterRequest]) (*connect.Response[pb.RegisterResponse], error) {

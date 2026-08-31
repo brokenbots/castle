@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/brokenbots/overlord/castle/internal/hub"
-	"github.com/brokenbots/overlord/castle/internal/store"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/castle/castle/internal/hub"
+	"github.com/brokenbots/castle/castle/internal/store"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 const controlBufferSize = 32

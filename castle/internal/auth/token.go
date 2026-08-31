@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/brokenbots/overlord/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store"
 )
 
 // BearerFromAuthorization parses an Authorization header and returns the bearer token.

@@ -3,7 +3,7 @@ package hub
 import (
 	"sync"
 
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 // Buffer keeps a bounded in-memory ring of recent envelopes per run.

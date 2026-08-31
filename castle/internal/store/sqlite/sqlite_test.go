@@ -13,8 +13,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
-	"github.com/brokenbots/overlord/castle/internal/store"
-	pb "github.com/brokenbots/overlord/shared/sdk/overseer"
+	"github.com/brokenbots/castle/castle/internal/store"
+	pb "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 func tempStore(t *testing.T) *Store {

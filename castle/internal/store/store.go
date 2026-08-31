@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 var ErrNotFound = errors.New("not found")

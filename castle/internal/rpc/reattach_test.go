@@ -8,10 +8,10 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/brokenbots/overlord/castle/internal/auth"
-	"github.com/brokenbots/overlord/castle/internal/store"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/overlord/shared/sdk/overseer"
+	"github.com/brokenbots/castle/castle/internal/auth"
+	"github.com/brokenbots/castle/castle/internal/store"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 // createRunAtStep creates a run in "running" status with currentStep set.
@@ -19,12 +19,12 @@ func createRunAtStep(t *testing.T, ts *testStack, overseerID, step string) strin
 	t.Helper()
 	ctx := context.Background()
 	r := &store.Run{
-		ID:          "run-" + step + "-" + overseerID[:8],
-		OverseerID:  overseerID,
+		ID:           "run-" + step + "-" + overseerID[:8],
+		OverseerID:   overseerID,
 		WorkflowName: "test-workflow",
-		Status:      "running",
-		CurrentStep: step,
-		CreatedAt:   time.Now().UTC(),
+		Status:       "running",
+		CurrentStep:  step,
+		CreatedAt:    time.Now().UTC(),
 	}
 	if err := ts.store.CreateRun(ctx, r); err != nil {
 		t.Fatal(err)

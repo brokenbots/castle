@@ -21,8 +21,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
-	"github.com/brokenbots/overlord/shared/events"
-	pb "github.com/brokenbots/overlord/shared/pb/overlord/v1"
+	"github.com/brokenbots/castle/shared/events"
+	pb "github.com/brokenbots/castle/shared/pb/overlord/v1"
 )
 
 // payloadOneof returns the "payload" oneof descriptor from the Envelope message.

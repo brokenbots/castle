@@ -1,9 +1,6 @@
 # Build outputs
 /bin/
-overseer/cmd/overseer/overseer
 castle/cmd/castle/castle
-overseer/bin/
-overseer/overseer
 castle/castle
 
 # Go
