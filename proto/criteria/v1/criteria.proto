@@ -197,7 +197,16 @@ message ControlMessage {
     // CreateRun for assignments. Accepted implicitly when the agent starts the
     // run and submits a RunStarted event.
     WorkflowAssignment workflow_assignment = 5; // CRI-60
+    // PauseRun asks the Criteria agent to pause an in-flight run. The agent
+    // should preserve adapter/run state and enter a paused state.
+    PauseRun pause_run = 6; // CRI-74
   }
+}
+
+// PauseRun asks the Criteria agent to pause an in-flight run.
+message PauseRun {
+  string run_id = 1;
+  string reason = 2;
 }
 
 // WorkflowAssignment delivers a queued workflow from the orchestrator to a

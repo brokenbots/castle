@@ -1,0 +1,204 @@
+package conformance
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+
+	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
+)
+
+// testCallerOwnership asserts the caller-ownership contract for every mutating
+// CriteriaService RPC. Two agents (A and B) are registered with distinct
+// tokens. B-token calls against A-owned resources must return
+// connect.CodePermissionDenied.
+//
+// RPCs tested:
+//   - Heartbeat: B cannot heartbeat as A.
+//   - CreateRun: B cannot create a run claiming A's criteria_id.
+//   - ReattachRun: B cannot reattach to A's run.
+//   - SubmitEvents: B cannot submit events for A's run.
+//   - Control: B cannot subscribe to A's control channel.
+//   - Resume: B cannot resume A's run.
+//   - Register: without a bootstrap credential returns Unimplemented (or
+//     the documented bootstrap-required error).
+func testCallerOwnership(t *testing.T, s Subject) {
+	t.Run("Heartbeat", func(t *testing.T) {
+		testOwnershipHeartbeat(t, s)
+	})
+	t.Run("CreateRun", func(t *testing.T) {
+		testOwnershipCreateRun(t, s)
+	})
+	t.Run("ReattachRun", func(t *testing.T) {
+		testOwnershipReattachRun(t, s)
+	})
+	t.Run("SubmitEvents", func(t *testing.T) {
+		testOwnershipSubmitEvents(t, s)
+	})
+	t.Run("Control", func(t *testing.T) {
+		testOwnershipControl(t, s)
+	})
+	t.Run("Resume", func(t *testing.T) {
+		testOwnershipResume(t, s)
+	})
+	t.Run("RegisterBootstrapGate", func(t *testing.T) {
+		testOwnershipRegisterBootstrapGate(t, s)
+	})
+}
+
+// ownershipSetup registers two agents (owner A and attacker B) and creates
+// a run owned by A. It returns the clients and IDs needed for ownership tests.
+func ownershipSetup(t *testing.T, s Subject) (
+	oClient criteria.ServiceClient,
+	ownerID, attackerID, attackerToken, runID string,
+) {
+	t.Helper()
+	baseURL, client, teardown := s.SetUp(t)
+	t.Cleanup(teardown)
+
+	ownerToken := "tok-owner"
+	attackerToken = "tok-attacker"
+	ownerID = s.RegisterAgent(t, "owner", ownerToken)
+	attackerID = s.RegisterAgent(t, "attacker", attackerToken)
+
+	oClient = criteria.NewServiceClient(client, baseURL)
+
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: ownerID, WorkflowName: "ownership-wf"})
+	createReq.Header().Set("Authorization", "Bearer "+ownerToken)
+	runResp, err := oClient.CreateRun(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("ownershipSetup: CreateRun: %v", err)
+	}
+	runID = runResp.Msg.RunId
+	return oClient, ownerID, attackerID, attackerToken, runID
+}
+
+func testOwnershipHeartbeat(t *testing.T, s Subject) {
+	oClient, ownerID, _, attackerToken, _ := ownershipSetup(t, s)
+	req := connect.NewRequest(&pb.HeartbeatRequest{CriteriaId: ownerID})
+	req.Header().Set("Authorization", "Bearer "+attackerToken)
+	_, err := oClient.Heartbeat(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Errorf("Heartbeat cross-owner: want CodePermissionDenied, got code=%v err=%v",
+			connect.CodeOf(err), err)
+	}
+}
+
+func testOwnershipCreateRun(t *testing.T, s Subject) {
+	oClient, ownerID, _, attackerToken, _ := ownershipSetup(t, s)
+	req := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: ownerID, WorkflowName: "wf"})
+	req.Header().Set("Authorization", "Bearer "+attackerToken)
+	_, err := oClient.CreateRun(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Errorf("CreateRun cross-owner: want CodePermissionDenied, got code=%v err=%v",
+			connect.CodeOf(err), err)
+	}
+}
+
+func testOwnershipReattachRun(t *testing.T, s Subject) {
+	oClient, _, attackerID, attackerToken, runID := ownershipSetup(t, s)
+	req := connect.NewRequest(&pb.ReattachRunRequest{RunId: runID, CriteriaId: attackerID})
+	req.Header().Set("Authorization", "Bearer "+attackerToken)
+	_, err := oClient.ReattachRun(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Errorf("ReattachRun cross-owner: want CodePermissionDenied, got code=%v err=%v",
+			connect.CodeOf(err), err)
+	}
+}
+
+func testOwnershipSubmitEvents(t *testing.T, s Subject) {
+	oClient, _, _, attackerToken, runID := ownershipSetup(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream := oClient.SubmitEvents(ctx)
+	stream.RequestHeader().Set("Authorization", "Bearer "+attackerToken)
+	env := criteria.NewEnvelope(runID, &pb.StepLog{Step: "s", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: "x"})
+	env.CorrelationId = "own-submit"
+	if err := stream.Send(env); err != nil {
+		// Server may close the stream before the client reads — validate the
+		// error code rather than silently passing on any failure.
+		if connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Errorf("SubmitEvents cross-owner Send: want CodePermissionDenied on early rejection, got code=%v err=%v", connect.CodeOf(err), err)
+		}
+		return
+	}
+	_, err := stream.Receive()
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Errorf("SubmitEvents cross-owner: want CodePermissionDenied, got code=%v err=%v",
+			connect.CodeOf(err), err)
+	}
+}
+
+func testOwnershipControl(t *testing.T, s Subject) {
+	oClient, ownerID, _, attackerToken, _ := ownershipSetup(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req := connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: ownerID})
+	req.Header().Set("Authorization", "Bearer "+attackerToken)
+	stream, err := oClient.Control(ctx, req)
+	if err != nil {
+		if connect.CodeOf(err) == connect.CodePermissionDenied {
+			return
+		}
+		t.Fatalf("Control cross-owner: unexpected error: %v", err)
+	}
+	// Server may send the rejection as the first stream message.
+	stream.Receive() // return value is bool; error is in stream.Err()
+	if connect.CodeOf(stream.Err()) != connect.CodePermissionDenied {
+		t.Errorf("Control cross-owner: want CodePermissionDenied, got code=%v err=%v",
+			connect.CodeOf(stream.Err()), stream.Err())
+	}
+}
+
+func testOwnershipResume(t *testing.T, s Subject) {
+	baseURL, client, teardown := s.SetUp(t)
+	defer teardown()
+
+	ownerToken := "tok-res-owner"
+	attackerToken := "tok-res-attacker"
+	ownerID := s.RegisterAgent(t, "res-owner", ownerToken)
+	_ = s.RegisterAgent(t, "res-attacker", attackerToken)
+	oClient := criteria.NewServiceClient(client, baseURL)
+
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: ownerID, WorkflowName: "own-resume-wf"})
+	createReq.Header().Set("Authorization", "Bearer "+ownerToken)
+	runResp, err := oClient.CreateRun(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	runID := runResp.Msg.RunId
+	pauseRunViaWaitEntered(t, oClient, ownerToken, runID, "gate-own")
+
+	req := connect.NewRequest(&pb.ResumeRequest{RunId: runID, Signal: "gate-own"})
+	req.Header().Set("Authorization", "Bearer "+attackerToken)
+	_, err = oClient.Resume(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Errorf("Resume cross-owner: want CodePermissionDenied, got code=%v err=%v",
+			connect.CodeOf(err), err)
+	}
+}
+
+func testOwnershipRegisterBootstrapGate(t *testing.T, s Subject) {
+	// The conformance test cannot configure the bootstrap credential on the
+	// server (that's implementation-specific). We verify that Register without
+	// any credential either returns Unimplemented (no bootstrap configured) or
+	// Unauthenticated (bootstrap required but not provided). Both are acceptable
+	// per the SDK doc contract.
+	//
+	// Note: the Subject uses RegisterAgent (direct store path) for test setup,
+	// so the bootstrap mechanism is not exercised there. This test exercises the
+	// wire-level Register RPC directly.
+	baseURL, client, teardown := s.SetUp(t)
+	defer teardown()
+
+	oClient := criteria.NewServiceClient(client, baseURL)
+	_, err := oClient.Register(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: "x"}))
+	code := connect.CodeOf(err)
+	if code != connect.CodeUnimplemented && code != connect.CodeUnauthenticated {
+		t.Errorf("Register without bootstrap token: want CodeUnimplemented or CodeUnauthenticated, got code=%v err=%v",
+			code, err)
+	}
+}

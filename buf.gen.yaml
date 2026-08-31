@@ -2,12 +2,24 @@ version: v1
 plugins:
   # Pin protobuf-es and connect-es to the v1 line so the generated TS stays
   # compatible with a single @bufbuild/protobuf + @connectrpc/connect version
-  # set. Bump together when upgrading.
-  - plugin: buf.build/bufbuild/es:v1.10.0
+  # set. Bump together when upgrading. Local plugin binaries avoid BSR rate
+  # limits and keep CI deterministic.
+  - plugin: es
     out: parapet/src/gen
     opt:
       - target=ts
-  - plugin: buf.build/connectrpc/es:v1.6.1
+  - plugin: connect-es
     out: parapet/src/gen
     opt:
       - target=ts
+  # Go bindings for the Criteria wire contract are generated into the local
+  # criteria-sdk module so Castle can evolve the proto schema without waiting
+  # for a published SDK release.
+  - plugin: go
+    out: criteria-sdk/pb
+    opt:
+      - paths=source_relative
+  - plugin: connect-go
+    out: criteria-sdk/pb
+    opt:
+      - paths=source_relative
