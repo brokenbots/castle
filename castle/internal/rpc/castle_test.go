@@ -15,8 +15,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/hub"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 type recordedLog struct {

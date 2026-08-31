@@ -13,10 +13,10 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
-	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 	criteria "github.com/brokenbots/criteria/sdk"
 	"github.com/brokenbots/criteria/sdk/conformance"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 // TestCastleConformance runs the full SDK conformance suite against Castle.

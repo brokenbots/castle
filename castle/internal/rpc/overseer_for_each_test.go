@@ -9,8 +9,8 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 // applyAndFlushScope calls applyRunStatus with the given envelope and then

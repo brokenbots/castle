@@ -9,9 +9,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
+	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	criteria "github.com/brokenbots/criteria/sdk"
 )
 
 // ownershipHarness holds the pieces needed for ownership enforcement tests.

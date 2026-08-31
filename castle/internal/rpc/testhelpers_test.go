@@ -19,9 +19,9 @@ import (
 	"github.com/brokenbots/castle/castle/internal/hub"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
+	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	criteria "github.com/brokenbots/criteria/sdk"
 )
 
 type testStack struct {
