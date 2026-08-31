@@ -54,11 +54,11 @@ func (s *castleSubject) SetUp(t *testing.T) (string, *http.Client, func()) {
 	return srv.URL, h2cClient(), func() {}
 }
 
-// RegisterOverseer inserts an overseer record directly into the SQLite store,
+// RegisterAgent inserts an overseer record directly into the SQLite store,
 // bypassing the Register RPC and its bootstrap requirement. This is the
 // standard test-setup path: it does not exercise the Register wire contract
 // (that is testOwnership_RegisterBootstrapGate's job).
-func (s *castleSubject) RegisterOverseer(t *testing.T, name, token string) string {
+func (s *castleSubject) RegisterAgent(t *testing.T, name, token string) string {
 	t.Helper()
 	s.mu.Lock()
 	ts := s.ts

@@ -34,6 +34,11 @@ type testStack struct {
 
 func newTestStack(t *testing.T) *testStack {
 	t.Helper()
+	return newTestStackWithLog(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
+	t.Helper()
 	s, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +46,6 @@ func newTestStack(t *testing.T) *testStack {
 	t.Cleanup(func() { _ = s.Close() })
 	h := hub.New()
 	controls := NewControlRegistry()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return &testStack{
 		store:    s,
 		hub:      h,
