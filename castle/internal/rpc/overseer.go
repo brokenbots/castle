@@ -478,33 +478,22 @@ func (s *CriteriaServer) dispatchForAgent(ctx context.Context, criteriaID string
 	}
 	now := time.Now().UTC()
 	leaseDuration := defaultAssignmentLeaseDuration
-	for {
-		leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, leaseDuration)
-		if err != nil {
-			if !errors.Is(err, store.ErrNotFound) {
-				s.Log.Debug("dispatch for agent: lease failed", "criteria_id", criteriaID, "err", err)
-			}
-			return
+	leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, leaseDuration)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			s.Log.Debug("dispatch for agent: lease failed", "criteria_id", criteriaID, "err", err)
 		}
-		err = s.controls.Enqueue(criteriaID, &pb.ControlMessage{Command: &pb.ControlMessage_WorkflowAssignment{WorkflowAssignment: &pb.WorkflowAssignment{
-			RunId:          leased.RunID,
-			WorkflowName:   leased.WorkflowName,
-			WorkflowSource: leased.WorkflowSource,
-			LockfileSource: leased.LockfileSource,
-			Labels:         leased.Labels,
-		}}})
-		if err != nil {
-			s.Log.Warn("dispatch for agent: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
-			return
-		}
-		// If this agent can take more work, continue; otherwise stop to avoid
-		// flooding the control channel.
-		select {
-		case <-time.After(10 * time.Millisecond):
-			continue
-		default:
-			return
-		}
+		return
+	}
+	err = s.controls.Enqueue(criteriaID, &pb.ControlMessage{Command: &pb.ControlMessage_WorkflowAssignment{WorkflowAssignment: &pb.WorkflowAssignment{
+		RunId:          leased.RunID,
+		WorkflowName:   leased.WorkflowName,
+		WorkflowSource: leased.WorkflowSource,
+		LockfileSource: leased.LockfileSource,
+		Labels:         leased.Labels,
+	}}})
+	if err != nil {
+		s.Log.Warn("dispatch for agent: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
 	}
 }
 
