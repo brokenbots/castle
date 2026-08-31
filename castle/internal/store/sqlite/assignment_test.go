@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -473,4 +474,88 @@ func TestOverseerLabels_RoundTrip(t *testing.T) {
 	if len(list) != 1 || len(list[0].Labels) != 2 {
 		t.Fatalf("list did not include labels: %v", list[0].Labels)
 	}
+}
+
+// TestCreateWorkflowAssignment_ConcurrentSubmissionsNoBusy reproduces Shape B
+// from CRI-78: many goroutines concurrently call CreateWorkflowAssignment on a
+// single store using the default connection pool. Before the fix this
+// surfaced SQLITE_BUSY to callers; after the fix every submission must succeed
+// and create exactly one run and one assignment.
+func TestCreateWorkflowAssignment_ConcurrentSubmissionsNoBusy(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	const m = 50
+	var wg sync.WaitGroup
+	var okCount int64
+	var busyCount int64
+	var otherCount int64
+
+	for i := 0; i < m; i++ {
+		wg.Add(1)
+		i := i
+		go func() {
+			defer wg.Done()
+			a := &store.WorkflowAssignment{
+				OwnerCriteriaID: "owner-1",
+				WorkflowName:    "wf",
+				WorkflowSource:  "source hcl",
+				IdempotencyKey:  fmt.Sprintf("key-%d", i),
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			_, created, err := s.CreateWorkflowAssignment(ctx, a)
+			if err != nil {
+				if isBusyError(err) {
+					atomic.AddInt64(&busyCount, 1)
+				} else {
+					atomic.AddInt64(&otherCount, 1)
+					t.Errorf("goroutine %d: unexpected error: %v", i, err)
+				}
+				return
+			}
+			if !created {
+				t.Errorf("goroutine %d: expected created=true", i)
+			}
+			atomic.AddInt64(&okCount, 1)
+		}()
+	}
+	wg.Wait()
+
+	if busyCount != 0 {
+		t.Fatalf("expected 0 busy errors, got %d", busyCount)
+	}
+	if otherCount != 0 {
+		t.Fatalf("expected 0 other errors, got %d", otherCount)
+	}
+	if okCount != m {
+		t.Fatalf("expected %d successes, got %d", m, okCount)
+	}
+
+	var runCount, assignmentCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs`).Scan(&runCount); err != nil {
+		t.Fatalf("count runs: %v", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_assignments`).Scan(&assignmentCount); err != nil {
+		t.Fatalf("count assignments: %v", err)
+	}
+	if runCount != m {
+		t.Fatalf("expected %d run rows, got %d", m, runCount)
+	}
+	if assignmentCount != m {
+		t.Fatalf("expected %d assignment rows, got %d", m, assignmentCount)
+	}
+}
+
+// isBusyError reports whether err is a SQLite writer-lock conflict that should
+// never be surfaced to callers.
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "SQLITE_BUSY") ||
+		strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "517")
 }

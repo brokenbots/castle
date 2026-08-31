@@ -2,6 +2,8 @@ package rpc
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,6 +247,121 @@ func TestSubmitWorkflowAssignment_DispatchesToEligibleConnectedAgent(t *testing.
 	}
 }
 
+// TestSubmitWorkflowAssignment_ConcurrentSubmissionsNoBusy reproduces Shape D
+// from CRI-78: two matching agents are connected and two workflow assignments
+// are submitted concurrently. Before the fix the second submit frequently
+// returned SQLITE_BUSY; after the fix both submits must succeed, create
+// distinct runs, and be dispatched to the two agents.
+func TestSubmitWorkflowAssignment_ConcurrentSubmissionsNoBusy(t *testing.T) {
+	ts := newTestStack(t)
+	ctx := context.Background()
+	ownerCtx := auth.WithCallerCriteriaID(ctx, "owner-1")
+
+	// Register two online agents with matching labels.
+	agentA, _ := registerAgent(t, ts, "agent-a", map[string]string{"env": "prod"})
+	chA, err := ts.controls.Register(agentA)
+	if err != nil {
+		t.Fatalf("register control channel for agent a: %v", err)
+	}
+	defer ts.controls.Unregister(agentA, chA)
+
+	agentB, _ := registerAgent(t, ts, "agent-b", map[string]string{"env": "prod"})
+	chB, err := ts.controls.Register(agentB)
+	if err != nil {
+		t.Fatalf("register control channel for agent b: %v", err)
+	}
+	defer ts.controls.Unregister(agentB, chB)
+
+	// Submit two assignments concurrently from the same owner.
+	var wg sync.WaitGroup
+	var respA, respB *pb.SubmitWorkflowAssignmentResponse
+	var errA, errB error
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+			WorkflowName:   "valid-alpha",
+			WorkflowSource: "hcl",
+			IdempotencyKey: "valid-alpha",
+			Labels:         map[string]string{"env": "prod"},
+		})
+		r, err := ts.server.SubmitWorkflowAssignment(ownerCtx, req)
+		if err != nil {
+			errA = err
+			return
+		}
+		respA = r.Msg
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+			WorkflowName:   "valid-beta",
+			WorkflowSource: "hcl",
+			IdempotencyKey: "valid-beta",
+			Labels:         map[string]string{"env": "prod"},
+		})
+		r, err := ts.server.SubmitWorkflowAssignment(ownerCtx, req)
+		if err != nil {
+			errB = err
+			return
+		}
+		respB = r.Msg
+	}()
+
+	wg.Wait()
+
+	if isBusyError(errA) {
+		t.Fatalf("valid-alpha submit returned busy error: %v", errA)
+	}
+	if isBusyError(errB) {
+		t.Fatalf("valid-beta submit returned busy error: %v", errB)
+	}
+	if errA != nil {
+		t.Fatalf("valid-alpha submit: %v", errA)
+	}
+	if errB != nil {
+		t.Fatalf("valid-beta submit: %v", errB)
+	}
+	if respA == nil || respB == nil {
+		t.Fatal("expected both submissions to return a response")
+	}
+	if respA.RunId == "" || respB.RunId == "" {
+		t.Fatalf("expected both runs to have run ids, got %q and %q", respA.RunId, respB.RunId)
+	}
+	if respA.RunId == respB.RunId {
+		t.Fatalf("expected distinct run ids, got %s", respA.RunId)
+	}
+
+	// Wait for async dispatch to deliver both assignments via the agents'
+	// Control channels. One assignment may be dispatched to either agent.
+	received := make(map[string]string, 2)
+	deadline := time.After(3 * time.Second)
+	for len(received) < 2 {
+		select {
+		case msg := <-chA:
+			if wa := msg.GetWorkflowAssignment(); wa != nil {
+				received[wa.RunId] = agentA
+			}
+		case msg := <-chB:
+			if wa := msg.GetWorkflowAssignment(); wa != nil {
+				received[wa.RunId] = agentB
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for both assignments to dispatch; received=%v", received)
+		}
+	}
+
+	if received[respA.RunId] == "" {
+		t.Fatalf("assignment for run %s was not dispatched", respA.RunId)
+	}
+	if received[respB.RunId] == "" {
+		t.Fatalf("assignment for run %s was not dispatched", respB.RunId)
+	}
+}
+
 // TestSubmitWorkflowAssignment_DispatchesOldestQueuedAssignmentOnNewSubmit verifies
 // the fix for a stranding bug: when a new submission triggers dispatch, the
 // atomic lease may return an older queued assignment rather than the one just
@@ -409,4 +526,16 @@ func registerAgent(t *testing.T, ts *testStack, name string, labels map[string]s
 		t.Fatalf("register agent: %v", err)
 	}
 	return resp.Msg.CriteriaId, resp.Msg.Token
+}
+
+// isBusyError reports whether err is a SQLite writer-lock conflict that must
+// never be returned to callers of SubmitWorkflowAssignment.
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "SQLITE_BUSY") ||
+		strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "517")
 }
