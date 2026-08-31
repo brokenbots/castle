@@ -37,7 +37,7 @@ services:
       castle:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -x criteria-test-agent && wget -q --post-data='{}' --header='Content-Type: application/json' -O- http://castle:8080/grpc.health.v1.Health/Check | grep -q '\"status\":\"SERVING_STATUS_SERVING\"'"]
+      test: ["CMD-SHELL", "pgrep -f criteria-test-agent && wget -q --post-data='{}' --header='Content-Type: application/json' -O- http://castle:8080/grpc.health.v1.Health/Check | grep -q '\"status\":\"SERVING_STATUS_SERVING\"'"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -58,7 +58,7 @@ services:
       castle:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -x criteria-test-agent && wget -q --post-data='{}' --header='Content-Type: application/json' -O- http://castle:8080/grpc.health.v1.Health/Check | grep -q '\"status\":\"SERVING_STATUS_SERVING\"'"]
+      test: ["CMD-SHELL", "pgrep -f criteria-test-agent && wget -q --post-data='{}' --header='Content-Type: application/json' -O- http://castle:8080/grpc.health.v1.Health/Check | grep -q '\"status\":\"SERVING_STATUS_SERVING\"'"]
       interval: 5s
       timeout: 3s
       retries: 12
