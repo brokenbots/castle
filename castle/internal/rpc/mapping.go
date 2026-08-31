@@ -11,10 +11,20 @@ func mapAgent(o *store.Overseer) *pb.Agent {
 	if o == nil {
 		return nil
 	}
+	labels := make(map[string]string, len(o.Labels)+2)
+	for k, v := range o.Labels {
+		labels[k] = v
+	}
+	if o.Hostname != "" {
+		labels["hostname"] = o.Hostname
+	}
+	if o.Version != "" {
+		labels["version"] = o.Version
+	}
 	return &pb.Agent{
 		CriteriaId:   o.ID,
 		Name:         o.Name,
-		Labels:       map[string]string{"hostname": o.Hostname, "version": o.Version},
+		Labels:       labels,
 		Status:       o.Status,
 		RegisteredAt: timestamppb.New(o.CreatedAt),
 		LastSeenAt:   timestamppb.New(o.LastSeenAt),

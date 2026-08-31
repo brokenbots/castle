@@ -41,6 +41,13 @@ type Event struct {
 	Payload       []byte // protojson of the concrete payload message
 }
 
+const (
+	WorkflowAssignmentStateQueued   = "queued"
+	WorkflowAssignmentStateLeased   = "leased"
+	WorkflowAssignmentStateTerminal = "terminal"
+	WorkflowAssignmentStateRejected = "rejected"
+)
+
 type Overseer struct {
 	ID         string
 	Name       string
@@ -48,8 +55,46 @@ type Overseer struct {
 	Version    string
 	TokenHash  string
 	Status     string // "online" | "offline"
+	Labels     map[string]string
 	CreatedAt  time.Time
 	LastSeenAt time.Time
+}
+
+// WorkflowAssignment is a durable, idempotent queued workflow submission.
+type WorkflowAssignment struct {
+	ID               string
+	OwnerCriteriaID  string
+	RunID            string
+	WorkflowName     string
+	WorkflowSource   string
+	LockfileSource   string
+	IdempotencyKey   string
+	State            string // WorkflowAssignmentState*
+	TerminalReason   string
+	LeasedCriteriaID string
+	LeaseExpiresAt   *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	Labels           map[string]string
+}
+
+// WorkflowAssignmentLease records a single lease grant to an agent.
+type WorkflowAssignmentLease struct {
+	ID           string
+	AssignmentID string
+	CriteriaID   string
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+}
+
+// WorkflowAssignmentAttempt records a single lease attempt for an assignment.
+type WorkflowAssignmentAttempt struct {
+	AssignmentID string
+	Attempt      int
+	CriteriaID   string
+	CreatedAt    time.Time
+	CompletedAt  *time.Time
+	Outcome      string
 }
 
 type Run struct {
@@ -129,6 +174,31 @@ type Store interface {
 	SetRunPaused(ctx context.Context, runID, pendingSignal string, pausedAt time.Time) error
 	// ClearRunPaused clears the pending_signal and paused_at and sets status back to running.
 	ClearRunPaused(ctx context.Context, runID string) error
+
+	// Workflow assignments
+	// CreateWorkflowAssignment atomically creates the queued run and assignment
+	// record in a single transaction. If an assignment with the same
+	// (owner_criteria_id, idempotency_key) already exists, the existing record is
+	// returned and created is false.
+	CreateWorkflowAssignment(ctx context.Context, a *WorkflowAssignment) (*WorkflowAssignment, bool, error)
+	// GetWorkflowAssignment returns a workflow assignment by id.
+	GetWorkflowAssignment(ctx context.Context, id string) (*WorkflowAssignment, error)
+	// GetWorkflowAssignmentByRunID returns the assignment for a run.
+	GetWorkflowAssignmentByRunID(ctx context.Context, runID string) (*WorkflowAssignment, error)
+	// LeaseWorkflowAssignment atomically expires stale leases, finds a queued
+	// assignment whose labels are satisfied by the agent's labels, and leases it
+	// to criteriaID. Returns ErrNotFound when no eligible queued assignment is
+	// available.
+	LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*WorkflowAssignment, error)
+	// RecordWorkflowAssignmentLease persists a lease record.
+	RecordWorkflowAssignmentLease(ctx context.Context, lease *WorkflowAssignmentLease) error
+	// RecordWorkflowAssignmentAttempt starts a lease attempt.
+	RecordWorkflowAssignmentAttempt(ctx context.Context, attempt *WorkflowAssignmentAttempt) error
+	// CompleteWorkflowAssignmentAttempt records the outcome of an attempt.
+	CompleteWorkflowAssignmentAttempt(ctx context.Context, assignmentID string, attempt int, outcome string) error
+	// MarkWorkflowAssignmentTerminal transitions an active assignment to the
+	// terminal state, preventing further lease attempts.
+	MarkWorkflowAssignmentTerminal(ctx context.Context, runID, reason string) error
 
 	Close() error
 }

@@ -53,6 +53,60 @@ func TestMigrate_FreshDB_AppliesAllMigrations(t *testing.T) {
 	}
 }
 
+func TestMigrate_AssignmentQueueSchema(t *testing.T) {
+	db := newMigrationTestDB(t)
+	ctx := context.Background()
+
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	expectedTables := []string{
+		"workflow_assignments",
+		"workflow_assignment_labels",
+		"workflow_assignment_leases",
+		"workflow_assignment_attempts",
+	}
+	for _, name := range expectedTables {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&count); err != nil {
+			t.Fatalf("query table %s: %v", name, err)
+		}
+		if count != 1 {
+			t.Fatalf("expected table %s to exist, got count=%d", name, count)
+		}
+	}
+
+	// runs.overseer_id must be nullable so queued runs can exist before leasing.
+	var overseerNotNull int
+	if err := db.QueryRowContext(ctx, `SELECT "notnull" FROM pragma_table_info('runs') WHERE name='overseer_id'`).Scan(&overseerNotNull); err != nil {
+		t.Fatalf("query runs columns: %v", err)
+	}
+	if overseerNotNull != 0 {
+		t.Fatalf("expected runs.overseer_id to be nullable, got notnull=%d", overseerNotNull)
+	}
+
+	// overseers.labels must exist to store eligibility labels.
+	var labelsCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('overseers') WHERE name='labels'`).Scan(&labelsCount); err != nil {
+		t.Fatalf("query overseers columns: %v", err)
+	}
+	if labelsCount != 1 {
+		t.Fatalf("expected overseers.labels column to exist, got count=%d", labelsCount)
+	}
+
+	var idempCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_workflow_assignments_idempotency'`).Scan(&idempCount); err != nil {
+		t.Fatalf("query idempotency index: %v", err)
+	}
+	if idempCount != 1 {
+		t.Fatalf("expected idempotency unique index, got count=%d", idempCount)
+	}
+}
+
 func TestMigrate_AlreadyApplied_NoOp(t *testing.T) {
 	db := newMigrationTestDB(t)
 	ctx := context.Background()

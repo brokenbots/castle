@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
@@ -480,11 +481,141 @@ func (s *ServerServer) InspectRun(ctx context.Context, req *connect.Request[pb.I
 }
 
 func (s *ServerServer) SubmitWorkflowAssignment(ctx context.Context, req *connect.Request[pb.SubmitWorkflowAssignmentRequest]) (*connect.Response[pb.SubmitWorkflowAssignmentResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("workflow assignment is not implemented"))
+	callerID := auth.CallerCriteriaID(ctx)
+	if callerID == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
+	}
+	if req.Msg.WorkflowName == "" || req.Msg.WorkflowSource == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_name and workflow_source required"))
+	}
+	if req.Msg.IdempotencyKey == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("idempotency_key required"))
+	}
+
+	a := &store.WorkflowAssignment{
+		OwnerCriteriaID: callerID,
+		WorkflowName:    req.Msg.WorkflowName,
+		WorkflowSource:  req.Msg.WorkflowSource,
+		LockfileSource:  req.Msg.LockfileSource,
+		IdempotencyKey:  req.Msg.IdempotencyKey,
+		Labels:          req.Msg.Labels,
+	}
+	existing, created, err := s.Store.CreateWorkflowAssignment(ctx, a)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	resp := &pb.SubmitWorkflowAssignmentResponse{
+		RunId:     existing.RunID,
+		State:     mapAssignmentState(existing.State),
+		CreatedAt: timestamppb.New(existing.CreatedAt),
+	}
+	if existing.LeasedCriteriaID != "" {
+		resp.LeasedCriteriaId = existing.LeasedCriteriaID
+	}
+
+	// If a new assignment was created, attempt to dispatch it immediately to any
+	// connected eligible agent.
+	if created {
+		// Fire-and-forget dispatch; errors are logged, not returned to caller.
+		// Detach from the request context so dispatch survives RPC completion.
+		go s.dispatchAssignment(context.WithoutCancel(ctx), existing)
+	}
+
+	return connect.NewResponse(resp), nil
 }
 
 func (s *ServerServer) GetAssignmentDisposition(ctx context.Context, req *connect.Request[pb.GetAssignmentDispositionRequest]) (*connect.Response[pb.GetAssignmentDispositionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("assignment disposition is not implemented"))
+	callerID := auth.CallerCriteriaID(ctx)
+	if callerID == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
+	}
+	if req.Msg.RunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
+	}
+	a, err := s.Store.GetWorkflowAssignmentByRunID(ctx, req.Msg.RunId)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if a.OwnerCriteriaID != callerID {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("caller does not own this assignment"))
+	}
+	resp := &pb.GetAssignmentDispositionResponse{
+		RunId:     a.RunID,
+		State:     mapAssignmentState(a.State),
+		CreatedAt: timestamppb.New(a.CreatedAt),
+		UpdatedAt: timestamppb.New(a.UpdatedAt),
+	}
+	if a.State == store.WorkflowAssignmentStateRejected {
+		resp.RejectionReason = a.TerminalReason
+	}
+	if a.LeasedCriteriaID != "" {
+		resp.LeasedCriteriaId = a.LeasedCriteriaID
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// dispatchAssignment attempts to lease the assignment to a connected
+// eligible agent and push it via the agent's Control stream.
+func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.WorkflowAssignment) {
+	if a == nil || a.State != store.WorkflowAssignmentStateQueued {
+		return
+	}
+	// Iterate over connected agents and try to lease to the first eligible one.
+	for _, criteriaID := range s.controls.Registered() {
+		o, err := s.Store.GetOverseer(ctx, criteriaID)
+		if err != nil {
+			s.Log.Debug("dispatch assignment: cannot load agent", "criteria_id", criteriaID, "err", err)
+			continue
+		}
+		if o.Status != "online" {
+			continue
+		}
+		now := time.Now().UTC()
+		leaseDuration := defaultAssignmentLeaseDuration
+		leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, leaseDuration)
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				s.Log.Debug("dispatch assignment: lease failed", "criteria_id", criteriaID, "err", err)
+			}
+			continue
+		}
+		if leased.ID != a.ID {
+			// Leased a different assignment; keep looking for this one or release.
+			continue
+		}
+		err = s.controls.Enqueue(criteriaID, &pb.ControlMessage{Command: &pb.ControlMessage_WorkflowAssignment{WorkflowAssignment: &pb.WorkflowAssignment{
+			RunId:          leased.RunID,
+			WorkflowName:   leased.WorkflowName,
+			WorkflowSource: leased.WorkflowSource,
+			LockfileSource: leased.LockfileSource,
+			Labels:         leased.Labels,
+		}}})
+		if err != nil {
+			s.Log.Warn("dispatch assignment: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
+		}
+		return
+	}
+}
+
+const defaultAssignmentLeaseDuration = 5 * time.Minute
+
+func mapAssignmentState(state string) pb.WorkflowAssignmentState {
+	switch state {
+	case store.WorkflowAssignmentStateQueued:
+		return pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_QUEUED
+	case store.WorkflowAssignmentStateLeased:
+		return pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_LEASED
+	case store.WorkflowAssignmentStateTerminal:
+		return pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL
+	case store.WorkflowAssignmentStateRejected:
+		return pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_REJECTED
+	default:
+		return pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_UNSPECIFIED
+	}
 }
 
 func (s *ServerServer) SendPrompt(context.Context, *connect.Request[pb.SendPromptRequest]) (*connect.Response[pb.SendPromptResponse], error) {
