@@ -60,6 +60,9 @@ func envelopeToEvent(env *criteria.Envelope) (*store.Event, error) {
 		Type:          criteria.TypeString(env),
 		CorrelationID: env.CorrelationId,
 	}
+	if ev.Type == "" {
+		return nil, fmt.Errorf("unknown or missing payload arm")
+	}
 	if env.Ts != nil {
 		ev.Ts = env.Ts.AsTime()
 	} else {
