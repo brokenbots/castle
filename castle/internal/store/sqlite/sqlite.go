@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -740,13 +741,30 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	// Transactionally expire stale leases back to a leasable queued state.
+	// Transactionally expire stale leases for unstarted runs back to a leasable
+	// queued state. Runs that have already emitted RunStarted (status='running')
+	// are intentionally left leased so they can reattach without being requeued.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE workflow_assignments
 		 SET state=?, leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=?
-		 WHERE state=? AND lease_expires_at < ?`,
+		 WHERE state=? AND lease_expires_at < ? AND run_id IN (
+		     SELECT id FROM runs WHERE status='pending'
+		 )`,
 		store.WorkflowAssignmentStateQueued, now.Format(tsLayout),
 		store.WorkflowAssignmentStateLeased, now.Format(tsLayout)); err != nil {
+		return nil, err
+	}
+	// Clear the stale overseer_id for any runs whose lease just expired.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs
+		 SET overseer_id=NULL
+		 WHERE id IN (
+		     SELECT run_id FROM workflow_assignments
+		     WHERE state=? AND lease_expires_at IS NULL AND run_id IN (
+		         SELECT id FROM runs WHERE status='pending'
+		     )
+		 )`,
+		store.WorkflowAssignmentStateQueued); err != nil {
 		return nil, err
 	}
 
@@ -759,6 +777,21 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		return nil, err
 	}
 	if status != "online" {
+		return nil, store.ErrNotFound
+	}
+
+	// Ensure the agent does not already hold an unstarted lease. This enforces
+	// sequential execution: an agent receives the next assignment only after it
+	// has accepted (RunStarted) the current one.
+	var hasPendingLease int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT 1 FROM workflow_assignments a
+		JOIN runs r ON r.id = a.run_id
+		WHERE a.leased_criteria_id=? AND a.state=? AND r.status='pending'
+		LIMIT 1`, criteriaID, store.WorkflowAssignmentStateLeased).Scan(&hasPendingLease); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if hasPendingLease == 1 {
 		return nil, store.ErrNotFound
 	}
 
@@ -897,6 +930,162 @@ func labelsSatisfy(agentLabels, required map[string]string) bool {
 func mustParseTime(s string) time.Time {
 	t, _ := time.Parse(tsLayout, s)
 	return t
+}
+
+// ExpireWorkflowAssignmentLeases transitions leased assignments whose lease
+// has expired and whose run has not yet started back to queued. It clears the
+// associated run's overseer_id so the assignment can be safely redispatched to
+// a new agent. The returned IDs can be used by callers to redispatch the work.
+func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Time) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT a.id
+		FROM workflow_assignments a
+		JOIN runs r ON r.id = a.run_id
+		WHERE a.state = ? AND a.lease_expires_at < ? AND r.status = 'pending'
+		ORDER BY a.created_at ASC, a.id ASC`,
+		store.WorkflowAssignmentStateLeased, now.Format(tsLayout))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		_ = tx.Rollback()
+		return nil, nil
+	}
+
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+
+	args := make([]any, 0, len(ids)+2)
+	args = append(args, store.WorkflowAssignmentStateQueued, now.Format(tsLayout))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET state=?, leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=?
+		 WHERE id IN (`+placeholders+`)`,
+		args...); err != nil {
+		return nil, err
+	}
+
+	runArgs := make([]any, 0, len(ids))
+	for _, id := range ids {
+		runArgs = append(runArgs, id)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs
+		 SET overseer_id=NULL
+		 WHERE id IN (
+		     SELECT run_id FROM workflow_assignments WHERE id IN (`+placeholders+`)
+		 )`,
+		runArgs...); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// ListLeasedPendingAssignmentsByCriteriaID returns assignments currently
+// leased to criteriaID whose run has not yet started. These are in-flight
+// leases that should be redelivered to the agent after a Castle restart.
+func (s *Store) ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, criteriaID string) ([]*store.WorkflowAssignment, error) {
+	if criteriaID == "" {
+		return nil, errors.New("criteria_id required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
+		       a.idempotency_key, a.created_at, a.updated_at, l.key, l.value
+		FROM workflow_assignments a
+		JOIN runs r ON r.id = a.run_id
+		LEFT JOIN workflow_assignment_labels l ON l.assignment_id = a.id
+		WHERE a.leased_criteria_id = ? AND a.state = ? AND r.status = 'pending'
+		ORDER BY a.created_at ASC, a.id ASC`,
+		criteriaID, store.WorkflowAssignmentStateLeased)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := make(map[string]*assignmentCandidate)
+	for rows.Next() {
+		var id, runID, wfName, wfSource, idemp, created, updated string
+		var lockfile sql.NullString
+		var lkey, lvalue sql.NullString
+		if err := rows.Scan(&id, &runID, &wfName, &wfSource, &lockfile, &idemp,
+			&created, &updated, &lkey, &lvalue); err != nil {
+			return nil, err
+		}
+		c, ok := candidates[id]
+		if !ok {
+			c = &assignmentCandidate{
+				assignment: &store.WorkflowAssignment{
+					ID:             id,
+					RunID:          runID,
+					WorkflowName:   wfName,
+					WorkflowSource: wfSource,
+					IdempotencyKey: idemp,
+					State:          store.WorkflowAssignmentStateLeased,
+					CreatedAt:      mustParseTime(created),
+					UpdatedAt:      mustParseTime(updated),
+					Labels:         make(map[string]string),
+				},
+				required: make(map[string]string),
+			}
+			if lockfile.Valid {
+				c.assignment.LockfileSource = lockfile.String
+			}
+			candidates[id] = c
+		}
+		if lkey.Valid {
+			c.required[lkey.String] = lvalue.String
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	ordered := make([]*assignmentCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		ordered = append(ordered, c)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if !ordered[i].assignment.CreatedAt.Equal(ordered[j].assignment.CreatedAt) {
+			return ordered[i].assignment.CreatedAt.Before(ordered[j].assignment.CreatedAt)
+		}
+		return ordered[i].assignment.ID < ordered[j].assignment.ID
+	})
+
+	out := make([]*store.WorkflowAssignment, 0, len(ordered))
+	for _, c := range ordered {
+		c.assignment.LeasedCriteriaID = criteriaID
+		c.assignment.Labels = c.required
+		out = append(out, c.assignment)
+	}
+	return out, nil
 }
 
 func (s *Store) RecordWorkflowAssignmentLease(ctx context.Context, lease *store.WorkflowAssignmentLease) error {

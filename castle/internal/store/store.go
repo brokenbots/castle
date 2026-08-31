@@ -192,8 +192,18 @@ type Store interface {
 	// LeaseWorkflowAssignment atomically expires stale leases, finds a queued
 	// assignment whose labels are satisfied by the agent's labels, and leases it
 	// to criteriaID. Returns ErrNotFound when no eligible queued assignment is
-	// available.
+	// available. Expired leases are only returned to the queue when their run
+	// has not yet started (status='pending'); running runs are left leased.
 	LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*WorkflowAssignment, error)
+	// ExpireWorkflowAssignmentLeases transitions leased assignments whose lease
+	// has expired and whose run is still pending back to queued, clearing their
+	// run's overseer_id. It returns the IDs of the assignments that were expired.
+	ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Time) ([]string, error)
+	// ListLeasedPendingAssignmentsByCriteriaID returns assignments currently
+	// leased to criteriaID whose run has not yet started (status='pending').
+	// These are active leases that should be redelivered to the agent when it
+	// reconnects after a Castle restart.
+	ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, criteriaID string) ([]*WorkflowAssignment, error)
 	// RecordWorkflowAssignmentLease persists a lease record.
 	RecordWorkflowAssignmentLease(ctx context.Context, lease *WorkflowAssignmentLease) error
 	// RecordWorkflowAssignmentAttempt starts a lease attempt.
