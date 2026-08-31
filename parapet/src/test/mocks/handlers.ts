@@ -11,10 +11,6 @@ function serverPath(method: string): string {
   return `/criteria.v1.ServerService/${method}`;
 }
 
-function criteriaPath(method: string): string {
-  return `/criteria.v1.CriteriaService/${method}`;
-}
-
 export const handlers = [
   http.post(serverPath('ListRuns'), () =>
     HttpResponse.json({
@@ -60,10 +56,9 @@ export const handlers = [
       next_page_token: '',
     }),
   ),
-  http.post(criteriaPath('Resume'), async () => {
+  http.post(serverPath('ResumeRun'), async () => {
     return HttpResponse.json({
-      accepted: true,
-      reason: 'ok',
+      issued_at: new Date().toISOString(),
     });
   }),
 ];

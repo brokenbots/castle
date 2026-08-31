@@ -22,7 +22,7 @@ vi.mock('../../api/castleApi', async () => {
       error: undefined,
       data: {
         runId: 'run-1',
-        overseerId: 'ov-1',
+        criteriaId: 'ov-1',
         workflowName: 'hello',
         workflowHash:
           'workflow "hello" {\n  start_at = "build"\n  step "build" {\n    transitions = {\n      "success" = "test"\n    }\n  }\n  step "test" {\n    transitions = {\n      "success" = "done"\n    }\n  }\n  state "done" { terminal = true }\n}',

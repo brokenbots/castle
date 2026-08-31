@@ -2,14 +2,14 @@ import { createApi } from '@reduxjs/toolkit/query/react';
 import { fakeBaseQuery } from '@reduxjs/toolkit/query';
 import { ConnectError } from '@connectrpc/connect';
 import { Timestamp } from '@bufbuild/protobuf';
-import { server, criteria } from './client';
+import { server } from './client';
 import type { Run as PbRun } from '../gen/criteria/v1/criteria_pb';
 import type { Agent as PbAgent } from '../gen/criteria/v1/server_pb';
 import type { Envelope } from '../gen/criteria/v1/events_pb';
 
 export interface Run {
   runId: string;
-  overseerId: string;
+  criteriaId: string;
   workflowName: string;
   workflowHash: string;
   status: string;
@@ -51,7 +51,7 @@ function tsToIso(ts?: Timestamp): string | undefined {
 function mapRun(r: PbRun): Run {
   return {
     runId: r.runId,
-    overseerId: r.criteriaId,
+    criteriaId: r.criteriaId,
     workflowName: r.workflowName,
     workflowHash: r.workflowHash,
     status: r.status,
@@ -104,7 +104,7 @@ function toError(err: unknown) {
 export const castleApi = createApi({
   reducerPath: 'castleApi',
   baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
-  tagTypes: ['Run', 'Overseer', 'Events'],
+  tagTypes: ['Run', 'Agent', 'Events'],
   endpoints: (b) => ({
     listRuns: b.query<Run[], void>({
       queryFn: async () => {
@@ -137,7 +137,7 @@ export const castleApi = createApi({
           return { error: toError(err) };
         }
       },
-      providesTags: ['Overseer'],
+      providesTags: ['Agent'],
     }),
     listEvents: b.query<EventEnvelope[], { runId: string; since?: number }>({
       queryFn: async ({ runId, since = 0 }) => {
@@ -154,13 +154,13 @@ export const castleApi = createApi({
       providesTags: (_r, _e, { runId }) => [{ type: 'Events', id: runId }],
     }),
     resume: b.mutation<
-      { accepted: boolean; reason: string },
-      { runId: string; signal: string; payload?: Record<string, string> }
+      { accepted: boolean },
+      { runId: string; signal?: string; payload?: Record<string, string> }
     >({
-      queryFn: async ({ runId, signal, payload = {} }) => {
+      queryFn: async ({ runId }) => {
         try {
-          const resp = await criteria.resume({ runId, signal, payload });
-          return { data: { accepted: resp.accepted, reason: resp.reason } };
+          await server.resumeRun({ runId });
+          return { data: { accepted: true } };
         } catch (err) {
           return { error: toError(err) };
         }
