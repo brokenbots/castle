@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/grpchealth"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
@@ -53,8 +54,13 @@ func startTestCastle(t *testing.T) (string, string) {
 	mux := http.NewServeMux()
 	criPath, criHandler := criteriav1connect.NewCriteriaServiceHandler(criteriaSrv, opts...)
 	srvPath, srvHandler := criteriav1connect.NewServerServiceHandler(serverSrv, opts...)
+	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
+		criteriav1connect.CriteriaServiceName,
+		criteriav1connect.ServerServiceName,
+	))
 	mux.Handle(criPath, criHandler)
 	mux.Handle(srvPath, srvHandler)
+	mux.Handle(healthPath, healthHandler)
 
 	ts := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
 	ts.Start()
