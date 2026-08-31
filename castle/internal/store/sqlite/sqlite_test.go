@@ -329,8 +329,8 @@ func TestExhaustive_PayloadRoundTrip(t *testing.T) {
 }
 
 // sqlitePopulateMessage sets every field in m to a deterministic non-zero
-// value. Duplicated from shared/events/exhaustive_test.go because shared/ and
-// castle/ are separate Go modules and cannot share test helpers directly.
+// value. Persistence and RPC layers are separate modules and cannot share
+// test helpers directly, so this helper is duplicated where needed.
 // depth guards against infinite recursion in self-referential message types.
 func sqlitePopulateMessage(m protoreflect.Message, depth int) {
 	if depth > 3 || sqliteIsWellKnown(m.Descriptor().FullName()) {

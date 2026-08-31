@@ -26,7 +26,6 @@ jobs:
         with:
           go-version-file: go.work
       - run: go work sync
-      - run: cd shared && go test ./...
       - run: cd castle && go test -race ./...
 
   parapet:
