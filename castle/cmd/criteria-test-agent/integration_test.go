@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,66 +71,73 @@ func startTestCastle(t *testing.T) (string, string) {
 	return ts.URL, regResp.Msg.Token
 }
 
-func TestAgentEndToEndAssignment(t *testing.T) {
-	baseURL, ownerToken := startTestCastle(t)
+type testLogWriter struct{ t *testing.T }
 
-	dir := t.TempDir()
+func (w *testLogWriter) Write(p []byte) (n int, err error) {
+	w.t.Log(strings.TrimSpace(string(p)))
+	return len(p), nil
+}
+
+func newIntegrationAgent(t *testing.T, baseURL, dir, name string, labels map[string]string) *agent {
+	t.Helper()
 	a := &agent{
-		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		log:       slog.New(slog.NewTextHandler(&testLogWriter{t: t}, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		state:     agentState{Runs: map[string]*runState{}},
 		statePath: filepath.Join(dir, stateFileName),
 		resumeCh:  map[string]chan string{},
 		runCtx:    map[string]context.CancelFunc{},
-		stopCh:    make(chan struct{}),
 		cfg: config{
-			castleAddr: baseURL,
-			name:       "test-agent",
-			labels:     map[string]string{"pool": "test"},
-			homeDir:    dir,
+			castleAddr:  baseURL,
+			name:        name,
+			labels:      labels,
+			homeDir:     dir,
+			longStepDur: 100 * time.Millisecond,
 		},
 		client:     criteriav1connect.NewCriteriaServiceClient(h2cClient(), baseURL),
 		srvClient:  criteriav1connect.NewServerServiceClient(h2cClient(), baseURL),
 		httpClient: h2cClient(),
 	}
-
 	if err := a.loadState(); err != nil {
 		t.Fatalf("load state: %v", err)
 	}
 	if err := a.ensureRegistered(context.Background()); err != nil {
 		t.Fatalf("register agent: %v", err)
 	}
+	return a
+}
 
-	ctx, cancel := context.WithCancel(context.Background())
+func waitForRunStatus(ctx context.Context, t *testing.T, srvClient criteriav1connect.ServerServiceClient, token, runID, want string) {
+	t.Helper()
+	for {
+		req := connect.NewRequest(&pb.GetRunRequest{RunId: runID})
+		req.Header().Set("Authorization", "Bearer "+token)
+		resp, err := srvClient.GetRun(ctx, req)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				t.Fatalf("timeout waiting for run %s status %q: %v", runID, want, ctx.Err())
+			case <-time.After(200 * time.Millisecond):
+				continue
+			}
+		}
+		if resp.Msg.Status == want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for run %s status %q (last %q): %v", runID, want, resp.Msg.Status, ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+func watchRunTerminal(t *testing.T, srvClient criteriav1connect.ServerServiceClient, token, runID, want string, timeout time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	go a.heartbeatLoop(ctx)
-	go a.controlLoop(ctx)
-
-	srvClient := criteriav1connect.NewServerServiceClient(h2cClient(), baseURL)
-
-	// Wait for the agent to come online.
-	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer waitCancel()
-	if err := waitForOnline(waitCtx, srvClient, ownerToken, 1); err != nil {
-		t.Fatalf("agent not online: %v", err)
-	}
-
-	// Submit a workflow assignment targeted at the agent's label.
-	submitReq := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
-		WorkflowName:   "hello",
-		WorkflowSource: "hello workflow",
-		Labels:         map[string]string{"pool": "test"},
-		IdempotencyKey: "hello-key",
-	})
-	submitReq.Header().Set("Authorization", "Bearer "+ownerToken)
-	submitResp, err := srvClient.SubmitWorkflowAssignment(ctx, submitReq)
-	if err != nil {
-		t.Fatalf("submit assignment: %v", err)
-	}
-	runID := submitResp.Msg.RunId
-
-	// Watch the run to successful completion.
-	watchReq := connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SubscriberId: "test"})
+	watchReq := connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SubscriberId: "test-" + runID})
+	watchReq.Header().Set("Authorization", "Bearer "+token)
 	stream, err := srvClient.WatchRun(ctx, watchReq)
 	if err != nil {
 		t.Fatalf("watch run: %v", err)
@@ -156,15 +164,66 @@ func TestAgentEndToEndAssignment(t *testing.T) {
 
 	select {
 	case got := <-terminal:
-		if got != "succeeded" {
-			t.Fatalf("run finished with %q, want succeeded", got)
+		if got != want {
+			t.Fatalf("run %s finished with %q, want %q", runID, got, want)
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("timeout waiting for run to finish")
+	case <-ctx.Done():
+		t.Fatalf("timeout waiting for run %s to finish", runID)
+	}
+}
+
+func assertNoDuplicateEvents(t *testing.T, srvClient criteriav1connect.ServerServiceClient, token, runID string) {
+	t.Helper()
+	listReq := connect.NewRequest(&pb.ListRunEventsRequest{RunId: runID, Limit: 500})
+	listReq.Header().Set("Authorization", "Bearer "+token)
+	listResp, err := srvClient.ListRunEvents(context.Background(), listReq)
+	if err != nil {
+		t.Fatalf("list run events: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, ev := range listResp.Msg.Events {
+		if seen[ev.CorrelationId] {
+			t.Fatalf("run %s duplicate correlation id %q", runID, ev.CorrelationId)
+		}
+		seen[ev.CorrelationId] = true
+	}
+}
+
+func TestAgentEndToEndAssignment(t *testing.T) {
+	baseURL, ownerToken := startTestCastle(t)
+	srvClient := criteriav1connect.NewServerServiceClient(h2cClient(), baseURL)
+
+	dir := t.TempDir()
+	a := newIntegrationAgent(t, baseURL, dir, "test-agent", map[string]string{"pool": "test"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.heartbeatLoop(ctx)
+	go a.controlLoop(ctx)
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer waitCancel()
+	if err := waitForOnline(waitCtx, srvClient, ownerToken, 1); err != nil {
+		t.Fatalf("agent not online: %v", err)
 	}
 
-	// Verify the run is owned by our test agent.
+	submitReq := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+		WorkflowName:   "hello",
+		WorkflowSource: "hello workflow",
+		Labels:         map[string]string{"pool": "test"},
+		IdempotencyKey: "hello-key",
+	})
+	submitReq.Header().Set("Authorization", "Bearer "+ownerToken)
+	submitResp, err := srvClient.SubmitWorkflowAssignment(ctx, submitReq)
+	if err != nil {
+		t.Fatalf("submit assignment: %v", err)
+	}
+	runID := submitResp.Msg.RunId
+
+	watchRunTerminal(t, srvClient, ownerToken, runID, "succeeded", 15*time.Second)
+
 	getReq := connect.NewRequest(&pb.GetRunRequest{RunId: runID})
+	getReq.Header().Set("Authorization", "Bearer "+ownerToken)
 	getResp, err := srvClient.GetRun(ctx, getReq)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
@@ -173,21 +232,153 @@ func TestAgentEndToEndAssignment(t *testing.T) {
 		t.Fatalf("run owned by %q, want %q", getResp.Msg.CriteriaId, a.criteriaID())
 	}
 
-	// Exactly-once: no duplicate correlation IDs in the event history.
-	listReq := connect.NewRequest(&pb.ListRunEventsRequest{RunId: runID, Limit: 500})
-	listResp, err := srvClient.ListRunEvents(ctx, listReq)
-	if err != nil {
-		t.Fatalf("list run events: %v", err)
-	}
-	seen := map[string]bool{}
-	for _, ev := range listResp.Msg.Events {
-		if seen[ev.CorrelationId] {
-			t.Fatalf("duplicate correlation id %q", ev.CorrelationId)
-		}
-		seen[ev.CorrelationId] = true
+	assertNoDuplicateEvents(t, srvClient, ownerToken, runID)
+}
+
+func TestAgentTokenCanControlOwnedRun(t *testing.T) {
+	baseURL, ownerToken := startTestCastle(t)
+	srvClient := criteriav1connect.NewServerServiceClient(h2cClient(), baseURL)
+
+	dir := t.TempDir()
+	a := newIntegrationAgent(t, baseURL, dir, "test-agent", map[string]string{"pool": "test"})
+	a.cfg.longStepDur = 3 * time.Second // give the stop phase time to observe "running"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.heartbeatLoop(ctx)
+	go a.controlLoop(ctx)
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer waitCancel()
+	if err := waitForOnline(waitCtx, srvClient, ownerToken, 1); err != nil {
+		t.Fatalf("agent not online: %v", err)
 	}
 
-	cancel()
+	// Pause/resume: the agent emits WaitEntered and waits for a resume signal.
+	pauseReq := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+		WorkflowName:   "pause-test",
+		WorkflowSource: "# pause fixture\nvalid\npause",
+		Labels:         map[string]string{"pool": "test"},
+		IdempotencyKey: "pause-key",
+	})
+	pauseReq.Header().Set("Authorization", "Bearer "+ownerToken)
+	pauseResp, err := srvClient.SubmitWorkflowAssignment(ctx, pauseReq)
+	if err != nil {
+		t.Fatalf("submit pause assignment: %v", err)
+	}
+	pauseRunID := pauseResp.Msg.RunId
+
+	waitCtx2, waitCancel2 := context.WithTimeout(ctx, 15*time.Second)
+	defer waitCancel2()
+	waitForRunStatus(waitCtx2, t, srvClient, ownerToken, pauseRunID, "paused")
+
+	// Resume using the owning agent's token. This is how the separate
+	// control-client container authenticates in the Compose smoke test.
+	resumeReq := connect.NewRequest(&pb.ResumeRunRequest{RunId: pauseRunID})
+	resumeReq.Header().Set("Authorization", "Bearer "+a.token())
+	if _, err := srvClient.ResumeRun(context.Background(), resumeReq); err != nil {
+		t.Fatalf("resume run as agent: %v", err)
+	}
+	watchRunTerminal(t, srvClient, ownerToken, pauseRunID, "succeeded", 15*time.Second)
+
+	// Stop: submit a long-running run and cancel it using the agent's token.
+	stopReq := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+		WorkflowName:   "stop-test",
+		WorkflowSource: "# stop fixture\nvalid\nlong",
+		Labels:         map[string]string{"pool": "test"},
+		IdempotencyKey: "stop-key",
+	})
+	stopReq.Header().Set("Authorization", "Bearer "+ownerToken)
+	stopResp, err := srvClient.SubmitWorkflowAssignment(ctx, stopReq)
+	if err != nil {
+		t.Fatalf("submit stop assignment: %v", err)
+	}
+	stopRunID := stopResp.Msg.RunId
+
+	waitCtx3, waitCancel3 := context.WithTimeout(ctx, 15*time.Second)
+	defer waitCancel3()
+	waitForRunStatus(waitCtx3, t, srvClient, ownerToken, stopRunID, "running")
+
+	cancelReq := connect.NewRequest(&pb.StopRunRequest{RunId: stopRunID, Reason: "test control client"})
+	cancelReq.Header().Set("Authorization", "Bearer "+a.token())
+	if _, err := srvClient.StopRun(context.Background(), cancelReq); err != nil {
+		t.Fatalf("stop run as agent: %v", err)
+	}
+	watchRunTerminal(t, srvClient, ownerToken, stopRunID, "failed", 15*time.Second)
+}
+
+func TestAgentReattachAfterRestart(t *testing.T) {
+	baseURL, ownerToken := startTestCastle(t)
+	srvClient := criteriav1connect.NewServerServiceClient(h2cClient(), baseURL)
+
+	dir := t.TempDir()
+	a1 := newIntegrationAgent(t, baseURL, dir, "test-agent", map[string]string{"pool": "test"})
+	a1.cfg.longStepDur = 3 * time.Second // long enough to restart mid-execution
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	go a1.heartbeatLoop(ctx1)
+	go a1.controlLoop(ctx1)
+
+	waitCtx, waitCancel := context.WithTimeout(ctx1, 10*time.Second)
+	defer waitCancel()
+	if err := waitForOnline(waitCtx, srvClient, ownerToken, 1); err != nil {
+		t.Fatalf("agent not online: %v", err)
+	}
+
+	// Start a long-running run so we can restart the agent mid-execution.
+	submitReq := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+		WorkflowName:   "restart-test",
+		WorkflowSource: "# restart fixture\nvalid\nlong",
+		Labels:         map[string]string{"pool": "test"},
+		IdempotencyKey: "restart-key",
+	})
+	submitReq.Header().Set("Authorization", "Bearer "+ownerToken)
+	submitResp, err := srvClient.SubmitWorkflowAssignment(ctx1, submitReq)
+	if err != nil {
+		t.Fatalf("submit assignment: %v", err)
+	}
+	runID := submitResp.Msg.RunId
+
+	waitCtx2, waitCancel2 := context.WithTimeout(ctx1, 15*time.Second)
+	defer waitCancel2()
+	waitForRunStatus(waitCtx2, t, srvClient, ownerToken, runID, "running")
+
+	// Simulate agent restart: stop the first agent process and start a new one
+	// that loads the same persistent state.
+	cancel1()
+	waitForNoActiveRuns(t, a1, 5*time.Second)
+
+	a2 := newIntegrationAgent(t, baseURL, dir, "test-agent", map[string]string{"pool": "test"})
+	a2.cfg.longStepDur = 3 * time.Second
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+
+	// The new agent should reattach in-flight runs (matching main.go behavior).
+	a2.reattachRuns(ctx2)
+	go a2.heartbeatLoop(ctx2)
+	go a2.controlLoop(ctx2)
+
+	// The run should resume and complete; replay must be exactly-once.
+	watchRunTerminal(t, srvClient, ownerToken, runID, "succeeded", 15*time.Second)
+	assertNoDuplicateEvents(t, srvClient, ownerToken, runID)
+}
+
+func waitForNoActiveRuns(t *testing.T, a *agent, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		a.runMu.Lock()
+		count := len(a.runCtx)
+		a.runMu.Unlock()
+		if count == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	a.runMu.Lock()
+	count := len(a.runCtx)
+	a.runMu.Unlock()
+	t.Fatalf("agent still has %d active runs after %v", count, timeout)
 }
 
 func waitForOnline(ctx context.Context, client criteriav1connect.ServerServiceClient, token string, want int) error {

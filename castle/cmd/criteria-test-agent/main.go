@@ -31,9 +31,10 @@ import (
 )
 
 const (
-	stateFileName    = "agent-state.json"
-	heartbeatInterval = 10 * time.Second
-	watchTimeout      = 60 * time.Second
+	stateFileName       = "agent-state.json"
+	heartbeatInterval   = 10 * time.Second
+	watchTimeout        = 60 * time.Second
+	defaultLongStepDur  = 30 * time.Second
 )
 
 type agentState struct {
@@ -69,15 +70,14 @@ type agent struct {
 	resumeCh map[string]chan string // run_id -> resume signal channel
 	runCtx   map[string]context.CancelFunc
 	runMu    sync.Mutex
-
-	stopCh chan struct{}
 }
 
 type config struct {
-	castleAddr string
-	name       string
-	labels     map[string]string
-	homeDir    string
+	castleAddr     string
+	name           string
+	labels         map[string]string
+	homeDir        string
+	longStepDur    time.Duration
 }
 
 func envOrDefault(key, fallback string) string {
@@ -103,11 +103,18 @@ func parseLabels(s string) map[string]string {
 }
 
 func loadConfig() config {
+	longDur := defaultLongStepDur
+	if v := os.Getenv("AGENT_LONG_STEP_DURATION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			longDur = d
+		}
+	}
 	return config{
-		castleAddr: envOrDefault("CASTLE_ADDR", "http://castle:8080"),
-		name:       envOrDefault("AGENT_NAME", "criteria-test-agent"),
-		labels:     parseLabels(envOrDefault("AGENT_LABELS", "")),
-		homeDir:    envOrDefault("AGENT_HOME_DIR", "/var/lib/agent"),
+		castleAddr:  envOrDefault("CASTLE_ADDR", "http://castle:8080"),
+		name:        envOrDefault("AGENT_NAME", "criteria-test-agent"),
+		labels:      parseLabels(envOrDefault("AGENT_LABELS", "")),
+		homeDir:     envOrDefault("AGENT_HOME_DIR", "/var/lib/agent"),
+		longStepDur: longDur,
 	}
 }
 
@@ -147,7 +154,6 @@ func main() {
 		statePath: statePath,
 		resumeCh:  map[string]chan string{},
 		runCtx:    map[string]context.CancelFunc{},
-		stopCh:    make(chan struct{}),
 	}
 
 	if err := a.loadState(); err != nil {
@@ -260,12 +266,18 @@ func (a *agent) setRunState(rs *runState) {
 	a.mu.Lock()
 	a.state.Runs[rs.RunID] = rs
 	a.mu.Unlock()
+	if err := a.saveState(); err != nil {
+		a.log.Error("persist run state", "run_id", rs.RunID, "err", err)
+	}
 }
 
 func (a *agent) deleteRunState(runID string) {
 	a.mu.Lock()
 	delete(a.state.Runs, runID)
 	a.mu.Unlock()
+	if err := a.saveState(); err != nil {
+		a.log.Error("persist run state", "run_id", runID, "err", err)
+	}
 }
 
 func (a *agent) controlLoop(ctx context.Context) {
@@ -379,6 +391,17 @@ func (a *agent) startRunGoroutine(ctx context.Context, rs *runState) bool {
 
 func (a *agent) handleRunCancel(cancel *pb.RunCancel) {
 	a.log.Info("received run cancel", "run_id", cancel.RunId, "reason", cancel.Reason)
+
+	// Mark the run as failed immediately using a background stream; do not
+	// rely on the run goroutine noticing the cancellation, because the
+	// goroutine's event stream may already be closed.
+	a.mu.Lock()
+	rs, ok := a.state.Runs[cancel.RunId]
+	a.mu.Unlock()
+	if ok && !isTerminal(rs.Status) {
+		a.failRunWithBackgroundStream(rs, "cancelled: "+cancel.Reason)
+	}
+
 	a.runMu.Lock()
 	cancelFn, ok := a.runCtx[cancel.RunId]
 	a.runMu.Unlock()
@@ -538,7 +561,9 @@ func (a *agent) executeRun(ctx context.Context, rs *runState) {
 
 		select {
 		case <-ctx.Done():
-			a.failRun(stream, rs, "cancelled while paused")
+			// Agent is shutting down; leave the run in its persisted state so a
+			// restarted process can reattach. Do not emit a terminal event.
+			a.log.Info("pausing run execution on shutdown", "run_id", rs.RunID)
 			return
 		case sig := <-ch:
 			a.log.Info("resuming paused run", "run_id", rs.RunID, "signal", sig)
@@ -561,9 +586,10 @@ func (a *agent) executeRun(ctx context.Context, rs *runState) {
 	if strings.Contains(rs.WorkflowSource, "long") {
 		select {
 		case <-ctx.Done():
-			a.failRun(stream, rs, "cancelled during long step")
+			// Agent is shutting down; leave the run running for reattach.
+			a.log.Info("stopping run execution on shutdown", "run_id", rs.RunID)
 			return
-		case <-time.After(30 * time.Second):
+		case <-time.After(a.cfg.longStepDur):
 		}
 	}
 
@@ -646,6 +672,30 @@ func deterministicCorrelationID(runID string, env *criteria.Envelope) string {
 	default:
 		return fmt.Sprintf("%s-%s", runID, typ)
 	}
+}
+
+// failRunWithBackgroundStream sends a terminal RunFailed event using a fresh
+// SubmitEvents stream. It is used when the run's own event stream has already
+// been closed (e.g. the run was cancelled via StopRun).
+func (a *agent) failRunWithBackgroundStream(rs *runState, reason string) {
+	a.log.Info("failing run on background stream", "run_id", rs.RunID, "reason", reason)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream := a.client.SubmitEvents(ctx)
+	stream.RequestHeader().Set("Authorization", "Bearer "+a.token())
+	defer func() {
+		_ = stream.CloseRequest()
+		_ = stream.CloseResponse()
+	}()
+	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.RunFailed{
+		Reason: reason,
+	})); err != nil {
+		a.log.Error("failed to emit run failed on background stream", "run_id", rs.RunID, "err", err)
+	}
+	rs.Status = "failed"
+	rs.FailureReason = reason
+	a.setRunState(rs)
+	a.deleteRunState(rs.RunID)
 }
 
 func (a *agent) failRun(stream *connect.BidiStreamForClient[criteria.Envelope, pb.Ack], rs *runState, reason string) {

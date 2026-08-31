@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -119,32 +120,48 @@ func main() {
 	log.Info("smoke test passed")
 }
 
+// controlClientToken is the JSON shape written by the agent to its home dir.
+type controlClientToken struct {
+	Token string `json:"token"`
+}
+
+func loadAgentToken(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var s controlClientToken
+	if err := json.Unmarshal(data, &s); err != nil {
+		return "", err
+	}
+	if s.Token == "" {
+		return "", fmt.Errorf("no token found in %s", path)
+	}
+	return s.Token, nil
+}
+
 func runControl(args []string) error {
 	fs := flag.NewFlagSet("control", flag.ExitOnError)
 	castleAddr := fs.String("castle", defaultCastleAddr, "Castle base URL")
 	op := fs.String("op", "", "operation: stop|pause|resume")
 	runID := fs.String("run-id", "", "run id to control")
+	agentTokenFile := fs.String("agent-token-file", "", "path to the owning agent's persisted state file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *op == "" || *runID == "" {
-		return errors.New("--op and --run-id are required")
+	if *op == "" || *runID == "" || *agentTokenFile == "" {
+		return errors.New("--op, --run-id and --agent-token-file are required")
+	}
+
+	token, err := loadAgentToken(*agentTokenFile)
+	if err != nil {
+		return fmt.Errorf("load agent token: %w", err)
 	}
 
 	httpClient := h2cClient()
-	criClient := criteriav1connect.NewCriteriaServiceClient(httpClient, *castleAddr)
 	srvClient := criteriav1connect.NewServerServiceClient(httpClient, *castleAddr)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	// Register a control-client identity so ServerService RPCs that require
-	// an authenticated caller can succeed.
-	regReq := connect.NewRequest(&pb.RegisterRequest{Name: "system-test-control-client"})
-	regResp, err := criClient.Register(ctx, regReq)
-	if err != nil {
-		return fmt.Errorf("register control client: %w", err)
-	}
-	token := regResp.Msg.Token
 
 	auth := func(req connect.AnyRequest) {
 		req.Header().Set("Authorization", "Bearer "+token)
@@ -514,7 +531,8 @@ func (h *harness) testControlClient(ctx context.Context) error {
 	}
 
 	// Issue resume from a separate control-client container.
-	if err := h.runControlClient(ctx, "resume", runID); err != nil {
+	// The run is owned by agent-a, so authenticate as agent-a.
+	if err := h.runControlClient(ctx, "resume", runID, "agent-a"); err != nil {
 		return err
 	}
 
@@ -533,7 +551,8 @@ func (h *harness) testControlClient(ctx context.Context) error {
 		return err
 	}
 
-	if err := h.runControlClient(ctx, "stop", stopRunID); err != nil {
+	// The run is owned by agent-b, so authenticate as agent-b.
+	if err := h.runControlClient(ctx, "stop", stopRunID, "agent-b"); err != nil {
 		return err
 	}
 
@@ -564,13 +583,30 @@ func (h *harness) waitForRunStatus(ctx context.Context, runID, want string) erro
 	}
 }
 
-func (h *harness) runControlClient(ctx context.Context, op, runID string) error {
-	h.log.Info("running control client", "op", op, "run_id", runID)
+func (h *harness) agentVolumeName(agentName string) string {
+	switch agentName {
+	case "agent-a":
+		return h.projectName + "_agent-a-home"
+	case "agent-b":
+		return h.projectName + "_agent-b-home"
+	default:
+		return h.projectName + "_" + agentName + "-home"
+	}
+}
+
+func (h *harness) runControlClient(ctx context.Context, op, runID, agentName string) error {
+	h.log.Info("running control client", "op", op, "run_id", runID, "agent", agentName)
+	volume := h.agentVolumeName(agentName)
+	// The agent container writes state to /var/lib/agent/agent-state.json;
+	// mount the owning agent's named volume at the same path read-only.
+	mountPath := "/var/lib/agent"
+	tokenFile := mountPath + "/agent-state.json"
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
 		"--network", h.projectName+"_default",
 		"-e", "CASTLE_ADDR="+h.castleAddr,
+		"-v", volume+":"+mountPath+":ro",
 		h.controlClientImg,
-		"control", "--op", op, "--run-id", runID,
+		"control", "--op", op, "--run-id", runID, "--agent-token-file", tokenFile,
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -591,13 +627,19 @@ func (h *harness) assertNoDuplicateEvents(ctx context.Context, runID string) err
 	if err != nil {
 		return err
 	}
+	return assertNoDuplicateEventsInList(events.Msg.Events)
+}
+
+// assertNoDuplicateEventsInList checks that no two events share the same
+// correlation_id. Castle deduplicates SubmitEvents by correlation id, so a
+// replayed event must not produce a duplicate.
+func assertNoDuplicateEventsInList(events []*pb.Envelope) error {
 	seen := map[string]struct{}{}
-	for _, ev := range events.Msg.Events {
-		key := fmt.Sprintf("%d-%s", ev.Seq, ev.CorrelationId)
-		if _, ok := seen[key]; ok {
-			return fmt.Errorf("duplicate event seq=%d correlation_id=%s", ev.Seq, ev.CorrelationId)
+	for _, ev := range events {
+		if _, ok := seen[ev.CorrelationId]; ok {
+			return fmt.Errorf("duplicate correlation_id %q", ev.CorrelationId)
 		}
-		seen[key] = struct{}{}
+		seen[ev.CorrelationId] = struct{}{}
 	}
 	return nil
 }
