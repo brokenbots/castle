@@ -6,11 +6,10 @@ help:
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 bootstrap: ## Install backend and frontend dependencies
-	go work sync
 	cd parapet && npm ci
 
-tidy: ## Tidy all Go modules
-	cd castle && go mod tidy
+tidy: ## Tidy the local Criteria SDK module
+	cd criteria-sdk && go mod tidy
 
 build: build-castle build-parapet ## Build Castle and Parapet
 
@@ -50,18 +49,18 @@ clean: ## Remove build outputs and local state
 	rm -f castle/*.db
 
 proto: ## Regenerate Go and TypeScript bindings
-	buf generate
+	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf generate
 
 proto-lint: ## Lint protobuf schemas
-	buf lint
+	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf lint
 
 proto-check: ## Check protobuf compatibility against main
-	buf breaking --against '.git#branch=main'
+	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf breaking --against '.git#branch=main'
 
 proto-check-drift: ## Fail when generated bindings are stale
-	buf generate
-	@if ! git diff --quiet -- parapet/src/gen; then \
+	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf generate
+	@if ! git diff --quiet -- parapet/src/gen criteria-sdk/pb; then \
 		echo "Generated proto output is out of date. Run 'make proto' and commit the changes." >&2; \
-		git --no-pager diff --stat -- parapet/src/gen >&2; \
+		git --no-pager diff --stat -- parapet/src/gen criteria-sdk/pb >&2; \
 		exit 1; \
 	fi

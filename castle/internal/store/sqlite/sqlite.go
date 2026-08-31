@@ -439,6 +439,23 @@ func normalizeListLimit(limit int) (int, error) {
 	return limit, nil
 }
 
+func scanEvent(seq int64, typ, ts string, corr sql.NullString, payload string, runID string) *store.Event {
+	ev := &store.Event{
+		SchemaVersion: store.EventSchemaVersion,
+		RunID:         runID,
+		Seq:           uint64(seq),
+		Type:          typ,
+		Payload:       []byte(payload),
+	}
+	if parsed, err := time.Parse(tsLayout, ts); err == nil {
+		ev.Ts = parsed
+	}
+	if corr.Valid {
+		ev.CorrelationID = corr.String
+	}
+	return ev
+}
+
 func scanEventRows(rows *sql.Rows, runID string) ([]*store.Event, error) {
 	var out []*store.Event
 	for rows.Next() {
@@ -450,22 +467,38 @@ func scanEventRows(rows *sql.Rows, runID string) ([]*store.Event, error) {
 		if err := rows.Scan(&seq, &typ, &ts, &corr, &payload); err != nil {
 			return nil, err
 		}
-		ev := &store.Event{
-			SchemaVersion: store.EventSchemaVersion,
-			RunID:         runID,
-			Seq:           uint64(seq),
-			Type:          typ,
-			Payload:       []byte(payload),
-		}
-		if parsed, err := time.Parse(tsLayout, ts); err == nil {
-			ev.Ts = parsed
-		}
-		if corr.Valid {
-			ev.CorrelationID = corr.String
-		}
-		out = append(out, ev)
+		out = append(out, scanEvent(seq, typ, ts, corr, payload, runID))
 	}
 	return out, rows.Err()
+}
+
+func scanEventRow(row *sql.Row, runID string) (*store.Event, error) {
+	var seq int64
+	var ts string
+	var payload string
+	var corr sql.NullString
+	var typ string
+	if err := row.Scan(&seq, &typ, &ts, &corr, &payload); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return scanEvent(seq, typ, ts, corr, payload, runID), nil
+}
+
+func (s *Store) GetLatestEvent(ctx context.Context, runID string) (*store.Event, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT seq,type,ts,correlation_id,payload FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 1`,
+		runID)
+	return scanEventRow(row, runID)
+}
+
+func (s *Store) GetLatestStepEnteredEvent(ctx context.Context, runID string) (*store.Event, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT seq,type,ts,correlation_id,payload FROM events WHERE run_id=? AND type='step.entered' ORDER BY seq DESC LIMIT 1`,
+		runID)
+	return scanEventRow(row, runID)
 }
 
 func marshalLabels(m map[string]string) (string, error) {

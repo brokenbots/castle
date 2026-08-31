@@ -12,6 +12,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+      - run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+      - run: go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.20.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: parapet/package-lock.json
+      - run: npm ci
+        working-directory: parapet
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
@@ -25,7 +37,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.work
-      - run: go work sync
       - run: cd castle && go test -race ./...
 
   parapet:

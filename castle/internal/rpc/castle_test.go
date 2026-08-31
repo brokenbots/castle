@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -16,7 +17,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
-	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 type recordedLog struct {
@@ -1003,6 +1005,399 @@ func TestStopRunConnectedAndDisconnected(t *testing.T) {
 	_ = ctrl.Close()
 }
 
+// drainControlReady subscribes to the Control stream and waits for the
+// ControlReady handshake. The caller must close the returned stream.
+func drainControlReady(t *testing.T, client criteriav1connect.CriteriaServiceClient, overseerID string) *connect.ServerStreamForClient[pb.ControlMessage] {
+	t.Helper()
+	ctrl, err := client.Control(context.Background(), connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: overseerID}))
+	if err != nil {
+		t.Fatalf("Control subscribe: %v", err)
+	}
+	if !ctrl.Receive() {
+		t.Fatalf("expected ControlReady, err=%v", ctrl.Err())
+	}
+	if _, ok := ctrl.Msg().Command.(*pb.ControlMessage_ControlReady); !ok {
+		t.Fatalf("expected ControlReady, got %T", ctrl.Msg().Command)
+	}
+	return ctrl
+}
+
+// markRunTerminal updates the run's status in the store to a terminal value.
+func markRunTerminal(t *testing.T, st store.Store, runID string, status string) {
+	t.Helper()
+	r, err := st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Status = status
+	now := time.Now().UTC()
+	r.EndedAt = &now
+	if err := st.UpdateRun(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPauseRunConnectedAndDisconnected(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = cClient.PauseRun(context.Background(), connect.NewRequest(&pb.PauseRunRequest{RunId: run.Msg.RunId}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition when agent disconnected, got %v", err)
+	}
+
+	ctrl := drainControlReady(t, oClient, overseerID)
+	defer ctrl.Close()
+
+	_, err = cClient.PauseRun(context.Background(), connect.NewRequest(&pb.PauseRunRequest{RunId: run.Msg.RunId}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !ctrl.Receive() {
+		t.Fatalf("expected control message, err=%v", ctrl.Err())
+	}
+	msg := ctrl.Msg()
+	cmd, ok := msg.Command.(*pb.ControlMessage_PauseRun)
+	if !ok {
+		t.Fatalf("unexpected control command: %T", msg.Command)
+	}
+	if cmd.PauseRun.RunId != run.Msg.RunId {
+		t.Fatalf("run id=%s", cmd.PauseRun.RunId)
+	}
+}
+
+func TestPauseRunTerminalRun(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markRunTerminal(t, ts.store, run.Msg.RunId, "cancelled")
+
+	_, err = cClient.PauseRun(context.Background(), connect.NewRequest(&pb.PauseRunRequest{RunId: run.Msg.RunId}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition for terminal run, got %v", err)
+	}
+}
+
+func TestResumeRunConnectedAndNotPaused(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run is not paused yet.
+	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition for non-paused run, got %v", err)
+	}
+
+	// Mark run paused with a pending signal.
+	if err := ts.store.SetRunPaused(context.Background(), run.Msg.RunId, "continue", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctrl := drainControlReady(t, oClient, overseerID)
+	defer ctrl.Close()
+
+	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !ctrl.Receive() {
+		t.Fatalf("expected control message, err=%v", ctrl.Err())
+	}
+	msg := ctrl.Msg()
+	cmd, ok := msg.Command.(*pb.ControlMessage_ResumeRun)
+	if !ok {
+		t.Fatalf("unexpected control command: %T", msg.Command)
+	}
+	if cmd.ResumeRun.RunId != run.Msg.RunId {
+		t.Fatalf("run id=%s", cmd.ResumeRun.RunId)
+	}
+	if cmd.ResumeRun.Signal != "continue" {
+		t.Fatalf("signal=%s want continue", cmd.ResumeRun.Signal)
+	}
+}
+
+func TestResumeRunDisconnected(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.store.SetRunPaused(context.Background(), run.Msg.RunId, "continue", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition when agent disconnected, got %v", err)
+	}
+}
+
+func TestResumeRunTerminalRun(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markRunTerminal(t, ts.store, run.Msg.RunId, "failed")
+
+	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition for terminal run, got %v", err)
+	}
+}
+
+func TestSendPromptConnectedAndDisconnected(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = cClient.SendPrompt(context.Background(), connect.NewRequest(&pb.SendPromptRequest{RunId: run.Msg.RunId, Step: "ask", Prompt: "hello"}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition when agent disconnected, got %v", err)
+	}
+
+	ctrl := drainControlReady(t, oClient, overseerID)
+	defer ctrl.Close()
+
+	_, err = cClient.SendPrompt(context.Background(), connect.NewRequest(&pb.SendPromptRequest{RunId: run.Msg.RunId, Step: "ask", Prompt: "hello"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !ctrl.Receive() {
+		t.Fatalf("expected control message, err=%v", ctrl.Err())
+	}
+	msg := ctrl.Msg()
+	cmd, ok := msg.Command.(*pb.ControlMessage_AgentPrompt)
+	if !ok {
+		t.Fatalf("unexpected control command: %T", msg.Command)
+	}
+	if cmd.AgentPrompt.RunId != run.Msg.RunId {
+		t.Fatalf("run id=%s", cmd.AgentPrompt.RunId)
+	}
+	if cmd.AgentPrompt.Step != "ask" {
+		t.Fatalf("step=%s want ask", cmd.AgentPrompt.Step)
+	}
+	if cmd.AgentPrompt.Prompt != "hello" {
+		t.Fatalf("prompt=%s want hello", cmd.AgentPrompt.Prompt)
+	}
+}
+
+func TestSendPromptTerminalRun(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markRunTerminal(t, ts.store, run.Msg.RunId, "succeeded")
+
+	_, err = cClient.SendPrompt(context.Background(), connect.NewRequest(&pb.SendPromptRequest{RunId: run.Msg.RunId, Step: "ask", Prompt: "hello"}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition for terminal run, got %v", err)
+	}
+}
+
+func TestSendPromptMissingStep(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrl := drainControlReady(t, oClient, overseerID)
+	defer ctrl.Close()
+
+	_, err = cClient.SendPrompt(context.Background(), connect.NewRequest(&pb.SendPromptRequest{RunId: run.Msg.RunId, Prompt: "hello"}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("expected invalid argument for missing step, got %v", err)
+	}
+}
+
+func TestInspectRunReturnsStateWithoutMutation(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a step-entered event and a variable scope.
+	env := criteria.NewEnvelope(run.Msg.RunId, &pb.StepEntered{Step: "build", Adapter: "shell", Attempt: 1})
+	ev, err := envelopeToEvent(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = ts.store.AppendEvent(context.Background(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.store.SetRunVariableScope(context.Background(), run.Msg.RunId, `{"x":1}`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := cClient.InspectRun(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: run.Msg.RunId, SessionId: "sess-1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Msg.RunId != run.Msg.RunId {
+		t.Fatalf("run_id=%s", resp.Msg.RunId)
+	}
+	if resp.Msg.SessionId != "sess-1" {
+		t.Fatalf("session_id=%s", resp.Msg.SessionId)
+	}
+	if resp.Msg.Adapter != "shell" {
+		t.Fatalf("adapter=%s want shell", resp.Msg.Adapter)
+	}
+	if resp.Msg.CurrentStep != "" {
+		t.Fatalf("current_step should be empty for fresh run, got %q", resp.Msg.CurrentStep)
+	}
+	if resp.Msg.StateJson != `{"x":1}` {
+		t.Fatalf("state_json=%s", resp.Msg.StateJson)
+	}
+	if resp.Msg.LastActivityAt == nil {
+		t.Fatal("expected last_activity_at")
+	}
+
+	// Inspect must not mutate state.
+	r, err := ts.store.GetRun(context.Background(), run.Msg.RunId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.VariableScope != `{"x":1}` {
+		t.Fatal("InspectRun mutated variable scope")
+	}
+}
+
+func TestInspectRunTerminalRun(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markRunTerminal(t, ts.store, run.Msg.RunId, "succeeded")
+
+	resp, err := cClient.InspectRun(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: run.Msg.RunId}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Msg.RunId != run.Msg.RunId {
+		t.Fatalf("run_id=%s", resp.Msg.RunId)
+	}
+	if resp.Msg.LastActivityAt != nil {
+		t.Fatal("expected no last_activity_at for terminal run with no events")
+	}
+}
+
+// TestInspectRunReportsLatestAdapterAndActivity guards the "latest adapter/run
+// state" exit criterion: the handler must look at the tail of the event log,
+// not the earliest 1000 events, and must report the most recent step.entered
+// adapter rather than the first one.
+func TestInspectRunReportsLatestAdapterAndActivity(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().UTC().Truncate(time.Second)
+
+	// Early step.entered with the old adapter.
+	oldEnv := criteria.NewEnvelope(run.Msg.RunId, &pb.StepEntered{Step: "build", Adapter: "old-adapter", Attempt: 1})
+	oldEnv.Ts = timestamppb.New(base)
+	if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, oldEnv)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Filler events push the total past the old 1000-event window so a
+	// naive earliest-1000 scan would miss the later step.entered and final
+	// activity.
+	const fillerCount = 1200
+	for i := 0; i < fillerCount; i++ {
+		env := criteria.NewEnvelope(run.Msg.RunId, &pb.StepLog{Step: "build", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("line %d", i)})
+		env.Ts = timestamppb.New(base.Add(time.Duration(i+1) * time.Second))
+		env.CorrelationId = fmt.Sprintf("filler-%d", i)
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A later step enters a different adapter.
+	latestEnv := criteria.NewEnvelope(run.Msg.RunId, &pb.StepEntered{Step: "deploy", Adapter: "latest-adapter", Attempt: 1})
+	latestEnv.Ts = timestamppb.New(base.Add(time.Duration(fillerCount+1) * time.Second))
+	latestEnv.CorrelationId = "enter-latest"
+	if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, latestEnv)); err != nil {
+		t.Fatal(err)
+	}
+
+	// One more activity event after the latest step.entered.
+	finalEnv := criteria.NewEnvelope(run.Msg.RunId, &pb.StepLog{Step: "deploy", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: "final"})
+	finalEnv.Ts = timestamppb.New(base.Add(time.Duration(fillerCount+2) * time.Second))
+	finalEnv.CorrelationId = "final-log"
+	if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, finalEnv)); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := cClient.InspectRun(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: run.Msg.RunId, SessionId: "sess-1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Msg.Adapter != "latest-adapter" {
+		t.Fatalf("adapter=%q want latest-adapter", resp.Msg.Adapter)
+	}
+	wantLast := base.Add(time.Duration(fillerCount+2) * time.Second)
+	if resp.Msg.LastActivityAt == nil || !resp.Msg.LastActivityAt.AsTime().Equal(wantLast) {
+		t.Fatalf("last_activity_at=%v want %v", resp.Msg.LastActivityAt, wantLast)
+	}
+}
+
+func TestStopRunTerminalRun(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markRunTerminal(t, ts.store, run.Msg.RunId, "failed")
+
+	_, err = cClient.StopRun(context.Background(), connect.NewRequest(&pb.StopRunRequest{RunId: run.Msg.RunId, Reason: "stop"}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition for terminal run, got %v", err)
+	}
+}
+
 func TestControlRegistryEvictsPriorSubscriber(t *testing.T) {
 	r := NewControlRegistry()
 	first, err := r.Register("o1")
@@ -1058,51 +1453,3 @@ func TestControlRegistryEnqueueErrors(t *testing.T) {
 	r.Unregister("o1", ch)
 }
 
-// TestPauseRunIsUnimplementedAndDoesNotCancelRun is a regression test for the
-// PR #2 fix: PauseRun must not silently enqueue RunCancel and return success.
-// It must report CodeUnimplemented and leave the agent's control stream empty.
-func TestPauseRunIsUnimplementedAndDoesNotCancelRun(t *testing.T) {
-	ts := newTestStack(t)
-	_, oClient, cClient := ts.startServer(t)
-	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctrl, err := oClient.Control(context.Background(), connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: overseerID}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ctrl.Close()
-
-	// Drain the ControlReady handshake so the subscription is active.
-	if !ctrl.Receive() {
-		t.Fatalf("expected ControlReady, err=%v", ctrl.Err())
-	}
-	if _, ok := ctrl.Msg().Command.(*pb.ControlMessage_ControlReady); !ok {
-		t.Fatalf("expected ControlReady, got %T", ctrl.Msg().Command)
-	}
-
-	_, err = cClient.PauseRun(context.Background(), connect.NewRequest(&pb.PauseRunRequest{RunId: run.Msg.RunId}))
-	if connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Fatalf("expected Unimplemented, got %v (code=%v)", err, connect.CodeOf(err))
-	}
-
-	// The fix removed the RunCancel enqueue; the control stream must remain
-	// idle. Use a short timeout so the test fails if the old cancel-and-return
-	// behavior is restored.
-	gotMsg := make(chan struct{})
-	go func() {
-		if ctrl.Receive() {
-			close(gotMsg)
-		}
-	}()
-	select {
-	case <-gotMsg:
-		cmd := ctrl.Msg().Command
-		t.Fatalf("PauseRun enqueued an unexpected control command: %T", cmd)
-	case <-time.After(250 * time.Millisecond):
-		// expected: no control message was enqueued
-	}
-}
