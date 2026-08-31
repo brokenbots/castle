@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 )
 
 func tempStore(t *testing.T) *Store {
@@ -26,6 +28,42 @@ func tempStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+// eventFromProto converts a wire envelope into the storage-neutral
+// store.Event representation used by the persistence layer. It is intentionally
+// local to the SQLite test package so storage tests can seed events without
+// depending on the RPC codec (which imports sqlite).
+func eventFromProto(env *criteria.Envelope) (*store.Event, error) {
+	payloadOO := env.ProtoReflect().Descriptor().Oneofs().ByName("payload")
+	fd := env.ProtoReflect().WhichOneof(payloadOO)
+	if fd == nil {
+		return nil, fmt.Errorf("envelope has no payload")
+	}
+	payload := env.ProtoReflect().Get(fd).Message().Interface()
+	payloadJSON, err := protojson.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return &store.Event{
+		SchemaVersion: int32(criteria.SchemaVersion),
+		RunID:         env.RunId,
+		Seq:           env.Seq,
+		Type:          criteria.TypeString(env),
+		Ts:            env.Ts.AsTime(),
+		CorrelationID: env.CorrelationId,
+		Payload:       payloadJSON,
+	}, nil
+}
+
+// mustEventFromProto is the test-failing variant of eventFromProto.
+func mustEventFromProto(t *testing.T, env *criteria.Envelope) *store.Event {
+	t.Helper()
+	ev, err := eventFromProto(env)
+	if err != nil {
+		t.Fatalf("convert envelope to store event: %v", err)
+	}
+	return ev
 }
 
 func TestOverseerCRUD(t *testing.T) {
@@ -60,8 +98,8 @@ func TestEventAppendAssignsMonotonicSeq(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		env := pb.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
-		seq, inserted, err := s.AppendEvent(ctx, env)
+		env := criteria.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		seq, inserted, err := s.AppendEvent(ctx, mustEventFromProto(t, env))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,10 +133,10 @@ func TestEventAppendIdempotentOnCorrelationID(t *testing.T) {
 	if err := s.CreateRun(ctx, &store.Run{ID: "r1", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	env := pb.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+	env := criteria.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 	env.CorrelationId = "corr-xyz"
 
-	seq1, inserted1, err := s.AppendEvent(ctx, env)
+	seq1, inserted1, err := s.AppendEvent(ctx, mustEventFromProto(t, env))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +146,7 @@ func TestEventAppendIdempotentOnCorrelationID(t *testing.T) {
 
 	// Second append with the same (run_id, correlation_id) must not insert
 	// a new row; it returns the existing seq and inserted=false.
-	seq2, inserted2, err := s.AppendEvent(ctx, env)
+	seq2, inserted2, err := s.AppendEvent(ctx, mustEventFromProto(t, env))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +163,9 @@ func TestEventAppendIdempotentOnCorrelationID(t *testing.T) {
 	}
 
 	// Different correlation id on the same run inserts a new row.
-	env2 := pb.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+	env2 := criteria.NewEnvelope("r1", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 	env2.CorrelationId = "corr-abc"
-	seq3, inserted3, err := s.AppendEvent(ctx, env2)
+	seq3, inserted3, err := s.AppendEvent(ctx, mustEventFromProto(t, env2))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,14 +272,14 @@ func TestExhaustive_PayloadRoundTrip(t *testing.T) {
 			msg := mt.New().Interface()
 			sqlitePopulateMessage(msg.ProtoReflect(), 0)
 
-			env := pb.NewEnvelope("r1", msg)
+			env := criteria.NewEnvelope("r1", msg)
 			if env.Payload == nil {
 				t.Fatalf("NewEnvelope produced nil payload for arm %q", armName)
 			}
 			// Use armName as correlation id to avoid dedup across subtests.
 			env.CorrelationId = armName
 
-			seq, inserted, err := s.AppendEvent(ctx, env)
+			seq, inserted, err := s.AppendEvent(ctx, mustEventFromProto(t, env))
 			if err != nil {
 				t.Fatalf("AppendEvent: %v", err)
 			}
@@ -258,21 +296,41 @@ func TestExhaustive_PayloadRoundTrip(t *testing.T) {
 			}
 			back := got[0]
 
-			// Side 3+4: proto.Equal across the full SQLite persistence path.
-			if !proto.Equal(env, back) {
-				t.Fatalf("round-trip mismatch for arm %q:\nwant: %v\ngot:  %v", armName, env, back)
+			wantType := criteria.TypeString(env)
+			if back.Type != wantType {
+				t.Fatalf("type drift for arm %q: want %q got %q", armName, wantType, back.Type)
 			}
-			if pb.TypeString(back) != pb.TypeString(env) {
-				t.Fatalf("TypeString drift for arm %q: want %q got %q",
-					armName, pb.TypeString(env), pb.TypeString(back))
+			if back.SchemaVersion != int32(criteria.SchemaVersion) {
+				t.Fatalf("schema version drift for arm %q: want %d got %d", armName, criteria.SchemaVersion, back.SchemaVersion)
+			}
+			if back.RunID != env.RunId {
+				t.Fatalf("run id drift for arm %q", armName)
+			}
+			if back.Seq != seq {
+				t.Fatalf("seq drift for arm %q: want %d got %d", armName, seq, back.Seq)
+			}
+			if back.CorrelationID != env.CorrelationId {
+				t.Fatalf("correlation id drift for arm %q", armName)
+			}
+			if !back.Ts.Equal(env.Ts.AsTime()) {
+				t.Fatalf("timestamp drift for arm %q", armName)
+			}
+
+			// Validate the JSON payload round-trips back into the same message.
+			roundtrip := mt.New().Interface()
+			if err := protojson.Unmarshal(back.Payload, roundtrip); err != nil {
+				t.Fatalf("payload unmarshal for arm %q: %v", armName, err)
+			}
+			if !proto.Equal(msg, roundtrip) {
+				t.Fatalf("payload round-trip mismatch for arm %q:\nwant: %v\ngot:  %v", armName, msg, roundtrip)
 			}
 		})
 	}
 }
 
 // sqlitePopulateMessage sets every field in m to a deterministic non-zero
-// value. Duplicated from shared/events/exhaustive_test.go because shared/ and
-// castle/ are separate Go modules and cannot share test helpers directly.
+// value. Persistence and RPC layers are separate modules and cannot share
+// test helpers directly, so this helper is duplicated where needed.
 // depth guards against infinite recursion in self-referential message types.
 func sqlitePopulateMessage(m protoreflect.Message, depth int) {
 	if depth > 3 || sqliteIsWellKnown(m.Descriptor().FullName()) {
@@ -285,11 +343,17 @@ func sqlitePopulateMessage(m protoreflect.Message, depth int) {
 		case fd.IsMap():
 			mp := m.Mutable(fd).Map()
 			k := sqliteMapKey(fd.MapKey().Kind())
-			v := sqliteDeterministicValue(fd.MapValue(), m, depth)
+			v := sqliteDeterministicValue(fd.MapValue(), depth)
 			mp.Set(k, v)
 		case fd.IsList():
 			ls := m.Mutable(fd).List()
-			ls.Append(sqliteDeterministicValue(fd, m, depth))
+			if fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind {
+				sub := sqliteNewMessage(fd.Message())
+				sqlitePopulateMessage(sub, depth+1)
+				ls.Append(protoreflect.ValueOfMessage(sub))
+			} else {
+				ls.Append(sqliteDeterministicScalar(fd))
+			}
 		case fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind:
 			sub := m.Mutable(fd).Message()
 			sqlitePopulateMessage(sub, depth+1)
@@ -299,12 +363,20 @@ func sqlitePopulateMessage(m protoreflect.Message, depth int) {
 	}
 }
 
-func sqliteDeterministicValue(fd protoreflect.FieldDescriptor, parent protoreflect.Message, depth int) protoreflect.Value {
+func sqliteNewMessage(desc protoreflect.MessageDescriptor) protoreflect.Message {
+	mt, err := protoregistry.GlobalTypes.FindMessageByName(desc.FullName())
+	if err != nil {
+		panic(fmt.Sprintf("find message %q: %v", desc.FullName(), err))
+	}
+	return mt.New().Interface().ProtoReflect()
+}
+
+func sqliteDeterministicValue(fd protoreflect.FieldDescriptor, depth int) protoreflect.Value {
 	if fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind {
 		if sqliteIsWellKnown(fd.Message().FullName()) {
-			return parent.NewField(fd)
+			return protoreflect.ValueOfMessage(sqliteNewMessage(fd.Message()))
 		}
-		sub := parent.NewField(fd).Message()
+		sub := sqliteNewMessage(fd.Message())
 		sqlitePopulateMessage(sub, depth+1)
 		return protoreflect.ValueOfMessage(sub)
 	}
@@ -378,9 +450,9 @@ func TestListEvents_HonorsLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 30; i++ {
-		env := pb.NewEnvelope("r-limit", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env := criteria.NewEnvelope("r-limit", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 		env.CorrelationId = fmt.Sprintf("limit-%d", i)
-		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+		if _, _, err := s.AppendEvent(ctx, mustEventFromProto(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -419,9 +491,9 @@ func TestListEvents_DefaultOnZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 700; i++ {
-		env := pb.NewEnvelope("r-default", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env := criteria.NewEnvelope("r-default", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 		env.CorrelationId = fmt.Sprintf("default-%d", i)
-		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+		if _, _, err := s.AppendEvent(ctx, mustEventFromProto(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -446,9 +518,9 @@ func TestListEvents_Pagination_OrderPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 1500; i++ {
-		env := pb.NewEnvelope("r-page", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
+		env := criteria.NewEnvelope("r-page", &pb.StepEntered{Step: "a", Adapter: "shell", Attempt: 1})
 		env.CorrelationId = fmt.Sprintf("page-%d", i)
-		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+		if _, _, err := s.AppendEvent(ctx, mustEventFromProto(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -494,16 +566,16 @@ func TestListStepLogs_Pagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 900; i++ {
-		env := pb.NewEnvelope("r-logs", &pb.StepLog{Step: "build", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("line-%d", i)})
+		env := criteria.NewEnvelope("r-logs", &pb.StepLog{Step: "build", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("line-%d", i)})
 		env.CorrelationId = fmt.Sprintf("build-%d", i)
-		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+		if _, _, err := s.AppendEvent(ctx, mustEventFromProto(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for i := 0; i < 50; i++ {
-		env := pb.NewEnvelope("r-logs", &pb.StepLog{Step: "test", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("other-%d", i)})
+		env := criteria.NewEnvelope("r-logs", &pb.StepLog{Step: "test", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("other-%d", i)})
 		env.CorrelationId = fmt.Sprintf("test-%d", i)
-		if _, _, err := s.AppendEvent(ctx, env); err != nil {
+		if _, _, err := s.AppendEvent(ctx, mustEventFromProto(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -521,12 +593,15 @@ func TestListStepLogs_Pagination(t *testing.T) {
 			break
 		}
 		for _, env := range page {
-			logPayload, ok := env.Payload.(*pb.Envelope_StepLog)
-			if !ok {
-				t.Fatalf("expected step.log payload, got %T", env.Payload)
+			if env.Type != "step.log" {
+				t.Fatalf("expected step.log event, got %q", env.Type)
 			}
-			if logPayload.StepLog.Step != "build" {
-				t.Fatalf("unexpected step %q", logPayload.StepLog.Step)
+			var logPayload pb.StepLog
+			if err := protojson.Unmarshal(env.Payload, &logPayload); err != nil {
+				t.Fatalf("unmarshal step log payload: %v", err)
+			}
+			if logPayload.Step != "build" {
+				t.Fatalf("unexpected step %q", logPayload.Step)
 			}
 		}
 		seen += len(page)

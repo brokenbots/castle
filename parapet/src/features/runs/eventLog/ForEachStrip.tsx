@@ -9,10 +9,10 @@ interface ForEachStripProps {
 export function ForEachStrip({ events }: ForEachStripProps) {
   const [expanded, setExpanded] = useState(false);
 
-  // Find ForEachEntered, ForEachIteration events, and ForEachOutcome
+  // Find ForEachEntered, StepIterationStarted events, and StepIterationCompleted
   const entered = events.find((e) => e.type === 'forEachEntered');
-  const iterations = events.filter((e) => e.type === 'forEachIteration');
-  const outcome = events.find((e) => e.type === 'forEachOutcome');
+  const iterations = events.filter((e) => e.type === 'stepIterationStarted');
+  const outcome = events.find((e) => e.type === 'stepIterationCompleted');
 
   if (!entered) return null;
 

@@ -70,7 +70,7 @@ export function RunDetailPage() {
   const forEachNodes = useMemo(() => {
     const nodes = new Map<string, EventEnvelope[]>();
     for (const e of events) {
-      if (e.type === 'forEachEntered' || e.type === 'forEachIteration' || e.type === 'forEachOutcome') {
+      if (e.type === 'forEachEntered' || e.type === 'stepIterationStarted' || e.type === 'stepIterationCompleted') {
         const payload = e.payload as Record<string, unknown> | undefined;
         const node = (payload?.node as string) ?? '';
         if (node) {

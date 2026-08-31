@@ -9,16 +9,16 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
-	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 // ownershipHarness holds the pieces needed for ownership enforcement tests.
 type ownershipHarness struct {
 	ts          *testStack
-	oClient     overseer.ServiceClient
-	cClient     overlordv1connect.CastleServiceClient
+	oClient     criteriav1connect.CriteriaServiceClient
+	cClient     criteriav1connect.ServerServiceClient
 	ownerID     string
 	ownerToken  string
 	attackerID  string
@@ -46,7 +46,7 @@ func newOwnershipHarness(t *testing.T) *ownershipHarness {
 	}
 
 	// Mint a run owned by A via CreateRun (authenticated as A).
-	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: regA.Msg.OverseerId, WorkflowName: "wf"})
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: regA.Msg.CriteriaId, WorkflowName: "wf"})
 	createReq.Header().Set("Authorization", "Bearer "+regA.Msg.Token)
 	runResp, err := oClient.CreateRun(ctx, createReq)
 	if err != nil {
@@ -57,9 +57,9 @@ func newOwnershipHarness(t *testing.T) *ownershipHarness {
 		ts:          ts,
 		oClient:     oClient,
 		cClient:     cClient,
-		ownerID:     regA.Msg.OverseerId,
+		ownerID:     regA.Msg.CriteriaId,
 		ownerToken:  regA.Msg.Token,
-		attackerID:  regB.Msg.OverseerId,
+		attackerID:  regB.Msg.CriteriaId,
 		attackerTok: regB.Msg.Token,
 		runID:       runResp.Msg.RunId,
 	}
@@ -103,7 +103,7 @@ func TestRegister_BootstrapGate_CorrectToken_Succeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register with correct token: %v", err)
 	}
-	if resp.Msg.OverseerId == "" {
+	if resp.Msg.CriteriaId == "" {
 		t.Fatal("expected non-empty overseer_id")
 	}
 }
@@ -117,7 +117,7 @@ func TestOwnership_Heartbeat_CallerIdentityWins(t *testing.T) {
 	// Attacker sends Heartbeat claiming to be the owner via the request field.
 	// requireCaller must reject this with PermissionDenied because the
 	// authenticated caller (attacker) != the requested overseer_id (owner).
-	req := connect.NewRequest(&pb.HeartbeatRequest{OverseerId: h.ownerID})
+	req := connect.NewRequest(&pb.HeartbeatRequest{CriteriaId: h.ownerID})
 	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
 	_, err := h.oClient.Heartbeat(ctx, req)
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -137,7 +137,7 @@ func TestOwnership_CreateRun_CallerIdentityWins(t *testing.T) {
 	ctx := context.Background()
 
 	// Negative case: attacker claims to be the owner via the request's overseer_id field.
-	req := connect.NewRequest(&pb.CreateRunRequest{OverseerId: h.ownerID, WorkflowName: "wf"})
+	req := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: h.ownerID, WorkflowName: "wf"})
 	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
 	_, err := h.oClient.CreateRun(ctx, req)
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -145,7 +145,7 @@ func TestOwnership_CreateRun_CallerIdentityWins(t *testing.T) {
 	}
 
 	// Positive case: caller sends its own overseer_id — run must be owned by caller.
-	posReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: h.attackerID, WorkflowName: "wf"})
+	posReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: h.attackerID, WorkflowName: "wf"})
 	posReq.Header().Set("Authorization", "Bearer "+h.attackerTok)
 	runResp, err := h.oClient.CreateRun(ctx, posReq)
 	if err != nil {
@@ -167,7 +167,7 @@ func TestOwnership_ReattachRun_OtherOverseer_PermissionDenied(t *testing.T) {
 	h := newOwnershipHarness(t)
 	ctx := context.Background()
 
-	req := connect.NewRequest(&pb.ReattachRunRequest{RunId: h.runID, OverseerId: h.attackerID})
+	req := connect.NewRequest(&pb.ReattachRunRequest{RunId: h.runID, CriteriaId: h.attackerID})
 	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
 	_, err := h.oClient.ReattachRun(ctx, req)
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -185,7 +185,7 @@ func TestOwnership_SubmitEvents_OtherOverseer_PermissionDenied(t *testing.T) {
 	stream.RequestHeader().Set("Authorization", "Bearer "+h.attackerTok)
 
 	err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(overseer.SchemaVersion),
+		SchemaVersion: int32(criteria.SchemaVersion),
 		RunId:         h.runID, // owned by owner, not attacker
 		CorrelationId: "neg-1",
 		Ts:            timestamppb.Now(),
@@ -209,7 +209,7 @@ func TestOwnership_Control_CallerIdentityDeterminesChannel(t *testing.T) {
 
 	// Attacker subscribes to Control but passes owner's overseer_id in the request field.
 	// requireCaller must reject this with PermissionDenied (caller != request field).
-	req := connect.NewRequest(&pb.ControlSubscribeRequest{OverseerId: h.ownerID})
+	req := connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: h.ownerID})
 	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
 	stream, err := h.oClient.Control(ctx, req)
 	if err != nil {

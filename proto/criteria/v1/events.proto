@@ -1,29 +1,29 @@
-// Overlord event schema.
+// Criteria event schema.
 //
 // The `Envelope` message is the wire format for every event flowing between
-// Overseer, Castle, and Parapet. Field numbers in `payload` are **stable** once
-// assigned — see WORKSTREAM Phase 1.1 §3.1. A new event type must use the next
-// unused field number and never reuse an old one.
+// Criteria agents, the server, and UI clients. Field numbers in `payload` are **stable** once
+// assigned. A new event type must use the next unused field number and never
+// reuse an old one.
 syntax = "proto3";
 
-package overlord.v1;
+package criteria.v1;
 
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/brokenbots/castle/shared/pb/overlord/v1;overlordv1";
+option go_package = "github.com/brokenbots/criteria/sdk/pb/criteria/v1;criteriav1";
 
 // Envelope is the wire format for every event.
 message Envelope {
   // Protocol version. Always 1 for this package; bump only with a new
-  // `overlord.vN` package.
+  // `criteria.vN` package.
   int32 schema_version = 1;
 
   // Run the event belongs to.
   string run_id = 2;
 
-  // Castle-assigned monotonic sequence number per run_id. 0 when an Overseer
-  // submits; Castle stamps the real value before persistence and fan-out.
+  // Server-assigned monotonic sequence number per run_id. 0 when an agent
+  // submits; the server stamps the real value before persistence and fan-out.
   uint64 seq = 3;
 
   // Event timestamp (UTC).
@@ -42,29 +42,35 @@ message Envelope {
     StepTransition step_transition = 15;
     StepLog step_log = 16;
     AdapterEvent adapter_event = 17;
-    OverseerHeartbeat overseer_heartbeat = 18;
-    OverseerDisconnected overseer_disconnected = 19;
+    CriteriaHeartbeat criteria_heartbeat = 18;
+    CriteriaDisconnected criteria_disconnected = 19;
     StepResumed step_resumed = 20;
     VariableSet variable_set = 21;                          // permanent (W04)
     StepOutputCaptured step_output_captured = 22;           // permanent (W04)
-    // W05 wait/approval events — overseer-emitted; permanent (W05).
+    // W05 wait/approval events — agent-emitted; permanent (W05).
     WaitEntered wait_entered = 23;            // permanent (W05)
     WaitResumed wait_resumed = 24;            // permanent (W05)
     ApprovalRequested approval_requested = 25; // permanent (W05)
     ApprovalDecision approval_decision = 26;   // permanent (W05)
     // BranchEvaluated — emitted when a branch node selects a transition arm (W06).
-    // Overseer-owned event; permanent field numbers.
+    // Agent-owned event; permanent field numbers.
     BranchEvaluated branch_evaluated = 27;
-    // ForEach events — emitted by Overseer during for_each node execution (W07).
-    // Overseer-owned events; permanent field numbers.
-    ForEachEntered for_each_entered = 28;
-    ForEachIteration for_each_iteration = 29;
-    ForEachOutcome for_each_outcome = 30;
-    // ScopeIterCursorSet — emitted by Overseer whenever the for_each iteration
-    // cursor changes. Castle stores cursor_json verbatim into the
+    // Step iteration events — emitted by the agent during per-step for_each/count
+    // iteration (W10). Agent-owned events; permanent field numbers.
+    ForEachEntered for_each_entered = 28;                              // permanent (W07/W10)
+    StepIterationStarted step_iteration_started = 29;                  // permanent (W10; was ForEachIteration)
+    StepIterationCompleted step_iteration_completed = 30;              // permanent (W10; was ForEachOutcome)
+    // ScopeIterCursorSet — emitted by the agent whenever the step iteration
+    // cursor changes. The server stores cursor_json verbatim into the
     // runs.variable_scope "iter" field without interpreting its contents,
     // preserving 1.6 split independence (W07). Permanent field number.
     ScopeIterCursorSet scope_iter_cursor_set = 31;
+    // StepIterationItem — emitted when the engine is about to run the step body
+    // for the next iteration item. Permanent field number (W10; was ForEachStep).
+    StepIterationItem step_iteration_item = 32;
+    // RunOutputs — emitted when a run reaches terminal state with declared outputs (W09).
+    // Outputs are emitted before run.completed, in declaration order.
+    RunOutputs run_outputs = 33;
     // WatchReady is a protocol-level sentinel sent once at the start of a
     // WatchRun server-stream, after any persisted-event replay, to flush
     // response headers so the client's WatchRun call can return. It has no
@@ -132,7 +138,7 @@ message StepLog {
 //
 // On-wire contract for `data`: adapter sinks SHOULD emit JSON objects
 // (top-level `{}`). For backward compatibility with Phase 0 adapters that
-// emitted scalars or arrays, the Overseer transport wraps non-object
+// emitted scalars or arrays, the agent transport wraps non-object
 // payloads under a `value` key before conversion to Struct (e.g. the
 // wire payload for the array `[1,2,3]` becomes `{"value": [1,2,3]}`).
 // Subscribers MUST tolerate the wrapped shape. New adapters SHOULD
@@ -144,20 +150,20 @@ message AdapterEvent {
   google.protobuf.Struct data = 4;
 }
 
-// OverseerHeartbeat — periodic liveness signal from an Overseer.
-message OverseerHeartbeat {
-  string overseer_id = 1;
+// CriteriaHeartbeat — periodic liveness signal from a Criteria agent.
+message CriteriaHeartbeat {
+  string criteria_id = 1;
 }
 
-// OverseerDisconnected — Castle observed the Overseer going away.
-message OverseerDisconnected {
-  string overseer_id = 1;
+// CriteriaDisconnected — the server observed the Criteria agent going away.
+message CriteriaDisconnected {
+  string criteria_id = 1;
   string reason = 2;
 }
 
-// StepResumed is emitted by an Overseer before re-executing a step after a
+// StepResumed is emitted by an agent before re-executing a step after a
 // crash. It distinguishes a crash-restart rerun from a normal retry after a
-// step failure. Castle stores and fans out this event identically to other
+// step failure. The server stores and fans out this event identically to other
 // envelopes; it has no run-status side-effects.
 message StepResumed {
   string step = 1;
@@ -189,7 +195,7 @@ message StepOutputCaptured {
 }
 
 // WaitEntered — emitted when the engine enters a wait node (W05).
-// Overseer-owned event; permanent field numbers.
+// Agent-owned event; permanent field numbers.
 message WaitEntered {
   string node = 1;
   string mode = 2;      // "duration" | "signal"
@@ -198,7 +204,7 @@ message WaitEntered {
 }
 
 // WaitResumed — emitted when a wait node is satisfied and execution continues (W05).
-// Overseer-owned event; permanent field numbers.
+// Agent-owned event; permanent field numbers.
 message WaitResumed {
   string node = 1;
   string mode = 2;
@@ -207,7 +213,7 @@ message WaitResumed {
 }
 
 // ApprovalRequested — emitted when the engine enters an approval node (W05).
-// Overseer-owned event; permanent field numbers.
+// Agent-owned event; permanent field numbers.
 message ApprovalRequested {
   string node = 1;
   repeated string approvers = 2;
@@ -215,7 +221,7 @@ message ApprovalRequested {
 }
 
 // ApprovalDecision — emitted when an approval node is resolved via Resume (W05).
-// Overseer-owned event; permanent field numbers.
+// Agent-owned event; permanent field numbers.
 message ApprovalDecision {
   string node = 1;
   string decision = 2;              // "approved" | "rejected"
@@ -224,7 +230,7 @@ message ApprovalDecision {
 }
 
 // BranchEvaluated — emitted when a branch node selects a transition arm (W06).
-// Overseer-owned event; permanent field numbers.
+// Agent-owned event; permanent field numbers.
 message BranchEvaluated {
   string node = 1;           // branch node name; permanent
   string matched_arm = 2;    // "arm[<index>]" | "default"; permanent
@@ -232,36 +238,65 @@ message BranchEvaluated {
   string condition = 4;      // string-rendered condition for the matched arm; empty for default; permanent
 }
 
-// ForEachEntered — emitted when a for_each node begins iterating (W07).
-// Overseer-owned event; permanent field numbers.
+// ForEachEntered — emitted when a step begins iterating (for_each or count) (W07/W10).
+// Agent-owned event; permanent field numbers.
 message ForEachEntered {
-  string node = 1;   // for_each node name; permanent
+  string node = 1;   // step name; permanent
   int32 count = 2;   // number of items; permanent
 }
 
-// ForEachIteration — emitted at the start of each per-item iteration (W07).
-// Overseer-owned event; permanent field numbers.
-message ForEachIteration {
-  string node = 1;       // for_each node name; permanent
+// StepIterationStarted — emitted at the start of each per-item iteration (W10).
+// Formerly ForEachIteration (W07); field numbers preserved for wire compatibility.
+// Agent-owned event; permanent field numbers.
+message StepIterationStarted {
+  string node = 1;       // step name; permanent
   int32 index = 2;       // zero-based iteration index; permanent
   string value = 3;      // string-rendered cty value of the current item; permanent
   bool any_failed = 4;   // true if any prior iteration produced a failure outcome; permanent.
                          // Retained for log/UI consumers; cursor persistence uses ScopeIterCursorSet instead.
 }
 
-// ForEachOutcome — emitted when a for_each node finishes iterating (W07).
-// Overseer-owned event; permanent field numbers.
-message ForEachOutcome {
-  string node = 1;      // for_each node name; permanent
+// StepIterationCompleted — emitted when a step finishes iterating (W10).
+// Formerly ForEachOutcome (W07); field numbers preserved for wire compatibility.
+// Agent-owned event; permanent field numbers.
+message StepIterationCompleted {
+  string node = 1;      // step name; permanent
   string outcome = 2;   // "all_succeeded" | "any_failed"; permanent
   string target = 3;    // transition target node name; permanent
 }
 
-// ScopeIterCursorSet — emitted by Overseer whenever the for_each iteration
+// ScopeIterCursorSet — emitted by the agent whenever the step iteration
 // cursor is created, advanced, or cleared. cursor_json is the JSON-encoded
 // IterCursor blob; an empty string means the cursor has been cleared.
-// Castle stores this verbatim into the runs.variable_scope "iter" field
+// The server stores this verbatim into the runs.variable_scope "iter" field
 // without parsing it, preserving schema independence at the 1.6 split (W07).
 message ScopeIterCursorSet {
   string cursor_json = 1;   // JSON-encoded IterCursor or "" to clear; permanent
+}
+
+// StepIterationItem — emitted when the engine is about to execute the step body
+// for the next iteration item. Formerly ForEachStep (W08); field numbers preserved.
+// Agent-owned event; permanent field numbers.
+message StepIterationItem {
+  string node = 1;    // step name; permanent
+  int32 index = 2;    // zero-based iteration index; permanent
+  string step = 3;    // reserved; empty for non-workflow steps; permanent
+}
+
+// RunOutputs — emitted when a run reaches a terminal state with declared outputs (W09).
+// All field numbers permanent.
+message RunOutputs {
+  message Output {
+    string name = 1;           // output declaration name; permanent
+    string value = 2;          // string-rendered cty value for log/UI; consumers must JSON-parse to recover type structure; permanent
+    string declared_type = 3;  // declared type string if set, empty otherwise; permanent
+  }
+  repeated Output outputs = 1;  // outputs in declaration order; permanent
+
+  // Note: output values are currently stringified on the wire (via cty/json marshaling) to preserve
+  // human readability and avoid complexity at Phase 3 ship. Typed consumers must JSON-parse the
+  // value string to recover the original type structure. A future SDK upgrade may add a sibling
+  // google.protobuf.Value typed_value field if programmatic typed consumption becomes a requirement
+  // (e.g. W13 sub-workflow callers needing native type access). Until then, assume consumers will
+  // JSON-parse value and understand it may be string/number/bool/null/array/object.
 }

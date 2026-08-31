@@ -9,8 +9,8 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
-	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 // seedPausedRun creates a run in the DB (under a registered overseer) and sets
@@ -18,11 +18,11 @@ import (
 func seedPausedRun(t *testing.T, stack *testStack, pendingSignal string) (runID, overseerID string) {
 	t.Helper()
 	ctx := context.Background()
-	reg, err := stack.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-resume-" + t.Name()}))
+	reg, err := stack.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-resume-" + t.Name()}))
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	overseerID = reg.Msg.OverseerId
+	overseerID = reg.Msg.CriteriaId
 	run := &store.Run{
 		ID:           "run-" + overseerID[:8],
 		OverseerID:   overseerID,
@@ -50,7 +50,7 @@ func TestResume_HappyPath(t *testing.T) {
 		Signal:  "approve",
 		Payload: map[string]string{"actor": "alice"},
 	})
-	resp, err := stack.overseer.Resume(ctx, req)
+	resp, err := stack.criteria.Resume(ctx, req)
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestResume_RunNotPaused(t *testing.T) {
 	ctx := context.Background()
 
 	// Register an overseer.
-	reg, err := stack.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-not-paused"}))
+	reg, err := stack.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-not-paused"}))
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestResume_RunNotPaused(t *testing.T) {
 	// Create a running run (not paused).
 	run := &store.Run{
 		ID:           "run-not-paused",
-		OverseerID:   reg.Msg.OverseerId,
+		OverseerID:   reg.Msg.CriteriaId,
 		WorkflowName: "test",
 		WorkflowHCL:  "workflow {}",
 		Status:       "running",
@@ -101,7 +101,7 @@ func TestResume_RunNotPaused(t *testing.T) {
 		RunId:  run.ID,
 		Signal: "approve",
 	})
-	resp, err := stack.overseer.Resume(ctx, req)
+	resp, err := stack.criteria.Resume(ctx, req)
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestResume_SignalMismatch(t *testing.T) {
 		RunId:  runID,
 		Signal: "gate-b", // wrong signal
 	})
-	resp, err := stack.overseer.Resume(ctx, req)
+	resp, err := stack.criteria.Resume(ctx, req)
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestResume_NoPendingSignal(t *testing.T) {
 	ctx := context.Background()
 
 	// Register overseer.
-	reg, err := stack.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-no-signal"}))
+	reg, err := stack.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-no-signal"}))
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestResume_NoPendingSignal(t *testing.T) {
 	// Create a run, then set paused with empty signal (edge case).
 	run := &store.Run{
 		ID:           "run-no-signal",
-		OverseerID:   reg.Msg.OverseerId,
+		OverseerID:   reg.Msg.CriteriaId,
 		WorkflowName: "test",
 		WorkflowHCL:  "workflow {}",
 		Status:       "running",
@@ -164,7 +164,7 @@ func TestResume_NoPendingSignal(t *testing.T) {
 		RunId:  run.ID,
 		Signal: "anything",
 	})
-	resp, err := stack.overseer.Resume(ctx, req)
+	resp, err := stack.criteria.Resume(ctx, req)
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestResume_WrongOverseerToken(t *testing.T) {
 	// Create a run owned by overseer-A and pause it.
 	run := &store.Run{
 		ID:           "run-owned-by-a",
-		OverseerID:   respA.Msg.OverseerId,
+		OverseerID:   respA.Msg.CriteriaId,
 		WorkflowName: "test",
 		WorkflowHCL:  "workflow {}",
 		Status:       "running",
@@ -215,7 +215,7 @@ func TestResume_WrongOverseerToken(t *testing.T) {
 	}
 
 	// Attempt resume authenticated as overseer-B.
-	attackClient := overlordv1connect.NewOverseerServiceClient(h2cClient(), tsrv.URL)
+	attackClient := criteriav1connect.NewCriteriaServiceClient(h2cClient(), tsrv.URL)
 	req := connect.NewRequest(&pb.ResumeRequest{
 		RunId:  run.ID,
 		Signal: "gate",

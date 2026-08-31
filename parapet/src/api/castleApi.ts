@@ -2,14 +2,14 @@ import { createApi } from '@reduxjs/toolkit/query/react';
 import { fakeBaseQuery } from '@reduxjs/toolkit/query';
 import { ConnectError } from '@connectrpc/connect';
 import { Timestamp } from '@bufbuild/protobuf';
-import { castle, overseer } from './client';
-import type { Run as PbRun } from '../sdk/overseer';
-import type { Overseer as PbOverseer } from '../gen/overlord/v1/castle_pb';
-import type { Envelope } from '../sdk/overseer';
+import { server } from './client';
+import type { Run as PbRun } from '../gen/criteria/v1/criteria_pb';
+import type { Agent as PbAgent } from '../gen/criteria/v1/server_pb';
+import type { Envelope } from '../gen/criteria/v1/events_pb';
 
 export interface Run {
   runId: string;
-  overseerId: string;
+  criteriaId: string;
   workflowName: string;
   workflowHash: string;
   status: string;
@@ -20,8 +20,8 @@ export interface Run {
   failureReason: string;
 }
 
-export interface Overseer {
-  overseerId: string;
+export interface Agent {
+  criteriaId: string;
   name: string;
   labels: Record<string, string>;
   status: string;
@@ -51,7 +51,7 @@ function tsToIso(ts?: Timestamp): string | undefined {
 function mapRun(r: PbRun): Run {
   return {
     runId: r.runId,
-    overseerId: r.overseerId,
+    criteriaId: r.criteriaId,
     workflowName: r.workflowName,
     workflowHash: r.workflowHash,
     status: r.status,
@@ -63,14 +63,14 @@ function mapRun(r: PbRun): Run {
   };
 }
 
-function mapOverseer(o: PbOverseer): Overseer {
+function mapAgent(a: PbAgent): Agent {
   return {
-    overseerId: o.overseerId,
-    name: o.name,
-    labels: { ...o.labels },
-    status: o.status,
-    registeredAt: tsToIso(o.registeredAt),
-    lastSeenAt: tsToIso(o.lastSeenAt),
+    criteriaId: a.criteriaId,
+    name: a.name,
+    labels: { ...a.labels },
+    status: a.status,
+    registeredAt: tsToIso(a.registeredAt),
+    lastSeenAt: tsToIso(a.lastSeenAt),
   };
 }
 
@@ -104,12 +104,12 @@ function toError(err: unknown) {
 export const castleApi = createApi({
   reducerPath: 'castleApi',
   baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
-  tagTypes: ['Run', 'Overseer', 'Events'],
+  tagTypes: ['Run', 'Agent', 'Events'],
   endpoints: (b) => ({
     listRuns: b.query<Run[], void>({
       queryFn: async () => {
         try {
-          const resp = await castle.listRuns({});
+          const resp = await server.listRuns({});
           return { data: resp.runs.map(mapRun) };
         } catch (err) {
           return { error: toError(err) };
@@ -120,7 +120,7 @@ export const castleApi = createApi({
     getRun: b.query<Run, string>({
       queryFn: async (runId) => {
         try {
-          const resp = await castle.getRun({ runId });
+          const resp = await server.getRun({ runId });
           return { data: mapRun(resp) };
         } catch (err) {
           return { error: toError(err) };
@@ -128,21 +128,21 @@ export const castleApi = createApi({
       },
       providesTags: (_r, _e, id) => [{ type: 'Run', id }],
     }),
-    listOverseers: b.query<Overseer[], void>({
+    listAgents: b.query<Agent[], void>({
       queryFn: async () => {
         try {
-          const resp = await castle.listOverseers({});
-          return { data: resp.overseers.map(mapOverseer) };
+          const resp = await server.listAgents({});
+          return { data: resp.agents.map(mapAgent) };
         } catch (err) {
           return { error: toError(err) };
         }
       },
-      providesTags: ['Overseer'],
+      providesTags: ['Agent'],
     }),
     listEvents: b.query<EventEnvelope[], { runId: string; since?: number }>({
       queryFn: async ({ runId, since = 0 }) => {
         try {
-          const resp = await castle.listRunEvents({
+          const resp = await server.listRunEvents({
             runId,
             sinceSeq: BigInt(since),
           });
@@ -154,13 +154,13 @@ export const castleApi = createApi({
       providesTags: (_r, _e, { runId }) => [{ type: 'Events', id: runId }],
     }),
     resume: b.mutation<
-      { accepted: boolean; reason: string },
-      { runId: string; signal: string; payload?: Record<string, string> }
+      { accepted: boolean },
+      { runId: string; signal?: string; payload?: Record<string, string> }
     >({
-      queryFn: async ({ runId, signal, payload = {} }) => {
+      queryFn: async ({ runId }) => {
         try {
-          const resp = await overseer.resume({ runId, signal, payload });
-          return { data: { accepted: resp.accepted, reason: resp.reason } };
+          await server.resumeRun({ runId });
+          return { data: { accepted: true } };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -176,7 +176,7 @@ export const castleApi = createApi({
 export const {
   useListRunsQuery,
   useGetRunQuery,
-  useListOverseersQuery,
+  useListAgentsQuery,
   useListEventsQuery,
   useResumeMutation,
 } = castleApi;

@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
 )
 
 const DefaultEventBufferCapacity = 1024
@@ -20,7 +20,7 @@ type Hub struct {
 }
 
 type Subscriber struct {
-	C      chan *overseer.Envelope
+	C      chan *criteria.Envelope
 	hub    *Hub
 	runIDs []string
 
@@ -52,7 +52,7 @@ func NewWithBuffer(capPerRun int, log *slog.Logger) *Hub {
 	}
 }
 
-func (h *Hub) Since(runID string, seq uint64) []*overseer.Envelope {
+func (h *Hub) Since(runID string, seq uint64) []*criteria.Envelope {
 	if h == nil || h.buffer == nil {
 		return nil
 	}
@@ -61,7 +61,7 @@ func (h *Hub) Since(runID string, seq uint64) []*overseer.Envelope {
 
 // Subscribe to one or more runs. "*" subscribes to every run.
 func (h *Hub) Subscribe(runIDs ...string) *Subscriber {
-	s := &Subscriber{C: make(chan *overseer.Envelope, 64), hub: h, runIDs: runIDs}
+	s := &Subscriber{C: make(chan *criteria.Envelope, 64), hub: h, runIDs: runIDs}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, id := range runIDs {
@@ -107,7 +107,7 @@ func (h *Hub) removeFromIndex(s *Subscriber) {
 
 // Publish delivers env to all subscribers of env.RunId and to wildcard "*".
 // Slow subscribers (buffer full) are dropped and their channel is closed.
-func (h *Hub) Publish(env *overseer.Envelope) {
+func (h *Hub) Publish(env *criteria.Envelope) {
 	if env == nil {
 		return
 	}
@@ -152,12 +152,12 @@ func (h *Hub) Publish(env *overseer.Envelope) {
 		h.removeFromIndex(s)
 	}
 
-	if overseer.IsTerminal(env) && h.buffer != nil {
+	if criteria.IsTerminal(env) && h.buffer != nil {
 		h.buffer.Forget(env.RunId)
 	}
 }
 
-func (h *Hub) appendToBuffer(env *overseer.Envelope) {
+func (h *Hub) appendToBuffer(env *criteria.Envelope) {
 	if h == nil || h.buffer == nil || env == nil {
 		return
 	}

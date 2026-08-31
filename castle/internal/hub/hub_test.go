@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	pb "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
 )
 
 // TestUnsubscribeIdempotent ensures the channel is closed at most once, so a
@@ -17,10 +17,10 @@ func TestUnsubscribeIdempotent(t *testing.T) {
 	// Fill the buffer (cap 64) with messages so the 65th Publish drops the
 	// subscriber and closes its channel.
 	for i := 0; i < cap(sub.C); i++ {
-		h.Publish(&pb.Envelope{RunId: "r1"})
+		h.Publish(&criteria.Envelope{RunId: "r1"})
 	}
 	// This publish finds the buffer full and evicts the subscriber.
-	h.Publish(&pb.Envelope{RunId: "r1"})
+	h.Publish(&criteria.Envelope{RunId: "r1"})
 
 	// Handler cleanup path: must not panic even though the channel is
 	// already closed.
@@ -41,7 +41,7 @@ func TestUnsubscribeRaceSlowSubscriber(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				h.Publish(&pb.Envelope{RunId: "r1"})
+				h.Publish(&criteria.Envelope{RunId: "r1"})
 			}
 		}()
 		go func(s *Subscriber) {
@@ -61,12 +61,12 @@ func TestUnsubscribeNilSafe(t *testing.T) {
 func TestPublish_TerminalForgetsRunBuffer(t *testing.T) {
 	h := NewWithBuffer(8, nil)
 
-	h.Publish(&pb.Envelope{RunId: "r1", Seq: 1, Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s", Adapter: "shell", Attempt: 1}}})
+	h.Publish(&criteria.Envelope{RunId: "r1", Seq: 1, Payload: &criteria.Envelope_StepEntered{StepEntered: &criteria.StepEntered{Step: "s", Adapter: "shell", Attempt: 1}}})
 	if got := len(h.Since("r1", 0)); got != 1 {
 		t.Fatalf("before terminal, buffered=%d want 1", got)
 	}
 
-	terminal := pb.NewEnvelope("r1", &pb.RunCompleted{Success: true})
+	terminal := criteria.NewEnvelope("r1", &criteria.RunCompleted{Success: true})
 	terminal.Seq = 2
 	h.Publish(terminal)
 

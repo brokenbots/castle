@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 func TestE2ELifecycleAndAuth(t *testing.T) {
@@ -27,7 +27,7 @@ func TestE2ELifecycleAndAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	overseerID, token := reg.Msg.OverseerId, reg.Msg.Token
+	overseerID, token := reg.Msg.CriteriaId, reg.Msg.Token
 
 	// Any non-exempt RPC should reject unauthenticated requests.
 	_, err = cClient.GetRun(context.Background(), connect.NewRequest(&pb.GetRunRequest{RunId: "missing"}))
@@ -35,7 +35,7 @@ func TestE2ELifecycleAndAuth(t *testing.T) {
 		t.Fatalf("expected unauthenticated, got %v", err)
 	}
 
-	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"})
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"})
 	createReq.Header().Set("Authorization", "Bearer "+token)
 	run, err := oClient.CreateRun(context.Background(), createReq)
 	if err != nil {
@@ -130,7 +130,7 @@ watchLoop:
 		t.Fatalf("ack seq %d does not match live event seq %d", ack.Seq, liveSeq)
 	}
 
-	ctrlReq := connect.NewRequest(&pb.ControlSubscribeRequest{OverseerId: overseerID})
+	ctrlReq := connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: overseerID})
 	ctrlReq.Header().Set("Authorization", "Bearer "+token)
 	ctrl, err := oClient.Control(context.Background(), ctrlReq)
 	if err != nil {

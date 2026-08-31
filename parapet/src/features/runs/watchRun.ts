@@ -1,5 +1,5 @@
 import type { Dispatch } from '@reduxjs/toolkit';
-import { castle } from '../../api/client';
+import { server } from '../../api/client';
 import { mapEnvelope } from '../../api/castleApi';
 import { runsSlice } from './runsSlice';
 
@@ -11,7 +11,7 @@ export async function startWatch(
   signal: AbortSignal,
 ): Promise<void> {
   try {
-    for await (const env of castle.watchRun(
+    for await (const env of server.watchRun(
       { runId, sinceSeq: BigInt(sinceSeq), subscriberId },
       { signal },
     )) {

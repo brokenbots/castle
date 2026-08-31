@@ -7,7 +7,7 @@ import { store } from './store';
 import { App } from './App';
 import { RunListPage } from './features/runs/RunListPage';
 import { RunDetailPage } from './features/runs/RunDetailPage';
-import { OverseerListPage } from './features/overseers/OverseerListPage';
+import { AgentListPage } from './features/agents/AgentListPage';
 
 import './index.css';
 
@@ -20,7 +20,7 @@ createRoot(document.getElementById('root')!).render(
             <Route index element={<Navigate to="/runs" replace />} />
             <Route path="runs" element={<RunListPage />} />
             <Route path="runs/:id" element={<RunDetailPage />} />
-            <Route path="overseers" element={<OverseerListPage />} />
+            <Route path="agents" element={<AgentListPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

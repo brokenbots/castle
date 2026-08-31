@@ -23,13 +23,13 @@ export function App() {
         <form onSubmit={onSubmit} className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-lg p-6">
           <h1 className="text-xl font-semibold mb-3">Parapet Login</h1>
           <p className="text-sm text-slate-400 mb-4">
-            Enter an Overseer token to authenticate Castle API and stream access.
+            Enter an agent token to authenticate Castle API and stream access.
           </p>
           <input
             value={value}
             onChange={(e) => setValue(e.target.value)}
             className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 font-mono text-sm"
-            placeholder="X-Overseer-Token"
+            placeholder="Agent token"
           />
           <button type="submit" className="mt-4 px-4 py-2 rounded bg-sky-600 hover:bg-sky-500 text-white">
             Continue
@@ -44,7 +44,7 @@ export function App() {
       <aside className="w-56 border-r border-slate-800 p-4 flex flex-col gap-1">
         <h1 className="text-lg font-semibold mb-4">Parapet</h1>
         <NavLink to="/runs" className={navClass}>Runs</NavLink>
-        <NavLink to="/overseers" className={navClass}>Overseers</NavLink>
+        <NavLink to="/agents" className={navClass}>Agents</NavLink>
         <button
           onClick={() => {
             clearAuthToken();

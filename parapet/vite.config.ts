@@ -6,11 +6,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/overlord.v1.CastleService': {
+      '/criteria.v1.ServerService': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
-      '/overlord.v1.OverseerService': {
+      '/criteria.v1.CriteriaService': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },

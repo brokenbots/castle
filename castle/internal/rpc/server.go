@@ -10,14 +10,14 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/hub"
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 )
 
 const controlBufferSize = 32
 
-// ErrOverseerNotConnected is returned when no Control subscriber exists for
-// the target overseer.
-var ErrOverseerNotConnected = errors.New("overseer not connected")
+// ErrAgentNotConnected is returned when no Control subscriber exists for
+// the target criteria agent.
+var ErrAgentNotConnected = errors.New("criteria agent not connected")
 
 // ErrControlBacklogFull is returned when the Control channel is full and a
 // new message cannot be enqueued without blocking.
@@ -32,46 +32,46 @@ func NewControlRegistry() *ControlRegistry {
 	return &ControlRegistry{conns: make(map[string]chan *pb.ControlMessage)}
 }
 
-// Register allocates a buffered channel for an overseer's Control stream. If
-// a prior registration exists for the same overseer_id the previous channel
+// Register allocates a buffered channel for a criteria agent's Control stream.
+// If a prior registration exists for the same criteria_id the previous channel
 // is closed, evicting the old subscriber so the new one takes over.
-func (r *ControlRegistry) Register(overseerID string) (chan *pb.ControlMessage, error) {
-	if overseerID == "" {
-		return nil, errors.New("overseer_id required")
+func (r *ControlRegistry) Register(criteriaID string) (chan *pb.ControlMessage, error) {
+	if criteriaID == "" {
+		return nil, errors.New("criteria_id required")
 	}
 	ch := make(chan *pb.ControlMessage, controlBufferSize)
 	r.mu.Lock()
-	if old, ok := r.conns[overseerID]; ok {
+	if old, ok := r.conns[criteriaID]; ok {
 		close(old)
 	}
-	r.conns[overseerID] = ch
+	r.conns[criteriaID] = ch
 	r.mu.Unlock()
 	return ch, nil
 }
 
-func (r *ControlRegistry) Unregister(overseerID string, ch chan *pb.ControlMessage) {
+func (r *ControlRegistry) Unregister(criteriaID string, ch chan *pb.ControlMessage) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	curr, ok := r.conns[overseerID]
+	curr, ok := r.conns[criteriaID]
 	if !ok {
 		return
 	}
 	if ch != nil && ch != curr {
 		return
 	}
-	delete(r.conns, overseerID)
+	delete(r.conns, criteriaID)
 	close(curr)
 }
 
-// Enqueue attempts a non-blocking send of msg to the overseer's Control
-// channel. Returns ErrOverseerNotConnected if no subscriber is registered
+// Enqueue attempts a non-blocking send of msg to the criteria agent's Control
+// channel. Returns ErrAgentNotConnected if no subscriber is registered
 // and ErrControlBacklogFull if the subscriber's buffer is saturated.
-func (r *ControlRegistry) Enqueue(overseerID string, msg *pb.ControlMessage) error {
+func (r *ControlRegistry) Enqueue(criteriaID string, msg *pb.ControlMessage) error {
 	r.mu.RLock()
-	ch, ok := r.conns[overseerID]
+	ch, ok := r.conns[criteriaID]
 	r.mu.RUnlock()
 	if !ok {
-		return ErrOverseerNotConnected
+		return ErrAgentNotConnected
 	}
 	select {
 	case ch <- msg:
@@ -81,7 +81,8 @@ func (r *ControlRegistry) Enqueue(overseerID string, msg *pb.ControlMessage) err
 	}
 }
 
-type OverseerServer struct {
+// CriteriaServer implements pb.v1.CriteriaService (agent-facing RPCs).
+type CriteriaServer struct {
 	Store    store.Store
 	Hub      *hub.Hub
 	Log      *slog.Logger
@@ -89,31 +90,32 @@ type OverseerServer struct {
 	controls *ControlRegistry
 }
 
-type CastleServer struct {
+// ServerServer implements pb.v1.ServerService (UI/tool-facing RPCs).
+type ServerServer struct {
 	Store    store.Store
 	Hub      *hub.Hub
 	Log      *slog.Logger
 	controls *ControlRegistry
 }
 
-func NewOverseerServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *ControlRegistry) *OverseerServer {
+func NewCriteriaServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *ControlRegistry) *CriteriaServer {
 	if controls == nil {
 		controls = NewControlRegistry()
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &OverseerServer{Store: st, Hub: h, Log: log, scope: newScopeCoalescer(st, log), controls: controls}
+	return &CriteriaServer{Store: st, Hub: h, Log: log, scope: newScopeCoalescer(st, log), controls: controls}
 }
 
-func NewCastleServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *ControlRegistry) *CastleServer {
+func NewServerServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *ControlRegistry) *ServerServer {
 	if controls == nil {
 		controls = NewControlRegistry()
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &CastleServer{Store: st, Hub: h, Log: log, controls: controls}
+	return &ServerServer{Store: st, Hub: h, Log: log, controls: controls}
 }
 
 // scopeCoalescer debounces variable-scope writes to SQLite. Each mutation is

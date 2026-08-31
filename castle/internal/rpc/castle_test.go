@@ -15,8 +15,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/hub"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 type recordedLog struct {
@@ -100,8 +100,8 @@ func newCursorSpyStack(t *testing.T) (*testStack, *cursorSpyStore) {
 		store:    wrapped,
 		hub:      h,
 		controls: controls,
-		overseer: NewOverseerServer(wrapped, h, log, controls),
-		castle:   NewCastleServer(wrapped, h, log, controls),
+		criteria: NewCriteriaServer(wrapped, h, log, controls),
+		server:   NewServerServer(wrapped, h, log, controls),
 	}
 	return stack, wrapped
 }
@@ -117,7 +117,7 @@ func TestCastleListRunEventsPaging(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestCastleListRunEventsPaging(t *testing.T) {
 			Ts:            timestamppb.Now(),
 			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s", Adapter: "shell", Attempt: 1}},
 		}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -153,7 +153,7 @@ func TestListRunEvents_RejectsOversizedLimit(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestListRunEvents_OverThreshold_PagesInternally(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestListRunEvents_OverThreshold_PagesInternally(t *testing.T) {
 			Ts:            timestamppb.Now(),
 			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s", Adapter: "shell", Attempt: 1}},
 		}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -210,14 +210,14 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	runID := run.Msg.RunId
 
 	replayEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}}
-	seq1, _, err := ts.store.AppendEvent(context.Background(), replayEnv)
+	seq1, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, replayEnv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 	}
 
 	liveEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r2", Adapter: "shell", Attempt: 1}}}
-	seq2, _, err := ts.store.AppendEvent(context.Background(), liveEnv)
+	seq2, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, liveEnv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,9 +256,9 @@ func TestWatchRunReplayAndTail(t *testing.T) {
 		t.Fatalf("live seq=%d", watch.Msg().Seq)
 	}
 
-	terminal := overseer.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
+	terminal := criteria.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
 	terminal.Ts = timestamppb.New(time.Now().UTC())
-	seq3, _, err := ts.store.AppendEvent(context.Background(), terminal)
+	seq3, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, terminal))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,14 +280,14 @@ func TestWatchRun_TerminalInReplay_ClosesImmediately(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	runID := run.Msg.RunId
 
 	replayEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}}
-	seq1, _, err := ts.store.AppendEvent(context.Background(), replayEnv)
+	seq1, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, replayEnv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,9 +314,9 @@ func TestWatchRun_TerminalInReplay_ClosesImmediately(t *testing.T) {
 		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
 	}
 
-	terminal := overseer.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
+	terminal := criteria.NewEnvelope(runID, &pb.RunFailed{Reason: "x"})
 	terminal.Ts = timestamppb.New(time.Now().UTC())
-	seq2, _, err := ts.store.AppendEvent(context.Background(), terminal)
+	seq2, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, terminal))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestWatchRun_ReplaysFromBuffer(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestWatchRun_ReplaysFromBuffer(t *testing.T) {
 			Ts:            timestamppb.Now(),
 			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}},
 		}
-		seq, _, err := ts.store.AppendEvent(context.Background(), env)
+		seq, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -388,7 +388,7 @@ func TestWatchRun_DeDupesBufferVsLive(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestWatchRun_DeDupesBufferVsLive(t *testing.T) {
 		Ts:            timestamppb.Now(),
 		Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}},
 	}
-	seq, _, err := ts.store.AppendEvent(context.Background(), env)
+	seq, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestWatchRun_DeDupesBufferVsLive(t *testing.T) {
 		Ts:            timestamppb.Now(),
 		Payload:       &pb.Envelope_RunFailed{RunFailed: &pb.RunFailed{Reason: "done"}},
 	}
-	seq2, _, err := ts.store.AppendEvent(context.Background(), live)
+	seq2, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, live))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestWatchRun_ReplaysPersistedWhenBufferEmpty(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestWatchRun_ReplaysPersistedWhenBufferEmpty(t *testing.T) {
 			Ts:            timestamppb.Now(),
 			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}},
 		}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -506,14 +506,14 @@ func TestWatchRun_WatchReadyAfterPersistedReplay(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	runID := run.Msg.RunId
 
 	replayEnv := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r1", Adapter: "shell", Attempt: 1}}}
-	if _, _, err := ts.store.AppendEvent(context.Background(), replayEnv); err != nil {
+	if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, replayEnv)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -559,13 +559,13 @@ func TestWatchRun_BufferCapacityLateSubscriberAndEvictionWarning(t *testing.T) {
 		store:    store,
 		hub:      h,
 		controls: controls,
-		overseer: NewOverseerServer(store, h, log, controls),
-		castle:   NewCastleServer(store, h, log, controls),
+		criteria: NewCriteriaServer(store, h, log, controls),
+		server:   NewServerServer(store, h, log, controls),
 	}
 
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +628,7 @@ func TestWatchRun_CursorResolution_NoPriorCursor(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +636,7 @@ func TestWatchRun_CursorResolution_NoPriorCursor(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -659,7 +659,7 @@ func TestWatchRun_CursorResolution_WithCursor(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +667,7 @@ func TestWatchRun_CursorResolution_WithCursor(t *testing.T) {
 
 	for i := 1; i <= 60; i++ {
 		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -693,7 +693,7 @@ func TestWatchRun_CursorUpdate_Coalesced(t *testing.T) {
 	ts, spy := newCursorSpyStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,7 +701,7 @@ func TestWatchRun_CursorUpdate_Coalesced(t *testing.T) {
 
 	for i := 1; i <= 500; i++ {
 		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -737,7 +737,7 @@ func TestWatchRun_CursorUpdate_FinalValueFlushedOnClose(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -745,7 +745,7 @@ func TestWatchRun_CursorUpdate_FinalValueFlushedOnClose(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -864,8 +864,8 @@ func newFaultStack(t *testing.T, failOnSeq uint64, failOnCall int) (*testStack, 
 		store:    wrapped,
 		hub:      h,
 		controls: controls,
-		overseer: NewOverseerServer(wrapped, h, log, controls),
-		castle:   NewCastleServer(wrapped, h, log, controls),
+		criteria: NewCriteriaServer(wrapped, h, log, controls),
+		server:   NewServerServer(wrapped, h, log, controls),
 	}
 	return stack, wrapped
 }
@@ -874,7 +874,7 @@ func TestWatchRun_CursorUpdate_FinalWriteRetriesBusy(t *testing.T) {
 	ts, fault := newFaultStack(t, 500, 0)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,7 +882,7 @@ func TestWatchRun_CursorUpdate_FinalWriteRetriesBusy(t *testing.T) {
 
 	for i := 1; i <= 500; i++ {
 		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -914,7 +914,7 @@ func TestWatchRun_CursorUpdate_IntermediateWriteRetriesBusy(t *testing.T) {
 	ts, fault := newFaultStack(t, 0, 3)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -922,7 +922,7 @@ func TestWatchRun_CursorUpdate_IntermediateWriteRetriesBusy(t *testing.T) {
 
 	for i := 1; i <= 500; i++ {
 		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -960,7 +960,7 @@ func TestStopRunConnectedAndDisconnected(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
-	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -970,7 +970,7 @@ func TestStopRunConnectedAndDisconnected(t *testing.T) {
 		t.Fatalf("expected failed precondition, got %v", err)
 	}
 
-	ctrl, err := oClient.Control(context.Background(), connect.NewRequest(&pb.ControlSubscribeRequest{OverseerId: overseerID}))
+	ctrl, err := oClient.Control(context.Background(), connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: overseerID}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1039,8 +1039,8 @@ func TestControlRegistryEvictsPriorSubscriber(t *testing.T) {
 
 func TestControlRegistryEnqueueErrors(t *testing.T) {
 	r := NewControlRegistry()
-	if err := r.Enqueue("missing", &pb.ControlMessage{}); err == nil || err != ErrOverseerNotConnected {
-		t.Fatalf("expected ErrOverseerNotConnected, got %v", err)
+	if err := r.Enqueue("missing", &pb.ControlMessage{}); err == nil || err != ErrAgentNotConnected {
+		t.Fatalf("expected ErrAgentNotConnected, got %v", err)
 	}
 	ch, err := r.Register("o1")
 	if err != nil {
@@ -1056,4 +1056,53 @@ func TestControlRegistryEnqueueErrors(t *testing.T) {
 		t.Fatalf("expected ErrControlBacklogFull, got %v", err)
 	}
 	r.Unregister("o1", ch)
+}
+
+// TestPauseRunIsUnimplementedAndDoesNotCancelRun is a regression test for the
+// PR #2 fix: PauseRun must not silently enqueue RunCancel and return success.
+// It must report CodeUnimplemented and leave the agent's control stream empty.
+func TestPauseRunIsUnimplementedAndDoesNotCancelRun(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctrl, err := oClient.Control(context.Background(), connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: overseerID}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctrl.Close()
+
+	// Drain the ControlReady handshake so the subscription is active.
+	if !ctrl.Receive() {
+		t.Fatalf("expected ControlReady, err=%v", ctrl.Err())
+	}
+	if _, ok := ctrl.Msg().Command.(*pb.ControlMessage_ControlReady); !ok {
+		t.Fatalf("expected ControlReady, got %T", ctrl.Msg().Command)
+	}
+
+	_, err = cClient.PauseRun(context.Background(), connect.NewRequest(&pb.PauseRunRequest{RunId: run.Msg.RunId}))
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("expected Unimplemented, got %v (code=%v)", err, connect.CodeOf(err))
+	}
+
+	// The fix removed the RunCancel enqueue; the control stream must remain
+	// idle. Use a short timeout so the test fails if the old cancel-and-return
+	// behavior is restored.
+	gotMsg := make(chan struct{})
+	go func() {
+		if ctrl.Receive() {
+			close(gotMsg)
+		}
+	}()
+	select {
+	case <-gotMsg:
+		cmd := ctrl.Msg().Command
+		t.Fatalf("PauseRun enqueued an unexpected control command: %T", cmd)
+	case <-time.After(250 * time.Millisecond):
+		// expected: no control message was enqueued
+	}
 }

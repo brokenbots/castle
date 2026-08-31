@@ -4,7 +4,7 @@ interface PendingSignalCardProps {
 }
 
 export function PendingSignalCard({ signal, runId }: PendingSignalCardProps) {
-  const curlExample = `curl -X POST http://localhost:8080/overlord.v1.OverseerService/Resume \\
+  const curlExample = `curl -X POST http://localhost:8080/criteria.v1.CriteriaService/Resume \\
   -H "Content-Type: application/json" \\
   -d '{"run_id":"${runId}","signal":"${signal}"}'`;
 

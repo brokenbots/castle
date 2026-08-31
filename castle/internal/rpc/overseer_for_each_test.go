@@ -9,8 +9,8 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 // applyAndFlushScope calls applyRunStatus with the given envelope and then
@@ -18,8 +18,8 @@ import (
 // store before we read it back.
 func applyAndFlushScope(t *testing.T, ts *testStack, runID string, env *pb.Envelope) {
 	t.Helper()
-	ts.overseer.applyRunStatus(context.Background(), env)
-	ts.overseer.scope.FlushNow(context.Background(), runID)
+	ts.criteria.applyRunStatus(context.Background(), env)
+	ts.criteria.scope.FlushNow(context.Background(), runID)
 }
 
 // getScopeIter reads back the stored variable_scope and returns the "iter"
@@ -48,13 +48,13 @@ func getScopeIter(t *testing.T, ts *testStack, runID string) map[string]interfac
 func mustRegisterAndCreateRun(t *testing.T, ts *testStack, overseerName string) string {
 	t.Helper()
 	ctx := context.Background()
-	reg, err := ts.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: overseerName}))
+	reg, err := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: overseerName}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := &store.Run{
-		ID:           "run-fe-" + reg.Msg.OverseerId[:8],
-		OverseerID:   reg.Msg.OverseerId,
+		ID:           "run-fe-" + reg.Msg.CriteriaId[:8],
+		OverseerID:   reg.Msg.CriteriaId,
 		WorkflowName: "test-wf",
 		Status:       "running",
 		CreatedAt:    time.Now().UTC(),
@@ -66,7 +66,7 @@ func mustRegisterAndCreateRun(t *testing.T, ts *testStack, overseerName string) 
 }
 
 func makeEnvForTest(runID string, payload *pb.Envelope) *pb.Envelope {
-	payload.SchemaVersion = int32(overseer.SchemaVersion)
+	payload.SchemaVersion = int32(criteria.SchemaVersion)
 	payload.RunId = runID
 	return payload
 }
@@ -126,7 +126,7 @@ func TestApplyRunStatus_ScopeIterCursorSet_EmptyClears(t *testing.T) {
 }
 
 // TestApplyRunStatus_ForEachEvents_AreNoOps verifies that the
-// ForEachEntered / ForEachIteration / ForEachOutcome events are informational
+// ForEachEntered / StepIterationStarted / StepIterationCompleted events are informational
 // only and do NOT write any state into scope["iter"] (W07).
 func TestApplyRunStatus_ForEachEvents_AreNoOps(t *testing.T) {
 	ts := newTestStack(t)
@@ -141,12 +141,12 @@ func TestApplyRunStatus_ForEachEvents_AreNoOps(t *testing.T) {
 			makeEnvForTest(runID, &pb.Envelope{Payload: &pb.Envelope_ForEachEntered{ForEachEntered: &pb.ForEachEntered{Node: "n", Count: 3}}}),
 		},
 		{
-			"ForEachIteration",
-			makeEnvForTest(runID, &pb.Envelope{Payload: &pb.Envelope_ForEachIteration{ForEachIteration: &pb.ForEachIteration{Node: "n", Index: 0, Value: "a"}}}),
+			"StepIterationStarted",
+			makeEnvForTest(runID, &pb.Envelope{Payload: &pb.Envelope_StepIterationStarted{StepIterationStarted: &pb.StepIterationStarted{Node: "n", Index: 0, Value: "a"}}}),
 		},
 		{
-			"ForEachOutcome",
-			makeEnvForTest(runID, &pb.Envelope{Payload: &pb.Envelope_ForEachOutcome{ForEachOutcome: &pb.ForEachOutcome{Node: "n", Outcome: "all_succeeded", Target: "done"}}}),
+			"StepIterationCompleted",
+			makeEnvForTest(runID, &pb.Envelope{Payload: &pb.Envelope_StepIterationCompleted{StepIterationCompleted: &pb.StepIterationCompleted{Node: "n", Outcome: "all_succeeded", Target: "done"}}}),
 		},
 	} {
 		tc := tc
