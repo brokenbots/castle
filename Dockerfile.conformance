@@ -1,0 +1,12 @@
+FROM golang:1.26-alpine
+
+RUN apk add --no-cache gcc musl-dev
+
+WORKDIR /src
+COPY go.work go.work.sum ./
+COPY castle/ ./castle/
+COPY criteria-sdk/ ./criteria-sdk/
+
+WORKDIR /src/castle
+ENV CGO_ENABLED=1
+CMD ["go", "test", "-race", "-tags=conformance", "./internal/rpc", "-run", "TestCastleConformance", "-count=1"]
