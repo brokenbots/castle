@@ -559,7 +559,11 @@ func (s *ServerServer) GetAssignmentDisposition(ctx context.Context, req *connec
 }
 
 // dispatchAssignment attempts to lease the assignment to a connected
-// eligible agent and push it via the agent's Control stream.
+// eligible agent and push it via the agent's Control stream. If
+// LeaseWorkflowAssignment returns a different queued assignment (because it
+// always leases the oldest matching work), that assignment is still dispatched
+// to the agent so it is never stranded in the leased state without a
+// corresponding control message.
 func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.WorkflowAssignment) {
 	if a == nil || a.State != store.WorkflowAssignmentStateQueued {
 		return
@@ -583,10 +587,9 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 			}
 			continue
 		}
-		if leased.ID != a.ID {
-			// Leased a different assignment; keep looking for this one or release.
-			continue
-		}
+		// Always dispatch the assignment that actually won the atomic lease,
+		// even if it is not the one that triggered this dispatch. Otherwise the
+		// leased assignment would sit undelivered until its lease expires.
 		err = s.controls.Enqueue(criteriaID, &pb.ControlMessage{Command: &pb.ControlMessage_WorkflowAssignment{WorkflowAssignment: &pb.WorkflowAssignment{
 			RunId:          leased.RunID,
 			WorkflowName:   leased.WorkflowName,
@@ -597,7 +600,11 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 		if err != nil {
 			s.Log.Warn("dispatch assignment: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
 		}
-		return
+		if leased.ID == a.ID {
+			return
+		}
+		// Leased a different assignment; dispatch it above and keep looking
+		// for the originally submitted assignment with the next agent.
 	}
 }
 

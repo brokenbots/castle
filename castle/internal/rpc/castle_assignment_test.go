@@ -244,6 +244,114 @@ func TestSubmitWorkflowAssignment_DispatchesToEligibleConnectedAgent(t *testing.
 	}
 }
 
+// TestSubmitWorkflowAssignment_DispatchesOldestQueuedAssignmentOnNewSubmit verifies
+// the fix for a stranding bug: when a new submission triggers dispatch, the
+// atomic lease may return an older queued assignment rather than the one just
+// submitted. That assignment must still be delivered to the leasing agent.
+func TestSubmitWorkflowAssignment_DispatchesOldestQueuedAssignmentOnNewSubmit(t *testing.T) {
+	ts := newTestStack(t)
+	ctx := context.Background()
+
+	// Start a real HTTP server with auth so we can exercise the Control stream.
+	_, oClient, cClient := ts.startServer(t,
+		connect.WithInterceptors(auth.NewInterceptor(ts.store, false, auth.WithAnonRegister())),
+	)
+
+	// Register an owner that will submit work, and an agent that will lease it.
+	ownerReg, err := oClient.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "owner-1"}))
+	if err != nil {
+		t.Fatalf("register owner: %v", err)
+	}
+	agentReg, err := oClient.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "agent-1", Labels: map[string]string{"gpu": "true"}}))
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	agentID := agentReg.Msg.CriteriaId
+
+	submit := func(key, wf string) *pb.SubmitWorkflowAssignmentResponse {
+		t.Helper()
+		req := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+			WorkflowName:   wf,
+			WorkflowSource: "hcl",
+			IdempotencyKey: key,
+			Labels:         map[string]string{"gpu": "true"},
+		})
+		req.Header().Set("Authorization", "Bearer "+ownerReg.Msg.Token)
+		resp, err := cClient.SubmitWorkflowAssignment(ctx, req)
+		if err != nil {
+			t.Fatalf("submit %s: %v", key, err)
+		}
+		return resp.Msg
+	}
+
+	// Queue two assignments before any agent is connected.
+	a1 := submit("key-1", "wf-1")
+	a2 := submit("key-2", "wf-2")
+
+	// Connect the agent. Control sends ControlReady, then dispatchForAgent leases A1.
+	ctrlReq := connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: agentID})
+	ctrlReq.Header().Set("Authorization", "Bearer "+agentReg.Msg.Token)
+	ctrl, err := oClient.Control(ctx, ctrlReq)
+	if err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	t.Cleanup(func() { _ = ctrl.Close() })
+
+	receive := func() *pb.ControlMessage {
+		t.Helper()
+		done := make(chan struct{})
+		var received bool
+		go func() {
+			received = ctrl.Receive()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for control message")
+		}
+		if !received {
+			t.Fatalf("expected control message, err=%v", ctrl.Err())
+		}
+		return ctrl.Msg()
+	}
+
+	expectWorkflowAssignment := func(wantRunID string) {
+		t.Helper()
+		msg := receive()
+		wa := msg.GetWorkflowAssignment()
+		if wa == nil {
+			t.Fatalf("expected WorkflowAssignment, got %T", msg.Command)
+		}
+		if wa.RunId != wantRunID {
+			t.Fatalf("expected run id %s, got %s", wantRunID, wa.RunId)
+		}
+	}
+
+	msg := receive()
+	if _, ok := msg.Command.(*pb.ControlMessage_ControlReady); !ok {
+		t.Fatalf("expected ControlReady, got %T", msg.Command)
+	}
+	expectWorkflowAssignment(a1.RunId)
+
+	// Submit a third assignment while the agent is connected. The dispatch path
+	// must lease the oldest still-queued assignment (A2) and deliver it.
+	_ = submit("key-3", "wf-3")
+	expectWorkflowAssignment(a2.RunId)
+
+	// Confirm A2 actually transitioned to leased for the agent.
+	assignment, err := ts.store.GetWorkflowAssignmentByRunID(ctx, a2.RunId)
+	if err != nil {
+		t.Fatalf("get assignment: %v", err)
+	}
+	if assignment.State != store.WorkflowAssignmentStateLeased {
+		t.Fatalf("expected A2 leased, got %s", assignment.State)
+	}
+	if assignment.LeasedCriteriaID != agentID {
+		t.Fatalf("expected A2 leased to %s, got %s", agentID, assignment.LeasedCriteriaID)
+	}
+}
+
 func registerAgent(t *testing.T, ts *testStack, name string, labels map[string]string) (string, string) {
 	t.Helper()
 	resp, err := ts.criteria.Register(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: name, Labels: labels}))

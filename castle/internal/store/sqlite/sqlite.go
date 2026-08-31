@@ -916,4 +916,3 @@ func (s *Store) MarkWorkflowAssignmentTerminal(ctx context.Context, runID, reaso
 		runID, store.WorkflowAssignmentStateQueued, store.WorkflowAssignmentStateLeased)
 	return err
 }
-
