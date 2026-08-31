@@ -33,8 +33,8 @@ func WithCallerCriteriaID(ctx context.Context, id string) context.Context {
 }
 
 var readOnlyServerProcedures = map[string]struct{}{
-	criteriav1connect.ServerServiceListAgentsProcedure:     {},
-	criteriav1connect.ServerServiceGetAgentProcedure:       {},
+	criteriav1connect.ServerServiceListAgentsProcedure:    {},
+	criteriav1connect.ServerServiceGetAgentProcedure:      {},
 	criteriav1connect.ServerServiceListRunsProcedure:      {},
 	criteriav1connect.ServerServiceGetRunProcedure:        {},
 	criteriav1connect.ServerServiceListRunEventsProcedure: {},
@@ -45,7 +45,7 @@ var readOnlyServerProcedures = map[string]struct{}{
 type InterceptorOption func(*AuthInterceptor)
 
 // WithBootstrapToken configures the raw bootstrap token required for Register.
-// The interceptor hashes it and validates incoming X-Castle-Bootstrap headers.
+// The interceptor hashes it and validates incoming X-Server-Bootstrap headers.
 // If not set, Register is disabled (returns Unimplemented).
 func WithBootstrapToken(token string) InterceptorOption {
 	return func(i *AuthInterceptor) {
@@ -135,7 +135,7 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 // handleRegister enforces the bootstrap-token gate for the Register RPC.
 //
 //   - allowAnonRegister=true (--dev-allow-anon-register): pass through.
-//   - bootstrapTokenHash set: require a matching X-Castle-Bootstrap header.
+//   - bootstrapTokenHash set: require a matching X-Server-Bootstrap header.
 //   - Neither: Register is disabled; Unimplemented is returned.
 func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyRequest, next connect.UnaryFunc) (connect.AnyResponse, error) {
 	if i.allowAnonRegister {
@@ -144,9 +144,9 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 	if i.bootstrapTokenHash == "" {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("register is disabled: no bootstrap token configured"))
 	}
-	tok := strings.TrimSpace(req.Header().Get("X-Castle-Bootstrap"))
+	tok := strings.TrimSpace(req.Header().Get("X-Server-Bootstrap"))
 	if tok == "" {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("X-Castle-Bootstrap header required for Register"))
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("X-Server-Bootstrap header required for Register"))
 	}
 	if !ConstantTimeEqual(tok, i.bootstrapTokenHash) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid bootstrap token"))

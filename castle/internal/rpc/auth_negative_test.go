@@ -2,6 +2,8 @@ package rpc
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,7 +87,7 @@ func TestRegister_BootstrapGate_WrongToken_IsUnauthenticated(t *testing.T) {
 		auth.NewInterceptor(ts.store, false, auth.WithBootstrapToken("correct-token")),
 	))
 	req := connect.NewRequest(&pb.RegisterRequest{Name: "x"})
-	req.Header().Set("X-Castle-Bootstrap", "wrong-token")
+	req.Header().Set("X-Server-Bootstrap", "wrong-token")
 	_, err := oClient.Register(context.Background(), req)
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("expected CodeUnauthenticated, got code=%v err=%v", connect.CodeOf(err), err)
@@ -98,13 +100,94 @@ func TestRegister_BootstrapGate_CorrectToken_Succeeds(t *testing.T) {
 		auth.NewInterceptor(ts.store, false, auth.WithBootstrapToken("correct-token")),
 	))
 	req := connect.NewRequest(&pb.RegisterRequest{Name: "x"})
-	req.Header().Set("X-Castle-Bootstrap", "correct-token")
+	req.Header().Set("X-Server-Bootstrap", "correct-token")
 	resp, err := oClient.Register(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Register with correct token: %v", err)
 	}
 	if resp.Msg.CriteriaId == "" {
 		t.Fatal("expected non-empty overseer_id")
+	}
+}
+
+// TestRegister_TokenStoredHashed verifies that Register returns a plaintext
+// bearer token to the caller but persists only its SHA-256 hash in the store.
+// The returned token must authenticate the caller; the stored record must not
+// contain the plaintext token.
+func TestRegister_TokenStoredHashed(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, _ := ts.startServer(t, connect.WithInterceptors(
+		auth.NewInterceptor(ts.store, false, auth.WithBootstrapToken("bootstrap-token")),
+	))
+
+	req := connect.NewRequest(&pb.RegisterRequest{Name: "hashed-check"})
+	req.Header().Set("X-Server-Bootstrap", "bootstrap-token")
+	resp, err := oClient.Register(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	criteriaID, token := resp.Msg.CriteriaId, resp.Msg.Token
+	if criteriaID == "" || token == "" {
+		t.Fatal("expected non-empty criteria_id and token")
+	}
+
+	// The returned plaintext token must authenticate the agent.
+	hbReq := connect.NewRequest(&pb.HeartbeatRequest{CriteriaId: criteriaID})
+	hbReq.Header().Set("Authorization", "Bearer "+token)
+	if _, err := oClient.Heartbeat(context.Background(), hbReq); err != nil {
+		t.Fatalf("Heartbeat with returned token: %v", err)
+	}
+
+	// The persisted record must contain only the hash, not the plaintext token.
+	o, err := ts.store.GetOverseer(context.Background(), criteriaID)
+	if err != nil {
+		t.Fatalf("GetOverseer: %v", err)
+	}
+	if o.TokenHash == "" {
+		t.Fatal("expected TokenHash to be set")
+	}
+	if o.TokenHash == token {
+		t.Fatal("TokenHash stored as plaintext token")
+	}
+	if !auth.ConstantTimeEqual(token, o.TokenHash) {
+		t.Fatal("stored TokenHash does not match the returned token")
+	}
+}
+
+// TestRegister_LogsNoSecrets verifies that the RPC logging path does not emit
+// the bootstrap token or the returned bearer token in service logs.
+func TestRegister_LogsNoSecrets(t *testing.T) {
+	h := &recordingSlogHandler{}
+	ts := newTestStackWithLog(t, slog.New(h))
+	_, oClient, _ := ts.startServer(t,
+		connect.WithInterceptors(
+			auth.NewLoggingInterceptor(ts.criteria.Log),
+			auth.NewInterceptor(ts.store, false, auth.WithBootstrapToken("bootstrap-secret")),
+		),
+	)
+
+	req := connect.NewRequest(&pb.RegisterRequest{Name: "log-check"})
+	req.Header().Set("X-Server-Bootstrap", "bootstrap-secret")
+	resp, err := oClient.Register(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	token := resp.Msg.Token
+
+	hbReq := connect.NewRequest(&pb.HeartbeatRequest{})
+	hbReq.Header().Set("Authorization", "Bearer "+token)
+	if _, err := oClient.Heartbeat(context.Background(), hbReq); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	for _, rec := range h.snapshot() {
+		for k, v := range rec.Attrs {
+			if s, ok := v.(string); ok {
+				if strings.Contains(s, "bootstrap-secret") || strings.Contains(s, token) {
+					t.Fatalf("log contains secret: key=%q value=%q msg=%q", k, s, rec.Message)
+				}
+			}
+		}
 	}
 }
 
