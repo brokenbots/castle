@@ -9,13 +9,9 @@ import (
 	"fmt"
 	"time"
 
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	_ "modernc.org/sqlite"
 
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/sdk/overseer"
 )
 
 type Store struct {
@@ -222,12 +218,15 @@ func (s *Store) ClearRunPaused(ctx context.Context, runID string) error {
 	return err
 }
 
-func (s *Store) AppendEvent(ctx context.Context, env *pb.Envelope) (uint64, bool, error) {
-	if env == nil {
-		return 0, false, errors.New("nil envelope")
+func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool, error) {
+	if ev == nil {
+		return 0, false, errors.New("nil event")
 	}
-	if env.RunId == "" {
+	if ev.RunID == "" {
 		return 0, false, errors.New("run_id required")
+	}
+	if ev.Type == "" {
+		return 0, false, errors.New("event type required")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -239,56 +238,52 @@ func (s *Store) AppendEvent(ctx context.Context, env *pb.Envelope) (uint64, bool
 	// Idempotency on (run_id, correlation_id): if an event with this
 	// correlation id already exists for this run, return its seq without
 	// inserting again. Empty correlation ids skip this check.
-	if env.CorrelationId != "" {
+	if ev.CorrelationID != "" {
 		var existing sql.NullInt64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT seq FROM events WHERE run_id=? AND correlation_id=? LIMIT 1`,
-			env.RunId, env.CorrelationId).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			ev.RunID, ev.CorrelationID).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return 0, false, err
 		}
 		if existing.Valid {
 			// No commit necessary (read-only); release the tx.
 			_ = tx.Rollback()
 			seq := uint64(existing.Int64)
-			env.Seq = seq
+			ev.Seq = seq
 			return seq, false, nil
 		}
 	}
 
 	var lastSeq sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM events WHERE run_id=?`, env.RunId).Scan(&lastSeq); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM events WHERE run_id=?`, ev.RunID).Scan(&lastSeq); err != nil {
 		return 0, false, err
 	}
 	next := uint64(1)
 	if lastSeq.Valid {
 		next = uint64(lastSeq.Int64) + 1
 	}
-	payload, err := marshalPayload(env)
-	if err != nil {
-		return 0, false, err
-	}
-	ts := time.Now().UTC()
-	if env.Ts != nil && !env.Ts.AsTime().IsZero() {
-		ts = env.Ts.AsTime().UTC()
+	ts := ev.Ts
+	if ts.IsZero() {
+		ts = time.Now().UTC()
 	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES(?,?,?,?,?,?)`,
-		env.RunId, next, pb.TypeString(env), ts.Format(tsLayout), env.CorrelationId, string(payload))
+		ev.RunID, next, ev.Type, ts.Format(tsLayout), ev.CorrelationID, string(ev.Payload))
 	if err != nil {
 		return 0, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE runs SET last_seq=? WHERE id=? AND last_seq < ?`, next, env.RunId, next); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET last_seq=? WHERE id=? AND last_seq < ?`, next, ev.RunID, next); err != nil {
 		return 0, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, false, err
 	}
-	env.Seq = next
-	env.Ts = timestamppb.New(ts)
+	ev.Seq = next
+	ev.Ts = ts
 	return next, true, nil
 }
 
-func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*pb.Envelope, error) {
+func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*store.Event, error) {
 	normalized, err := normalizeListLimit(limit)
 	if err != nil {
 		return nil, err
@@ -303,7 +298,7 @@ func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limi
 	return scanEventRows(rows, runID)
 }
 
-func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*pb.Envelope, error) {
+func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*store.Event, error) {
 	normalized, err := normalizeListLimit(limit)
 	if err != nil {
 		return nil, err
@@ -429,8 +424,8 @@ func normalizeListLimit(limit int) (int, error) {
 	return limit, nil
 }
 
-func scanEventRows(rows *sql.Rows, runID string) ([]*pb.Envelope, error) {
-	var out []*pb.Envelope
+func scanEventRows(rows *sql.Rows, runID string) ([]*store.Event, error) {
+	var out []*store.Event
 	for rows.Next() {
 		var seq int64
 		var ts string
@@ -440,202 +435,21 @@ func scanEventRows(rows *sql.Rows, runID string) ([]*pb.Envelope, error) {
 		if err := rows.Scan(&seq, &typ, &ts, &corr, &payload); err != nil {
 			return nil, err
 		}
-		env := &pb.Envelope{
-			SchemaVersion: pb.SchemaVersion,
-			RunId:         runID,
+		ev := &store.Event{
+			SchemaVersion: store.EventSchemaVersion,
+			RunID:         runID,
 			Seq:           uint64(seq),
+			Type:          typ,
+			Payload:       []byte(payload),
 		}
 		if parsed, err := time.Parse(tsLayout, ts); err == nil {
-			env.Ts = timestamppb.New(parsed)
+			ev.Ts = parsed
 		}
 		if corr.Valid {
-			env.CorrelationId = corr.String
+			ev.CorrelationID = corr.String
 		}
-		if err := unmarshalPayload(env, typ, []byte(payload)); err != nil {
-			return nil, fmt.Errorf("unmarshal event %d: %w", seq, err)
-		}
-		out = append(out, env)
+		out = append(out, ev)
 	}
 	return out, rows.Err()
 }
 
-// marshalPayload serialises the payload message (the concrete value inside
-// env.Payload) as protojson. The envelope's discriminator string lives in the
-// `type` column so the payload blob only needs the inner message.
-// Returns an error for envelopes whose payload arm is not covered by
-// payloadMessage — there is no silent fallback to "{}".
-func marshalPayload(env *pb.Envelope) ([]byte, error) {
-	msg := payloadMessage(env)
-	if msg == nil {
-		if env.Payload != nil {
-			return nil, fmt.Errorf("marshalPayload: unknown payload arm %T", env.Payload)
-		}
-		return []byte(`{}`), nil
-	}
-	return protojson.Marshal(msg)
-}
-
-// unmarshalPayload hydrates env.Payload from payload bytes according to typ.
-func unmarshalPayload(env *pb.Envelope, typ string, payload []byte) error {
-	if len(payload) == 0 {
-		payload = []byte(`{}`)
-	}
-	unmarshal := func(msg proto.Message, wrap func(proto.Message)) error {
-		u := protojson.UnmarshalOptions{DiscardUnknown: true}
-		if err := u.Unmarshal(payload, msg); err != nil {
-			return err
-		}
-		wrap(msg)
-		return nil
-	}
-	switch typ {
-	case "run.started":
-		return unmarshal(&pb.RunStarted{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_RunStarted{RunStarted: m.(*pb.RunStarted)}
-		})
-	case "run.completed":
-		return unmarshal(&pb.RunCompleted{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_RunCompleted{RunCompleted: m.(*pb.RunCompleted)}
-		})
-	case "run.failed":
-		return unmarshal(&pb.RunFailed{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_RunFailed{RunFailed: m.(*pb.RunFailed)}
-		})
-	case "step.entered":
-		return unmarshal(&pb.StepEntered{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_StepEntered{StepEntered: m.(*pb.StepEntered)}
-		})
-	case "step.outcome":
-		return unmarshal(&pb.StepOutcome{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_StepOutcome{StepOutcome: m.(*pb.StepOutcome)}
-		})
-	case "step.transition":
-		return unmarshal(&pb.StepTransition{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_StepTransition{StepTransition: m.(*pb.StepTransition)}
-		})
-	case "step.log":
-		return unmarshal(&pb.StepLog{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_StepLog{StepLog: m.(*pb.StepLog)}
-		})
-	case "adapter.event":
-		return unmarshal(&pb.AdapterEvent{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_AdapterEvent{AdapterEvent: m.(*pb.AdapterEvent)}
-		})
-	case "overseer.heartbeat":
-		return unmarshal(&pb.OverseerHeartbeat{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_OverseerHeartbeat{OverseerHeartbeat: m.(*pb.OverseerHeartbeat)}
-		})
-	case "overseer.disconnected":
-		return unmarshal(&pb.OverseerDisconnected{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_OverseerDisconnected{OverseerDisconnected: m.(*pb.OverseerDisconnected)}
-		})
-	case "step.resumed":
-		return unmarshal(&pb.StepResumed{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_StepResumed{StepResumed: m.(*pb.StepResumed)}
-		})
-	case "watch.ready":
-		return unmarshal(&pb.WatchReady{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_WatchReady{WatchReady: m.(*pb.WatchReady)}
-		})
-	case "variable.set":
-		return unmarshal(&pb.VariableSet{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_VariableSet{VariableSet: m.(*pb.VariableSet)}
-		})
-	case "step.output_captured":
-		return unmarshal(&pb.StepOutputCaptured{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_StepOutputCaptured{StepOutputCaptured: m.(*pb.StepOutputCaptured)}
-		})
-	case "wait.entered":
-		return unmarshal(&pb.WaitEntered{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_WaitEntered{WaitEntered: m.(*pb.WaitEntered)}
-		})
-	case "wait.resumed":
-		return unmarshal(&pb.WaitResumed{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_WaitResumed{WaitResumed: m.(*pb.WaitResumed)}
-		})
-	case "approval.requested":
-		return unmarshal(&pb.ApprovalRequested{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_ApprovalRequested{ApprovalRequested: m.(*pb.ApprovalRequested)}
-		})
-	case "approval.decision":
-		return unmarshal(&pb.ApprovalDecision{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_ApprovalDecision{ApprovalDecision: m.(*pb.ApprovalDecision)}
-		})
-	case "branch.evaluated":
-		return unmarshal(&pb.BranchEvaluated{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_BranchEvaluated{BranchEvaluated: m.(*pb.BranchEvaluated)}
-		})
-	case "for_each.entered":
-		return unmarshal(&pb.ForEachEntered{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_ForEachEntered{ForEachEntered: m.(*pb.ForEachEntered)}
-		})
-	case "for_each.iteration":
-		return unmarshal(&pb.ForEachIteration{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_ForEachIteration{ForEachIteration: m.(*pb.ForEachIteration)}
-		})
-	case "for_each.outcome":
-		return unmarshal(&pb.ForEachOutcome{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_ForEachOutcome{ForEachOutcome: m.(*pb.ForEachOutcome)}
-		})
-	case "scope.iter_cursor_set":
-		return unmarshal(&pb.ScopeIterCursorSet{}, func(m proto.Message) {
-			env.Payload = &pb.Envelope_ScopeIterCursorSet{ScopeIterCursorSet: m.(*pb.ScopeIterCursorSet)}
-		})
-	default:
-		return fmt.Errorf("unknown event type %q", typ)
-	}
-}
-
-// payloadMessage returns the concrete payload message stored in env.Payload.
-func payloadMessage(env *pb.Envelope) proto.Message {
-	switch p := env.Payload.(type) {
-	case *pb.Envelope_RunStarted:
-		return p.RunStarted
-	case *pb.Envelope_RunCompleted:
-		return p.RunCompleted
-	case *pb.Envelope_RunFailed:
-		return p.RunFailed
-	case *pb.Envelope_StepEntered:
-		return p.StepEntered
-	case *pb.Envelope_StepOutcome:
-		return p.StepOutcome
-	case *pb.Envelope_StepTransition:
-		return p.StepTransition
-	case *pb.Envelope_StepLog:
-		return p.StepLog
-	case *pb.Envelope_AdapterEvent:
-		return p.AdapterEvent
-	case *pb.Envelope_OverseerHeartbeat:
-		return p.OverseerHeartbeat
-	case *pb.Envelope_OverseerDisconnected:
-		return p.OverseerDisconnected
-	case *pb.Envelope_StepResumed:
-		return p.StepResumed
-	case *pb.Envelope_WatchReady:
-		return p.WatchReady
-	case *pb.Envelope_VariableSet:
-		return p.VariableSet
-	case *pb.Envelope_StepOutputCaptured:
-		return p.StepOutputCaptured
-	case *pb.Envelope_WaitEntered:
-		return p.WaitEntered
-	case *pb.Envelope_WaitResumed:
-		return p.WaitResumed
-	case *pb.Envelope_ApprovalRequested:
-		return p.ApprovalRequested
-	case *pb.Envelope_ApprovalDecision:
-		return p.ApprovalDecision
-	case *pb.Envelope_BranchEvaluated:
-		return p.BranchEvaluated
-	case *pb.Envelope_ForEachEntered:
-		return p.ForEachEntered
-	case *pb.Envelope_ForEachIteration:
-		return p.ForEachIteration
-	case *pb.Envelope_ForEachOutcome:
-		return p.ForEachOutcome
-	case *pb.Envelope_ScopeIterCursorSet:
-		return p.ScopeIterCursorSet
-	default:
-		return nil
-	}
-}

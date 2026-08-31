@@ -10,7 +10,6 @@ bootstrap: ## Install backend and frontend dependencies
 	cd parapet && npm ci
 
 tidy: ## Tidy all Go modules
-	cd shared && go mod tidy
 	cd castle && go mod tidy
 
 build: build-castle build-parapet ## Build Castle and Parapet
@@ -23,7 +22,6 @@ build-parapet: ## Build the Parapet UI
 	cd parapet && npm run build
 
 test: ## Run backend and frontend tests
-	cd shared && go test ./...
 	cd castle && CGO_ENABLED=1 go test -race ./...
 	cd parapet && npm run test:run
 
@@ -62,8 +60,8 @@ proto-check: ## Check protobuf compatibility against main
 
 proto-check-drift: ## Fail when generated bindings are stale
 	buf generate
-	@if ! git diff --quiet -- shared/pb parapet/src/gen; then \
+	@if ! git diff --quiet -- parapet/src/gen; then \
 		echo "Generated proto output is out of date. Run 'make proto' and commit the changes." >&2; \
-		git --no-pager diff --stat -- shared/pb parapet/src/gen >&2; \
+		git --no-pager diff --stat -- parapet/src/gen >&2; \
 		exit 1; \
 	fi

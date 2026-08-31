@@ -85,14 +85,14 @@ describe('RunDetailPage', () => {
     // Test default codec (json)
     expect(getRuntimeCodec()).toBe('json');
 
-    // Test window.__OVERLORD__.codec override (proto)
-    window.__OVERLORD__ = { codec: 'proto' };
+    // Test window.__CRITERIA__.codec override (proto)
+    window.__CRITERIA__ = { codec: 'proto' };
     expect(getRuntimeCodec()).toBe('proto');
 
     // Test meta tag fallback (json)
-    window.__OVERLORD__ = undefined;
+    window.__CRITERIA__ = undefined;
     const meta = document.createElement('meta');
-    meta.name = 'overlord-codec';
+    meta.name = 'criteria-codec';
     meta.content = 'json';
     document.head.appendChild(meta);
     expect(getRuntimeCodec()).toBe('json');

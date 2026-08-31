@@ -1,4 +1,4 @@
-const SUBSCRIBER_ID_KEY = 'overlord.subscriber_id';
+const SUBSCRIBER_ID_KEY = 'criteria.subscriber_id';
 
 export function subscriberIdForSession(): string {
   let id = sessionStorage.getItem(SUBSCRIBER_ID_KEY);

@@ -13,10 +13,10 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
-	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
-	"github.com/brokenbots/castle/shared/sdk/overseer/conformance"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	criteria "github.com/brokenbots/criteria/sdk"
+	"github.com/brokenbots/criteria/sdk/conformance"
 )
 
 // TestCastleConformance runs the full SDK conformance suite against Castle.
@@ -82,12 +82,12 @@ func (s *castleSubject) RegisterOverseer(t *testing.T, name, token string) strin
 	return id
 }
 
-// ListRunEvents retrieves events for runID via the CastleService ListRunEvents
-// RPC. overseerToken authenticates the caller. The conformance suite uses this
-// to assert persistence without the conformance package importing CastleService.
-func (s *castleSubject) ListRunEvents(t *testing.T, baseURL string, client *http.Client, overseerToken, runID string, sinceSeq uint64) []*overseer.Envelope {
+// ListRunEvents retrieves events for runID via the ServerService ListRunEvents
+// RPC. criteriaToken authenticates the caller. The conformance suite uses this
+// to assert persistence without the conformance package importing ServerService.
+func (s *castleSubject) ListRunEvents(t *testing.T, baseURL string, client *http.Client, overseerToken, runID string, sinceSeq uint64) []*criteria.Envelope {
 	t.Helper()
-	cClient := overlordv1connect.NewCastleServiceClient(client, baseURL)
+	cClient := criteriav1connect.NewServerServiceClient(client, baseURL)
 	req := connect.NewRequest(&pb.ListRunEventsRequest{
 		RunId:    runID,
 		SinceSeq: sinceSeq,
@@ -101,11 +101,11 @@ func (s *castleSubject) ListRunEvents(t *testing.T, baseURL string, client *http
 	return resp.Msg.Events
 }
 
-// StopRun sends a StopRun request via the CastleService on behalf of the run
+// StopRun sends a StopRun request via the ServerService on behalf of the run
 // owner. Returns the RPC error so conformance tests can inspect the error code.
 func (s *castleSubject) StopRun(t *testing.T, baseURL string, client *http.Client, ownerToken, runID string) error {
 	t.Helper()
-	cClient := overlordv1connect.NewCastleServiceClient(client, baseURL)
+	cClient := criteriav1connect.NewServerServiceClient(client, baseURL)
 	req := connect.NewRequest(&pb.StopRunRequest{RunId: runID})
 	req.Header().Set("Authorization", "Bearer "+ownerToken)
 	_, err := cClient.StopRun(context.Background(), req)

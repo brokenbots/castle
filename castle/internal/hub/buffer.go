@@ -3,7 +3,7 @@ package hub
 import (
 	"sync"
 
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
 )
 
 // Buffer keeps a bounded in-memory ring of recent envelopes per run.
@@ -17,7 +17,7 @@ type Buffer struct {
 }
 
 type runRing struct {
-	items  []*overseer.Envelope
+	items  []*criteria.Envelope
 	start  int
 	size   int
 	newest uint64
@@ -30,7 +30,7 @@ func NewBuffer(capPerRun int) *Buffer {
 	return &Buffer{capPerRun: capPerRun, byRun: make(map[string]*runRing)}
 }
 
-func (b *Buffer) Append(env *overseer.Envelope) {
+func (b *Buffer) Append(env *criteria.Envelope) {
 	if b == nil || env == nil || env.RunId == "" {
 		return
 	}
@@ -38,7 +38,7 @@ func (b *Buffer) Append(env *overseer.Envelope) {
 	b.mu.Lock()
 	r, ok := b.byRun[env.RunId]
 	if !ok {
-		r = &runRing{items: make([]*overseer.Envelope, b.capPerRun)}
+		r = &runRing{items: make([]*criteria.Envelope, b.capPerRun)}
 		b.byRun[env.RunId] = r
 	}
 	evicted, oldestSeq := r.append(env)
@@ -51,7 +51,7 @@ func (b *Buffer) Append(env *overseer.Envelope) {
 	}
 }
 
-func (b *Buffer) Since(runID string, seq uint64) []*overseer.Envelope {
+func (b *Buffer) Since(runID string, seq uint64) []*criteria.Envelope {
 	if b == nil || runID == "" {
 		return nil
 	}
@@ -76,7 +76,7 @@ func (b *Buffer) Forget(runID string) {
 	b.mu.Unlock()
 }
 
-func (r *runRing) append(env *overseer.Envelope) (bool, uint64) {
+func (r *runRing) append(env *criteria.Envelope) (bool, uint64) {
 	if r.size < len(r.items) {
 		idx := (r.start + r.size) % len(r.items)
 		r.items[idx] = env
@@ -96,11 +96,11 @@ func (r *runRing) append(env *overseer.Envelope) (bool, uint64) {
 	return true, evictedSeq
 }
 
-func (r *runRing) since(seq uint64) []*overseer.Envelope {
+func (r *runRing) since(seq uint64) []*criteria.Envelope {
 	if r == nil || r.size == 0 {
 		return nil
 	}
-	out := make([]*overseer.Envelope, 0, r.size)
+	out := make([]*criteria.Envelope, 0, r.size)
 	for i := 0; i < r.size; i++ {
 		env := r.items[(r.start+i)%len(r.items)]
 		if env == nil || env.Seq <= seq {

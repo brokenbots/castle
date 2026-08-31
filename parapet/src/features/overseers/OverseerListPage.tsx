@@ -1,12 +1,12 @@
-import { useListOverseersQuery } from '../../api/castleApi';
+import { useListAgentsQuery } from '../../api/castleApi';
 
 export function OverseerListPage() {
-  const { data, isLoading, error } = useListOverseersQuery();
+  const { data, isLoading, error } = useListAgentsQuery();
   if (isLoading) return <p>Loading…</p>;
   if (error) return <p className="text-rose-400">Failed to load.</p>;
   return (
     <div>
-      <h2 className="text-2xl font-semibold mb-4">Overseers</h2>
+      <h2 className="text-2xl font-semibold mb-4">Agents</h2>
       <table className="w-full text-sm">
         <thead className="text-left text-slate-400 border-b border-slate-800">
           <tr>
@@ -18,7 +18,7 @@ export function OverseerListPage() {
         </thead>
         <tbody>
           {(data ?? []).map((o) => (
-            <tr key={o.overseerId} className="border-b border-slate-900">
+            <tr key={o.criteriaId} className="border-b border-slate-900">
               <td className="py-2 pr-4">{o.name}</td>
               <td className="py-2 pr-4 text-slate-400">{o.labels.hostname ?? ''}</td>
               <td className={`py-2 pr-4 ${o.status === 'online' ? 'text-emerald-400' : 'text-slate-500'}`}>{o.status}</td>

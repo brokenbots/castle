@@ -1,24 +1,24 @@
 import { createPromiseClient, Interceptor, PromiseClient } from '@connectrpc/connect';
 import { createConnectTransport } from '@connectrpc/connect-web';
-import { CastleService } from '../gen/overlord/v1/castle_connect';
-import { OverseerService } from '../sdk/overseer';
+import { ServerService } from '../gen/criteria/v1/server_connect';
+import { CriteriaService } from '../gen/criteria/v1/criteria_connect';
 import { getAuthToken } from '../authToken';
 
 declare global {
   interface Window {
-    __OVERLORD__?: { codec?: 'json' | 'proto' };
+    __CRITERIA__?: { codec?: 'json' | 'proto' };
   }
 }
 
 export type Codec = 'json' | 'proto';
 
 export function getRuntimeCodec(): Codec {
-  const runtime = (typeof window !== 'undefined' ? window.__OVERLORD__?.codec : undefined) as
+  const runtime = (typeof window !== 'undefined' ? window.__CRITERIA__?.codec : undefined) as
     | Codec
     | undefined;
   if (runtime === 'proto' || runtime === 'json') return runtime;
   if (typeof document !== 'undefined') {
-    const meta = document.querySelector('meta[name="overlord-codec"]');
+    const meta = document.querySelector('meta[name="criteria-codec"]');
     const value = meta?.getAttribute('content');
     if (value === 'proto' || value === 'json') return value;
   }
@@ -49,8 +49,8 @@ export function createCastleTransport(codec: Codec = getRuntimeCodec()) {
   });
 }
 
-export type CastleClient = PromiseClient<typeof CastleService>;
-export type OverseerClient = PromiseClient<typeof OverseerService>;
+export type ServerClient = PromiseClient<typeof ServerService>;
+export type CriteriaClient = PromiseClient<typeof CriteriaService>;
 
-export const castle: CastleClient = createPromiseClient(CastleService, createCastleTransport());
-export const overseer: OverseerClient = createPromiseClient(OverseerService, createCastleTransport());
+export const server: ServerClient = createPromiseClient(ServerService, createCastleTransport());
+export const criteria: CriteriaClient = createPromiseClient(CriteriaService, createCastleTransport());

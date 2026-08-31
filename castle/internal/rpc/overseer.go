@@ -14,16 +14,16 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 )
 
-func (s *OverseerServer) Register(ctx context.Context, req *connect.Request[pb.RegisterRequest]) (*connect.Response[pb.RegisterResponse], error) {
+func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.RegisterRequest]) (*connect.Response[pb.RegisterResponse], error) {
 	now := time.Now().UTC()
-	overseerID := uuid.NewString()
+	criteriaID := uuid.NewString()
 	token := uuid.NewString()
 	o := &store.Overseer{
-		ID:         overseerID,
+		ID:         criteriaID,
 		Name:       req.Msg.Name,
 		Hostname:   req.Msg.Labels["hostname"],
 		Version:    req.Msg.Labels["version"],
@@ -35,43 +35,43 @@ func (s *OverseerServer) Register(ctx context.Context, req *connect.Request[pb.R
 	if err := s.Store.CreateOverseer(ctx, o); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(&pb.RegisterResponse{OverseerId: overseerID, Token: token}), nil
+	return connect.NewResponse(&pb.RegisterResponse{CriteriaId: criteriaID, Token: token}), nil
 }
 
-func (s *OverseerServer) Heartbeat(ctx context.Context, req *connect.Request[pb.HeartbeatRequest]) (*connect.Response[pb.HeartbeatResponse], error) {
-	// CallerOverseerID wins; the request-supplied overseer_id is used only when
+func (s *CriteriaServer) Heartbeat(ctx context.Context, req *connect.Request[pb.HeartbeatRequest]) (*connect.Response[pb.HeartbeatResponse], error) {
+	// CallerCriteriaID wins; the request-supplied criteria_id is used only when
 	// the interceptor is not wired (direct-call tests). In production the
 	// caller's authenticated identity always determines which record is updated.
-	overseerID, err := requireCaller(ctx, req.Msg.OverseerId)
+	criteriaID, err := requireCaller(ctx, req.Msg.CriteriaId)
 	if err != nil {
 		return nil, err
 	}
-	if overseerID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("overseer_id required"))
+	if criteriaID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("criteria_id required"))
 	}
 	now := time.Now().UTC()
-	if err := s.Store.UpdateOverseerSeen(ctx, overseerID, now); err != nil {
+	if err := s.Store.UpdateOverseerSeen(ctx, criteriaID, now); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&pb.HeartbeatResponse{ServerTime: timestamppb.New(now)}), nil
 }
 
-func (s *OverseerServer) CreateRun(ctx context.Context, req *connect.Request[pb.CreateRunRequest]) (*connect.Response[pb.Run], error) {
+func (s *CriteriaServer) CreateRun(ctx context.Context, req *connect.Request[pb.CreateRunRequest]) (*connect.Response[pb.Run], error) {
 	// The run is always owned by the authenticated caller. The request-supplied
-	// overseer_id is treated as informational only; CallerOverseerID wins when
+	// criteria_id is treated as informational only; CallerCriteriaID wins when
 	// the interceptor is wired. When the interceptor is not present (direct-call
 	// tests) the request field is used as a fallback.
-	overseerID, err := requireCaller(ctx, req.Msg.OverseerId)
+	criteriaID, err := requireCaller(ctx, req.Msg.CriteriaId)
 	if err != nil {
 		return nil, err
 	}
-	if overseerID == "" || req.Msg.WorkflowName == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("overseer_id and workflow_name required"))
+	if criteriaID == "" || req.Msg.WorkflowName == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("criteria_id and workflow_name required"))
 	}
 	now := time.Now().UTC()
 	r := &store.Run{
 		ID:           uuid.NewString(),
-		OverseerID:   overseerID,
+		OverseerID:   criteriaID,
 		WorkflowName: req.Msg.WorkflowName,
 		WorkflowHCL:  req.Msg.WorkflowHash,
 		Status:       "pending",
@@ -83,15 +83,15 @@ func (s *OverseerServer) CreateRun(ctx context.Context, req *connect.Request[pb.
 	return connect.NewResponse(mapRun(r)), nil
 }
 
-func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiStream[pb.Envelope, pb.Ack]) error {
+func (s *CriteriaServer) SubmitEvents(ctx context.Context, stream *connect.BidiStream[criteria.Envelope, pb.Ack]) error {
 	sinceSeq, replayRequested := parseSinceSeq(stream.RequestHeader().Get("since_seq"), stream.RequestHeader().Get("since-seq"))
 	replayed := make(map[string]bool)
 
 	// Per-envelope ownership: cache run→owner lookups so we hit the DB once per
 	// run_id per stream, not once per envelope. Cache is stream-local (single
 	// goroutine) so no synchronisation is needed.
-	callerID := auth.CallerOverseerID(ctx)
-	runOwnerCache := make(map[string]string) // run_id → owner overseer_id
+	callerID := auth.CallerCriteriaID(ctx)
+	runOwnerCache := make(map[string]string) // run_id → owner criteria_id
 
 	for {
 		msg, err := stream.Receive()
@@ -101,7 +101,7 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 		if err != nil {
 			return connect.NewError(connect.CodeUnknown, err)
 		}
-		if msg.SchemaVersion != int32(overseer.SchemaVersion) {
+		if msg.SchemaVersion != int32(criteria.SchemaVersion) {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("schema_version mismatch"))
 		}
 		// Reject server-synthesised payloads that must never be ingested
@@ -109,7 +109,7 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 		// stream-open to flush response headers; allowing it through
 		// SubmitEvents would persist an un-decodable row (see
 		// sqlite.unmarshalPayload which has no watch.ready case).
-		if _, ok := msg.Payload.(*pb.Envelope_WatchReady); ok {
+		if _, ok := msg.Payload.(*criteria.Envelope_WatchReady); ok {
 			return connect.NewError(connect.CodeInvalidArgument, errors.New("watch.ready is server-only and cannot be submitted"))
 		}
 		if msg.Ts == nil || msg.Ts.AsTime().IsZero() {
@@ -138,7 +138,7 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 		}
 
 		if replayRequested && !replayed[msg.RunId] {
-			_, listErr := forEachPersistedEventPage(ctx, s.Store, msg.RunId, sinceSeq, func(priorEvent *pb.Envelope) error {
+			_, listErr := forEachPersistedEventPage(ctx, s.Store, msg.RunId, sinceSeq, func(priorEvent *criteria.Envelope) error {
 				if err := stream.Send(&pb.Ack{RunId: priorEvent.RunId, Seq: priorEvent.Seq, CorrelationId: priorEvent.CorrelationId}); err != nil {
 					return connect.NewError(connect.CodeUnknown, err)
 				}
@@ -150,7 +150,11 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 			replayed[msg.RunId] = true
 		}
 
-		seq, inserted, appendErr := s.Store.AppendEvent(ctx, msg)
+		ev, convErr := envelopeToEvent(msg)
+		if convErr != nil {
+			return connect.NewError(connect.CodeInvalidArgument, convErr)
+		}
+		seq, inserted, appendErr := s.Store.AppendEvent(ctx, ev)
 		if appendErr != nil {
 			return connect.NewError(connect.CodeInternal, appendErr)
 		}
@@ -175,21 +179,21 @@ func (s *OverseerServer) SubmitEvents(ctx context.Context, stream *connect.BidiS
 	}
 }
 
-func (s *OverseerServer) Control(ctx context.Context, req *connect.Request[pb.ControlSubscribeRequest], stream *connect.ServerStream[pb.ControlMessage]) error {
-	// CallerOverseerID wins for the registry key. The request-supplied
-	// overseer_id is used as fallback when the interceptor is not wired (tests).
-	overseerID, err := requireCaller(ctx, req.Msg.OverseerId)
+func (s *CriteriaServer) Control(ctx context.Context, req *connect.Request[pb.ControlSubscribeRequest], stream *connect.ServerStream[pb.ControlMessage]) error {
+	// CallerCriteriaID wins for the registry key. The request-supplied
+	// criteria_id is used as fallback when the interceptor is not wired (tests).
+	criteriaID, err := requireCaller(ctx, req.Msg.CriteriaId)
 	if err != nil {
 		return err
 	}
-	if overseerID == "" {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New("overseer_id required"))
+	if criteriaID == "" {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("criteria_id required"))
 	}
-	ch, err := s.controls.Register(overseerID)
+	ch, err := s.controls.Register(criteriaID)
 	if err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	defer s.controls.Unregister(overseerID, ch)
+	defer s.controls.Unregister(criteriaID, ch)
 
 	// Send ControlReady immediately so the Connect server flushes response
 	// headers. Without this, the Connect client's Control(...) call blocks in
@@ -215,7 +219,7 @@ func (s *OverseerServer) Control(ctx context.Context, req *connect.Request[pb.Co
 	}
 }
 
-func (s *OverseerServer) ReattachRun(ctx context.Context, req *connect.Request[pb.ReattachRunRequest]) (*connect.Response[pb.ReattachRunResponse], error) {
+func (s *CriteriaServer) ReattachRun(ctx context.Context, req *connect.Request[pb.ReattachRunRequest]) (*connect.Response[pb.ReattachRunResponse], error) {
 	if req.Msg.RunId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
 	}
@@ -250,9 +254,9 @@ func (s *OverseerServer) ReattachRun(ctx context.Context, req *connect.Request[p
 	return connect.NewResponse(resp), nil
 }
 
-func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
+func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envelope) {
 	switch p := env.Payload.(type) {
-	case *pb.Envelope_RunStarted:
+	case *criteria.Envelope_RunStarted:
 		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
 			return
@@ -262,7 +266,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 			run.CurrentStep = p.RunStarted.InitialStep
 		}
 		_ = s.Store.UpdateRun(ctx, run)
-	case *pb.Envelope_StepEntered:
+	case *criteria.Envelope_StepEntered:
 		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
 			return
@@ -277,7 +281,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 				StartedAt: time.Now().UTC(),
 			})
 		}
-	case *pb.Envelope_StepOutcome:
+	case *criteria.Envelope_StepOutcome:
 		if p.StepOutcome == nil {
 			return
 		}
@@ -290,7 +294,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 			}
 			_ = s.Store.RecordAttemptComplete(ctx, env.RunId, p.StepOutcome.Step, latest.Attempt, outcome)
 		}
-	case *pb.Envelope_StepResumed:
+	case *criteria.Envelope_StepResumed:
 		// Informational only; no run-status side-effect.
 		if p.StepResumed != nil {
 			s.Log.Info("step resumed after crash",
@@ -299,7 +303,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 				"attempt", p.StepResumed.Attempt,
 				"reason", p.StepResumed.Reason)
 		}
-	case *pb.Envelope_VariableSet:
+	case *criteria.Envelope_VariableSet:
 		// Queue the scope mutation for coalesced persistence (W04).
 		if p.VariableSet == nil {
 			return
@@ -313,7 +317,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 			varMap[name] = value
 			scope["var"] = varMap
 		})
-	case *pb.Envelope_StepOutputCaptured:
+	case *criteria.Envelope_StepOutputCaptured:
 		// Queue step output merge for coalesced persistence (W04).
 		if p.StepOutputCaptured == nil {
 			return
@@ -335,7 +339,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 			stepsMap[step] = outputMap
 			scope["steps"] = stepsMap
 		})
-	case *pb.Envelope_WaitEntered:
+	case *criteria.Envelope_WaitEntered:
 		// Run entered a wait node; mark as paused only for signal-mode waits (W05).
 		// Duration-mode waits do not pause the run; the engine sleeps and resumes
 		// without a control-plane round-trip, so the DB status stays "running".
@@ -344,7 +348,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 		}
 		now := time.Now().UTC()
 		_ = s.Store.SetRunPaused(ctx, env.RunId, p.WaitEntered.Signal, now)
-	case *pb.Envelope_WaitResumed:
+	case *criteria.Envelope_WaitResumed:
 		// Informational: the resume.go handler already called ClearRunPaused before
 		// enqueuing the ResumeRun control message. A second ClearRunPaused here
 		// would race against RunCompleted and could set status="running" after the
@@ -352,43 +356,43 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 		if p.WaitResumed == nil {
 			return
 		}
-	case *pb.Envelope_ApprovalRequested:
+	case *criteria.Envelope_ApprovalRequested:
 		// Run entered an approval node; mark as paused with the node name as signal (W05).
 		if p.ApprovalRequested == nil {
 			return
 		}
 		now := time.Now().UTC()
 		_ = s.Store.SetRunPaused(ctx, env.RunId, p.ApprovalRequested.Node, now)
-	case *pb.Envelope_ApprovalDecision:
+	case *criteria.Envelope_ApprovalDecision:
 		// Informational: same as WaitResumed — resume.go already cleared the pause.
 		// No-op here to avoid the double-clear race with RunCompleted. (W05/F-04)
 		if p.ApprovalDecision == nil {
 			return
 		}
-	case *pb.Envelope_BranchEvaluated:
+	case *criteria.Envelope_BranchEvaluated:
 		// No run-status side-effect. BranchEvaluated is informational; Castle
 		// stores and fans out the event without mutating run state (W06).
 		if p.BranchEvaluated == nil {
 			return
 		}
-	case *pb.Envelope_ForEachEntered:
+	case *criteria.Envelope_ForEachEntered:
 		// Informational event only. Cursor persistence is handled by
 		// ScopeIterCursorSet so Castle does not need to know IterCursor's
 		// schema (W07 split-readiness).
 		if p.ForEachEntered == nil {
 			return
 		}
-	case *pb.Envelope_ForEachIteration:
+	case *criteria.Envelope_StepIterationStarted:
 		// Informational event only. See ForEachEntered comment above.
-		if p.ForEachIteration == nil {
+		if p.StepIterationStarted == nil {
 			return
 		}
-	case *pb.Envelope_ForEachOutcome:
+	case *criteria.Envelope_StepIterationCompleted:
 		// Informational event only. See ForEachEntered comment above.
-		if p.ForEachOutcome == nil {
+		if p.StepIterationCompleted == nil {
 			return
 		}
-	case *pb.Envelope_ScopeIterCursorSet:
+	case *criteria.Envelope_ScopeIterCursorSet:
 		// Overseer serialises the full IterCursor as opaque JSON and emits this
 		// event whenever the cursor is created, advanced, or cleared. Castle
 		// stores cursor_json verbatim into scope["iter"] without interpreting
@@ -407,7 +411,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 				scope["iter"] = iterMap
 			}
 		})
-	case *pb.Envelope_RunCompleted:
+	case *criteria.Envelope_RunCompleted:
 		// Flush any pending scope mutations before marking the run terminal so
 		// the final scope is available to any post-run readers.
 		s.scope.FlushNow(ctx, env.RunId)
@@ -423,7 +427,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 			run.Status = "failed"
 		}
 		_ = s.Store.UpdateRun(ctx, run)
-	case *pb.Envelope_RunFailed:
+	case *criteria.Envelope_RunFailed:
 		// Flush pending scope before marking terminal.
 		s.scope.FlushNow(ctx, env.RunId)
 		run, err := s.Store.GetRun(ctx, env.RunId)
@@ -437,7 +441,7 @@ func (s *OverseerServer) applyRunStatus(ctx context.Context, env *pb.Envelope) {
 	default:
 		// Log unknown payload types so any drift from the expected set is visible.
 		// This closes TD-14 (silent default in applyRunStatus).
-		s.Log.Debug("applyRunStatus: unhandled payload type", "run_id", env.RunId, "type", overseer.TypeString(env))
+		s.Log.Debug("applyRunStatus: unhandled payload type", "run_id", env.RunId, "type", criteria.TypeString(env))
 	}
 }
 

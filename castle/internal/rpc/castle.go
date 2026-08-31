@@ -13,8 +13,8 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 )
 
 const (
@@ -24,31 +24,31 @@ const (
 	cursorFinalMaxDuration     = 15 * time.Second
 )
 
-func (s *CastleServer) ListOverseers(ctx context.Context, _ *connect.Request[pb.ListOverseersRequest]) (*connect.Response[pb.ListOverseersResponse], error) {
+func (s *ServerServer) ListAgents(ctx context.Context, req *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error) {
 	list, err := s.Store.ListOverseers(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	out := make([]*pb.Overseer, 0, len(list))
+	out := make([]*pb.Agent, 0, len(list))
 	for _, o := range list {
-		out = append(out, mapOverseer(o))
+		out = append(out, mapAgent(o))
 	}
-	return connect.NewResponse(&pb.ListOverseersResponse{Overseers: out}), nil
+	return connect.NewResponse(&pb.ListAgentsResponse{Agents: out}), nil
 }
 
-func (s *CastleServer) GetOverseer(ctx context.Context, req *connect.Request[pb.GetOverseerRequest]) (*connect.Response[pb.Overseer], error) {
-	o, err := s.Store.GetOverseer(ctx, req.Msg.OverseerId)
+func (s *ServerServer) GetAgent(ctx context.Context, req *connect.Request[pb.GetAgentRequest]) (*connect.Response[pb.Agent], error) {
+	o, err := s.Store.GetOverseer(ctx, req.Msg.CriteriaId)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, err)
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(mapOverseer(o)), nil
+	return connect.NewResponse(mapAgent(o)), nil
 }
 
-func (s *CastleServer) ListRuns(ctx context.Context, req *connect.Request[pb.ListRunsRequest]) (*connect.Response[pb.ListRunsResponse], error) {
-	list, err := s.Store.ListRuns(ctx, req.Msg.OverseerId, req.Msg.Status)
+func (s *ServerServer) ListRuns(ctx context.Context, req *connect.Request[pb.ListRunsRequest]) (*connect.Response[pb.ListRunsResponse], error) {
+	list, err := s.Store.ListRuns(ctx, req.Msg.CriteriaId, req.Msg.Status)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -59,7 +59,7 @@ func (s *CastleServer) ListRuns(ctx context.Context, req *connect.Request[pb.Lis
 	return connect.NewResponse(&pb.ListRunsResponse{Runs: out}), nil
 }
 
-func (s *CastleServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {
+func (s *ServerServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {
 	r, err := s.Store.GetRun(ctx, req.Msg.RunId)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -70,7 +70,7 @@ func (s *CastleServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRu
 	return connect.NewResponse(mapRun(r)), nil
 }
 
-func (s *CastleServer) ListRunEvents(ctx context.Context, req *connect.Request[pb.ListRunEventsRequest]) (*connect.Response[pb.ListRunEventsResponse], error) {
+func (s *ServerServer) ListRunEvents(ctx context.Context, req *connect.Request[pb.ListRunEventsRequest]) (*connect.Response[pb.ListRunEventsResponse], error) {
 	limit := int(req.Msg.Limit)
 	if limit <= 0 {
 		limit = sqlite.ListEventsDefaultLimit
@@ -84,17 +84,26 @@ func (s *CastleServer) ListRunEvents(ctx context.Context, req *connect.Request[p
 		return nil, mapListEventsError(err)
 	}
 
-	resp := &pb.ListRunEventsResponse{Events: all}
-	if len(all) > 0 {
-		resp.LastSeq = all[len(all)-1].Seq
-		if len(all) == limit {
-			resp.NextSinceSeq = all[len(all)-1].Seq
+	events := make([]*criteria.Envelope, 0, len(all))
+	for _, ev := range all {
+		env, convErr := eventToEnvelope(ev)
+		if convErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, convErr)
+		}
+		events = append(events, env)
+	}
+
+	resp := &pb.ListRunEventsResponse{Events: events}
+	if len(events) > 0 {
+		resp.LastSeq = events[len(events)-1].Seq
+		if len(events) == limit {
+			resp.NextSinceSeq = events[len(events)-1].Seq
 		}
 	}
 	return connect.NewResponse(resp), nil
 }
 
-func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.WatchRunRequest], stream *connect.ServerStream[pb.Envelope]) error {
+func (s *ServerServer) WatchRun(ctx context.Context, req *connect.Request[pb.WatchRunRequest], stream *connect.ServerStream[criteria.Envelope]) error {
 	runID := req.Msg.RunId
 	if runID == "" {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
@@ -140,7 +149,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		}()
 	}
 
-	_, err := forEachPersistedEventPage(ctx, s.Store, runID, effectiveSince, func(env *pb.Envelope) error {
+	_, err := forEachPersistedEventPage(ctx, s.Store, runID, effectiveSince, func(env *criteria.Envelope) error {
 		if env.Seq <= lastSent {
 			return nil
 		}
@@ -149,7 +158,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		}
 		lastSent = env.Seq
 		updateCursor(env.Seq)
-		if overseer.IsTerminal(env) {
+		if criteria.IsTerminal(env) {
 			terminalInReplay = true
 			return errStopEventPagination
 		}
@@ -164,7 +173,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 
 	// WatchReady is sent once replay is complete so Connect flushes response
 	// headers even when no live event has arrived yet. Clients must ignore it.
-	if err := stream.Send(&pb.Envelope{SchemaVersion: 1, RunId: runID, Payload: &pb.Envelope_WatchReady{WatchReady: &pb.WatchReady{}}}); err != nil {
+	if err := stream.Send(&criteria.Envelope{SchemaVersion: criteria.SchemaVersion, RunId: runID, Payload: &criteria.Envelope_WatchReady{WatchReady: &criteria.WatchReady{}}}); err != nil {
 		return connect.NewError(connect.CodeUnknown, err)
 	}
 
@@ -179,7 +188,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		}
 		lastSent = env.Seq
 		updateCursor(env.Seq)
-		if overseer.IsTerminal(env) {
+		if criteria.IsTerminal(env) {
 			return nil
 		}
 	}
@@ -200,7 +209,7 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 			}
 			lastSent = env.Seq
 			updateCursor(env.Seq)
-			if overseer.IsTerminal(env) {
+			if criteria.IsTerminal(env) {
 				return nil
 			}
 		}
@@ -274,7 +283,7 @@ func upsertCursorWithRetry(
 	return lastErr
 }
 
-func (s *CastleServer) startCursorWriter(ctx context.Context, subscriberID, runID string) cursorWriter {
+func (s *ServerServer) startCursorWriter(ctx context.Context, subscriberID, runID string) cursorWriter {
 	var (
 		mu           sync.Mutex
 		hasPending   bool
@@ -435,7 +444,7 @@ func (s *CastleServer) startCursorWriter(ctx context.Context, subscriberID, runI
 	}
 }
 
-func (s *CastleServer) StopRun(ctx context.Context, req *connect.Request[pb.StopRunRequest]) (*connect.Response[pb.StopRunResponse], error) {
+func (s *ServerServer) StopRun(ctx context.Context, req *connect.Request[pb.StopRunRequest]) (*connect.Response[pb.StopRunResponse], error) {
 	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
 	if err != nil {
 		return nil, err
@@ -446,10 +455,10 @@ func (s *CastleServer) StopRun(ctx context.Context, req *connect.Request[pb.Stop
 	}
 	err = s.controls.Enqueue(run.OverseerID, &pb.ControlMessage{Command: &pb.ControlMessage_RunCancel{RunCancel: &pb.RunCancel{RunId: run.ID, Reason: reason}}})
 	switch {
-	case errors.Is(err, ErrOverseerNotConnected):
+	case errors.Is(err, ErrAgentNotConnected):
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, ErrControlBacklogFull):
-		s.Log.Warn("control backlog full; stop run dropped", "overseer_id", run.OverseerID, "run_id", run.ID)
+		s.Log.Warn("control backlog full; stop run dropped", "criteria_id", run.OverseerID, "run_id", run.ID)
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	case err != nil:
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -458,6 +467,44 @@ func (s *CastleServer) StopRun(ctx context.Context, req *connect.Request[pb.Stop
 	return connect.NewResponse(&pb.StopRunResponse{IssuedAt: timestamppb.New(now)}), nil
 }
 
-func (s *CastleServer) SendPrompt(context.Context, *connect.Request[pb.SendPromptRequest]) (*connect.Response[pb.SendPromptResponse], error) {
+func (s *ServerServer) PauseRun(ctx context.Context, req *connect.Request[pb.PauseRunRequest]) (*connect.Response[pb.PauseRunResponse], error) {
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
+	if err != nil {
+		return nil, err
+	}
+	// Castle currently only supports pausing via the agent Control stream on
+	// the running criteria agent. If no agent is connected, the run cannot be
+	// paused at this time.
+	err = s.controls.Enqueue(run.OverseerID, &pb.ControlMessage{Command: &pb.ControlMessage_RunCancel{RunCancel: &pb.RunCancel{RunId: run.ID, Reason: "pause requested by operator"}}})
+	switch {
+	case errors.Is(err, ErrAgentNotConnected):
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, ErrControlBacklogFull):
+		s.Log.Warn("control backlog full; pause run dropped", "criteria_id", run.OverseerID, "run_id", run.ID)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	case err != nil:
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	now := time.Now().UTC()
+	return connect.NewResponse(&pb.PauseRunResponse{IssuedAt: timestamppb.New(now)}), nil
+}
+
+func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.ResumeRunRequest]) (*connect.Response[pb.ResumeRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("resume run is not implemented on ServerService; use CriteriaService.Resume"))
+}
+
+func (s *ServerServer) InspectRun(ctx context.Context, req *connect.Request[pb.InspectRunRequest]) (*connect.Response[pb.InspectRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("inspect run is not implemented"))
+}
+
+func (s *ServerServer) SubmitWorkflowAssignment(ctx context.Context, req *connect.Request[pb.SubmitWorkflowAssignmentRequest]) (*connect.Response[pb.SubmitWorkflowAssignmentResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("workflow assignment is not implemented"))
+}
+
+func (s *ServerServer) GetAssignmentDisposition(ctx context.Context, req *connect.Request[pb.GetAssignmentDispositionRequest]) (*connect.Response[pb.GetAssignmentDispositionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("assignment disposition is not implemented"))
+}
+
+func (s *ServerServer) SendPrompt(context.Context, *connect.Request[pb.SendPromptRequest]) (*connect.Response[pb.SendPromptResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("send prompt is not implemented"))
 }

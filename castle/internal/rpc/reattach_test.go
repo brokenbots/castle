@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 // createRunAtStep creates a run in "running" status with currentStep set.
@@ -37,11 +38,11 @@ func TestReattachRun_RunningReturnsCurrentStep(t *testing.T) {
 	ctx := context.Background()
 
 	// Register an overseer.
-	reg, err := ts.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-reattach"}))
+	reg, err := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-reattach"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	overseerID := reg.Msg.OverseerId
+	overseerID := reg.Msg.CriteriaId
 
 	// Create a run in running state at step "build".
 	runID := createRunAtStep(t, ts, overseerID, "build")
@@ -56,9 +57,9 @@ func TestReattachRun_RunningReturnsCurrentStep(t *testing.T) {
 		t.Fatal(raErr)
 	}
 
-	resp, err := ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
+	resp, err := ts.criteria.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
 		RunId:      runID,
-		OverseerId: overseerID,
+		CriteriaId: overseerID,
 	}))
 	if err != nil {
 		t.Fatalf("ReattachRun: %v", err)
@@ -81,11 +82,11 @@ func TestReattachRun_TerminalReturnsCannotResume(t *testing.T) {
 	ts := newTestStack(t)
 	ctx := context.Background()
 
-	reg, err := ts.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-terminal"}))
+	reg, err := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-terminal"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	overseerID := reg.Msg.OverseerId
+	overseerID := reg.Msg.CriteriaId
 
 	// Create a succeeded run.
 	now := time.Now().UTC()
@@ -101,9 +102,9 @@ func TestReattachRun_TerminalReturnsCannotResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
+	resp, err := ts.criteria.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
 		RunId:      r.ID,
-		OverseerId: overseerID,
+		CriteriaId: overseerID,
 	}))
 	if err != nil {
 		t.Fatalf("ReattachRun: %v", err)
@@ -121,18 +122,18 @@ func TestReattachRun_WrongOwner_Rejected(t *testing.T) {
 	ctx := context.Background()
 
 	// Register two overseers.
-	reg1, _ := ts.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-owner"}))
-	reg2, _ := ts.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-other"}))
-	ownerID := reg1.Msg.OverseerId
-	otherID := reg2.Msg.OverseerId
+	reg1, _ := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-owner"}))
+	reg2, _ := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-other"}))
+	ownerID := reg1.Msg.CriteriaId
+	otherID := reg2.Msg.CriteriaId
 
 	runID := createRunAtStep(t, ts, ownerID, "deploy")
 
 	// Other overseer tries to reattach — inject its identity as the caller.
-	callerCtx := auth.WithCallerOverseerID(ctx, otherID)
-	_, err := ts.overseer.ReattachRun(callerCtx, connect.NewRequest(&pb.ReattachRunRequest{
+	callerCtx := auth.WithCallerCriteriaID(ctx, otherID)
+	_, err := ts.criteria.ReattachRun(callerCtx, connect.NewRequest(&pb.ReattachRunRequest{
 		RunId:      runID,
-		OverseerId: otherID,
+		CriteriaId: otherID,
 	}))
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("expected CodePermissionDenied, got code=%v err=%v", connect.CodeOf(err), err)
@@ -144,13 +145,13 @@ func TestReattachRun_MissingArgs_ReturnsError(t *testing.T) {
 	ctx := context.Background()
 
 	// run_id is required — a missing run_id must be rejected.
-	_, err := ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{OverseerId: "x"}))
+	_, err := ts.criteria.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{CriteriaId: "x"}))
 	if err == nil {
 		t.Fatal("expected error for missing run_id")
 	}
 
 	// run_id present but run does not exist — must also be rejected (NotFound).
-	_, err = ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{RunId: "nonexistent"}))
+	_, err = ts.criteria.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{RunId: "nonexistent"}))
 	if err == nil {
 		t.Fatal("expected error for nonexistent run")
 	}
@@ -160,9 +161,9 @@ func TestReattachRun_RunNotFound(t *testing.T) {
 	ts := newTestStack(t)
 	ctx := context.Background()
 
-	_, err := ts.overseer.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
+	_, err := ts.criteria.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
 		RunId:      "nonexistent-run",
-		OverseerId: "nonexistent-overseer",
+		CriteriaId: "nonexistent-overseer",
 	}))
 	if err == nil {
 		t.Fatal("expected error for nonexistent run")
@@ -173,8 +174,8 @@ func TestRunAttempts_RecordAndComplete(t *testing.T) {
 	ts := newTestStack(t)
 	ctx := context.Background()
 
-	reg, _ := ts.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-attempts"}))
-	overseerID := reg.Msg.OverseerId
+	reg, _ := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-attempts"}))
+	overseerID := reg.Msg.CriteriaId
 	runID := createRunAtStep(t, ts, overseerID, "test")
 
 	// Record attempt 1 start.
@@ -219,7 +220,7 @@ func TestSubmitEvents_StepEntered_RecordsAttempt(t *testing.T) {
 	_, oClient, _ := ts.startServer(t)
 	overseerID, token := mustRegister(t, oClient)
 
-	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf", WorkflowHash: "h"})
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf", WorkflowHash: "h"})
 	createReq.Header().Set("Authorization", "Bearer "+token)
 	runResp, err := oClient.CreateRun(context.Background(), createReq)
 	if err != nil {
@@ -232,7 +233,7 @@ func TestSubmitEvents_StepEntered_RecordsAttempt(t *testing.T) {
 
 	// Send StepEntered event.
 	if err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(overseer.SchemaVersion),
+		SchemaVersion: int32(criteria.SchemaVersion),
 		RunId:         runID,
 		CorrelationId: "se-1",
 		Ts:            timestamppb.Now(),
@@ -261,7 +262,7 @@ func TestSubmitEvents_StepResumed_StoredAndFannedOut(t *testing.T) {
 	_, oClient, _ := ts.startServer(t)
 	overseerID, token := mustRegister(t, oClient)
 
-	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf", WorkflowHash: "h"})
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf", WorkflowHash: "h"})
 	createReq.Header().Set("Authorization", "Bearer "+token)
 	runResp, err := oClient.CreateRun(context.Background(), createReq)
 	if err != nil {
@@ -274,7 +275,7 @@ func TestSubmitEvents_StepResumed_StoredAndFannedOut(t *testing.T) {
 
 	// Send StepResumed event.
 	if err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(overseer.SchemaVersion),
+		SchemaVersion: int32(criteria.SchemaVersion),
 		RunId:         runID,
 		CorrelationId: "sr-1",
 		Ts:            timestamppb.Now(),
@@ -296,10 +297,12 @@ func TestSubmitEvents_StepResumed_StoredAndFannedOut(t *testing.T) {
 	var found bool
 	for _, e := range evts {
 		if e.Seq == ack.Seq {
-			if sr, ok := e.Payload.(*pb.Envelope_StepResumed); ok {
-				if sr.StepResumed.Step == "build" && sr.StepResumed.Attempt == 2 {
-					found = true
-				}
+			var sr pb.StepResumed
+			if err := protojson.Unmarshal(e.Payload, &sr); err != nil {
+				t.Fatalf("unmarshal StepResumed payload: %v", err)
+			}
+			if sr.Step == "build" && sr.Attempt == 2 {
+				found = true
 			}
 		}
 	}

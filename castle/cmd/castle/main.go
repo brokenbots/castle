@@ -22,8 +22,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/hub"
 	"github.com/brokenbots/castle/castle/internal/rpc"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
-	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
 )
 
 func envOrDefault(key, fallback string) string {
@@ -88,7 +88,7 @@ func main() {
 	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
-	allowAnonReads := flag.Bool("allow-anon-reads", envOrDefaultBool("CASTLE_ALLOW_ANON_READS", !tlsDefault), "allow anonymous CastleService read RPCs")
+	allowAnonReads := flag.Bool("allow-anon-reads", envOrDefaultBool("CASTLE_ALLOW_ANON_READS", !tlsDefault), "allow anonymous ServerService read RPCs")
 	eventBufferCapacity := flag.Int("event-buffer-capacity", envOrDefaultInt("CASTLE_EVENT_BUFFER_CAPACITY", hub.DefaultEventBufferCapacity), "in-memory events retained per run for WatchRun replay")
 	flag.Parse()
 
@@ -127,8 +127,8 @@ func main() {
 	h := hub.NewWithBuffer(*eventBufferCapacity, log)
 	controls := rpc.NewControlRegistry()
 
-	overseerRPC := rpc.NewOverseerServer(st, h, log, controls)
-	castleRPC := rpc.NewCastleServer(st, h, log, controls)
+	criteriaRPC := rpc.NewCriteriaServer(st, h, log, controls)
+	serverRPC := rpc.NewServerServer(st, h, log, controls)
 
 	interceptors := []connect.Interceptor{
 		auth.NewLoggingInterceptor(log),
@@ -136,20 +136,20 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	ovPath, ovHandler := overseer.NewServiceHandler(overseerRPC, connect.WithInterceptors(interceptors...))
-	csPath, csHandler := overlordv1connect.NewCastleServiceHandler(castleRPC, connect.WithInterceptors(interceptors...))
+	critPath, critHandler := criteria.NewServiceHandler(criteriaRPC, connect.WithInterceptors(interceptors...))
+	serverPath, serverHandler := criteriav1connect.NewServerServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
 	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
-		overseer.ServiceName,
-		overlordv1connect.CastleServiceName,
+		criteria.ServiceName,
+		criteriav1connect.ServerServiceName,
 	))
-	mux.Handle(ovPath, ovHandler)
-	mux.Handle(csPath, csHandler)
+	mux.Handle(critPath, critHandler)
+	mux.Handle(serverPath, serverHandler)
 	mux.Handle(healthPath, healthHandler)
 
 	if *grpcReflection {
 		reflector := grpcreflect.NewStaticReflector(
-			overseer.ServiceName,
-			overlordv1connect.CastleServiceName,
+			criteria.ServiceName,
+			criteriav1connect.ServerServiceName,
 			grpchealth.HealthV1ServiceName,
 		)
 		rPathV1, rHandlerV1 := grpcreflect.NewHandlerV1(reflector)

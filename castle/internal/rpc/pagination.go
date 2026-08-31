@@ -9,7 +9,7 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	criteria "github.com/brokenbots/criteria/sdk"
 )
 
 const maxListEventPagesPerRPC = 10
@@ -17,7 +17,7 @@ const maxListEventPagesPerRPC = 10
 var errListEventPageLimitExceeded = errors.New("persisted event page limit exceeded")
 var errStopEventPagination = errors.New("stop paged event iteration")
 
-func forEachPersistedEventPage(ctx context.Context, st store.Store, runID string, since uint64, onEvent func(*pb.Envelope) error) (uint64, error) {
+func forEachPersistedEventPage(ctx context.Context, st store.Store, runID string, since uint64, onEvent func(*criteria.Envelope) error) (uint64, error) {
 	cursor := since
 	for page := 0; page < maxListEventPagesPerRPC; page++ {
 		events, err := st.ListEvents(ctx, runID, cursor, sqlite.ListEventsMaxLimit)
@@ -27,14 +27,18 @@ func forEachPersistedEventPage(ctx context.Context, st store.Store, runID string
 		if len(events) == 0 {
 			return cursor, nil
 		}
-		for _, env := range events {
+		for _, ev := range events {
+			env, convErr := eventToEnvelope(ev)
+			if convErr != nil {
+				return cursor, convErr
+			}
 			if err := onEvent(env); err != nil {
 				if errors.Is(err, errStopEventPagination) {
 					return cursor, nil
 				}
 				return cursor, err
 			}
-			cursor = env.Seq
+			cursor = ev.Seq
 		}
 		if len(events) < sqlite.ListEventsMaxLimit {
 			return cursor, nil

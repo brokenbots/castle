@@ -19,8 +19,8 @@ func TestTokenFromHeaders(t *testing.T) {
 		valid bool
 	}{
 		{name: "authorization bearer", head: map[string]string{"Authorization": "Bearer abc"}, want: "abc", valid: true},
-		{name: "x overseer token", head: map[string]string{"X-Overseer-Token": "xyz"}, want: "xyz", valid: true},
-		{name: "metadata token", head: map[string]string{"overseer-token": "meta"}, want: "meta", valid: true},
+		{name: "x overseer token", head: map[string]string{"X-Criteria-Token": "xyz"}, want: "xyz", valid: true},
+		{name: "metadata token", head: map[string]string{"criteria-token": "meta"}, want: "meta", valid: true},
 		{name: "invalid auth", head: map[string]string{"Authorization": "Basic abc"}, valid: false},
 	}
 	for _, tc := range tests {

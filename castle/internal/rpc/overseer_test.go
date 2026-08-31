@@ -8,27 +8,27 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	criteria "github.com/brokenbots/criteria/sdk"
 )
 
 func TestOverseerUnaryMethods(t *testing.T) {
 	ts := newTestStack(t)
 	ctx := context.Background()
 
-	reg, err := ts.overseer.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o1", Labels: map[string]string{"hostname": "h1", "version": "v1"}}))
+	reg, err := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o1", Labels: map[string]string{"hostname": "h1", "version": "v1"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reg.Msg.OverseerId == "" || reg.Msg.Token == "" {
+	if reg.Msg.CriteriaId == "" || reg.Msg.Token == "" {
 		t.Fatal("expected register to return overseer id and token")
 	}
 
-	if _, err := ts.overseer.Heartbeat(ctx, connect.NewRequest(&pb.HeartbeatRequest{OverseerId: reg.Msg.OverseerId})); err != nil {
+	if _, err := ts.criteria.Heartbeat(ctx, connect.NewRequest(&pb.HeartbeatRequest{CriteriaId: reg.Msg.CriteriaId})); err != nil {
 		t.Fatal(err)
 	}
 
-	runResp, err := ts.overseer.CreateRun(ctx, connect.NewRequest(&pb.CreateRunRequest{OverseerId: reg.Msg.OverseerId, WorkflowName: "wf", WorkflowHash: "h"}))
+	runResp, err := ts.criteria.CreateRun(ctx, connect.NewRequest(&pb.CreateRunRequest{CriteriaId: reg.Msg.CriteriaId, WorkflowName: "wf", WorkflowHash: "h"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestSubmitEventsStream_ReplayPagesPersistedEvents(t *testing.T) {
 	_, oClient, _ := ts.startServer(t)
 	overseerID, token := mustRegister(t, oClient)
 
-	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf", WorkflowHash: "hash"})
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf", WorkflowHash: "hash"})
 	createReq.Header().Set("Authorization", "Bearer "+token)
 	runResp, err := oClient.CreateRun(context.Background(), createReq)
 	if err != nil {
@@ -52,13 +52,13 @@ func TestSubmitEventsStream_ReplayPagesPersistedEvents(t *testing.T) {
 
 	for i := 0; i < 1500; i++ {
 		env := &pb.Envelope{
-			SchemaVersion: int32(overseer.SchemaVersion),
+			SchemaVersion: int32(criteria.SchemaVersion),
 			RunId:         runID,
 			CorrelationId: fmt.Sprintf("seed-%d", i),
 			Ts:            timestamppb.Now(),
 			Payload:       &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "seed", Adapter: "shell", Attempt: 1}},
 		}
-		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -67,7 +67,7 @@ func TestSubmitEventsStream_ReplayPagesPersistedEvents(t *testing.T) {
 	stream.RequestHeader().Set("Authorization", "Bearer "+token)
 	stream.RequestHeader().Set("since_seq", "0")
 	if err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(overseer.SchemaVersion),
+		SchemaVersion: int32(criteria.SchemaVersion),
 		RunId:         runID,
 		CorrelationId: "live-event",
 		Ts:            timestamppb.Now(),
@@ -101,7 +101,7 @@ func TestSubmitEventsStream(t *testing.T) {
 	_, oClient, _ := ts.startServer(t)
 	overseerID, token := mustRegister(t, oClient)
 
-	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf", WorkflowHash: "hash"})
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf", WorkflowHash: "hash"})
 	createReq.Header().Set("Authorization", "Bearer "+token)
 	runResp, err := oClient.CreateRun(context.Background(), createReq)
 	if err != nil {
@@ -113,7 +113,7 @@ func TestSubmitEventsStream(t *testing.T) {
 		stream := oClient.SubmitEvents(context.Background())
 		stream.RequestHeader().Set("Authorization", "Bearer "+token)
 		err := stream.Send(&pb.Envelope{
-			SchemaVersion: int32(overseer.SchemaVersion),
+			SchemaVersion: int32(criteria.SchemaVersion),
 			RunId:         runID,
 			CorrelationId: "c1",
 			Ts:            timestamppb.Now(),
@@ -155,7 +155,7 @@ func TestSubmitEventsStream(t *testing.T) {
 		stream.RequestHeader().Set("Authorization", "Bearer "+token)
 		stream.RequestHeader().Set("since_seq", "0")
 		err := stream.Send(&pb.Envelope{
-			SchemaVersion: int32(overseer.SchemaVersion),
+			SchemaVersion: int32(criteria.SchemaVersion),
 			RunId:         runID,
 			CorrelationId: "c2",
 			Ts:            timestamppb.Now(),
@@ -191,7 +191,7 @@ func TestSubmitEvents_DurationWaitDoesNotPause(t *testing.T) {
 	_, oClient, _ := ts.startServer(t)
 	overseerID, token := mustRegister(t, oClient)
 
-	createReq := connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf", WorkflowHash: "hash"})
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf", WorkflowHash: "hash"})
 	createReq.Header().Set("Authorization", "Bearer "+token)
 	runResp, err := oClient.CreateRun(context.Background(), createReq)
 	if err != nil {
@@ -202,7 +202,7 @@ func TestSubmitEvents_DurationWaitDoesNotPause(t *testing.T) {
 	stream := oClient.SubmitEvents(context.Background())
 	stream.RequestHeader().Set("Authorization", "Bearer "+token)
 	if err := stream.Send(&pb.Envelope{
-		SchemaVersion: int32(overseer.SchemaVersion),
+		SchemaVersion: int32(criteria.SchemaVersion),
 		RunId:         runID,
 		CorrelationId: "dur-1",
 		Ts:            timestamppb.Now(),

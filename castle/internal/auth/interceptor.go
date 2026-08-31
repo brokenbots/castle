@@ -9,35 +9,36 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/brokenbots/castle/castle/internal/store"
-	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
-	overseer "github.com/brokenbots/castle/shared/sdk/overseer"
+	criteria "github.com/brokenbots/criteria/sdk"
+	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
 )
 
-// callerOverseerIDKey is the context key for the authenticated caller's overseer ID.
-type callerOverseerIDKey struct{}
+// callerCriteriaIDKey is the context key for the authenticated caller's criteria agent ID.
+type callerCriteriaIDKey struct{}
 
-// CallerOverseerID returns the overseer ID injected by AuthInterceptor, or ""
-// if the request was not authenticated (e.g. exempt procedures or direct
-// handler calls in tests without the interceptor wired).
-func CallerOverseerID(ctx context.Context) string {
-	v, _ := ctx.Value(callerOverseerIDKey{}).(string)
+// CallerCriteriaID returns the criteria agent ID injected by AuthInterceptor,
+// or "" if the request was not authenticated (e.g. exempt procedures or
+// direct handler calls in tests without the interceptor wired).
+func CallerCriteriaID(ctx context.Context) string {
+	v, _ := ctx.Value(callerCriteriaIDKey{}).(string)
 	return v
 }
 
-// WithCallerOverseerID returns a context with the given overseer ID injected
-// as the authenticated caller. Use in tests that call handlers directly (no
-// HTTP stack) to simulate the identity the interceptor would inject.
-func WithCallerOverseerID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, callerOverseerIDKey{}, id)
+// WithCallerCriteriaID returns a context with the given criteria agent ID
+// injected as the authenticated caller. Use in tests that call handlers
+// directly (no HTTP stack) to simulate the identity the interceptor would
+// inject.
+func WithCallerCriteriaID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, callerCriteriaIDKey{}, id)
 }
 
-var readOnlyCastleProcedures = map[string]struct{}{
-	overlordv1connect.CastleServiceListOverseersProcedure: {},
-	overlordv1connect.CastleServiceGetOverseerProcedure:   {},
-	overlordv1connect.CastleServiceListRunsProcedure:      {},
-	overlordv1connect.CastleServiceGetRunProcedure:        {},
-	overlordv1connect.CastleServiceListRunEventsProcedure: {},
-	overlordv1connect.CastleServiceWatchRunProcedure:      {},
+var readOnlyServerProcedures = map[string]struct{}{
+	criteriav1connect.ServerServiceListAgentsProcedure:     {},
+	criteriav1connect.ServerServiceGetAgentProcedure:       {},
+	criteriav1connect.ServerServiceListRunsProcedure:      {},
+	criteriav1connect.ServerServiceGetRunProcedure:        {},
+	criteriav1connect.ServerServiceListRunEventsProcedure: {},
+	criteriav1connect.ServerServiceWatchRunProcedure:      {},
 }
 
 // InterceptorOption configures an AuthInterceptor.
@@ -62,7 +63,7 @@ func WithAnonRegister() InterceptorOption {
 	}
 }
 
-// AuthInterceptor authenticates Connect calls using overseer tokens.
+// AuthInterceptor authenticates Connect calls using criteria agent tokens.
 type AuthInterceptor struct {
 	store              store.Store
 	allowAnonReads     bool
@@ -83,7 +84,7 @@ func NewInterceptor(st store.Store, allowAnonReads bool, opts ...InterceptorOpti
 
 func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if req.Spec().Procedure == overseer.RegisterProcedure {
+		if req.Spec().Procedure == criteria.RegisterProcedure {
 			return i.handleRegister(ctx, req, next)
 		}
 		if i.isExempt(req.Spec().Procedure) {
@@ -115,7 +116,7 @@ func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 }
 
 // authenticateHeaders validates the token and returns a context with the
-// caller's overseer ID injected.
+// caller's criteria agent ID injected.
 func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header) (context.Context, error) {
 	tok, ok := TokenFromHeaders(h)
 	if !ok {
@@ -128,7 +129,7 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 	if o == nil {
 		return ctx, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token"))
 	}
-	return context.WithValue(ctx, callerOverseerIDKey{}, o.ID), nil
+	return context.WithValue(ctx, callerCriteriaIDKey{}, o.ID), nil
 }
 
 // handleRegister enforces the bootstrap-token gate for the Register RPC.
@@ -155,7 +156,7 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 
 func (i *AuthInterceptor) isExempt(procedure string) bool {
 	if i.allowAnonReads {
-		if _, ok := readOnlyCastleProcedures[procedure]; ok {
+		if _, ok := readOnlyServerProcedures[procedure]; ok {
 			return true
 		}
 	}

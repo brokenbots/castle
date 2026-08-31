@@ -4,15 +4,15 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 )
 
-func mapOverseer(o *store.Overseer) *pb.Overseer {
+func mapAgent(o *store.Overseer) *pb.Agent {
 	if o == nil {
 		return nil
 	}
-	return &pb.Overseer{
-		OverseerId:   o.ID,
+	return &pb.Agent{
+		CriteriaId:   o.ID,
 		Name:         o.Name,
 		Labels:       map[string]string{"hostname": o.Hostname, "version": o.Version},
 		Status:       o.Status,
@@ -27,7 +27,7 @@ func mapRun(r *store.Run) *pb.Run {
 	}
 	out := &pb.Run{
 		RunId:        r.ID,
-		OverseerId:   r.OverseerID,
+		CriteriaId:   r.OverseerID,
 		WorkflowName: r.WorkflowName,
 		WorkflowHash: r.WorkflowHCL,
 		Status:       r.Status,

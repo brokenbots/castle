@@ -32,10 +32,10 @@ func TokenFromHeaders(h http.Header) (string, bool) {
 	if tok, ok := BearerFromAuthorization(h.Get("Authorization")); ok {
 		return tok, true
 	}
-	if tok := strings.TrimSpace(h.Get("X-Overseer-Token")); tok != "" {
+	if tok := strings.TrimSpace(h.Get("X-Criteria-Token")); tok != "" {
 		return tok, true
 	}
-	if tok := strings.TrimSpace(h.Get("overseer-token")); tok != "" {
+	if tok := strings.TrimSpace(h.Get("criteria-token")); tok != "" {
 		return tok, true
 	}
 	return "", false

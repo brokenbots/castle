@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { Envelope, LogStream, StepLog, WatchReady } from '../../sdk/overseer';
+import { Envelope, LogStream, StepLog, WatchReady } from '../../gen/criteria/v1/events_pb';
 import { runsSlice } from './runsSlice';
 
 const watchRunMock = vi.fn();
 
 vi.mock('../../api/client', () => ({
-  castle: {
+  server: {
     watchRun: (...args: unknown[]) => watchRunMock(...args),
   },
 }));

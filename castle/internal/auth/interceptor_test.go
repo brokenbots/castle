@@ -16,8 +16,8 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
-	pb "github.com/brokenbots/castle/shared/pb/overlord/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
-	"github.com/brokenbots/castle/shared/pb/overlord/v1/overlordv1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
+	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 func TestAuthInterceptorUnary(t *testing.T) {
@@ -35,19 +35,19 @@ func TestAuthInterceptorUnary(t *testing.T) {
 	}
 
 	h := connect.NewUnaryHandler(
-		overlordv1connect.CastleServiceGetRunProcedure,
+		criteriav1connect.ServerServiceGetRunProcedure,
 		func(context.Context, *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {
 			return connect.NewResponse(&pb.Run{RunId: "r1"}), nil
 		},
 		connect.WithInterceptors(NewInterceptor(db, false)),
 	)
 	mux := http.NewServeMux()
-	mux.Handle(overlordv1connect.CastleServiceGetRunProcedure, h)
+	mux.Handle(criteriav1connect.ServerServiceGetRunProcedure, h)
 	tsrv := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
 	tsrv.Start()
 	t.Cleanup(tsrv.Close)
 
-	client := connect.NewClient[pb.GetRunRequest, pb.Run](httpClient(), tsrv.URL+overlordv1connect.CastleServiceGetRunProcedure)
+	client := connect.NewClient[pb.GetRunRequest, pb.Run](httpClient(), tsrv.URL+criteriav1connect.ServerServiceGetRunProcedure)
 
 	_, err = client.CallUnary(context.Background(), connect.NewRequest(&pb.GetRunRequest{RunId: "r1"}))
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
@@ -64,21 +64,21 @@ func TestAuthInterceptorUnary(t *testing.T) {
 
 func TestAuthInterceptorExemptions(t *testing.T) {
 	h := connect.NewUnaryHandler(
-		overlordv1connect.OverseerServiceRegisterProcedure,
+		criteriav1connect.CriteriaServiceRegisterProcedure,
 		func(context.Context, *connect.Request[pb.RegisterRequest]) (*connect.Response[pb.RegisterResponse], error) {
-			return connect.NewResponse(&pb.RegisterResponse{OverseerId: "o1"}), nil
+			return connect.NewResponse(&pb.RegisterResponse{CriteriaId: "o1"}), nil
 		},
 		// WithAnonRegister is required: Register now requires a bootstrap token unless
 		// anonymous registration is explicitly enabled (dev/test mode).
 		connect.WithInterceptors(NewInterceptor(nil, true, WithAnonRegister())),
 	)
 	mux := http.NewServeMux()
-	mux.Handle(overlordv1connect.OverseerServiceRegisterProcedure, h)
+	mux.Handle(criteriav1connect.CriteriaServiceRegisterProcedure, h)
 	tsrv := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
 	tsrv.Start()
 	t.Cleanup(tsrv.Close)
 
-	client := connect.NewClient[pb.RegisterRequest, pb.RegisterResponse](httpClient(), tsrv.URL+overlordv1connect.OverseerServiceRegisterProcedure)
+	client := connect.NewClient[pb.RegisterRequest, pb.RegisterResponse](httpClient(), tsrv.URL+criteriav1connect.CriteriaServiceRegisterProcedure)
 	_, err := client.CallUnary(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: "test"}))
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestAuthInterceptorExemptions(t *testing.T) {
 
 // TestAuthInterceptor_CallerIDInjected verifies that AuthInterceptor resolves
 // the caller's overseer ID and injects it into the handler context via
-// CallerOverseerID. This locks in the context-injection contract so future
+// CallerCriteriaID. This locks in the context-injection contract so future
 // refactors of the interceptor don't silently break run-ownership checks.
 func TestAuthInterceptor_CallerIDInjected(t *testing.T) {
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "auth-id.db"))
@@ -105,20 +105,20 @@ func TestAuthInterceptor_CallerIDInjected(t *testing.T) {
 
 	var capturedID string
 	h := connect.NewUnaryHandler(
-		overlordv1connect.CastleServiceGetRunProcedure,
+		criteriav1connect.ServerServiceGetRunProcedure,
 		func(ctx context.Context, _ *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {
-			capturedID = CallerOverseerID(ctx)
+			capturedID = CallerCriteriaID(ctx)
 			return connect.NewResponse(&pb.Run{RunId: "r1"}), nil
 		},
 		connect.WithInterceptors(NewInterceptor(db, false)),
 	)
 	mux := http.NewServeMux()
-	mux.Handle(overlordv1connect.CastleServiceGetRunProcedure, h)
+	mux.Handle(criteriav1connect.ServerServiceGetRunProcedure, h)
 	tsrv := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
 	tsrv.Start()
 	t.Cleanup(tsrv.Close)
 
-	client := connect.NewClient[pb.GetRunRequest, pb.Run](httpClient(), tsrv.URL+overlordv1connect.CastleServiceGetRunProcedure)
+	client := connect.NewClient[pb.GetRunRequest, pb.Run](httpClient(), tsrv.URL+criteriav1connect.ServerServiceGetRunProcedure)
 	req := connect.NewRequest(&pb.GetRunRequest{RunId: "r1"})
 	req.Header().Set("Authorization", "Bearer tok-inject")
 	if _, err := client.CallUnary(context.Background(), req); err != nil {
@@ -126,7 +126,7 @@ func TestAuthInterceptor_CallerIDInjected(t *testing.T) {
 	}
 
 	if capturedID != "overseer-xyz" {
-		t.Errorf("expected CallerOverseerID='overseer-xyz', got %q", capturedID)
+		t.Errorf("expected CallerCriteriaID='overseer-xyz', got %q", capturedID)
 	}
 }
 
