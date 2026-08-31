@@ -1,0 +1,18 @@
+FROM golang:1.26-alpine AS build
+
+WORKDIR /src
+COPY go.work ./
+COPY castle/ ./castle/
+COPY criteria-sdk/ ./criteria-sdk/
+
+WORKDIR /src/castle
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/system-test-harness ./cmd/system-test-harness
+
+FROM alpine:3.20
+
+RUN apk add --no-cache docker-cli ca-certificates
+
+WORKDIR /app
+COPY --from=build /out/system-test-harness /usr/local/bin/system-test-harness
+
+ENTRYPOINT ["system-test-harness"]
