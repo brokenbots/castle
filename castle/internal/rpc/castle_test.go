@@ -723,9 +723,11 @@ func TestWatchRun_CursorUpdate_Coalesced(t *testing.T) {
 	_ = watch.Close()
 
 	waitForCursor(t, ts.store, "sub-c", runID, 500, 2*time.Second)
-	// Coalescing policy is flush every 100 envelopes or 250ms. For 500 replay
-	// envelopes this should be near 5 writes; allow moderate timing variance.
-	const maxExpectedUpserts = 10
+	// Coalescing policy is flush every 100 envelopes or 250ms. Theoretical
+	// minimum is 5 batch flushes for 500 replay envelopes; allow a wider ceiling
+	// because the 250ms ticker can fire during replay and during the close phase
+	// under the race detector.
+	const maxExpectedUpserts = 15
 	if calls := spy.UpsertCount(); calls > maxExpectedUpserts {
 		t.Fatalf("upsert calls=%d want <= %d", calls, maxExpectedUpserts)
 	}
