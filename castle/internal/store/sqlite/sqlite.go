@@ -5,10 +5,13 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 
 	"github.com/brokenbots/castle/castle/internal/store"
@@ -40,17 +43,22 @@ const (
 )
 
 func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?)`,
-		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, o.CreatedAt.Format(tsLayout), o.LastSeenAt.Format(tsLayout))
+	labels, err := marshalLabels(o.Labels)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, o.CreatedAt.Format(tsLayout), o.LastSeenAt.Format(tsLayout))
 	return err
 }
 
 func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,hostname,version,token_hash,status,created_at,last_seen_at FROM overseers WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers WHERE id=?`, id)
 	var o store.Overseer
 	var created, seen string
-	if err := row.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &created, &seen); err != nil {
+	var labels sql.NullString
+	if err := row.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
@@ -58,11 +66,12 @@ func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, er
 	}
 	o.CreatedAt, _ = time.Parse(tsLayout, created)
 	o.LastSeenAt, _ = time.Parse(tsLayout, seen)
+	o.Labels = unmarshalLabels(labels.String)
 	return &o, nil
 }
 
 func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -71,11 +80,13 @@ func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
 	for rows.Next() {
 		var o store.Overseer
 		var created, seen string
-		if err := rows.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &created, &seen); err != nil {
+		var labels sql.NullString
+		if err := rows.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen); err != nil {
 			return nil, err
 		}
 		o.CreatedAt, _ = time.Parse(tsLayout, created)
 		o.LastSeenAt, _ = time.Parse(tsLayout, seen)
+		o.Labels = unmarshalLabels(labels.String)
 		out = append(out, &o)
 	}
 	return out, rows.Err()
@@ -139,16 +150,20 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string) ([]*sto
 func scanRun(scan func(...any) error) (*store.Run, error) {
 	var r store.Run
 	var created string
+	var overseerID sql.NullString
 	var ended sql.NullString
 	var variableScope sql.NullString
 	var pendingSignal sql.NullString
 	var pausedAt sql.NullString
-	err := scan(&r.ID, &r.OverseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt)
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
 		return nil, err
+	}
+	if overseerID.Valid {
+		r.OverseerID = overseerID.String
 	}
 	r.CreatedAt, _ = time.Parse(tsLayout, created)
 	if ended.Valid {
@@ -453,3 +468,451 @@ func scanEventRows(rows *sql.Rows, runID string) ([]*store.Event, error) {
 	return out, rows.Err()
 }
 
+func marshalLabels(m map[string]string) (string, error) {
+	if len(m) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("marshal labels: %w", err)
+	}
+	return string(b), nil
+}
+
+func unmarshalLabels(s string) map[string]string {
+	if s == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowAssignment) (*store.WorkflowAssignment, bool, error) {
+	if a == nil {
+		return nil, false, errors.New("nil assignment")
+	}
+	if a.OwnerCriteriaID == "" {
+		return nil, false, errors.New("owner_criteria_id required")
+	}
+	if a.WorkflowName == "" {
+		return nil, false, errors.New("workflow_name required")
+	}
+	if a.WorkflowSource == "" {
+		return nil, false, errors.New("workflow_source required")
+	}
+	if a.IdempotencyKey == "" {
+		return nil, false, errors.New("idempotency_key required")
+	}
+	if a.ID == "" {
+		a.ID = uuid.NewString()
+	}
+	if a.RunID == "" {
+		a.RunID = uuid.NewString()
+	}
+	if a.State == "" {
+		a.State = store.WorkflowAssignmentStateQueued
+	}
+	now := time.Now().UTC()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = now
+	}
+	if a.UpdatedAt.IsZero() {
+		a.UpdatedAt = now
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	existing, err := scanAssignmentTx(ctx, tx, `
+		SELECT id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
+		       idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
+		       created_at, updated_at
+		FROM workflow_assignments
+		WHERE owner_criteria_id=? AND idempotency_key=?`, a.OwnerCriteriaID, a.IdempotencyKey)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, false, err
+	}
+	if existing != nil {
+		_ = tx.Rollback()
+		return existing, false, nil
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO runs(id, overseer_id, workflow_name, workflow_hcl, status, current_step, last_seq, created_at)
+		 VALUES(?, NULL, ?, ?, 'pending', '', 0, ?)`,
+		a.RunID, a.WorkflowName, a.WorkflowSource, a.CreatedAt.Format(tsLayout)); err != nil {
+		return nil, false, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO workflow_assignments(id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
+		                                   idempotency_key, state, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.OwnerCriteriaID, a.RunID, a.WorkflowName, a.WorkflowSource, a.LockfileSource,
+		a.IdempotencyKey, a.State, a.CreatedAt.Format(tsLayout), a.UpdatedAt.Format(tsLayout)); err != nil {
+		return nil, false, err
+	}
+
+	if err := s.insertAssignmentLabelsTx(ctx, tx, a.ID, a.Labels); err != nil {
+		return nil, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return a, true, nil
+}
+
+func (s *Store) insertAssignmentLabelsTx(ctx context.Context, tx *sql.Tx, assignmentID string, labels map[string]string) error {
+	for k, v := range labels {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO workflow_assignment_labels(assignment_id, key, value) VALUES(?, ?, ?)`,
+			assignmentID, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) GetWorkflowAssignment(ctx context.Context, id string) (*store.WorkflowAssignment, error) {
+	if id == "" {
+		return nil, errors.New("id required")
+	}
+	return s.scanAssignment(ctx, s.db.QueryRowContext(ctx, `
+		SELECT id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
+		       idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
+		       created_at, updated_at
+		FROM workflow_assignments WHERE id=?`, id))
+}
+
+func (s *Store) GetWorkflowAssignmentByRunID(ctx context.Context, runID string) (*store.WorkflowAssignment, error) {
+	if runID == "" {
+		return nil, errors.New("run_id required")
+	}
+	return s.scanAssignment(ctx, s.db.QueryRowContext(ctx, `
+		SELECT id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
+		       idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
+		       created_at, updated_at
+		FROM workflow_assignments WHERE run_id=?`, runID))
+}
+
+func (s *Store) scanAssignment(ctx context.Context, row *sql.Row) (*store.WorkflowAssignment, error) {
+	var a store.WorkflowAssignment
+	var created, updated string
+	var lockfile, terminalReason, leasedID, expires sql.NullString
+	err := row.Scan(
+		&a.ID, &a.OwnerCriteriaID, &a.RunID, &a.WorkflowName, &a.WorkflowSource, &lockfile,
+		&a.IdempotencyKey, &a.State, &terminalReason, &leasedID, &expires,
+		&created, &updated)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	a.CreatedAt, _ = time.Parse(tsLayout, created)
+	a.UpdatedAt, _ = time.Parse(tsLayout, updated)
+	if lockfile.Valid {
+		a.LockfileSource = lockfile.String
+	}
+	if terminalReason.Valid {
+		a.TerminalReason = terminalReason.String
+	}
+	if leasedID.Valid {
+		a.LeasedCriteriaID = leasedID.String
+	}
+	if expires.Valid {
+		t, _ := time.Parse(tsLayout, expires.String)
+		a.LeaseExpiresAt = &t
+	}
+	labels, err := s.loadAssignmentLabels(ctx, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	a.Labels = labels
+	return &a, nil
+}
+
+func scanAssignmentTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (*store.WorkflowAssignment, error) {
+	var a store.WorkflowAssignment
+	var created, updated string
+	var lockfile, terminalReason, leasedID, expires sql.NullString
+	row := tx.QueryRowContext(ctx, query, args...)
+	err := row.Scan(
+		&a.ID, &a.OwnerCriteriaID, &a.RunID, &a.WorkflowName, &a.WorkflowSource, &lockfile,
+		&a.IdempotencyKey, &a.State, &terminalReason, &leasedID, &expires,
+		&created, &updated)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	a.CreatedAt, _ = time.Parse(tsLayout, created)
+	a.UpdatedAt, _ = time.Parse(tsLayout, updated)
+	if lockfile.Valid {
+		a.LockfileSource = lockfile.String
+	}
+	if terminalReason.Valid {
+		a.TerminalReason = terminalReason.String
+	}
+	if leasedID.Valid {
+		a.LeasedCriteriaID = leasedID.String
+	}
+	if expires.Valid {
+		t, _ := time.Parse(tsLayout, expires.String)
+		a.LeaseExpiresAt = &t
+	}
+	return &a, nil
+}
+
+func (s *Store) loadAssignmentLabels(ctx context.Context, assignmentID string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key, value FROM workflow_assignment_labels WHERE assignment_id=?`, assignmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		m[k] = v
+	}
+	return m, rows.Err()
+}
+
+// LeaseWorkflowAssignment atomically expires stale leases, finds a queued
+// assignment whose required labels are satisfied by agentLabels, and leases it
+// to criteriaID. The lease is written to workflow_assignment_leases and the
+// first attempt is recorded in workflow_assignment_attempts. The associated
+// run's overseer_id is updated to criteriaID.
+func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*store.WorkflowAssignment, error) {
+	if criteriaID == "" {
+		return nil, errors.New("criteria_id required")
+	}
+	expiresAt := now.Add(leaseDuration)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// Transactionally expire stale leases back to a leasable queued state.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET state=?, leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=?
+		 WHERE state=? AND lease_expires_at < ?`,
+		store.WorkflowAssignmentStateQueued, now.Format(tsLayout),
+		store.WorkflowAssignmentStateLeased, now.Format(tsLayout)); err != nil {
+		return nil, err
+	}
+
+	// Verify the agent is online.
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM overseers WHERE id=?`, criteriaID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	if status != "online" {
+		return nil, store.ErrNotFound
+	}
+
+	// Find queued assignments and their required labels, oldest first.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
+		       a.idempotency_key, a.created_at, a.updated_at, l.key, l.value
+		FROM workflow_assignments a
+		LEFT JOIN workflow_assignment_labels l ON l.assignment_id = a.id
+		WHERE a.state = ?
+		ORDER BY a.created_at ASC, a.id ASC`,
+		store.WorkflowAssignmentStateQueued)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make(map[string]*assignmentCandidate)
+	for rows.Next() {
+		var id, runID, wfName, wfSource, idemp, created, updated string
+		var lockfile sql.NullString
+		var lkey, lvalue sql.NullString
+		if err := rows.Scan(&id, &runID, &wfName, &wfSource, &lockfile, &idemp,
+			&created, &updated, &lkey, &lvalue); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		c, ok := candidates[id]
+		if !ok {
+			c = &assignmentCandidate{
+				assignment: &store.WorkflowAssignment{
+					ID:             id,
+					RunID:          runID,
+					WorkflowName:   wfName,
+					WorkflowSource: wfSource,
+					IdempotencyKey: idemp,
+					State:          store.WorkflowAssignmentStateQueued,
+					CreatedAt:      mustParseTime(created),
+					UpdatedAt:      mustParseTime(updated),
+					Labels:         make(map[string]string),
+				},
+				required: make(map[string]string),
+			}
+			if lockfile.Valid {
+				c.assignment.LockfileSource = lockfile.String
+			}
+			candidates[id] = c
+		}
+		if lkey.Valid {
+			c.required[lkey.String] = lvalue.String
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	ordered := make([]*assignmentCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		ordered = append(ordered, c)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if !ordered[i].assignment.CreatedAt.Equal(ordered[j].assignment.CreatedAt) {
+			return ordered[i].assignment.CreatedAt.Before(ordered[j].assignment.CreatedAt)
+		}
+		return ordered[i].assignment.ID < ordered[j].assignment.ID
+	})
+
+	for _, c := range ordered {
+		if !labelsSatisfy(agentLabels, c.required) {
+			continue
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE workflow_assignments
+			 SET state=?, leased_criteria_id=?, lease_expires_at=?, updated_at=?
+			 WHERE id=? AND state=?`,
+			store.WorkflowAssignmentStateLeased, criteriaID, expiresAt.Format(tsLayout),
+			now.Format(tsLayout), c.assignment.ID, store.WorkflowAssignmentStateQueued)
+		if err != nil {
+			return nil, err
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE runs SET overseer_id=? WHERE id=?`, criteriaID, c.assignment.RunID); err != nil {
+			return nil, err
+		}
+		leaseID := uuid.NewString()
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO workflow_assignment_leases(id, assignment_id, criteria_id, created_at, expires_at)
+			 VALUES(?, ?, ?, ?, ?)`,
+			leaseID, c.assignment.ID, criteriaID, now.Format(tsLayout), expiresAt.Format(tsLayout)); err != nil {
+			return nil, err
+		}
+		var attempt int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(attempt),0)+1 FROM workflow_assignment_attempts WHERE assignment_id=?`,
+			c.assignment.ID).Scan(&attempt); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO workflow_assignment_attempts(assignment_id, attempt, criteria_id, created_at)
+			 VALUES(?, ?, ?, ?)`,
+			c.assignment.ID, attempt, criteriaID, now.Format(tsLayout)); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		c.assignment.State = store.WorkflowAssignmentStateLeased
+		c.assignment.LeasedCriteriaID = criteriaID
+		c.assignment.LeaseExpiresAt = &expiresAt
+		c.assignment.Labels = c.required
+		return c.assignment, nil
+	}
+
+	return nil, store.ErrNotFound
+}
+
+type assignmentCandidate struct {
+	assignment *store.WorkflowAssignment
+	required   map[string]string
+}
+
+func labelsSatisfy(agentLabels, required map[string]string) bool {
+	for k, v := range required {
+		if agentLabels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func mustParseTime(s string) time.Time {
+	t, _ := time.Parse(tsLayout, s)
+	return t
+}
+
+func (s *Store) RecordWorkflowAssignmentLease(ctx context.Context, lease *store.WorkflowAssignmentLease) error {
+	if lease == nil || lease.AssignmentID == "" || lease.CriteriaID == "" {
+		return errors.New("assignment_id and criteria_id required")
+	}
+	if lease.ID == "" {
+		lease.ID = uuid.NewString()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO workflow_assignment_leases(id, assignment_id, criteria_id, created_at, expires_at)
+		 VALUES(?, ?, ?, ?, ?)`,
+		lease.ID, lease.AssignmentID, lease.CriteriaID, lease.CreatedAt.Format(tsLayout), lease.ExpiresAt.Format(tsLayout))
+	return err
+}
+
+func (s *Store) RecordWorkflowAssignmentAttempt(ctx context.Context, attempt *store.WorkflowAssignmentAttempt) error {
+	if attempt == nil || attempt.AssignmentID == "" || attempt.Attempt <= 0 {
+		return errors.New("assignment_id and attempt > 0 required")
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO workflow_assignment_attempts(assignment_id, attempt, criteria_id, created_at)
+		 VALUES(?, ?, ?, ?)`,
+		attempt.AssignmentID, attempt.Attempt, attempt.CriteriaID, attempt.CreatedAt.Format(tsLayout))
+	return err
+}
+
+func (s *Store) CompleteWorkflowAssignmentAttempt(ctx context.Context, assignmentID string, attempt int, outcome string) error {
+	if assignmentID == "" || attempt <= 0 {
+		return errors.New("assignment_id and attempt > 0 required")
+	}
+	now := time.Now().UTC().Format(tsLayout)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE workflow_assignment_attempts SET completed_at=?, outcome=?
+		 WHERE assignment_id=? AND attempt=?`,
+		now, outcome, assignmentID, attempt)
+	return err
+}
+
+func (s *Store) MarkWorkflowAssignmentTerminal(ctx context.Context, runID, reason string) error {
+	if runID == "" {
+		return errors.New("run_id required")
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET state=?, terminal_reason=?, updated_at=?
+		 WHERE run_id=? AND state IN (?, ?)`,
+		store.WorkflowAssignmentStateTerminal, reason, now.Format(tsLayout),
+		runID, store.WorkflowAssignmentStateQueued, store.WorkflowAssignmentStateLeased)
+	return err
+}

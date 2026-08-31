@@ -22,6 +22,10 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 	now := time.Now().UTC()
 	criteriaID := uuid.NewString()
 	token := uuid.NewString()
+	labels := make(map[string]string, len(req.Msg.Labels))
+	for k, v := range req.Msg.Labels {
+		labels[k] = v
+	}
 	o := &store.Overseer{
 		ID:         criteriaID,
 		Name:       req.Msg.Name,
@@ -29,6 +33,7 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 		Version:    req.Msg.Labels["version"],
 		TokenHash:  auth.HashToken(token),
 		Status:     "online",
+		Labels:     labels,
 		CreatedAt:  now,
 		LastSeenAt: now,
 	}
@@ -203,6 +208,10 @@ func (s *CriteriaServer) Control(ctx context.Context, req *connect.Request[pb.Co
 	if err := stream.Send(&pb.ControlMessage{Command: &pb.ControlMessage_ControlReady{ControlReady: &pb.ControlReady{}}}); err != nil {
 		return connect.NewError(connect.CodeUnknown, err)
 	}
+
+	// On connection, attempt to lease any queued assignment this agent is
+	// eligible for and push it to the agent.
+	go s.dispatchForAgent(ctx, criteriaID)
 
 	for {
 		select {
@@ -435,6 +444,7 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 			run.Status = "failed"
 		}
 		_ = s.Store.UpdateRun(ctx, run)
+		_ = s.Store.MarkWorkflowAssignmentTerminal(ctx, env.RunId, "run completed")
 	case *criteria.Envelope_RunFailed:
 		// Flush pending scope before marking terminal.
 		s.scope.FlushNow(ctx, env.RunId)
@@ -446,10 +456,44 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		run.EndedAt = &now
 		run.Status = "failed"
 		_ = s.Store.UpdateRun(ctx, run)
+		_ = s.Store.MarkWorkflowAssignmentTerminal(ctx, env.RunId, "run failed")
 	default:
 		// Log unknown payload types so any drift from the expected set is visible.
 		// This closes TD-14 (silent default in applyRunStatus).
 		s.Log.Debug("applyRunStatus: unhandled payload type", "run_id", env.RunId, "type", criteria.TypeString(env))
+	}
+}
+
+// dispatchForAgent attempts to lease one queued assignment that the agent
+// is eligible for and push it via the Control stream. It is safe to run in a
+// goroutine; errors are logged.
+func (s *CriteriaServer) dispatchForAgent(ctx context.Context, criteriaID string) {
+	o, err := s.Store.GetOverseer(ctx, criteriaID)
+	if err != nil {
+		s.Log.Debug("dispatch for agent: cannot load agent", "criteria_id", criteriaID, "err", err)
+		return
+	}
+	if o.Status != "online" {
+		return
+	}
+	now := time.Now().UTC()
+	leaseDuration := defaultAssignmentLeaseDuration
+	leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, leaseDuration)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			s.Log.Debug("dispatch for agent: lease failed", "criteria_id", criteriaID, "err", err)
+		}
+		return
+	}
+	err = s.controls.Enqueue(criteriaID, &pb.ControlMessage{Command: &pb.ControlMessage_WorkflowAssignment{WorkflowAssignment: &pb.WorkflowAssignment{
+		RunId:          leased.RunID,
+		WorkflowName:   leased.WorkflowName,
+		WorkflowSource: leased.WorkflowSource,
+		LockfileSource: leased.LockfileSource,
+		Labels:         leased.Labels,
+	}}})
+	if err != nil {
+		s.Log.Warn("dispatch for agent: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -79,6 +80,20 @@ func (r *ControlRegistry) Enqueue(criteriaID string, msg *pb.ControlMessage) err
 	default:
 		return ErrControlBacklogFull
 	}
+}
+
+// Registered returns a snapshot of currently registered criteria IDs. The order
+// is deterministic (sorted) but not significant; callers must not assume the
+// returned agents remain connected after the call returns.
+func (r *ControlRegistry) Registered() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.conns))
+	for id := range r.conns {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CriteriaServer implements pb.v1.CriteriaService (agent-facing RPCs).
