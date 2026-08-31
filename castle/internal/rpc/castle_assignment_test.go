@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
@@ -334,10 +335,50 @@ func TestSubmitWorkflowAssignment_DispatchesOldestQueuedAssignmentOnNewSubmit(t 
 	}
 	expectWorkflowAssignment(a1.RunId)
 
-	// Submit a third assignment while the agent is connected. The dispatch path
-	// must lease the oldest still-queued assignment (A2) and deliver it.
-	_ = submit("key-3", "wf-3")
+	// Accept A1 so the agent becomes eligible for the next assignment.
+	// One agent executes assignments sequentially (CRI-73).
+	submitEvents := oClient.SubmitEvents(ctx)
+	submitEvents.RequestHeader().Set("Authorization", "Bearer "+agentReg.Msg.Token)
+	if err := submitEvents.Send(&pb.Envelope{
+		SchemaVersion: 1,
+		RunId:         a1.RunId,
+		CorrelationId: "accept-a1",
+		Ts:            timestamppb.Now(),
+		Payload:       &pb.Envelope_RunStarted{RunStarted: &pb.RunStarted{WorkflowName: "wf-1", InitialStep: "s1"}},
+	}); err != nil {
+		t.Fatalf("send RunStarted: %v", err)
+	}
+	ack, err := submitEvents.Receive()
+	if err != nil {
+		t.Fatalf("receive ack: %v", err)
+	}
+	if ack == nil || ack.RunId != a1.RunId {
+		t.Fatalf("unexpected ack: %+v", ack)
+	}
+
+	// After A1 starts, Castle should dispatch A2 before anything else.
 	expectWorkflowAssignment(a2.RunId)
+
+	// Submitting a third assignment while the agent still holds A2's unstarted
+	// lease must not dispatch A3 (sequential execution).
+	a3 := submit("key-3", "wf-3")
+	expectNoControlMessage := func() {
+		t.Helper()
+		done := make(chan struct{})
+		var received bool
+		go func() {
+			received = ctrl.Receive()
+			close(done)
+		}()
+		select {
+		case <-done:
+			if received {
+				t.Fatalf("expected no control message while A2 unstarted, got %T", ctrl.Msg().Command)
+			}
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	expectNoControlMessage()
 
 	// Confirm A2 actually transitioned to leased for the agent.
 	assignment, err := ts.store.GetWorkflowAssignmentByRunID(ctx, a2.RunId)
@@ -349,6 +390,15 @@ func TestSubmitWorkflowAssignment_DispatchesOldestQueuedAssignmentOnNewSubmit(t 
 	}
 	if assignment.LeasedCriteriaID != agentID {
 		t.Fatalf("expected A2 leased to %s, got %s", agentID, assignment.LeasedCriteriaID)
+	}
+
+	// Confirm A3 stayed queued because the agent has not accepted A2 yet.
+	a3Stored, err := ts.store.GetWorkflowAssignmentByRunID(ctx, a3.RunId)
+	if err != nil {
+		t.Fatalf("get A3: %v", err)
+	}
+	if a3Stored.State != store.WorkflowAssignmentStateQueued {
+		t.Fatalf("expected A3 queued, got %s", a3Stored.State)
 	}
 }
 

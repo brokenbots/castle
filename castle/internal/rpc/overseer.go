@@ -283,6 +283,10 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 			run.CurrentStep = p.RunStarted.InitialStep
 		}
 		_ = s.Store.UpdateRun(ctx, run)
+		// The agent accepted this lease; send the next queued assignment if any.
+		if run.OverseerID != "" {
+			go s.dispatchForAgent(context.Background(), run.OverseerID)
+		}
 	case *criteria.Envelope_StepEntered:
 		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
@@ -445,6 +449,9 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		}
 		_ = s.Store.UpdateRun(ctx, run)
 		_ = s.Store.MarkWorkflowAssignmentTerminal(ctx, env.RunId, "run completed")
+		if run.OverseerID != "" {
+			go s.dispatchForAgent(context.Background(), run.OverseerID)
+		}
 	case *criteria.Envelope_RunFailed:
 		// Flush pending scope before marking terminal.
 		s.scope.FlushNow(ctx, env.RunId)
@@ -457,6 +464,9 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		run.Status = "failed"
 		_ = s.Store.UpdateRun(ctx, run)
 		_ = s.Store.MarkWorkflowAssignmentTerminal(ctx, env.RunId, "run failed")
+		if run.OverseerID != "" {
+			go s.dispatchForAgent(context.Background(), run.OverseerID)
+		}
 	default:
 		// Log unknown payload types so any drift from the expected set is visible.
 		// This closes TD-14 (silent default in applyRunStatus).
@@ -464,10 +474,24 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 	}
 }
 
-// dispatchForAgent attempts to lease one queued assignment that the agent
-// is eligible for and push it via the Control stream. It is safe to run in a
-// goroutine; errors are logged.
+// dispatchForAgent redelivers any active leases the agent already holds (e.g.
+// after a Castle restart) and then attempts to lease one new queued assignment
+// the agent is eligible for. It is safe to run in a goroutine; errors are logged.
 func (s *CriteriaServer) dispatchForAgent(ctx context.Context, criteriaID string) {
+	// First, redeliver any in-flight leases that were active before this Control
+	// stream opened. This restores assignment dispatch after a Castle restart
+	// without re-leasing the work.
+	active, err := s.Store.ListLeasedPendingAssignmentsByCriteriaID(ctx, criteriaID)
+	if err != nil {
+		s.Log.Debug("dispatch for agent: cannot list active leases", "criteria_id", criteriaID, "err", err)
+	} else {
+		for _, a := range active {
+			if err := enqueueWorkflowAssignment(s.Store, s.controls, criteriaID, a, s.Log); err != nil {
+				s.Log.Warn("dispatch for agent: redeliver active lease failed", "criteria_id", criteriaID, "run_id", a.RunID, "err", err)
+			}
+		}
+	}
+
 	o, err := s.Store.GetOverseer(ctx, criteriaID)
 	if err != nil {
 		s.Log.Debug("dispatch for agent: cannot load agent", "criteria_id", criteriaID, "err", err)
@@ -476,23 +500,21 @@ func (s *CriteriaServer) dispatchForAgent(ctx context.Context, criteriaID string
 	if o.Status != "online" {
 		return
 	}
+
+	// Serialize lease attempts to prevent concurrent dispatchers from granting
+	// this agent a second unstarted lease before it accepts the first one.
+	s.controls.LeaseLock()
+	defer s.controls.LeaseUnlock()
+
 	now := time.Now().UTC()
-	leaseDuration := defaultAssignmentLeaseDuration
-	leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, leaseDuration)
+	leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, s.leaseDuration())
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			s.Log.Debug("dispatch for agent: lease failed", "criteria_id", criteriaID, "err", err)
 		}
 		return
 	}
-	err = s.controls.Enqueue(criteriaID, &pb.ControlMessage{Command: &pb.ControlMessage_WorkflowAssignment{WorkflowAssignment: &pb.WorkflowAssignment{
-		RunId:          leased.RunID,
-		WorkflowName:   leased.WorkflowName,
-		WorkflowSource: leased.WorkflowSource,
-		LockfileSource: leased.LockfileSource,
-		Labels:         leased.Labels,
-	}}})
-	if err != nil {
+	if err := enqueueWorkflowAssignment(s.Store, s.controls, criteriaID, leased, s.Log); err != nil {
 		s.Log.Warn("dispatch for agent: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
 	}
 }

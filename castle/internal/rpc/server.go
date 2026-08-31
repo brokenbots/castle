@@ -25,12 +25,46 @@ var ErrAgentNotConnected = errors.New("criteria agent not connected")
 var ErrControlBacklogFull = errors.New("control backlog full")
 
 type ControlRegistry struct {
-	mu    sync.RWMutex
-	conns map[string]chan *pb.ControlMessage
+	mu      sync.RWMutex
+	leaseMu sync.Mutex
+	conns   map[string]chan *pb.ControlMessage
 }
 
 func NewControlRegistry() *ControlRegistry {
 	return &ControlRegistry{conns: make(map[string]chan *pb.ControlMessage)}
+}
+
+// LeaseLock locks the global lease serialization mutex. Lease attempts are
+// serialized across the registry to prevent two concurrent dispatchers from
+// granting an agent two unstarted leases at once.
+func (r *ControlRegistry) LeaseLock() {
+	r.leaseMu.Lock()
+}
+
+// LeaseUnlock releases the global lease serialization mutex.
+func (r *ControlRegistry) LeaseUnlock() {
+	r.leaseMu.Unlock()
+}
+
+// enqueueWorkflowAssignment pushes a WorkflowAssignment control message to the
+// connected agent identified by criteriaID. It re-reads the assignment from
+// the store immediately before sending so an assignment whose lease just
+// expired is not delivered to a stale subscriber.
+func enqueueWorkflowAssignment(st store.Store, controls *ControlRegistry, criteriaID string, a *store.WorkflowAssignment, log *slog.Logger) error {
+	fresh, err := st.GetWorkflowAssignment(context.Background(), a.ID)
+	if err != nil {
+		return err
+	}
+	if fresh.State != store.WorkflowAssignmentStateLeased || fresh.LeasedCriteriaID != criteriaID {
+		return errors.New("assignment no longer leased to this agent")
+	}
+	return controls.Enqueue(criteriaID, &pb.ControlMessage{Command: &pb.ControlMessage_WorkflowAssignment{WorkflowAssignment: &pb.WorkflowAssignment{
+		RunId:          fresh.RunID,
+		WorkflowName:   fresh.WorkflowName,
+		WorkflowSource: fresh.WorkflowSource,
+		LockfileSource: fresh.LockfileSource,
+		Labels:         fresh.Labels,
+	}}})
 }
 
 // Register allocates a buffered channel for a criteria agent's Control stream.
@@ -98,19 +132,21 @@ func (r *ControlRegistry) Registered() []string {
 
 // CriteriaServer implements pb.v1.CriteriaService (agent-facing RPCs).
 type CriteriaServer struct {
-	Store    store.Store
-	Hub      *hub.Hub
-	Log      *slog.Logger
-	scope    *scopeCoalescer
-	controls *ControlRegistry
+	Store                   store.Store
+	Hub                     *hub.Hub
+	Log                     *slog.Logger
+	scope                   *scopeCoalescer
+	controls                *ControlRegistry
+	assignmentLeaseDuration time.Duration
 }
 
 // ServerServer implements pb.v1.ServerService (UI/tool-facing RPCs).
 type ServerServer struct {
-	Store    store.Store
-	Hub      *hub.Hub
-	Log      *slog.Logger
-	controls *ControlRegistry
+	Store                   store.Store
+	Hub                     *hub.Hub
+	Log                     *slog.Logger
+	controls                *ControlRegistry
+	assignmentLeaseDuration time.Duration
 }
 
 func NewCriteriaServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *ControlRegistry) *CriteriaServer {
@@ -120,7 +156,14 @@ func NewCriteriaServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *C
 	if log == nil {
 		log = slog.Default()
 	}
-	return &CriteriaServer{Store: st, Hub: h, Log: log, scope: newScopeCoalescer(st, log), controls: controls}
+	return &CriteriaServer{
+		Store:                   st,
+		Hub:                     h,
+		Log:                     log,
+		scope:                   newScopeCoalescer(st, log),
+		controls:                controls,
+		assignmentLeaseDuration: defaultAssignmentLeaseDuration,
+	}
 }
 
 func NewServerServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *ControlRegistry) *ServerServer {
@@ -130,7 +173,57 @@ func NewServerServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *Con
 	if log == nil {
 		log = slog.Default()
 	}
-	return &ServerServer{Store: st, Hub: h, Log: log, controls: controls}
+	return &ServerServer{
+		Store:                   st,
+		Hub:                     h,
+		Log:                     log,
+		controls:                controls,
+		assignmentLeaseDuration: defaultAssignmentLeaseDuration,
+	}
+}
+
+// SetAssignmentLeaseDuration configures how long an agent has to emit
+// RunStarted before its lease expires. It is intended for tests; production
+// code should rely on the default.
+func (s *CriteriaServer) SetAssignmentLeaseDuration(d time.Duration) {
+	if d <= 0 {
+		d = defaultAssignmentLeaseDuration
+	}
+	s.assignmentLeaseDuration = d
+}
+
+// SetAssignmentLeaseDuration configures how long an agent has to emit
+// RunStarted before its lease expires. It is intended for tests; production
+// code should rely on the default.
+func (s *ServerServer) SetAssignmentLeaseDuration(d time.Duration) {
+	if d <= 0 {
+		d = defaultAssignmentLeaseDuration
+	}
+	s.assignmentLeaseDuration = d
+}
+
+func (s *CriteriaServer) leaseDuration() time.Duration {
+	if s.assignmentLeaseDuration <= 0 {
+		return defaultAssignmentLeaseDuration
+	}
+	return s.assignmentLeaseDuration
+}
+
+func (s *ServerServer) leaseDuration() time.Duration {
+	if s.assignmentLeaseDuration <= 0 {
+		return defaultAssignmentLeaseDuration
+	}
+	return s.assignmentLeaseDuration
+}
+
+// LeaseDuration returns the currently configured assignment lease duration.
+func (s *CriteriaServer) LeaseDuration() time.Duration {
+	return s.leaseDuration()
+}
+
+// LeaseDuration returns the currently configured assignment lease duration.
+func (s *ServerServer) LeaseDuration() time.Duration {
+	return s.leaseDuration()
 }
 
 // scopeCoalescer debounces variable-scope writes to SQLite. Each mutation is
