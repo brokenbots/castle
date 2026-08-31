@@ -37,6 +37,11 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// SetMaxOpenConns configures the maximum number of open database connections.
+// Tests that drive a single SQLite file from many goroutines can set this to 1
+// to serialize access and avoid SQLITE_BUSY races under the race detector.
+func (s *Store) SetMaxOpenConns(n int) { s.db.SetMaxOpenConns(n) }
+
 const (
 	tsLayout               = time.RFC3339Nano
 	ListEventsDefaultLimit = 500

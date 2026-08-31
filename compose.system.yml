@@ -1,0 +1,95 @@
+name: castle-system-test
+
+services:
+  castle:
+    build:
+      context: .
+      dockerfile: Dockerfile.castle
+    environment:
+      CASTLE_ADDR: :8080
+      CASTLE_DB_PATH: /data/castle.db
+      CASTLE_EVENT_BUFFER_CAPACITY: "10000"
+      CASTLE_ALLOW_ANON_READS: "true"
+    command: ["--dev-allow-anon-register", "--allow-anon-reads=true"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - castle-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --post-data='{}' --header='Content-Type: application/json' -O- http://localhost:8080/grpc.health.v1.Health/Check | grep -q '\"status\":\"SERVING_STATUS_SERVING\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  agent-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.criteria-test-agent
+    environment:
+      CASTLE_ADDR: http://castle:8080
+      AGENT_NAME: agent-a
+      AGENT_LABELS: pool=alpha
+      AGENT_HOME_DIR: /var/lib/agent
+    volumes:
+      - agent-a-home:/var/lib/agent
+    depends_on:
+      castle:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x criteria-test-agent && wget -q --post-data='{}' --header='Content-Type: application/json' -O- http://castle:8080/grpc.health.v1.Health/Check | grep -q '\"status\":\"SERVING_STATUS_SERVING\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  agent-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.criteria-test-agent
+    environment:
+      CASTLE_ADDR: http://castle:8080
+      AGENT_NAME: agent-b
+      AGENT_LABELS: pool=beta
+      AGENT_HOME_DIR: /var/lib/agent
+    volumes:
+      - agent-b-home:/var/lib/agent
+    depends_on:
+      castle:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x criteria-test-agent && wget -q --post-data='{}' --header='Content-Type: application/json' -O- http://castle:8080/grpc.health.v1.Health/Check | grep -q '\"status\":\"SERVING_STATUS_SERVING\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  submission:
+    image: castle-system-test-harness
+    build:
+      context: .
+      dockerfile: Dockerfile.system-test-harness
+    environment:
+      CASTLE_ADDR: http://castle:8080
+      COMPOSE_PROJECT_NAME: castle-system-test
+      DOCKER_SOCKET: /var/run/docker.sock
+      CASTLE_CONTAINER: castle-system-test-castle-1
+      AGENT_A_CONTAINER: castle-system-test-agent-a-1
+      AGENT_B_CONTAINER: castle-system-test-agent-b-1
+      SUBMISSION_CONTAINER: castle-system-test-submission-1
+      CONTROL_CLIENT_IMAGE: castle-system-test-harness
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      castle:
+        condition: service_healthy
+      agent-a:
+        condition: service_healthy
+      agent-b:
+        condition: service_healthy
+    command: ["smoke"]
+
+volumes:
+  castle-data:
+  agent-a-home:
+  agent-b-home:

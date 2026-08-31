@@ -1,9 +1,10 @@
 .PHONY: help bootstrap tidy build build-castle build-parapet test test-conformance ci dev-castle \
-	dev-parapet docker-build compose-up compose-down compose-logs compose-conformance clean proto \
+	dev-parapet docker-build compose-up compose-down compose-logs compose-conformance compose-system-smoke \
+	compose-system-down compose-system-logs clean proto \
 	proto-lint proto-check proto-check-drift
 
 help:
-	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 bootstrap: ## Install backend and frontend dependencies
 	cd parapet && npm ci
@@ -49,6 +50,15 @@ compose-logs: ## Follow Castle logs
 
 compose-conformance: ## Run the Criteria SDK conformance suite through Compose
 	docker compose -f compose.local.yml --profile conformance up --build --abort-on-container-exit conformance
+
+compose-system-smoke: ## Run the Castle plus Criteria-agent system smoke test
+	docker compose -f compose.system.yml up --build --abort-on-container-exit submission
+
+compose-system-down: ## Stop the Castle plus Criteria-agent system test
+	docker compose -f compose.system.yml down -v
+
+compose-system-logs: ## Follow system-test service logs
+	docker compose -f compose.system.yml logs -f
 
 clean: ## Remove build outputs and local state
 	rm -rf bin parapet/dist parapet/.vite
