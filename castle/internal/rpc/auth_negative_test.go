@@ -341,6 +341,60 @@ func TestOwnership_Resume_OtherOverseer_PermissionDenied(t *testing.T) {
 	}
 }
 
+// --- Criteria operator controls: attacker cannot operate owner's run ---
+
+func TestOwnership_PauseRun_OtherOverseer_PermissionDenied(t *testing.T) {
+	h := newOwnershipHarness(t)
+	ctx := context.Background()
+
+	req := connect.NewRequest(&pb.PauseRunRequest{RunId: h.runID})
+	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
+	_, err := h.cClient.PauseRun(ctx, req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("expected CodePermissionDenied, got code=%v err=%v", connect.CodeOf(err), err)
+	}
+}
+
+func TestOwnership_ResumeRun_OtherOverseer_PermissionDenied(t *testing.T) {
+	h := newOwnershipHarness(t)
+	ctx := context.Background()
+
+	if err := h.ts.store.SetRunPaused(ctx, h.runID, "gate", time.Now().UTC()); err != nil {
+		t.Fatalf("SetRunPaused: %v", err)
+	}
+
+	req := connect.NewRequest(&pb.ResumeRunRequest{RunId: h.runID})
+	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
+	_, err := h.cClient.ResumeRun(ctx, req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("expected CodePermissionDenied, got code=%v err=%v", connect.CodeOf(err), err)
+	}
+}
+
+func TestOwnership_InspectRun_OtherOverseer_PermissionDenied(t *testing.T) {
+	h := newOwnershipHarness(t)
+	ctx := context.Background()
+
+	req := connect.NewRequest(&pb.InspectRunRequest{RunId: h.runID})
+	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
+	_, err := h.cClient.InspectRun(ctx, req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("expected CodePermissionDenied, got code=%v err=%v", connect.CodeOf(err), err)
+	}
+}
+
+func TestOwnership_SendPrompt_OtherOverseer_PermissionDenied(t *testing.T) {
+	h := newOwnershipHarness(t)
+	ctx := context.Background()
+
+	req := connect.NewRequest(&pb.SendPromptRequest{RunId: h.runID, Step: "ask", Prompt: "hello"})
+	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
+	_, err := h.cClient.SendPrompt(ctx, req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("expected CodePermissionDenied, got code=%v err=%v", connect.CodeOf(err), err)
+	}
+}
+
 // --- helpers ---
 
 // (no test-local helpers required; all helpers live in testhelpers_test.go)

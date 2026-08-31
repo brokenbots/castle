@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -450,34 +451,98 @@ func (s *ServerServer) StopRun(ctx context.Context, req *connect.Request[pb.Stop
 	if err != nil {
 		return nil, err
 	}
+	if isTerminalRunStatus(run.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is terminal"))
+	}
 	reason := req.Msg.Reason
 	if reason == "" {
 		reason = "requested by operator"
 	}
-	err = s.controls.Enqueue(run.OverseerID, &pb.ControlMessage{Command: &pb.ControlMessage_RunCancel{RunCancel: &pb.RunCancel{RunId: run.ID, Reason: reason}}})
-	switch {
-	case errors.Is(err, ErrAgentNotConnected):
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-	case errors.Is(err, ErrControlBacklogFull):
-		s.Log.Warn("control backlog full; stop run dropped", "criteria_id", run.OverseerID, "run_id", run.ID)
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-	case err != nil:
-		return nil, connect.NewError(connect.CodeInternal, err)
+	msg := &pb.ControlMessage{Command: &pb.ControlMessage_RunCancel{RunCancel: &pb.RunCancel{RunId: run.ID, Reason: reason}}}
+	issuedAt, err := s.issueControlCommand(ctx, run, msg)
+	if err != nil {
+		return nil, err
 	}
-	now := time.Now().UTC()
-	return connect.NewResponse(&pb.StopRunResponse{IssuedAt: timestamppb.New(now)}), nil
+	return connect.NewResponse(&pb.StopRunResponse{IssuedAt: issuedAt}), nil
 }
 
 func (s *ServerServer) PauseRun(ctx context.Context, req *connect.Request[pb.PauseRunRequest]) (*connect.Response[pb.PauseRunResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pause run is not implemented"))
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
+	if err != nil {
+		return nil, err
+	}
+	if isTerminalRunStatus(run.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is terminal"))
+	}
+	reason := "requested by operator"
+	msg := &pb.ControlMessage{Command: &pb.ControlMessage_PauseRun{PauseRun: &pb.PauseRun{RunId: run.ID, Reason: reason}}}
+	issuedAt, err := s.issueControlCommand(ctx, run, msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pb.PauseRunResponse{IssuedAt: issuedAt}), nil
 }
 
 func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.ResumeRunRequest]) (*connect.Response[pb.ResumeRunResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("resume run is not implemented on ServerService; use CriteriaService.Resume"))
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
+	if err != nil {
+		return nil, err
+	}
+	if isTerminalRunStatus(run.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is terminal"))
+	}
+	if run.Status != "paused" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is not paused"))
+	}
+	signal := run.PendingSignal
+	if signal == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run has no pending signal"))
+	}
+	msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Signal: signal}}}
+	issuedAt, err := s.issueControlCommand(ctx, run, msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
 }
 
 func (s *ServerServer) InspectRun(ctx context.Context, req *connect.Request[pb.InspectRunRequest]) (*connect.Response[pb.InspectRunResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("inspect run is not implemented"))
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &pb.InspectRunResponse{
+		RunId:       run.ID,
+		SessionId:   req.Msg.SessionId,
+		CurrentStep: run.CurrentStep,
+		StateJson:   run.VariableScope,
+	}
+
+	// Load recent events to report the latest adapter and last activity.
+	const inspectEventLimit = 1000
+	events, err := s.Store.ListEvents(ctx, run.ID, 0, inspectEventLimit)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	var lastActivity time.Time
+	for _, ev := range events {
+		if ev.Ts.After(lastActivity) {
+			lastActivity = ev.Ts
+		}
+		if resp.Adapter == "" && ev.Type == "step.entered" {
+			var payload pb.StepEntered
+			if jsonErr := json.Unmarshal(ev.Payload, &payload); jsonErr == nil {
+				resp.Adapter = payload.Adapter
+			}
+		}
+	}
+	if !lastActivity.IsZero() {
+		resp.LastActivityAt = timestamppb.New(lastActivity)
+	}
+
+	return connect.NewResponse(resp), nil
 }
 
 func (s *ServerServer) SubmitWorkflowAssignment(ctx context.Context, req *connect.Request[pb.SubmitWorkflowAssignmentRequest]) (*connect.Response[pb.SubmitWorkflowAssignmentResponse], error) {
@@ -625,6 +690,49 @@ func mapAssignmentState(state string) pb.WorkflowAssignmentState {
 	}
 }
 
-func (s *ServerServer) SendPrompt(context.Context, *connect.Request[pb.SendPromptRequest]) (*connect.Response[pb.SendPromptResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("send prompt is not implemented"))
+func (s *ServerServer) SendPrompt(ctx context.Context, req *connect.Request[pb.SendPromptRequest]) (*connect.Response[pb.SendPromptResponse], error) {
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
+	if err != nil {
+		return nil, err
+	}
+	if isTerminalRunStatus(run.Status) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is terminal"))
+	}
+	if req.Msg.Step == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("step required"))
+	}
+	msg := &pb.ControlMessage{Command: &pb.ControlMessage_AgentPrompt{AgentPrompt: &pb.AgentPrompt{RunId: run.ID, Step: req.Msg.Step, Prompt: req.Msg.Prompt}}}
+	issuedAt, err := s.issueControlCommand(ctx, run, msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pb.SendPromptResponse{IssuedAt: issuedAt}), nil
+}
+
+// issueControlCommand enqueues a control message to the criteria agent that
+// owns the run. It rejects terminal runs with FailedPrecondition and maps
+// control-registry errors to explicit Connect codes. The returned timestamp
+// is the server time the command was issued.
+func (s *ServerServer) issueControlCommand(ctx context.Context, run *store.Run, msg *pb.ControlMessage) (*timestamppb.Timestamp, error) {
+	err := s.controls.Enqueue(run.OverseerID, msg)
+	switch {
+	case errors.Is(err, ErrAgentNotConnected):
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, ErrControlBacklogFull):
+		s.Log.Warn("control backlog full; command dropped", "criteria_id", run.OverseerID, "run_id", run.ID)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	case err != nil:
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return timestamppb.New(time.Now().UTC()), nil
+}
+
+// isTerminalRunStatus reports whether a run status represents a finished run.
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
