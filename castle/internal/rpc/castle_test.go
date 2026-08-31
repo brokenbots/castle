@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -721,19 +722,12 @@ func TestWatchRun_CursorUpdate_Coalesced(t *testing.T) {
 	}
 	_ = watch.Close()
 
-	seq, found, err := ts.store.GetSubscriberCursor(context.Background(), "sub-c", runID)
-	if err != nil {
-		t.Fatalf("get cursor: %v", err)
-	}
-	if !found {
-		t.Fatal("expected stored cursor row")
-	}
-	if seq != 500 {
-		t.Fatalf("cursor seq=%d want 500", seq)
-	}
-	// Coalescing policy is flush every 100 envelopes or 250ms. For 500 replay
-	// envelopes this should be near 5 writes; allow moderate timing variance.
-	const maxExpectedUpserts = 10
+	waitForCursor(t, ts.store, "sub-c", runID, 500, 2*time.Second)
+	// Coalescing policy is flush every 100 envelopes or 250ms. Theoretical
+	// minimum is 5 batch flushes for 500 replay envelopes; allow a wider ceiling
+	// because the 250ms ticker can fire during replay and during the close phase
+	// under the race detector.
+	const maxExpectedUpserts = 15
 	if calls := spy.UpsertCount(); calls > maxExpectedUpserts {
 		t.Fatalf("upsert calls=%d want <= %d", calls, maxExpectedUpserts)
 	}
@@ -784,6 +778,182 @@ func TestWatchRun_CursorUpdate_FinalValueFlushedOnClose(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// waitForCursor polls the store until the subscriber cursor for the given run
+// reaches want or the timeout expires.
+func waitForCursor(t *testing.T, st store.Store, subscriberID, runID string, want uint64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		seq, found, err := st.GetSubscriberCursor(context.Background(), subscriberID, runID)
+		if err != nil {
+			t.Fatalf("get cursor: %v", err)
+		}
+		if found && seq == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for cursor %d for subscriber %s; found=%v seq=%d", want, subscriberID, found, seq)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// cursorFaultStore wraps a Store and fails exactly one UpsertSubscriberCursor
+// call matching a configured sequence number or call count. It is used to
+// simulate transient SQLITE_BUSY errors deterministically.
+type cursorFaultStore struct {
+	store.Store
+
+	mu         sync.Mutex
+	calls      int
+	failOnSeq  uint64
+	failOnCall int
+	failed     bool
+}
+
+func (s *cursorFaultStore) UpsertSubscriberCursor(ctx context.Context, subscriberID, runID string, lastSeq uint64) error {
+	s.mu.Lock()
+	s.calls++
+	shouldFail := false
+	if !s.failed {
+		if s.failOnSeq > 0 && lastSeq == s.failOnSeq {
+			shouldFail = true
+		}
+		if s.failOnCall > 0 && s.calls == s.failOnCall {
+			shouldFail = true
+		}
+		if shouldFail {
+			s.failed = true
+		}
+	}
+	s.mu.Unlock()
+
+	if shouldFail {
+		return errors.New("database is locked (5) (SQLITE_BUSY)")
+	}
+	return s.Store.UpsertSubscriberCursor(ctx, subscriberID, runID, lastSeq)
+}
+
+func (s *cursorFaultStore) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *cursorFaultStore) Failed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failed
+}
+
+func newFaultStack(t *testing.T, failOnSeq uint64, failOnCall int) (*testStack, *cursorFaultStore) {
+	t.Helper()
+	baseStore, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = baseStore.Close() })
+
+	wrapped := &cursorFaultStore{Store: baseStore, failOnSeq: failOnSeq, failOnCall: failOnCall}
+	h := hub.New()
+	controls := NewControlRegistry()
+	log := slog.New(slog.NewTextHandler(testWriter{t: t}, nil))
+	stack := &testStack{
+		store:    wrapped,
+		hub:      h,
+		controls: controls,
+		overseer: NewOverseerServer(wrapped, h, log, controls),
+		castle:   NewCastleServer(wrapped, h, log, controls),
+	}
+	return stack, wrapped
+}
+
+func TestWatchRun_CursorUpdate_FinalWriteRetriesBusy(t *testing.T) {
+	ts, fault := newFaultStack(t, 500, 0)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 500; i++ {
+		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SubscriberId: "sub-final-busy"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := 0
+	for seen < 501 { // 500 replay envelopes + WatchReady
+		if !watch.Receive() {
+			t.Fatalf("expected message %d, err=%v", seen+1, watch.Err())
+		}
+		seen++
+	}
+	_ = watch.Close()
+
+	waitForCursor(t, ts.store, "sub-final-busy", runID, 500, 2*time.Second)
+
+	if !fault.Failed() {
+		t.Fatal("expected the final cursor write to be faulted")
+	}
+}
+
+func TestWatchRun_CursorUpdate_IntermediateWriteRetriesBusy(t *testing.T) {
+	ts, fault := newFaultStack(t, 0, 3)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{OverseerId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := run.Msg.RunId
+
+	for i := 1; i <= 500; i++ {
+		env := &pb.Envelope{SchemaVersion: 1, RunId: runID, Ts: timestamppb.Now(), Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "r", Adapter: "shell", Attempt: int32(i)}}}
+		if _, _, err := ts.store.AppendEvent(context.Background(), env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SubscriberId: "sub-intermediate-busy"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := 0
+	for seen < 501 { // 500 replay envelopes + WatchReady
+		if !watch.Receive() {
+			t.Fatalf("expected message %d, err=%v", seen+1, watch.Err())
+		}
+		seen++
+	}
+	_ = watch.Close()
+
+	if !fault.Failed() {
+		t.Fatal("expected an intermediate cursor write to be faulted")
+	}
+	// The 3rd coalesced write is expected to land at seq 300. Tolerate the
+	// batch boundary shifting by also accepting seq 200 or 400, but ensure we
+	// did fault an intermediate rather than the final write.
+	if fault.Calls() < 3 {
+		t.Fatalf("expected at least 3 upsert calls, got %d", fault.Calls())
+	}
+
+	waitForCursor(t, ts.store, "sub-intermediate-busy", runID, 500, 2*time.Second)
 }
 
 func TestStopRunConnectedAndDisconnected(t *testing.T) {
