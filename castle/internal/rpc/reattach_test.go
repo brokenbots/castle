@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,5 +309,101 @@ func TestSubmitEvents_StepResumed_StoredAndFannedOut(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("StepResumed event not found in persisted events")
+	}
+}
+
+func TestReattachRun_ReturnsVariableScopeAndPendingSignal(t *testing.T) {
+	ts := newTestStack(t)
+	ctx := context.Background()
+
+	reg, err := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-reattach-scope"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	overseerID := reg.Msg.CriteriaId
+	runID := createRunAtStep(t, ts, overseerID, "wait-step")
+
+	scopeJSON := `{"var":{"x":"42"},"steps":{"wait-step":{"out":"yes"}}}`
+	if err := ts.store.SetRunVariableScope(ctx, runID, scopeJSON); err != nil {
+		t.Fatal(err)
+	}
+	// Append an event so runs.last_seq is non-zero and can be validated.
+	env := &pb.Envelope{
+		SchemaVersion: 1,
+		RunId:         runID,
+		Ts:            timestamppb.Now(),
+		Payload:       &pb.Envelope_StepLog{StepLog: &pb.StepLog{Step: "wait-step", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: "setup"}},
+		CorrelationId: "reattach-seq",
+	}
+	seq, _, err := ts.store.AppendEvent(ctx, mustStoreEvent(t, env))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pausedAt := time.Now().UTC()
+	if err := ts.store.SetRunPaused(ctx, runID, "resume-signal", pausedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := ts.criteria.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
+		RunId:      runID,
+		CriteriaId: overseerID,
+	}))
+	if err != nil {
+		t.Fatalf("ReattachRun: %v", err)
+	}
+	if !resp.Msg.CanResume {
+		t.Fatal("expected can_resume=true for paused run")
+	}
+	if resp.Msg.CurrentStep != "wait-step" {
+		t.Fatalf("current_step=%q want wait-step", resp.Msg.CurrentStep)
+	}
+	if resp.Msg.VariableScope != scopeJSON {
+		t.Fatalf("variable_scope=%q want %q", resp.Msg.VariableScope, scopeJSON)
+	}
+	if resp.Msg.PendingSignal != "resume-signal" {
+		t.Fatalf("pending_signal=%q want resume-signal", resp.Msg.PendingSignal)
+	}
+	if resp.Msg.LastSeq != seq {
+		t.Fatalf("last_seq=%d want %d", resp.Msg.LastSeq, seq)
+	}
+}
+
+func TestReattachRun_FlushesPendingScopeBeforeReturning(t *testing.T) {
+	ts := newTestStack(t)
+	ctx := context.Background()
+
+	reg, err := ts.criteria.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "o-reattach-flush"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	overseerID := reg.Msg.CriteriaId
+	runID := createRunAtStep(t, ts, overseerID, "build")
+
+	// Queue a scope mutation but do not flush it manually.
+	ts.criteria.scope.Enqueue(runID, func(scope map[string]interface{}) {
+		varMap, _ := scope["var"].(map[string]interface{})
+		if varMap == nil {
+			varMap = map[string]interface{}{}
+		}
+		varMap["flushed"] = "true"
+		scope["var"] = varMap
+	})
+
+	resp, err := ts.criteria.ReattachRun(ctx, connect.NewRequest(&pb.ReattachRunRequest{
+		RunId:      runID,
+		CriteriaId: overseerID,
+	}))
+	if err != nil {
+		t.Fatalf("ReattachRun: %v", err)
+	}
+	if !resp.Msg.CanResume {
+		t.Fatal("expected can_resume=true")
+	}
+	if resp.Msg.VariableScope == "" {
+		t.Fatal("expected flushed variable scope to be returned")
+	}
+	if !strings.Contains(resp.Msg.VariableScope, "flushed") {
+		t.Fatalf("variable_scope does not contain flushed mutation: %q", resp.Msg.VariableScope)
 	}
 }

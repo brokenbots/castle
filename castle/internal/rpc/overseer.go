@@ -237,6 +237,14 @@ func (s *CriteriaServer) ReattachRun(ctx context.Context, req *connect.Request[p
 		}), nil
 	}
 
+	// Flush any pending variable-scope mutations before reading run state so
+	// the reattach response reflects the latest scope (W04/CRI-71).
+	s.scope.FlushNow(ctx, run.ID)
+	run, err = s.Store.GetRun(ctx, run.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
 	resp := &pb.ReattachRunResponse{
 		Status:        run.Status,
 		CurrentStep:   run.CurrentStep,
