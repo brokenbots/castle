@@ -193,6 +193,24 @@ func main() {
 		}
 	}()
 
+	// Background: expire unstarted workflow assignment leases and redispatch.
+	go func() {
+		d := criteriaRPC.LeaseDuration()
+		if d <= 0 {
+			d = 5 * time.Minute
+		}
+		t := time.NewTicker(d / 2)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				_ = serverRPC.ExpireLeasesNow(context.Background())
+			}
+		}
+	}()
+
 	go func() {
 		log.Info("castle listening", "addr", *addr, "db", *dbPath, "tls", tlsCfg != nil, "event_buffer_capacity", *eventBufferCapacity)
 		var err error

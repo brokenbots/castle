@@ -632,6 +632,8 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 		return
 	}
 	// Iterate over connected agents and try to lease to the first eligible one.
+	// Serialize the actual lease attempt so two concurrent dispatchers cannot
+	// grant the same agent two unstarted leases.
 	for _, criteriaID := range s.controls.Registered() {
 		o, err := s.Store.GetOverseer(ctx, criteriaID)
 		if err != nil {
@@ -641,9 +643,11 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 		if o.Status != "online" {
 			continue
 		}
+
+		s.controls.LeaseLock()
 		now := time.Now().UTC()
-		leaseDuration := defaultAssignmentLeaseDuration
-		leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, leaseDuration)
+		leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, s.leaseDuration())
+		s.controls.LeaseUnlock()
 		if err != nil {
 			if !errors.Is(err, store.ErrNotFound) {
 				s.Log.Debug("dispatch assignment: lease failed", "criteria_id", criteriaID, "err", err)
@@ -653,14 +657,7 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 		// Always dispatch the assignment that actually won the atomic lease,
 		// even if it is not the one that triggered this dispatch. Otherwise the
 		// leased assignment would sit undelivered until its lease expires.
-		err = s.controls.Enqueue(criteriaID, &pb.ControlMessage{Command: &pb.ControlMessage_WorkflowAssignment{WorkflowAssignment: &pb.WorkflowAssignment{
-			RunId:          leased.RunID,
-			WorkflowName:   leased.WorkflowName,
-			WorkflowSource: leased.WorkflowSource,
-			LockfileSource: leased.LockfileSource,
-			Labels:         leased.Labels,
-		}}})
-		if err != nil {
+		if err := enqueueWorkflowAssignment(s.Store, s.controls, criteriaID, leased, s.Log); err != nil {
 			s.Log.Warn("dispatch assignment: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
 		}
 		if leased.ID == a.ID {
@@ -669,6 +666,25 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 		// Leased a different assignment; dispatch it above and keep looking
 		// for the originally submitted assignment with the next agent.
 	}
+}
+
+// ExpireLeasesNow expires any unstarted leases that are past their deadline
+// and redispatches the requeued assignments to connected eligible agents.
+func (s *ServerServer) ExpireLeasesNow(ctx context.Context) error {
+	now := time.Now().UTC()
+	ids, err := s.Store.ExpireWorkflowAssignmentLeases(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		a, err := s.Store.GetWorkflowAssignment(ctx, id)
+		if err != nil {
+			s.Log.Debug("expire leases: cannot load assignment", "assignment_id", id, "err", err)
+			continue
+		}
+		s.dispatchAssignment(ctx, a)
+	}
+	return nil
 }
 
 const defaultAssignmentLeaseDuration = 5 * time.Minute
