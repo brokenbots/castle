@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,8 +18,10 @@ import (
 )
 
 const (
-	cursorFlushInterval = 250 * time.Millisecond
-	cursorFlushBatch    = 100
+	cursorFlushInterval        = 250 * time.Millisecond
+	cursorFlushBatch           = 100
+	cursorFinalPerWriteTimeout = 6 * time.Second
+	cursorFinalMaxDuration     = 15 * time.Second
 )
 
 func (s *CastleServer) ListOverseers(ctx context.Context, _ *connect.Request[pb.ListOverseersRequest]) (*connect.Response[pb.ListOverseersResponse], error) {
@@ -106,10 +109,13 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		}
 	}
 
-	updateCursor := func(uint64) {}
+	var (
+		updateCursor func(uint64)
+		writer       cursorWriter
+	)
+	updateCursor = func(uint64) {}
 	if subscriberID != "" {
-		writer := s.startCursorWriter(ctx, subscriberID, runID)
-		defer writer.stop()
+		writer = s.startCursorWriter(ctx, subscriberID, runID)
 		updateCursor = writer.update
 	}
 
@@ -120,6 +126,19 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 
 	lastSent := effectiveSince
 	terminalInReplay := false
+
+	if subscriberID != "" {
+		defer func() {
+			// Ensure the highest sequence actually delivered to the client is
+			// durably flushed before the writer stops. This closes the race
+			// between the server's last updateCursor call and the client close.
+			if lastSent > effectiveSince {
+				writer.update(lastSent)
+			}
+			writer.flush()
+			writer.stop()
+		}()
+	}
 
 	_, err := forEachPersistedEventPage(ctx, s.Store, runID, effectiveSince, func(env *pb.Envelope) error {
 		if env.Seq <= lastSent {
@@ -190,7 +209,69 @@ func (s *CastleServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 
 type cursorWriter struct {
 	update func(uint64)
+	flush  func()
 	stop   func()
+}
+
+// isCursorBusyError reports whether err is a transient SQLite busy error that
+// should be retried by the cursor writer.
+func isCursorBusyError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "SQLITE_BUSY")
+}
+
+// upsertCursorWithRetry attempts to persist seq for (subscriberID, runID). It
+// retries on SQLITE_BUSY errors with bounded backoff until the write succeeds,
+// a non-retryable error occurs, the supplied context is canceled, or the retry
+// budget is exhausted.
+func upsertCursorWithRetry(
+	ctx context.Context,
+	st store.Store,
+	subscriberID, runID string,
+	seq uint64,
+	perWriteTimeout, maxDuration time.Duration,
+) error {
+	deadline := time.Now().Add(maxDuration)
+	delay := 5 * time.Millisecond
+	var lastErr error
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+
+		// Bound the per-attempt timeout by the remaining overall budget so the
+		// final attempt does not overshoot maxDuration.
+		timeout := perWriteTimeout
+		if remaining := time.Until(deadline); remaining < timeout {
+			timeout = remaining
+		}
+		if timeout <= 0 {
+			break
+		}
+
+		writeCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		lastErr = st.UpsertSubscriberCursor(writeCtx, subscriberID, runID, seq)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+		if !isCursorBusyError(lastErr) {
+			return lastErr
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+		delay *= 2
+		if delay > 50*time.Millisecond {
+			delay = 50 * time.Millisecond
+		}
+	}
+	return lastErr
 }
 
 func (s *CastleServer) startCursorWriter(ctx context.Context, subscriberID, runID string) cursorWriter {
@@ -198,31 +279,74 @@ func (s *CastleServer) startCursorWriter(ctx context.Context, subscriberID, runI
 		mu           sync.Mutex
 		hasPending   bool
 		pendingSeq   uint64
+		persistedSeq uint64
 		pendingCount int
 		once         sync.Once
 	)
 
-	requestFlush := make(chan struct{}, 1)
+	// flushReq carries an optional completion channel. A nil channel is a
+	// best-effort wake-up (used by batch-triggered updates); a non-nil channel
+	// is closed after the requested flush attempt finishes.
+	flushReq := make(chan chan struct{}, 1)
 	stopCh := make(chan struct{})
 	done := make(chan struct{})
 
-	flush := func() {
+	const (
+		normalPerWriteTimeout = 2 * time.Second
+		normalMaxDuration     = 2 * time.Second
+	)
+
+	// flush performs a single cursor write attempt with bounded retry. On
+	// success it advances the persisted sequence and only clears pending state
+	// when no higher sequence has arrived in the meantime. On a non-retryable
+	// error it clears pending to avoid endless failure. On a retryable
+	// SQLITE_BUSY error it leaves the pending sequence untouched so a later
+	// flush can retry the same (or higher) value.
+	flush := func(final bool, deadline time.Time) bool {
 		mu.Lock()
 		if !hasPending {
 			mu.Unlock()
-			return
+			return true
 		}
 		seq := pendingSeq
-		hasPending = false
-		pendingCount = 0
 		mu.Unlock()
 
-		writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err := s.Store.UpsertSubscriberCursor(writeCtx, subscriberID, runID, seq)
-		cancel()
+		maxDuration := normalMaxDuration
+		perWrite := normalPerWriteTimeout
+		if final {
+			perWrite = cursorFinalPerWriteTimeout
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				s.Log.Warn("watch cursor final flush exhausted retry budget",
+					"run_id", runID, "subscriber_id", subscriberID, "seq", seq)
+				return false
+			}
+			maxDuration = remaining
+		}
+
+		// Cursor writes must outlive the request context: WatchRun's client
+		// stream may be canceled before the final cursor flush completes, and
+		// we still need to durably persist the highest delivered sequence.
+		err := upsertCursorWithRetry(context.Background(), s.Store, subscriberID, runID, seq, perWrite, maxDuration)
 		if err != nil {
 			s.Log.Warn("watch cursor persist failed", "run_id", runID, "subscriber_id", subscriberID, "seq", seq, "error", err)
+			if !isCursorBusyError(err) {
+				mu.Lock()
+				hasPending = false
+				pendingCount = 0
+				mu.Unlock()
+			}
+			return false
 		}
+
+		mu.Lock()
+		persistedSeq = seq
+		pendingCount = 0
+		if pendingSeq <= persistedSeq {
+			hasPending = false
+		}
+		mu.Unlock()
+		return true
 	}
 
 	go func() {
@@ -231,39 +355,75 @@ func (s *CastleServer) startCursorWriter(ctx context.Context, subscriberID, runI
 		defer ticker.Stop()
 		for {
 			select {
-			case <-requestFlush:
-				flush()
+			case doneCh := <-flushReq:
+				flush(false, time.Time{})
+				if doneCh != nil {
+					close(doneCh)
+				}
 			case <-ticker.C:
-				flush()
-			case <-ctx.Done():
-				flush()
-				return
+				flush(false, time.Time{})
 			case <-stopCh:
-				flush()
-				return
+				finalDeadline := time.Now().Add(cursorFinalMaxDuration)
+				for {
+					flushed := flush(true, finalDeadline)
+					mu.Lock()
+					noPending := !hasPending
+					mu.Unlock()
+					if noPending || !flushed {
+						return
+					}
+				}
 			}
 		}
 	}()
 
-	requestFlushFn := func() {
-		select {
-		case requestFlush <- struct{}{}:
-		default:
-		}
-	}
-
 	return cursorWriter{
 		update: func(seq uint64) {
+			if seq == 0 {
+				return
+			}
 			mu.Lock()
-			if !hasPending || seq > pendingSeq {
+			if seq <= persistedSeq {
+				// Already durably persisted at or above seq.
+				mu.Unlock()
+				return
+			}
+			if seq > pendingSeq {
 				pendingSeq = seq
 			}
-			hasPending = true
+			if !hasPending {
+				hasPending = true
+				pendingCount = 0
+			}
 			pendingCount++
 			shouldFlush := pendingCount >= cursorFlushBatch
 			mu.Unlock()
 			if shouldFlush {
-				requestFlushFn()
+				select {
+				case flushReq <- nil:
+				default:
+				}
+			}
+		},
+		flush: func() {
+			doneCh := make(chan struct{})
+			select {
+			case flushReq <- doneCh:
+				<-doneCh
+			default:
+				// A flush is already queued; wait for the next flush cycle to
+				// complete by sending a fresh completion channel once there is
+				// room.
+				ticker := time.NewTicker(5 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case flushReq <- doneCh:
+						<-doneCh
+						return
+					case <-ticker.C:
+					}
+				}
 			}
 		},
 		stop: func() {
