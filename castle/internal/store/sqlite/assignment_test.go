@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -119,6 +120,70 @@ func TestCreateWorkflowAssignment_Idempotent(t *testing.T) {
 	}
 	if runCount != 1 {
 		t.Fatalf("expected exactly one run row, got %d", runCount)
+	}
+}
+
+func TestCreateWorkflowAssignment_IdempotentAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restart.db")
+
+	// First "Castle" process.
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	owner := "owner-1"
+	a := &store.WorkflowAssignment{
+		OwnerCriteriaID: owner,
+		WorkflowName:    "wf",
+		WorkflowSource:  "source hcl",
+		IdempotencyKey:  "idem-key",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	first, created, err := s1.CreateWorkflowAssignment(ctx, a)
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected created=true on first create")
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Simulate Castle restart by opening a new store on the same file.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer s2.Close()
+
+	a2 := &store.WorkflowAssignment{
+		OwnerCriteriaID: owner,
+		WorkflowName:    "different-wf",
+		WorkflowSource:  "different source",
+		IdempotencyKey:  "idem-key",
+	}
+	second, created2, err := s2.CreateWorkflowAssignment(ctx, a2)
+	if err != nil {
+		t.Fatalf("second create after restart: %v", err)
+	}
+	if created2 {
+		t.Fatalf("expected idempotent resubmit after restart")
+	}
+	if second.RunID != first.RunID {
+		t.Fatalf("expected same run id after restart, got %s want %s", second.RunID, first.RunID)
+	}
+
+	runs, err := s2.ListRuns(ctx, "", "")
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected exactly one run after restart, got %d", len(runs))
 	}
 }
 
