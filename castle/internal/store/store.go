@@ -145,6 +145,10 @@ type Store interface {
 	AppendEvent(ctx context.Context, ev *Event) (seq uint64, inserted bool, err error)
 	ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*Event, error)
 	ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*Event, error)
+	// GetLatestEvent returns the most recently appended event for a run.
+	GetLatestEvent(ctx context.Context, runID string) (*Event, error)
+	// GetLatestStepEnteredEvent returns the most recent step.entered event for a run.
+	GetLatestStepEnteredEvent(ctx context.Context, runID string) (*Event, error)
 
 	// Subscriber cursors
 	// UpsertSubscriberCursor records progress for (subscriber_id, run_id) and

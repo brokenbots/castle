@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/store"
 	criteria "github.com/brokenbots/criteria/sdk"
@@ -552,6 +553,104 @@ func TestListEvents_Pagination_OrderPreserved(t *testing.T) {
 	}
 	if seen != 1500 {
 		t.Fatalf("events seen=%d want 1500", seen)
+	}
+}
+
+func TestGetLatestEvent_ReturnsMostRecentBySeq(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o1", Name: "x", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-latest", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	base := now.Truncate(time.Second)
+	for i := 0; i < 5; i++ {
+		env := criteria.NewEnvelope("r-latest", &pb.StepLog{Step: "a", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("line %d", i)})
+		env.Ts = timestamppb.New(base.Add(time.Duration(i) * time.Second))
+		env.CorrelationId = fmt.Sprintf("log-%d", i)
+		if _, _, err := s.AppendEvent(ctx, mustEventFromProto(t, env)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.GetLatestEvent(ctx, "r-latest")
+	if err != nil {
+		t.Fatalf("GetLatestEvent: %v", err)
+	}
+	if got.Seq != 5 {
+		t.Fatalf("seq=%d want 5", got.Seq)
+	}
+	if got.Ts != base.Add(4*time.Second) {
+		t.Fatalf("ts=%v want %v", got.Ts, base.Add(4*time.Second))
+	}
+}
+
+func TestGetLatestEvent_NotFound(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o1", Name: "x", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-empty", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetLatestEvent(ctx, "r-empty"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestGetLatestStepEnteredEvent_ReturnsMostRecentAdapter(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o1", Name: "x", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-adapters", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	base := now.Truncate(time.Second)
+	adapters := []string{"docker", "shell", "kubernetes"}
+	for i, adapter := range adapters {
+		env := criteria.NewEnvelope("r-adapters", &pb.StepEntered{Step: fmt.Sprintf("s%d", i), Adapter: adapter, Attempt: 1})
+		env.Ts = timestamppb.New(base.Add(time.Duration(i) * time.Second))
+		env.CorrelationId = fmt.Sprintf("enter-%d", i)
+		if _, _, err := s.AppendEvent(ctx, mustEventFromProto(t, env)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.GetLatestStepEnteredEvent(ctx, "r-adapters")
+	if err != nil {
+		t.Fatalf("GetLatestStepEnteredEvent: %v", err)
+	}
+	var payload pb.StepEntered
+	if err := protojson.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.Adapter != "kubernetes" {
+		t.Fatalf("adapter=%q want kubernetes", payload.Adapter)
+	}
+}
+
+func TestGetLatestStepEnteredEvent_NotFound(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o1", Name: "x", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-no-steps", OverseerID: "o1", WorkflowName: "w", WorkflowHCL: "x", Status: "pending", CurrentStep: "a", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetLatestStepEnteredEvent(ctx, "r-no-steps"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 

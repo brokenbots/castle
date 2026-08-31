@@ -519,27 +519,25 @@ func (s *ServerServer) InspectRun(ctx context.Context, req *connect.Request[pb.I
 		StateJson:   run.VariableScope,
 	}
 
-	// Load recent events to report the latest adapter and last activity.
-	const inspectEventLimit = 1000
-	events, err := s.Store.ListEvents(ctx, run.ID, 0, inspectEventLimit)
+	// Report the most recent activity for the run.
+	latest, err := s.Store.GetLatestEvent(ctx, run.ID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-
-	var lastActivity time.Time
-	for _, ev := range events {
-		if ev.Ts.After(lastActivity) {
-			lastActivity = ev.Ts
-		}
-		if resp.Adapter == "" && ev.Type == "step.entered" {
-			var payload pb.StepEntered
-			if jsonErr := json.Unmarshal(ev.Payload, &payload); jsonErr == nil {
-				resp.Adapter = payload.Adapter
-			}
-		}
+	if latest != nil && !latest.Ts.IsZero() {
+		resp.LastActivityAt = timestamppb.New(latest.Ts)
 	}
-	if !lastActivity.IsZero() {
-		resp.LastActivityAt = timestamppb.New(lastActivity)
+
+	// Report the most recent adapter the run entered.
+	entered, err := s.Store.GetLatestStepEnteredEvent(ctx, run.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if entered != nil {
+		var payload pb.StepEntered
+		if jsonErr := json.Unmarshal(entered.Payload, &payload); jsonErr == nil {
+			resp.Adapter = payload.Adapter
+		}
 	}
 
 	return connect.NewResponse(resp), nil

@@ -123,8 +123,8 @@ type ServerServiceClient interface {
 	// execute runs via the Control stream, but the assignment record remains
 	// owned by the submitting caller.
 	GetAssignmentDisposition(context.Context, *connect.Request[v1.GetAssignmentDispositionRequest]) (*connect.Response[v1.GetAssignmentDispositionResponse], error)
-	// SendPrompt — schema-only stub for Phase 2.3. UI clients can wire up
-	// against this method, but the server currently returns UNIMPLEMENTED.
+	// SendPrompt delivers a prompt to the agent executing a specific run step.
+	// The prompt is sent over the Criteria Control stream; callers must own the run.
 	SendPrompt(context.Context, *connect.Request[v1.SendPromptRequest]) (*connect.Response[v1.SendPromptResponse], error)
 }
 
@@ -355,8 +355,8 @@ type ServerServiceHandler interface {
 	// execute runs via the Control stream, but the assignment record remains
 	// owned by the submitting caller.
 	GetAssignmentDisposition(context.Context, *connect.Request[v1.GetAssignmentDispositionRequest]) (*connect.Response[v1.GetAssignmentDispositionResponse], error)
-	// SendPrompt — schema-only stub for Phase 2.3. UI clients can wire up
-	// against this method, but the server currently returns UNIMPLEMENTED.
+	// SendPrompt delivers a prompt to the agent executing a specific run step.
+	// The prompt is sent over the Criteria Control stream; callers must own the run.
 	SendPrompt(context.Context, *connect.Request[v1.SendPromptRequest]) (*connect.Response[v1.SendPromptResponse], error)
 }
 

@@ -173,8 +173,8 @@ export const ServerService = {
       kind: MethodKind.Unary,
     },
     /**
-     * SendPrompt — schema-only stub for Phase 2.3. UI clients can wire up
-     * against this method, but the server currently returns UNIMPLEMENTED.
+     * SendPrompt delivers a prompt to the agent executing a specific run step.
+     * The prompt is sent over the Criteria Control stream; callers must own the run.
      *
      * @generated from rpc criteria.v1.ServerService.SendPrompt
      */

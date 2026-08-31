@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -1314,6 +1315,70 @@ func TestInspectRunTerminalRun(t *testing.T) {
 	}
 	if resp.Msg.LastActivityAt != nil {
 		t.Fatal("expected no last_activity_at for terminal run with no events")
+	}
+}
+
+// TestInspectRunReportsLatestAdapterAndActivity guards the "latest adapter/run
+// state" exit criterion: the handler must look at the tail of the event log,
+// not the earliest 1000 events, and must report the most recent step.entered
+// adapter rather than the first one.
+func TestInspectRunReportsLatestAdapterAndActivity(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().UTC().Truncate(time.Second)
+
+	// Early step.entered with the old adapter.
+	oldEnv := criteria.NewEnvelope(run.Msg.RunId, &pb.StepEntered{Step: "build", Adapter: "old-adapter", Attempt: 1})
+	oldEnv.Ts = timestamppb.New(base)
+	if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, oldEnv)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Filler events push the total past the old 1000-event window so a
+	// naive earliest-1000 scan would miss the later step.entered and final
+	// activity.
+	const fillerCount = 1200
+	for i := 0; i < fillerCount; i++ {
+		env := criteria.NewEnvelope(run.Msg.RunId, &pb.StepLog{Step: "build", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: fmt.Sprintf("line %d", i)})
+		env.Ts = timestamppb.New(base.Add(time.Duration(i+1) * time.Second))
+		env.CorrelationId = fmt.Sprintf("filler-%d", i)
+		if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, env)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A later step enters a different adapter.
+	latestEnv := criteria.NewEnvelope(run.Msg.RunId, &pb.StepEntered{Step: "deploy", Adapter: "latest-adapter", Attempt: 1})
+	latestEnv.Ts = timestamppb.New(base.Add(time.Duration(fillerCount+1) * time.Second))
+	latestEnv.CorrelationId = "enter-latest"
+	if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, latestEnv)); err != nil {
+		t.Fatal(err)
+	}
+
+	// One more activity event after the latest step.entered.
+	finalEnv := criteria.NewEnvelope(run.Msg.RunId, &pb.StepLog{Step: "deploy", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: "final"})
+	finalEnv.Ts = timestamppb.New(base.Add(time.Duration(fillerCount+2) * time.Second))
+	finalEnv.CorrelationId = "final-log"
+	if _, _, err := ts.store.AppendEvent(context.Background(), mustStoreEvent(t, finalEnv)); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := cClient.InspectRun(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: run.Msg.RunId, SessionId: "sess-1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Msg.Adapter != "latest-adapter" {
+		t.Fatalf("adapter=%q want latest-adapter", resp.Msg.Adapter)
+	}
+	wantLast := base.Add(time.Duration(fillerCount+2) * time.Second)
+	if resp.Msg.LastActivityAt == nil || !resp.Msg.LastActivityAt.AsTime().Equal(wantLast) {
+		t.Fatalf("last_activity_at=%v want %v", resp.Msg.LastActivityAt, wantLast)
 	}
 }
 
