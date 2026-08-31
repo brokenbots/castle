@@ -17,5 +17,12 @@ services:
       retries: 12
       start_period: 3s
 
+  conformance:
+    profiles: ["conformance"]
+    build:
+      context: .
+      dockerfile: Dockerfile.conformance
+    restart: "no"
+
 volumes:
   castle-data:

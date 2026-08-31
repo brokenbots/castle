@@ -1,5 +1,5 @@
-.PHONY: help bootstrap tidy build build-castle build-parapet test ci dev-castle \
-	dev-parapet docker-build compose-up compose-down compose-logs clean proto \
+.PHONY: help bootstrap tidy build build-castle build-parapet test test-conformance ci dev-castle \
+	dev-parapet docker-build compose-up compose-down compose-logs compose-conformance clean proto \
 	proto-lint proto-check proto-check-drift
 
 help:
@@ -24,7 +24,10 @@ test: ## Run backend and frontend tests
 	cd castle && CGO_ENABLED=1 go test -race ./...
 	cd parapet && npm run test:run
 
-ci: build test proto-lint proto-check-drift ## Run all repository gates
+test-conformance: ## Run the Criteria SDK conformance suite against Castle with the race detector
+	cd castle && CGO_ENABLED=1 go test -race -tags=conformance ./internal/rpc -run TestCastleConformance -count=1
+
+ci: build test test-conformance proto-lint proto-check-drift ## Run all repository gates
 
 dev-castle: ## Run Castle on localhost:8080
 	cd castle && go run ./cmd/castle --addr :8080 --db ./castle.dev.db
@@ -43,6 +46,9 @@ compose-down: ## Stop Castle
 
 compose-logs: ## Follow Castle logs
 	docker compose -f compose.local.yml logs -f
+
+compose-conformance: ## Run the Criteria SDK conformance suite through Compose
+	docker compose -f compose.local.yml --profile conformance up --build --abort-on-container-exit conformance
 
 clean: ## Remove build outputs and local state
 	rm -rf bin parapet/dist parapet/.vite
