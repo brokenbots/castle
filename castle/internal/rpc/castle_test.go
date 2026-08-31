@@ -1057,3 +1057,52 @@ func TestControlRegistryEnqueueErrors(t *testing.T) {
 	}
 	r.Unregister("o1", ch)
 }
+
+// TestPauseRunIsUnimplementedAndDoesNotCancelRun is a regression test for the
+// PR #2 fix: PauseRun must not silently enqueue RunCancel and return success.
+// It must report CodeUnimplemented and leave the agent's control stream empty.
+func TestPauseRunIsUnimplementedAndDoesNotCancelRun(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctrl, err := oClient.Control(context.Background(), connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: overseerID}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctrl.Close()
+
+	// Drain the ControlReady handshake so the subscription is active.
+	if !ctrl.Receive() {
+		t.Fatalf("expected ControlReady, err=%v", ctrl.Err())
+	}
+	if _, ok := ctrl.Msg().Command.(*pb.ControlMessage_ControlReady); !ok {
+		t.Fatalf("expected ControlReady, got %T", ctrl.Msg().Command)
+	}
+
+	_, err = cClient.PauseRun(context.Background(), connect.NewRequest(&pb.PauseRunRequest{RunId: run.Msg.RunId}))
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("expected Unimplemented, got %v (code=%v)", err, connect.CodeOf(err))
+	}
+
+	// The fix removed the RunCancel enqueue; the control stream must remain
+	// idle. Use a short timeout so the test fails if the old cancel-and-return
+	// behavior is restored.
+	gotMsg := make(chan struct{})
+	go func() {
+		if ctrl.Receive() {
+			close(gotMsg)
+		}
+	}()
+	select {
+	case <-gotMsg:
+		cmd := ctrl.Msg().Command
+		t.Fatalf("PauseRun enqueued an unexpected control command: %T", cmd)
+	case <-time.After(250 * time.Millisecond):
+		// expected: no control message was enqueued
+	}
+}
