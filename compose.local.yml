@@ -22,9 +22,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.conformance
-    depends_on:
-      castle:
-        condition: service_healthy
     restart: "no"
 
 volumes:

@@ -29,9 +29,9 @@ import (
 
 // TestCastleConformance runs the full SDK conformance suite against Castle plus
 // Castle-specific scenario tests for assignment, bootstrap, ownership,
-// restart, and negative authorization. The suite is gated behind the
-// "conformance" build tag so it stays out of the default `make test` lane.
-// Use `make test-conformance` to run it.
+// restart, negative authorization, and server read/control operations.
+// The suite is gated behind the "conformance" build tag so it stays out of
+// the default `make test` lane. Use `make test-conformance` to run it.
 func TestCastleConformance(t *testing.T) {
 	t.Run("SDK", func(t *testing.T) {
 		conformance.Run(t, &castleSubject{})
@@ -41,6 +41,7 @@ func TestCastleConformance(t *testing.T) {
 	t.Run("Ownership", testOwnership)
 	t.Run("Restart", testRestart)
 	t.Run("NegativeAuth", testNegativeAuth)
+	t.Run("ServerOperations", testServerOperations)
 }
 
 // castleSubject implements conformance.Subject backed by a real Castle server
@@ -683,6 +684,238 @@ func testNegativeAuth(t *testing.T) {
 	})
 }
 
+func testServerOperations(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("Heartbeat", func(t *testing.T) {
+		_, _, oClient, _ := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "heartbeat-agent", nil)
+		req := connect.NewRequest(&pb.HeartbeatRequest{CriteriaId: agent.id})
+		req.Header().Set("Authorization", "Bearer "+agent.token)
+		resp, err := oClient.Heartbeat(ctx, req)
+		if err != nil {
+			t.Fatalf("Heartbeat: %v", err)
+		}
+		if resp.Msg.ServerTime == nil || resp.Msg.ServerTime.AsTime().IsZero() {
+			t.Fatal("expected non-zero server_time")
+		}
+	})
+
+	t.Run("ListAgents", func(t *testing.T) {
+		_, _, oClient, sClient := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "list-agent", map[string]string{"team": "ci"})
+		req := connect.NewRequest(&pb.ListAgentsRequest{Limit: 100})
+		req.Header().Set("Authorization", "Bearer "+agent.token)
+		resp, err := sClient.ListAgents(ctx, req)
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		var found bool
+		for _, a := range resp.Msg.Agents {
+			if a.CriteriaId == agent.id {
+				found = true
+				if a.Name != "list-agent" {
+					t.Fatalf("unexpected name: %s", a.Name)
+				}
+				if a.Labels["team"] != "ci" {
+					t.Fatalf("unexpected labels: %v", a.Labels)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("agent %s not in list", agent.id)
+		}
+	})
+
+	t.Run("GetAgent", func(t *testing.T) {
+		_, _, oClient, sClient := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "get-agent", map[string]string{"team": "ci"})
+		req := connect.NewRequest(&pb.GetAgentRequest{CriteriaId: agent.id})
+		req.Header().Set("Authorization", "Bearer "+agent.token)
+		resp, err := sClient.GetAgent(ctx, req)
+		if err != nil {
+			t.Fatalf("GetAgent: %v", err)
+		}
+		if resp.Msg.CriteriaId != agent.id {
+			t.Fatalf("expected criteria_id %s, got %s", agent.id, resp.Msg.CriteriaId)
+		}
+		if resp.Msg.Name != "get-agent" {
+			t.Fatalf("unexpected name: %s", resp.Msg.Name)
+		}
+		if resp.Msg.Labels["team"] != "ci" {
+			t.Fatalf("unexpected labels: %v", resp.Msg.Labels)
+		}
+	})
+
+	t.Run("ListRuns", func(t *testing.T) {
+		_, _, oClient, sClient := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "list-runs-agent", nil)
+		run := createRun(t, oClient, agent.id, agent.token)
+		req := connect.NewRequest(&pb.ListRunsRequest{CriteriaId: agent.id, Limit: 100})
+		req.Header().Set("Authorization", "Bearer "+agent.token)
+		resp, err := sClient.ListRuns(ctx, req)
+		if err != nil {
+			t.Fatalf("ListRuns: %v", err)
+		}
+		var found bool
+		for _, r := range resp.Msg.Runs {
+			if r.RunId == run.RunId {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("run %s not in list", run.RunId)
+		}
+	})
+
+	t.Run("GetRun", func(t *testing.T) {
+		_, _, oClient, sClient := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "get-run-agent", nil)
+		run := createRun(t, oClient, agent.id, agent.token)
+		req := connect.NewRequest(&pb.GetRunRequest{RunId: run.RunId})
+		req.Header().Set("Authorization", "Bearer "+agent.token)
+		resp, err := sClient.GetRun(ctx, req)
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		if resp.Msg.RunId != run.RunId {
+			t.Fatalf("expected run_id %s, got %s", run.RunId, resp.Msg.RunId)
+		}
+		if resp.Msg.CriteriaId != agent.id {
+			t.Fatalf("expected criteria_id %s, got %s", agent.id, resp.Msg.CriteriaId)
+		}
+	})
+
+	t.Run("WatchRun", func(t *testing.T) {
+		_, _, oClient, sClient := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "watch-agent", nil)
+		run := createRun(t, oClient, agent.id, agent.token)
+
+		req := connect.NewRequest(&pb.WatchRunRequest{RunId: run.RunId, SinceSeq: 0})
+		req.Header().Set("Authorization", "Bearer "+agent.token)
+		stream, err := sClient.WatchRun(ctx, req)
+		if err != nil {
+			t.Fatalf("WatchRun: %v", err)
+		}
+		defer stream.Close()
+
+		msg := receiveWatch(t, stream, 2*time.Second)
+		if msg.GetWatchReady() == nil {
+			t.Fatalf("expected WatchReady first, got %T", msg.Payload)
+		}
+
+		_ = submitEvent(t, oClient, agent.token, criteria.NewEnvelope(run.RunId, &pb.StepLog{Step: "s1", Stream: pb.LogStream_LOG_STREAM_STDOUT, Chunk: "hello"}))
+
+		msg = receiveWatch(t, stream, 2*time.Second)
+		if msg.GetStepLog() == nil {
+			t.Fatalf("expected StepLog, got %T", msg.Payload)
+		}
+		if msg.RunId != run.RunId {
+			t.Fatalf("expected run_id %s, got %s", run.RunId, msg.RunId)
+		}
+	})
+
+	t.Run("PauseRunAndResumeRun", func(t *testing.T) {
+		ts, _, oClient, sClient := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "pause-resume-agent", nil)
+		run := createRun(t, oClient, agent.id, agent.token)
+
+		ctrl := openControl(t, oClient, agent.id, agent.token)
+		defer ctrl.Close()
+		expectControlReady(t, ctrl)
+
+		_ = submitEvent(t, oClient, agent.token, criteria.NewEnvelope(run.RunId, &pb.RunStarted{WorkflowName: run.WorkflowName, InitialStep: "s1"}))
+
+		pauseReq := connect.NewRequest(&pb.PauseRunRequest{RunId: run.RunId})
+		pauseReq.Header().Set("Authorization", "Bearer "+agent.token)
+		if _, err := sClient.PauseRun(ctx, pauseReq); err != nil {
+			t.Fatalf("PauseRun: %v", err)
+		}
+		pauseMsg := receiveControl(t, ctrl, 2*time.Second)
+		if pauseMsg.GetPauseRun() == nil {
+			t.Fatalf("expected PauseRun control, got %T", pauseMsg.Command)
+		}
+		if pauseMsg.GetPauseRun().RunId != run.RunId {
+			t.Fatalf("unexpected PauseRun run id: %s", pauseMsg.GetPauseRun().RunId)
+		}
+
+		_ = submitEvent(t, oClient, agent.token, criteria.NewEnvelope(run.RunId, &pb.WaitEntered{Signal: "go"}))
+
+		runRec, err := ts.store.GetRun(ctx, run.RunId)
+		if err != nil {
+			t.Fatalf("get run after wait: %v", err)
+		}
+		if runRec.Status != "paused" || runRec.PendingSignal != "go" {
+			t.Fatalf("expected paused with pending signal, got status=%s signal=%s", runRec.Status, runRec.PendingSignal)
+		}
+
+		resumeReq := connect.NewRequest(&pb.ResumeRunRequest{RunId: run.RunId})
+		resumeReq.Header().Set("Authorization", "Bearer "+agent.token)
+		if _, err := sClient.ResumeRun(ctx, resumeReq); err != nil {
+			t.Fatalf("ResumeRun: %v", err)
+		}
+		resumeMsg := receiveControl(t, ctrl, 2*time.Second)
+		if resumeMsg.GetResumeRun() == nil {
+			t.Fatalf("expected ResumeRun control, got %T", resumeMsg.Command)
+		}
+		rr := resumeMsg.GetResumeRun()
+		if rr.RunId != run.RunId || rr.Signal != "go" {
+			t.Fatalf("unexpected ResumeRun: %+v", rr)
+		}
+	})
+
+	t.Run("InspectRun", func(t *testing.T) {
+		_, _, oClient, sClient := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "inspect-agent", nil)
+		run := createRun(t, oClient, agent.id, agent.token)
+
+		_ = submitEvent(t, oClient, agent.token, criteria.NewEnvelope(run.RunId, &pb.StepEntered{Step: "s1", Adapter: "test-adapter", Attempt: 1}))
+
+		req := connect.NewRequest(&pb.InspectRunRequest{RunId: run.RunId})
+		req.Header().Set("Authorization", "Bearer "+agent.token)
+		resp, err := sClient.InspectRun(ctx, req)
+		if err != nil {
+			t.Fatalf("InspectRun: %v", err)
+		}
+		if resp.Msg.RunId != run.RunId {
+			t.Fatalf("expected run_id %s, got %s", run.RunId, resp.Msg.RunId)
+		}
+		if resp.Msg.Adapter != "test-adapter" {
+			t.Fatalf("expected adapter test-adapter, got %s", resp.Msg.Adapter)
+		}
+		if resp.Msg.CurrentStep != "s1" {
+			t.Fatalf("expected current_step s1, got %s", resp.Msg.CurrentStep)
+		}
+	})
+
+	t.Run("SendPrompt", func(t *testing.T) {
+		_, _, oClient, sClient := startConformanceServer(t, conformanceBootstrapToken)
+		agent := registerWithBootstrap(t, oClient, "prompt-agent", nil)
+		run := createRun(t, oClient, agent.id, agent.token)
+
+		ctrl := openControl(t, oClient, agent.id, agent.token)
+		defer ctrl.Close()
+		expectControlReady(t, ctrl)
+
+		req := connect.NewRequest(&pb.SendPromptRequest{RunId: run.RunId, Step: "ask", Prompt: "say hello"})
+		req.Header().Set("Authorization", "Bearer "+agent.token)
+		if _, err := sClient.SendPrompt(ctx, req); err != nil {
+			t.Fatalf("SendPrompt: %v", err)
+		}
+
+		msg := receiveControl(t, ctrl, 2*time.Second)
+		prompt := msg.GetAgentPrompt()
+		if prompt == nil {
+			t.Fatalf("expected AgentPrompt, got %T", msg.Command)
+		}
+		if prompt.RunId != run.RunId || prompt.Step != "ask" || prompt.Prompt != "say hello" {
+			t.Fatalf("unexpected AgentPrompt: %+v", prompt)
+		}
+	})
+}
+
 // startConformanceServer builds a fresh in-process Castle server for
 // scenario tests. If bootstrapToken is non-empty, Register requires a matching
 // X-Server-Bootstrap header.
@@ -827,4 +1060,24 @@ func assertCode(t *testing.T, err error, want connect.Code) {
 	if got := connect.CodeOf(err); got != want {
 		t.Fatalf("expected code %v, got %v (%v)", want, got, err)
 	}
+}
+
+// receiveWatch reads the next envelope from a WatchRun stream with a timeout.
+func receiveWatch(t *testing.T, stream *connect.ServerStreamForClient[criteria.Envelope], timeout time.Duration) *criteria.Envelope {
+	t.Helper()
+	done := make(chan struct{})
+	var received bool
+	go func() {
+		received = stream.Receive()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for watch envelope")
+	}
+	if !received {
+		t.Fatalf("expected watch envelope, err=%v", stream.Err())
+	}
+	return stream.Msg()
 }
