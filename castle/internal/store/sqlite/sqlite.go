@@ -32,14 +32,20 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// Serialize all SQLite writers through a single connection. WAL mode still
+	// allows concurrent readers, but multiple writer connections can return
+	// SQLITE_BUSY under load. A single open connection guarantees writers never
+	// conflict and matches the behavior observed when callers explicitly set
+	// SetMaxOpenConns(1).
+	db.SetMaxOpenConns(1)
 	return &Store{db: db}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
 // SetMaxOpenConns configures the maximum number of open database connections.
-// Tests that drive a single SQLite file from many goroutines can set this to 1
-// to serialize access and avoid SQLITE_BUSY races under the race detector.
+// Open now defaults to 1 to serialize writers and avoid SQLITE_BUSY races.
+// Callers may override this for tests that need a different pool size.
 func (s *Store) SetMaxOpenConns(n int) { s.db.SetMaxOpenConns(n) }
 
 const (
