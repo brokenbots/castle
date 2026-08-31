@@ -468,25 +468,7 @@ func (s *ServerServer) StopRun(ctx context.Context, req *connect.Request[pb.Stop
 }
 
 func (s *ServerServer) PauseRun(ctx context.Context, req *connect.Request[pb.PauseRunRequest]) (*connect.Response[pb.PauseRunResponse], error) {
-	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
-	if err != nil {
-		return nil, err
-	}
-	// Castle currently only supports pausing via the agent Control stream on
-	// the running criteria agent. If no agent is connected, the run cannot be
-	// paused at this time.
-	err = s.controls.Enqueue(run.OverseerID, &pb.ControlMessage{Command: &pb.ControlMessage_RunCancel{RunCancel: &pb.RunCancel{RunId: run.ID, Reason: "pause requested by operator"}}})
-	switch {
-	case errors.Is(err, ErrAgentNotConnected):
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-	case errors.Is(err, ErrControlBacklogFull):
-		s.Log.Warn("control backlog full; pause run dropped", "criteria_id", run.OverseerID, "run_id", run.ID)
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-	case err != nil:
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	now := time.Now().UTC()
-	return connect.NewResponse(&pb.PauseRunResponse{IssuedAt: timestamppb.New(now)}), nil
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pause run is not implemented"))
 }
 
 func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.ResumeRunRequest]) (*connect.Response[pb.ResumeRunResponse], error) {
