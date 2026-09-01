@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/system-test-harness ./cmd/system-t
 
 FROM alpine:3.20
 
-RUN apk add --no-cache docker-cli ca-certificates
+RUN apk add --no-cache docker-cli docker-cli-compose ca-certificates
 
 WORKDIR /app
 COPY --from=build /out/system-test-harness /usr/local/bin/system-test-harness

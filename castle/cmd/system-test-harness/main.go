@@ -87,21 +87,19 @@ func h2cClient() *http.Client {
 }
 
 type harness struct {
-	log              *slog.Logger
-	castleAddr       string
-	dockerSocket     string
-	projectName      string
-	composeFile      string
-	agentAContainer  string
-	agentBContainer  string
-	castleContainer  string
-	controlClientImg string
-	controlNetwork   string
-	client           *http.Client
-	criClient        criteriav1connect.CriteriaServiceClient
-	srvClient        criteriav1connect.ServerServiceClient
-	token            string
-	newExecCmd       func(ctx context.Context, name string, arg ...string) *exec.Cmd
+	log             *slog.Logger
+	castleAddr      string
+	dockerSocket    string
+	projectName     string
+	composeFile     string
+	agentAContainer string
+	agentBContainer string
+	castleContainer string
+	client          *http.Client
+	criClient       criteriav1connect.CriteriaServiceClient
+	srvClient       criteriav1connect.ServerServiceClient
+	token           string
+	newExecCmd      func(ctx context.Context, name string, arg ...string) *exec.Cmd
 }
 
 func main() {
@@ -200,25 +198,23 @@ func runSmoke(log *slog.Logger, args []string) error {
 	agentA := fs.String("agent-a", envOrDefault("AGENT_A_CONTAINER", defaultAgentAContainer), "agent-a container name")
 	agentB := fs.String("agent-b", envOrDefault("AGENT_B_CONTAINER", defaultAgentBContainer), "agent-b container name")
 	castle := fs.String("castle-container", envOrDefault("CASTLE_CONTAINER", defaultCastleContainer), "Castle container name")
-	controlImg := fs.String("control-client-image", envOrDefault("CONTROL_CLIENT_IMAGE", "castle-system-test-control-client"), "control client image")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	h := &harness{
-		log:              log,
-		castleAddr:       *castleAddr,
-		dockerSocket:     *dockerSocket,
-		projectName:      *projectName,
-		composeFile:      *composeFile,
-		agentAContainer:  *agentA,
-		agentBContainer:  *agentB,
-		castleContainer:  *castle,
-		controlClientImg: *controlImg,
-		client:           h2cClient(),
-		criClient:        criteriav1connect.NewCriteriaServiceClient(h2cClient(), *castleAddr),
-		srvClient:        criteriav1connect.NewServerServiceClient(h2cClient(), *castleAddr),
-		newExecCmd:       exec.CommandContext,
+		log:             log,
+		castleAddr:      *castleAddr,
+		dockerSocket:    *dockerSocket,
+		projectName:     *projectName,
+		composeFile:     *composeFile,
+		agentAContainer: *agentA,
+		agentBContainer: *agentB,
+		castleContainer: *castle,
+		client:          h2cClient(),
+		criClient:       criteriav1connect.NewCriteriaServiceClient(h2cClient(), *castleAddr),
+		srvClient:       criteriav1connect.NewServerServiceClient(h2cClient(), *castleAddr),
+		newExecCmd:      exec.CommandContext,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -523,16 +519,6 @@ func (h *harness) testInvalidWorkflow(ctx context.Context) error {
 }
 
 func (h *harness) testControlClient(ctx context.Context) error {
-	// Run control helpers on an isolated network so that a successful one-off
-	// helper exit is not visible to docker compose up --abort-on-container-exit.
-	// Castle is connected to this network with an alias so helpers can still
-	// reach it as http://castle:8080 without sharing the Compose project
-	// topology.
-	if err := h.setupControlNetwork(ctx); err != nil {
-		return fmt.Errorf("setup control network: %w", err)
-	}
-	defer h.teardownControlNetwork(ctx)
-
 	// Use the pause fixture so we can pause/resume it from a separate container.
 	runID, err := h.submitAssignment(ctx, "pause-resume", "# pause fixture\nvalid\npause", map[string]string{"pool": "alpha"}, "pause-key")
 	if err != nil {
@@ -608,44 +594,6 @@ func (h *harness) agentVolumeName(agentName string) string {
 	}
 }
 
-func (h *harness) controlNetworkName() string {
-	return h.projectName + "_control"
-}
-
-func (h *harness) setupControlNetwork(ctx context.Context) error {
-	h.controlNetwork = h.controlNetworkName()
-	h.log.Info("setting up isolated control network", "network", h.controlNetwork)
-
-	// Remove any stale network left by a prior interrupted run.
-	_ = h.dockerNetworkRemove(ctx, h.controlNetwork)
-
-	if err := h.dockerNetworkCreate(ctx, h.controlNetwork); err != nil {
-		return fmt.Errorf("create control network: %w", err)
-	}
-	// Give the helper containers DNS resolution for the same CASTLE_ADDR the
-	// harness uses by aliasing the Castle container as "castle" on the new
-	// network. The helpers stay off the Compose project network, so their
-	// exits are invisible to --abort-on-container-exit.
-	if err := h.dockerNetworkConnect(ctx, h.controlNetwork, h.castleContainer, "castle"); err != nil {
-		return fmt.Errorf("connect castle to control network: %w", err)
-	}
-	return nil
-}
-
-func (h *harness) teardownControlNetwork(ctx context.Context) {
-	if h.controlNetwork == "" {
-		return
-	}
-	h.log.Info("tearing down isolated control network", "network", h.controlNetwork)
-	if err := h.dockerNetworkDisconnect(ctx, h.controlNetwork, h.castleContainer); err != nil {
-		h.log.Warn("failed to disconnect castle from control network", "err", err)
-	}
-	if err := h.dockerNetworkRemove(ctx, h.controlNetwork); err != nil {
-		h.log.Warn("failed to remove control network", "err", err)
-	}
-	h.controlNetwork = ""
-}
-
 func (h *harness) runControlClient(ctx context.Context, op, runID, agentName string) error {
 	h.log.Info("running control client", "op", op, "run_id", runID, "agent", agentName)
 	cmd := h.controlClientCmd(ctx, op, runID, agentName)
@@ -661,19 +609,17 @@ func (h *harness) controlClientCmd(ctx context.Context, op, runID, agentName str
 	mountPath := "/var/lib/agent"
 	tokenFile := mountPath + "/agent-state.json"
 
-	// Use the isolated control network when available; fall back to the
-	// project network only when the harness is invoked directly without
-	// first calling setupControlNetwork.
-	network := h.projectName + "_default"
-	if h.controlNetwork != "" {
-		network = h.controlNetwork
-	}
-
-	return h.execCmd(ctx, "docker", "run", "--rm",
-		"--network", network,
-		"-e", "CASTLE_ADDR="+h.castleAddr,
+	// Run the helper as a one-off Compose service container. Compose labels
+	// one-off containers with com.docker.compose.oneoff=True, and the
+	// docker compose up --abort-on-container-exit monitor ignores those
+	// events, so a successful helper exit does not abort the submission
+	// service.
+	return h.execCmd(ctx, "docker", "compose",
+		"-f", h.composeFile,
+		"-p", h.projectName,
+		"run", "--rm", "--no-deps",
 		"-v", volume+":"+mountPath+":ro",
-		h.controlClientImg,
+		"control",
 		"control", "--op", op, "--run-id", runID, "--agent-token-file", tokenFile,
 	)
 }
@@ -689,26 +635,6 @@ func (h *harness) dockerRestart(ctx context.Context, container string) error {
 	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "restart", container)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func (h *harness) dockerNetworkCreate(ctx context.Context, network string) error {
-	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "network", "create", "--driver", "bridge", network)
-	return cmd.Run()
-}
-
-func (h *harness) dockerNetworkRemove(ctx context.Context, network string) error {
-	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "network", "rm", network)
-	return cmd.Run()
-}
-
-func (h *harness) dockerNetworkConnect(ctx context.Context, network, container, alias string) error {
-	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "network", "connect", "--alias", alias, network, container)
-	return cmd.Run()
-}
-
-func (h *harness) dockerNetworkDisconnect(ctx context.Context, network, container string) error {
-	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "network", "disconnect", network, container)
 	return cmd.Run()
 }
 
