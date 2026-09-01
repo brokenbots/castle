@@ -252,9 +252,15 @@ func TestAgentTokenCanControlOwnedRun(t *testing.T) {
 	a.cfg.longStepDur = 3 * time.Second // give the stop phase time to observe "running"
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go a.heartbeatLoop(ctx)
-	go a.controlLoop(ctx)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); a.heartbeatLoop(ctx) }()
+	go func() { defer wg.Done(); a.controlLoop(ctx) }()
+	defer func() {
+		cancel()
+		waitForNoActiveRuns(t, a, 5*time.Second)
+		wg.Wait()
+	}()
 
 	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer waitCancel()
