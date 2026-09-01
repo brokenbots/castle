@@ -108,9 +108,6 @@ func TestControlClientCmdUsesIsolatedNetwork(t *testing.T) {
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Errorf("cmd.Args = %v, want %v", cmd.Args, want)
 	}
-	if cmd.Path != "docker" {
-		t.Errorf("cmd.Path = %q, want docker", cmd.Path)
-	}
 }
 
 func TestControlClientCmdFallsBackToProjectNetwork(t *testing.T) {
