@@ -15,6 +15,7 @@ func newTestAgent(home string) *agent {
 		state:     agentState{Runs: map[string]*runState{}},
 		statePath: filepath.Join(home, stateFileName),
 		resumeCh:  map[string]chan string{},
+		runCtx:    map[string]*runHandle{},
 	}
 }
 
@@ -25,9 +26,9 @@ func TestLoadSaveState(t *testing.T) {
 	a.state.CriteriaID = "agent-123"
 	a.state.Token = "tok-abc"
 	a.setRunState(&runState{
-		RunID:    "run-1",
-		Status:   "running",
-		Paused:   true,
+		RunID:        "run-1",
+		Status:       "running",
+		Paused:       true,
 		ResumeSignal: "go",
 	})
 
