@@ -1,9 +1,10 @@
 // system-test-harness drives the Castle plus Criteria-agent Compose system test.
 //
 // Subcommands:
-//   smoke   (default) — submit fixtures, watch runs, restart agents/Castle,
-//                       verify failure visibility and pause/resume/stop.
-//   control — issue a single StopRun, PauseRun, or ResumeRun from a client container.
+//
+//	smoke   (default) — submit fixtures, watch runs, restart agents/Castle,
+//	                    verify failure visibility and pause/resume/stop.
+//	control — issue a single StopRun, PauseRun, or ResumeRun from a client container.
 package main
 
 import (
@@ -31,23 +32,23 @@ import (
 )
 
 const (
-	defaultCastleAddr      = "http://castle:8080"
-	defaultDockerSocket    = "/var/run/docker.sock"
-	defaultProjectName     = "castle-system-test"
-	defaultComposeFile     = "/src/compose.system.yml"
-	defaultAgentAContainer   = "castle-system-test-agent-a-1"
-	defaultAgentBContainer   = "castle-system-test-agent-b-1"
-	defaultCastleContainer   = "castle-system-test-castle-1"
+	defaultCastleAddr          = "http://castle:8080"
+	defaultDockerSocket        = "/var/run/docker.sock"
+	defaultProjectName         = "castle-system-test"
+	defaultComposeFile         = "/src/compose.system.yml"
+	defaultAgentAContainer     = "castle-system-test-agent-a-1"
+	defaultAgentBContainer     = "castle-system-test-agent-b-1"
+	defaultCastleContainer     = "castle-system-test-castle-1"
 	defaultSubmissionContainer = "castle-system-test-submission-1"
 )
 
 var fixtures = []struct {
-	name         string
-	labels       map[string]string
-	source       string
-	wantAgent    string
-	wantStatus   string
-	description  string
+	name        string
+	labels      map[string]string
+	source      string
+	wantAgent   string
+	wantStatus  string
+	description string
 }{
 	{
 		name:        "valid-alpha",
@@ -95,10 +96,12 @@ type harness struct {
 	agentBContainer  string
 	castleContainer  string
 	controlClientImg string
+	controlNetwork   string
 	client           *http.Client
 	criClient        criteriav1connect.CriteriaServiceClient
 	srvClient        criteriav1connect.ServerServiceClient
 	token            string
+	newExecCmd       func(ctx context.Context, name string, arg ...string) *exec.Cmd
 }
 
 func main() {
@@ -215,6 +218,7 @@ func runSmoke(log *slog.Logger, args []string) error {
 		client:           h2cClient(),
 		criClient:        criteriav1connect.NewCriteriaServiceClient(h2cClient(), *castleAddr),
 		srvClient:        criteriav1connect.NewServerServiceClient(h2cClient(), *castleAddr),
+		newExecCmd:       exec.CommandContext,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -519,6 +523,16 @@ func (h *harness) testInvalidWorkflow(ctx context.Context) error {
 }
 
 func (h *harness) testControlClient(ctx context.Context) error {
+	// Run control helpers on an isolated network so that a successful one-off
+	// helper exit is not visible to docker compose up --abort-on-container-exit.
+	// Castle is connected to this network with an alias so helpers can still
+	// reach it as http://castle:8080 without sharing the Compose project
+	// topology.
+	if err := h.setupControlNetwork(ctx); err != nil {
+		return fmt.Errorf("setup control network: %w", err)
+	}
+	defer h.teardownControlNetwork(ctx)
+
 	// Use the pause fixture so we can pause/resume it from a separate container.
 	runID, err := h.submitAssignment(ctx, "pause-resume", "# pause fixture\nvalid\npause", map[string]string{"pool": "alpha"}, "pause-key")
 	if err != nil {
@@ -594,29 +608,107 @@ func (h *harness) agentVolumeName(agentName string) string {
 	}
 }
 
+func (h *harness) controlNetworkName() string {
+	return h.projectName + "_control"
+}
+
+func (h *harness) setupControlNetwork(ctx context.Context) error {
+	h.controlNetwork = h.controlNetworkName()
+	h.log.Info("setting up isolated control network", "network", h.controlNetwork)
+
+	// Remove any stale network left by a prior interrupted run.
+	_ = h.dockerNetworkRemove(ctx, h.controlNetwork)
+
+	if err := h.dockerNetworkCreate(ctx, h.controlNetwork); err != nil {
+		return fmt.Errorf("create control network: %w", err)
+	}
+	// Give the helper containers DNS resolution for the same CASTLE_ADDR the
+	// harness uses by aliasing the Castle container as "castle" on the new
+	// network. The helpers stay off the Compose project network, so their
+	// exits are invisible to --abort-on-container-exit.
+	if err := h.dockerNetworkConnect(ctx, h.controlNetwork, h.castleContainer, "castle"); err != nil {
+		return fmt.Errorf("connect castle to control network: %w", err)
+	}
+	return nil
+}
+
+func (h *harness) teardownControlNetwork(ctx context.Context) {
+	if h.controlNetwork == "" {
+		return
+	}
+	h.log.Info("tearing down isolated control network", "network", h.controlNetwork)
+	if err := h.dockerNetworkDisconnect(ctx, h.controlNetwork, h.castleContainer); err != nil {
+		h.log.Warn("failed to disconnect castle from control network", "err", err)
+	}
+	if err := h.dockerNetworkRemove(ctx, h.controlNetwork); err != nil {
+		h.log.Warn("failed to remove control network", "err", err)
+	}
+	h.controlNetwork = ""
+}
+
 func (h *harness) runControlClient(ctx context.Context, op, runID, agentName string) error {
 	h.log.Info("running control client", "op", op, "run_id", runID, "agent", agentName)
-	volume := h.agentVolumeName(agentName)
-	// The agent container writes state to /var/lib/agent/agent-state.json;
-	// mount the owning agent's named volume at the same path read-only.
-	mountPath := "/var/lib/agent"
-	tokenFile := mountPath + "/agent-state.json"
-	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
-		"--network", h.projectName+"_default",
-		"-e", "CASTLE_ADDR="+h.castleAddr,
-		"-v", volume+":"+mountPath+":ro",
-		h.controlClientImg,
-		"control", "--op", op, "--run-id", runID, "--agent-token-file", tokenFile,
-	)
+	cmd := h.controlClientCmd(ctx, op, runID, agentName)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
+func (h *harness) controlClientCmd(ctx context.Context, op, runID, agentName string) *exec.Cmd {
+	volume := h.agentVolumeName(agentName)
+	// The agent container writes state to /var/lib/agent/agent-state.json;
+	// mount the owning agent's named volume at the same path read-only.
+	mountPath := "/var/lib/agent"
+	tokenFile := mountPath + "/agent-state.json"
+
+	// Use the isolated control network when available; fall back to the
+	// project network only when the harness is invoked directly without
+	// first calling setupControlNetwork.
+	network := h.projectName + "_default"
+	if h.controlNetwork != "" {
+		network = h.controlNetwork
+	}
+
+	return h.execCmd(ctx, "docker", "run", "--rm",
+		"--network", network,
+		"-e", "CASTLE_ADDR="+h.castleAddr,
+		"-v", volume+":"+mountPath+":ro",
+		h.controlClientImg,
+		"control", "--op", op, "--run-id", runID, "--agent-token-file", tokenFile,
+	)
+}
+
+func (h *harness) execCmd(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	if h.newExecCmd != nil {
+		return h.newExecCmd(ctx, name, arg...)
+	}
+	return exec.CommandContext(ctx, name, arg...)
+}
+
 func (h *harness) dockerRestart(ctx context.Context, container string) error {
-	cmd := exec.CommandContext(ctx, "docker", "--host", "unix://"+h.dockerSocket, "restart", container)
+	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "restart", container)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func (h *harness) dockerNetworkCreate(ctx context.Context, network string) error {
+	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "network", "create", "--driver", "bridge", network)
+	return cmd.Run()
+}
+
+func (h *harness) dockerNetworkRemove(ctx context.Context, network string) error {
+	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "network", "rm", network)
+	return cmd.Run()
+}
+
+func (h *harness) dockerNetworkConnect(ctx context.Context, network, container, alias string) error {
+	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "network", "connect", "--alias", alias, network, container)
+	return cmd.Run()
+}
+
+func (h *harness) dockerNetworkDisconnect(ctx context.Context, network, container string) error {
+	cmd := h.execCmd(ctx, "docker", "--host", "unix://"+h.dockerSocket, "network", "disconnect", network, container)
 	return cmd.Run()
 }
 
