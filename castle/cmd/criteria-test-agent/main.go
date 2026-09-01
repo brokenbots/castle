@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,15 +32,15 @@ import (
 )
 
 const (
-	stateFileName       = "agent-state.json"
-	heartbeatInterval   = 10 * time.Second
-	watchTimeout        = 60 * time.Second
-	defaultLongStepDur  = 30 * time.Second
+	stateFileName      = "agent-state.json"
+	heartbeatInterval  = 10 * time.Second
+	watchTimeout       = 60 * time.Second
+	defaultLongStepDur = 30 * time.Second
 )
 
 type agentState struct {
-	CriteriaID string            `json:"criteria_id"`
-	Token      string            `json:"token"`
+	CriteriaID string               `json:"criteria_id"`
+	Token      string               `json:"token"`
 	Runs       map[string]*runState `json:"runs"`
 }
 
@@ -56,28 +57,34 @@ type runState struct {
 	FailureReason  string `json:"failure_reason,omitempty"`
 }
 
+type runHandle struct {
+	cancel context.CancelFunc
+	gen    int64
+}
+
 type agent struct {
-	log      *slog.Logger
-	cfg      config
-	client   criteriav1connect.CriteriaServiceClient
-	srvClient criteriav1connect.ServerServiceClient
+	log        *slog.Logger
+	cfg        config
+	client     criteriav1connect.CriteriaServiceClient
+	srvClient  criteriav1connect.ServerServiceClient
 	httpClient *http.Client
 
-	mu       sync.Mutex
-	state    agentState
+	mu        sync.Mutex
+	state     agentState
 	statePath string
 
 	resumeCh map[string]chan string // run_id -> resume signal channel
-	runCtx   map[string]context.CancelFunc
+	runCtx   map[string]*runHandle
 	runMu    sync.Mutex
+	runGen   atomic.Int64
 }
 
 type config struct {
-	castleAddr     string
-	name           string
-	labels         map[string]string
-	homeDir        string
-	longStepDur    time.Duration
+	castleAddr  string
+	name        string
+	labels      map[string]string
+	homeDir     string
+	longStepDur time.Duration
 }
 
 func envOrDefault(key, fallback string) string {
@@ -153,7 +160,7 @@ func main() {
 		},
 		statePath: statePath,
 		resumeCh:  map[string]chan string{},
-		runCtx:    map[string]context.CancelFunc{},
+		runCtx:    map[string]*runHandle{},
 	}
 
 	if err := a.loadState(); err != nil {
@@ -264,7 +271,11 @@ func (a *agent) criteriaID() string {
 
 func (a *agent) setRunState(rs *runState) {
 	a.mu.Lock()
-	a.state.Runs[rs.RunID] = rs
+	// Store a private copy so the persisted state is never aliased with a
+	// running executor goroutine. This lets reattachRuns read the map under
+	// lock without racing the executor's unlocked field updates.
+	cpy := *rs
+	a.state.Runs[rs.RunID] = &cpy
 	a.mu.Unlock()
 	if err := a.saveState(); err != nil {
 		a.log.Error("persist run state", "run_id", rs.RunID, "err", err)
@@ -330,6 +341,11 @@ func (a *agent) runControlStream(ctx context.Context) error {
 
 	a.log.Info("control stream ready")
 
+	// The control stream is live. Reattach any in-flight runs so a Castle
+	// restart or transient outage does not leave them stranded on a broken
+	// SubmitEvents stream.
+	a.reattachRuns(ctx)
+
 	for {
 		if !stream.Receive() {
 			err := stream.Err()
@@ -384,9 +400,34 @@ func (a *agent) startRunGoroutine(ctx context.Context, rs *runState) bool {
 		cancel()
 		return false
 	}
-	a.runCtx[rs.RunID] = cancel
-	go a.executeRun(runCtx, rs)
+	gen := a.runGen.Add(1)
+	a.runCtx[rs.RunID] = &runHandle{cancel: cancel, gen: gen}
+	go a.executeRun(runCtx, rs, gen)
 	return true
+}
+
+// restartRunGoroutine cancels any active executor for rs and starts a fresh
+// one. It is used during reattachment so the recovered run gets a working
+// SubmitEvents stream instead of continuing on a stale one.
+func (a *agent) restartRunGoroutine(ctx context.Context, rs *runState) {
+	runCtx, cancel := context.WithCancel(ctx)
+	a.runMu.Lock()
+	if h, ok := a.runCtx[rs.RunID]; ok {
+		h.cancel()
+	}
+	gen := a.runGen.Add(1)
+	a.runCtx[rs.RunID] = &runHandle{cancel: cancel, gen: gen}
+	a.runMu.Unlock()
+	go a.executeRun(runCtx, rs, gen)
+}
+
+// isCurrentExecutor reports whether the executor identified by gen is still the
+// active executor for the run.
+func (a *agent) isCurrentExecutor(runID string, gen int64) bool {
+	a.runMu.Lock()
+	defer a.runMu.Unlock()
+	h, ok := a.runCtx[runID]
+	return ok && h.gen == gen
 }
 
 func (a *agent) handleRunCancel(cancel *pb.RunCancel) {
@@ -403,10 +444,10 @@ func (a *agent) handleRunCancel(cancel *pb.RunCancel) {
 	}
 
 	a.runMu.Lock()
-	cancelFn, ok := a.runCtx[cancel.RunId]
+	h, ok := a.runCtx[cancel.RunId]
 	a.runMu.Unlock()
 	if ok {
-		cancelFn()
+		h.cancel()
 	}
 }
 
@@ -438,7 +479,11 @@ func (a *agent) reattachRuns(ctx context.Context) {
 	a.mu.Lock()
 	runs := make(map[string]*runState, len(a.state.Runs))
 	for id, rs := range a.state.Runs {
-		runs[id] = rs
+		// Work on a private copy; a previous executor may still reference the
+		// persisted pointer and must not observe mutations intended for the
+		// fresh executor.
+		cpy := *rs
+		runs[id] = &cpy
 	}
 	a.mu.Unlock()
 
@@ -467,14 +512,14 @@ func (a *agent) reattachRuns(ctx context.Context) {
 		rs.LastSeq = resp.Msg.LastSeq
 		a.setRunState(rs)
 
-		if !a.startRunGoroutine(ctx, rs) {
-			a.log.Info("run executor already active after reattach", "run_id", rs.RunID)
-		}
+		// Replace any active executor with a fresh one so event submission uses
+		// a new SubmitEvents stream after a Castle outage.
+		a.restartRunGoroutine(ctx, rs)
 	}
 }
 
-func (a *agent) executeRun(ctx context.Context, rs *runState) {
-	a.log.Info("executing run", "run_id", rs.RunID, "workflow", rs.WorkflowName)
+func (a *agent) executeRun(ctx context.Context, rs *runState, gen int64) {
+	a.log.Info("executing run", "run_id", rs.RunID, "workflow", rs.WorkflowName, "gen", gen)
 
 	// Open SubmitEvents stream for this run.
 	stream := a.client.SubmitEvents(ctx)
@@ -484,7 +529,9 @@ func (a *agent) executeRun(ctx context.Context, rs *runState) {
 		_ = stream.CloseRequest()
 		_ = stream.CloseResponse()
 		a.runMu.Lock()
-		delete(a.runCtx, rs.RunID)
+		if h, ok := a.runCtx[rs.RunID]; ok && h.gen == gen {
+			delete(a.runCtx, rs.RunID)
+		}
 		a.runMu.Unlock()
 	}()
 
@@ -493,13 +540,35 @@ func (a *agent) executeRun(ctx context.Context, rs *runState) {
 		return
 	}
 
+	// abort is a helper that returns true when this executor has been
+	// superseded or its context is done and should not mutate run state.
+	abort := func() bool {
+		return ctx.Err() != nil || !a.isCurrentExecutor(rs.RunID, gen)
+	}
+
+	// send is a wrapper around sendEvent that treats stream errors as fatal
+	// only while this executor remains current. A superseded executor (e.g.
+	// one whose stream broke during a Castle restart) must not fail the run.
+	send := func(env *criteria.Envelope) bool {
+		if abort() {
+			return false
+		}
+		if err := a.sendEvent(stream, rs, env); err != nil {
+			if abort() {
+				return false
+			}
+			a.logErrorAndFail(ctx, stream, rs, gen, "send event", err)
+			return false
+		}
+		return true
+	}
+
 	// Start the run if it is not already running.
 	if rs.Status == "pending" {
-		if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.RunStarted{
+		if !send(criteria.NewEnvelope(rs.RunID, &pb.RunStarted{
 			WorkflowName: rs.WorkflowName,
 			InitialStep:  "compile",
-		})); err != nil {
-			a.logErrorAndFail(stream, rs, "failed to start run", err)
+		})) {
 			return
 		}
 		rs.Status = "running"
@@ -508,45 +577,44 @@ func (a *agent) executeRun(ctx context.Context, rs *runState) {
 	}
 
 	// Simulate compilation.
-	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.StepEntered{
+	if !send(criteria.NewEnvelope(rs.RunID, &pb.StepEntered{
 		Step:    "compile",
 		Attempt: 1,
-	})); err != nil {
-		a.logErrorAndFail(stream, rs, "failed to emit step entered", err)
+	})) {
 		return
 	}
 
 	if strings.Contains(rs.WorkflowSource, "invalid") {
-		a.failRun(stream, rs, "compilation failed: invalid workflow source")
+		if abort() {
+			return
+		}
+		a.failRun(ctx, stream, rs, gen, "compilation failed: invalid workflow source")
 		return
 	}
 
-	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.StepOutcome{
+	if !send(criteria.NewEnvelope(rs.RunID, &pb.StepOutcome{
 		Step:    "compile",
 		Outcome: "success",
-	})); err != nil {
-		a.logErrorAndFail(stream, rs, "failed to emit step outcome", err)
+	})) {
 		return
 	}
 
 	// Execute the main step.
 	rs.CurrentStep = "main"
 	a.setRunState(rs)
-	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.StepEntered{
+	if !send(criteria.NewEnvelope(rs.RunID, &pb.StepEntered{
 		Step:    "main",
 		Attempt: 1,
-	})); err != nil {
-		a.logErrorAndFail(stream, rs, "failed to emit step entered", err)
+	})) {
 		return
 	}
 
 	// Pause workflow: emit WaitEntered and block until resumed.
 	if strings.Contains(rs.WorkflowSource, "pause") {
-		if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.WaitEntered{
+		if !send(criteria.NewEnvelope(rs.RunID, &pb.WaitEntered{
 			Node:   "approval",
 			Signal: "resume-test",
-		})); err != nil {
-			a.logErrorAndFail(stream, rs, "failed to emit wait entered", err)
+		})) {
 			return
 		}
 
@@ -569,12 +637,11 @@ func (a *agent) executeRun(ctx context.Context, rs *runState) {
 			a.log.Info("resuming paused run", "run_id", rs.RunID, "signal", sig)
 		}
 
-		if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.WaitResumed{
+		if !send(criteria.NewEnvelope(rs.RunID, &pb.WaitResumed{
 			Node:   "approval",
 			Mode:   "signal",
 			Signal: "resume-test",
-		})); err != nil {
-			a.logErrorAndFail(stream, rs, "failed to emit wait resumed", err)
+		})) {
 			return
 		}
 		rs.Paused = false
@@ -593,36 +660,35 @@ func (a *agent) executeRun(ctx context.Context, rs *runState) {
 		}
 	}
 
-	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.StepOutcome{
+	if !send(criteria.NewEnvelope(rs.RunID, &pb.StepOutcome{
 		Step:    "main",
 		Outcome: "success",
-	})); err != nil {
-		a.logErrorAndFail(stream, rs, "failed to emit step outcome", err)
+	})) {
 		return
 	}
 
 	rs.CurrentStep = "finish"
 	a.setRunState(rs)
-	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.StepEntered{
+	if !send(criteria.NewEnvelope(rs.RunID, &pb.StepEntered{
 		Step:    "finish",
 		Attempt: 1,
-	})); err != nil {
-		a.logErrorAndFail(stream, rs, "failed to emit step entered", err)
+	})) {
 		return
 	}
-	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.StepOutcome{
+	if !send(criteria.NewEnvelope(rs.RunID, &pb.StepOutcome{
 		Step:    "finish",
 		Outcome: "success",
-	})); err != nil {
-		a.logErrorAndFail(stream, rs, "failed to emit step outcome", err)
+	})) {
 		return
 	}
 
-	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.RunCompleted{Success: true})); err != nil {
-		a.logErrorAndFail(stream, rs, "failed to emit run completed", err)
+	if !send(criteria.NewEnvelope(rs.RunID, &pb.RunCompleted{Success: true})) {
 		return
 	}
 
+	if abort() {
+		return
+	}
 	rs.Status = "succeeded"
 	a.setRunState(rs)
 	a.deleteRunState(rs.RunID)
@@ -698,7 +764,11 @@ func (a *agent) failRunWithBackgroundStream(rs *runState, reason string) {
 	a.deleteRunState(rs.RunID)
 }
 
-func (a *agent) failRun(stream *connect.BidiStreamForClient[criteria.Envelope, pb.Ack], rs *runState, reason string) {
+func (a *agent) failRun(ctx context.Context, stream *connect.BidiStreamForClient[criteria.Envelope, pb.Ack], rs *runState, gen int64, reason string) {
+	if ctx.Err() != nil || !a.isCurrentExecutor(rs.RunID, gen) {
+		a.log.Info("aborting failRun for superseded executor", "run_id", rs.RunID, "reason", reason)
+		return
+	}
 	a.log.Info("failing run", "run_id", rs.RunID, "reason", reason)
 	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.RunFailed{
 		Reason: reason,
@@ -711,9 +781,13 @@ func (a *agent) failRun(stream *connect.BidiStreamForClient[criteria.Envelope, p
 	a.deleteRunState(rs.RunID)
 }
 
-func (a *agent) logErrorAndFail(stream *connect.BidiStreamForClient[criteria.Envelope, pb.Ack], rs *runState, msg string, err error) {
+func (a *agent) logErrorAndFail(ctx context.Context, stream *connect.BidiStreamForClient[criteria.Envelope, pb.Ack], rs *runState, gen int64, msg string, err error) {
 	a.log.Error(msg, "run_id", rs.RunID, "err", err)
-	a.failRun(stream, rs, fmt.Sprintf("%s: %v", msg, err))
+	if ctx.Err() != nil || !a.isCurrentExecutor(rs.RunID, gen) {
+		a.log.Info("aborting logErrorAndFail for superseded executor", "run_id", rs.RunID)
+		return
+	}
+	a.failRun(ctx, stream, rs, gen, fmt.Sprintf("%s: %v", msg, err))
 }
 
 func isTerminal(status string) bool {

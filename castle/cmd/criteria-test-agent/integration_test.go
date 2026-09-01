@@ -4,10 +4,12 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,7 +93,7 @@ func newIntegrationAgent(t *testing.T, baseURL, dir, name string, labels map[str
 		state:     agentState{Runs: map[string]*runState{}},
 		statePath: filepath.Join(dir, stateFileName),
 		resumeCh:  map[string]chan string{},
-		runCtx:    map[string]context.CancelFunc{},
+		runCtx:    map[string]*runHandle{},
 		cfg: config{
 			castleAddr:  baseURL,
 			name:        name,
@@ -415,4 +417,293 @@ func waitForOnline(ctx context.Context, client criteriav1connect.ServerServiceCl
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// trackedListener wraps a net.Listener so we can forcibly close all accepted
+// connections. httptest.Server.Close does not close hijacked HTTP/2 (h2c)
+// connections, so we must track and close them ourselves to simulate a
+// transient Castle outage that breaks existing agent streams.
+type trackedListener struct {
+	net.Listener
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func (l *trackedListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	tc := &trackedConn{Conn: c, l: l}
+	l.mu.Lock()
+	l.conns = append(l.conns, tc)
+	l.mu.Unlock()
+	return tc, nil
+}
+
+func (l *trackedListener) activeConns() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.conns)
+}
+
+func (l *trackedListener) closeConns() {
+	l.mu.Lock()
+	for _, c := range l.conns {
+		_ = c.(*trackedConn).Conn.Close()
+	}
+	l.conns = nil
+	l.mu.Unlock()
+}
+
+func (l *trackedListener) remove(c net.Conn) {
+	l.mu.Lock()
+	for i, cc := range l.conns {
+		if cc == c {
+			l.conns = append(l.conns[:i], l.conns[i+1:]...)
+			break
+		}
+	}
+	l.mu.Unlock()
+}
+
+type trackedConn struct {
+	net.Conn
+	l *trackedListener
+}
+
+func (c *trackedConn) Close() error {
+	c.l.remove(c)
+	return c.Conn.Close()
+}
+
+// restartableCastle runs an in-process Castle server on a listener that can be
+// closed and rebound, simulating a transient Castle restart while preserving
+// the same SQLite store.
+type restartableCastle struct {
+	t        *testing.T
+	server   *httptest.Server
+	listener net.Listener
+	store    *sqlite.Store
+	log      *slog.Logger
+	token    string
+}
+
+func newRestartableCastle(t *testing.T) *restartableCastle {
+	t.Helper()
+
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	st.SetMaxOpenConns(1)
+
+	log := slog.New(slog.NewTextHandler(&testLogWriter{t: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cf := &restartableCastle{t: t, store: st, log: log}
+	cf.startServer()
+
+	client := h2cClient()
+	criClient := criteriav1connect.NewCriteriaServiceClient(client, cf.server.URL)
+	regReq := connect.NewRequest(&pb.RegisterRequest{Name: "test-owner"})
+	regResp, err := criClient.Register(context.Background(), regReq)
+	if err != nil {
+		t.Fatalf("register owner: %v", err)
+	}
+	cf.token = regResp.Msg.Token
+
+	return cf
+}
+
+func (cf *restartableCastle) startServer() {
+	cf.t.Helper()
+
+	if cf.server != nil {
+		cf.server.Close()
+	}
+	if cf.listener != nil {
+		_ = cf.listener.Close()
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		cf.t.Fatalf("listen: %v", err)
+	}
+	cf.listener = &trackedListener{Listener: ln}
+
+	h := hub.New()
+	controls := rpc.NewControlRegistry()
+	criteriaSrv := rpc.NewCriteriaServer(cf.store, h, cf.log, controls)
+	serverSrv := rpc.NewServerServer(cf.store, h, cf.log, controls)
+
+	authInterceptor := auth.NewInterceptor(cf.store, true, auth.WithAnonRegister())
+	opts := []connect.HandlerOption{connect.WithInterceptors(authInterceptor)}
+
+	mux := http.NewServeMux()
+	criPath, criHandler := criteriav1connect.NewCriteriaServiceHandler(criteriaSrv, opts...)
+	srvPath, srvHandler := criteriav1connect.NewServerServiceHandler(serverSrv, opts...)
+	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
+		criteriav1connect.CriteriaServiceName,
+		criteriav1connect.ServerServiceName,
+	))
+	mux.Handle(criPath, criHandler)
+	mux.Handle(srvPath, srvHandler)
+	mux.Handle(healthPath, healthHandler)
+
+	cf.server = httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
+	cf.server.Listener = cf.listener
+	cf.server.Start()
+}
+
+// Restart closes the current HTTP server, rebinds the same listener address,
+// and starts a fresh Castle server backed by the same store.
+func (cf *restartableCastle) Restart() {
+	cf.t.Helper()
+
+	addr := cf.listener.Addr().String()
+	cf.server.Close()
+	cf.listener.(*trackedListener).closeConns()
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		cf.t.Fatalf("rebind listener on %s: %v", addr, err)
+	}
+	cf.listener = &trackedListener{Listener: ln}
+
+	h := hub.New()
+	controls := rpc.NewControlRegistry()
+	criteriaSrv := rpc.NewCriteriaServer(cf.store, h, cf.log, controls)
+	serverSrv := rpc.NewServerServer(cf.store, h, cf.log, controls)
+
+	authInterceptor := auth.NewInterceptor(cf.store, true, auth.WithAnonRegister())
+	opts := []connect.HandlerOption{connect.WithInterceptors(authInterceptor)}
+
+	mux := http.NewServeMux()
+	criPath, criHandler := criteriav1connect.NewCriteriaServiceHandler(criteriaSrv, opts...)
+	srvPath, srvHandler := criteriav1connect.NewServerServiceHandler(serverSrv, opts...)
+	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
+		criteriav1connect.CriteriaServiceName,
+		criteriav1connect.ServerServiceName,
+	))
+	mux.Handle(criPath, criHandler)
+	mux.Handle(srvPath, srvHandler)
+	mux.Handle(healthPath, healthHandler)
+
+	cf.server = httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
+	cf.server.Listener = cf.listener
+	cf.server.Start()
+}
+
+func TestAgentReattachAfterCastleRestart(t *testing.T) {
+	cf := newRestartableCastle(t)
+	srvClient := criteriav1connect.NewServerServiceClient(h2cClient(), cf.server.URL)
+
+	dir := t.TempDir()
+	a := newIntegrationAgent(t, cf.server.URL, dir, "test-agent", map[string]string{"pool": "test"})
+	a.cfg.longStepDur = 10 * time.Second // long enough to restart Castle mid-execution
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.heartbeatLoop(ctx)
+	go a.controlLoop(ctx)
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer waitCancel()
+	if err := waitForOnline(waitCtx, srvClient, cf.token, 1); err != nil {
+		t.Fatalf("agent not online: %v", err)
+	}
+
+	// Start a long-running run so we can restart Castle mid-execution.
+	submitReq := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+		WorkflowName:   "castle-restart-test",
+		WorkflowSource: "# restart fixture\nvalid\nlong",
+		Labels:         map[string]string{"pool": "test"},
+		IdempotencyKey: "castle-restart-key",
+	})
+	submitReq.Header().Set("Authorization", "Bearer "+cf.token)
+	submitResp, err := srvClient.SubmitWorkflowAssignment(ctx, submitReq)
+	if err != nil {
+		t.Fatalf("submit assignment: %v", err)
+	}
+	runID := submitResp.Msg.RunId
+
+	waitCtx2, waitCancel2 := context.WithTimeout(ctx, 15*time.Second)
+	defer waitCancel2()
+	waitForRunStatus(waitCtx2, t, srvClient, cf.token, runID, "running")
+
+	// Simulate transient Castle restart: close the listener and rebind the
+	// same port after a short delay.
+	t.Logf("before restart; active conns=%d", cf.listener.(*trackedListener).activeConns())
+	cf.Restart()
+	t.Logf("after restart; active conns=%d new addr=%s", cf.listener.(*trackedListener).activeConns(), cf.server.URL)
+	// Use a fresh test-side client for post-restart queries; the agent's
+	// existing client will redial the same address once the old connections
+	// are closed.
+	srvClient = criteriav1connect.NewServerServiceClient(h2cClient(), cf.server.URL)
+
+	// The agent should reconnect Control, reattach the in-flight run, and
+	// resume event submission on a fresh SubmitEvents stream.
+	watchRunTerminal(t, srvClient, cf.token, runID, "succeeded", 30*time.Second)
+
+	cancel()
+	waitForNoActiveRuns(t, a, 5*time.Second)
+	assertNoDuplicateEvents(t, srvClient, cf.token, runID)
+}
+
+func TestTerminalRunSurvivesCastleRestart(t *testing.T) {
+	cf := newRestartableCastle(t)
+	srvClient := criteriav1connect.NewServerServiceClient(h2cClient(), cf.server.URL)
+
+	dir := t.TempDir()
+	a := newIntegrationAgent(t, cf.server.URL, dir, "test-agent", map[string]string{"pool": "test"})
+	a.cfg.longStepDur = 5 * time.Second // long enough to restart Castle mid-execution
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.heartbeatLoop(ctx)
+	go a.controlLoop(ctx)
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer waitCancel()
+	if err := waitForOnline(waitCtx, srvClient, cf.token, 1); err != nil {
+		t.Fatalf("agent not online: %v", err)
+	}
+
+	// Start a short run that will complete before Castle restarts.
+	submitReq := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
+		WorkflowName:   "terminal-survive-test",
+		WorkflowSource: "# terminal fixture\nvalid",
+		Labels:         map[string]string{"pool": "test"},
+		IdempotencyKey: "terminal-survive-key",
+	})
+	submitReq.Header().Set("Authorization", "Bearer "+cf.token)
+	submitResp, err := srvClient.SubmitWorkflowAssignment(ctx, submitReq)
+	if err != nil {
+		t.Fatalf("submit assignment: %v", err)
+	}
+	runID := submitResp.Msg.RunId
+
+	watchRunTerminal(t, srvClient, cf.token, runID, "succeeded", 15*time.Second)
+
+	// Restart Castle after the run is terminal. The agent must report the
+	// terminal status without reopening a SubmitEvents stream.
+	cf.Restart()
+	srvClient = criteriav1connect.NewServerServiceClient(h2cClient(), cf.server.URL)
+
+	getReq := connect.NewRequest(&pb.GetRunRequest{RunId: runID})
+	getReq.Header().Set("Authorization", "Bearer "+cf.token)
+	getResp, err := srvClient.GetRun(context.Background(), getReq)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if getResp.Msg.Status != "succeeded" {
+		t.Fatalf("run status %q after restart, want succeeded", getResp.Msg.Status)
+	}
+
+	// Give the agent a moment to reconnect Control and ensure it does not emit
+	// duplicate terminal events.
+	time.Sleep(500 * time.Millisecond)
+	cancel()
+	waitForNoActiveRuns(t, a, 5*time.Second)
+	assertNoDuplicateEvents(t, srvClient, cf.token, runID)
 }
