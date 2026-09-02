@@ -649,7 +649,10 @@ func TestAgentReattachAfterCastleRestart(t *testing.T) {
 
 	// The agent should reconnect Control, reattach the in-flight run, and
 	// resume event submission on a fresh SubmitEvents stream.
-	watchRunTerminal(t, srvClient, cf.token, runID, "succeeded", 30*time.Second)
+	// After the restart the gen=2 executor may re-emit StepEntered/StepOutcome
+	// events for steps Castle already persisted, and those duplicates are ignored.
+	// Wait long enough for the remaining longStepDur plus deduplication/retry margin.
+	watchRunTerminal(t, srvClient, cf.token, runID, "succeeded", 3*a.cfg.longStepDur+5*time.Second)
 
 	cancel()
 	waitForNoActiveRuns(t, a, 5*time.Second)

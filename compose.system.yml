@@ -77,9 +77,9 @@ services:
       AGENT_A_CONTAINER: castle-system-test-agent-a-1
       AGENT_B_CONTAINER: castle-system-test-agent-b-1
       SUBMISSION_CONTAINER: castle-system-test-submission-1
-      CONTROL_CLIENT_IMAGE: castle-system-test-harness
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./compose.system.yml:/src/compose.system.yml:ro
     depends_on:
       castle:
         condition: service_healthy
@@ -88,6 +88,16 @@ services:
       agent-b:
         condition: service_healthy
     command: ["smoke"]
+
+  # Profiled control client used by the submission harness for docker compose run
+  # one-off helpers. Keeping it off the default profile prevents it from starting
+  # during `docker compose up`, while still allowing the harness to spawn isolated
+  # resume/stop control containers that are ignored by --abort-on-container-exit.
+  control:
+    profiles: ["control"]
+    image: castle-system-test-harness
+    environment:
+      CASTLE_ADDR: http://castle:8080
 
 volumes:
   castle-data:

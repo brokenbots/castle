@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -68,8 +69,12 @@ func TestComposeAgentHealthCheck(t *testing.T) {
 
 	// The bug: pgrep -x looks at /proc/<pid>/comm, which is truncated to 15
 	// characters for "criteria-test-agent". It must fail to find the process.
-	if out, err := exec.Command("pgrep", "-x", "criteria-test-agent").CombinedOutput(); err == nil {
-		t.Errorf("pgrep -x unexpectedly matched a process: %s", out)
+	// This is a Linux-specific regression guard; on macOS the comm is not
+	// truncated, so the assertion does not hold there.
+	if runtime.GOOS == "linux" {
+		if out, err := exec.Command("pgrep", "-x", "criteria-test-agent").CombinedOutput(); err == nil {
+			t.Errorf("pgrep -x unexpectedly matched a process: %s", out)
+		}
 	}
 
 	// Extract the health-check command from compose.system.yml and run it

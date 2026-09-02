@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -87,22 +86,21 @@ func TestLoadAgentToken(t *testing.T) {
 	}
 }
 
-func TestControlClientCmdUsesIsolatedNetwork(t *testing.T) {
+func TestControlClientCmdUsesComposeRun(t *testing.T) {
 	h := &harness{
-		log:              discardLogger(),
-		projectName:      "castle-system-test",
-		castleAddr:       "http://castle:8080",
-		controlClientImg: "castle-system-test-harness",
-		controlNetwork:   "castle-system-test_control",
+		log:         discardLogger(),
+		projectName: "castle-system-test",
+		composeFile: "/src/compose.system.yml",
 	}
 	cmd := h.controlClientCmd(context.Background(), "resume", "run-123", "agent-a")
 
 	want := []string{
-		"docker", "run", "--rm",
-		"--network", "castle-system-test_control",
-		"-e", "CASTLE_ADDR=http://castle:8080",
+		"docker", "compose",
+		"-f", "/src/compose.system.yml",
+		"-p", "castle-system-test",
+		"run", "--rm", "--no-deps",
 		"-v", "castle-system-test_agent-a-home:/var/lib/agent:ro",
-		"castle-system-test-harness",
+		"control",
 		"control", "--op", "resume", "--run-id", "run-123", "--agent-token-file", "/var/lib/agent/agent-state.json",
 	}
 	if !reflect.DeepEqual(cmd.Args, want) {
@@ -110,83 +108,24 @@ func TestControlClientCmdUsesIsolatedNetwork(t *testing.T) {
 	}
 }
 
-func TestControlClientCmdFallsBackToProjectNetwork(t *testing.T) {
+func TestControlClientCmdVariesByAgent(t *testing.T) {
 	h := &harness{
-		log:              discardLogger(),
-		projectName:      "castle-system-test",
-		castleAddr:       "http://castle:8080",
-		controlClientImg: "castle-system-test-harness",
+		log:         discardLogger(),
+		projectName: "castle-system-test",
+		composeFile: "/src/compose.system.yml",
 	}
 	cmd := h.controlClientCmd(context.Background(), "stop", "run-456", "agent-b")
 
-	if got := cmd.Args[4]; got != "castle-system-test_default" {
-		t.Errorf("fallback network = %q, want castle-system-test_default", got)
+	want := []string{
+		"docker", "compose",
+		"-f", "/src/compose.system.yml",
+		"-p", "castle-system-test",
+		"run", "--rm", "--no-deps",
+		"-v", "castle-system-test_agent-b-home:/var/lib/agent:ro",
+		"control",
+		"control", "--op", "stop", "--run-id", "run-456", "--agent-token-file", "/var/lib/agent/agent-state.json",
 	}
-}
-
-func TestSetupControlNetworkCommands(t *testing.T) {
-	var recorded [][]string
-	h := &harness{
-		log:             discardLogger(),
-		projectName:     "castle-system-test",
-		castleContainer: "castle-system-test-castle-1",
-		dockerSocket:    "/var/run/docker.sock",
-		newExecCmd: func(_ context.Context, name string, arg ...string) *exec.Cmd {
-			recorded = append(recorded, append([]string{name}, arg...))
-			// Return a command that does nothing so Run() succeeds.
-			return exec.CommandContext(context.Background(), "true")
-		},
-	}
-
-	if err := h.setupControlNetwork(context.Background()); err != nil {
-		t.Fatalf("setup control network: %v", err)
-	}
-	if h.controlNetwork != "castle-system-test_control" {
-		t.Errorf("controlNetwork = %q, want castle-system-test_control", h.controlNetwork)
-	}
-	if len(recorded) < 3 {
-		t.Fatalf("expected at least 3 docker commands, got %d: %v", len(recorded), recorded)
-	}
-
-	// First command is a best-effort cleanup of stale network.
-	if got, want := recorded[0], []string{"docker", "--host", "unix:///var/run/docker.sock", "network", "rm", "castle-system-test_control"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("cleanup command = %v, want %v", got, want)
-	}
-	// Second command creates the network.
-	if got, want := recorded[1], []string{"docker", "--host", "unix:///var/run/docker.sock", "network", "create", "--driver", "bridge", "castle-system-test_control"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("create command = %v, want %v", got, want)
-	}
-	// Third command connects castle with the "castle" alias.
-	if got, want := recorded[2], []string{"docker", "--host", "unix:///var/run/docker.sock", "network", "connect", "--alias", "castle", "castle-system-test_control", "castle-system-test-castle-1"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("connect command = %v, want %v", got, want)
-	}
-}
-
-func TestTeardownControlNetworkCommands(t *testing.T) {
-	var recorded [][]string
-	h := &harness{
-		log:             discardLogger(),
-		projectName:     "castle-system-test",
-		castleContainer: "castle-system-test-castle-1",
-		dockerSocket:    "/var/run/docker.sock",
-		controlNetwork:  "castle-system-test_control",
-		newExecCmd: func(_ context.Context, name string, arg ...string) *exec.Cmd {
-			recorded = append(recorded, append([]string{name}, arg...))
-			return exec.CommandContext(context.Background(), "true")
-		},
-	}
-
-	h.teardownControlNetwork(context.Background())
-	if h.controlNetwork != "" {
-		t.Errorf("controlNetwork not cleared, got %q", h.controlNetwork)
-	}
-	if len(recorded) != 2 {
-		t.Fatalf("expected 2 docker commands, got %d: %v", len(recorded), recorded)
-	}
-	if got, want := recorded[0], []string{"docker", "--host", "unix:///var/run/docker.sock", "network", "disconnect", "castle-system-test_control", "castle-system-test-castle-1"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("disconnect command = %v, want %v", got, want)
-	}
-	if got, want := recorded[1], []string{"docker", "--host", "unix:///var/run/docker.sock", "network", "rm", "castle-system-test_control"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("remove command = %v, want %v", got, want)
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Errorf("cmd.Args = %v, want %v", cmd.Args, want)
 	}
 }
