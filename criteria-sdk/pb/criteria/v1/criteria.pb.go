@@ -1210,8 +1210,7 @@ type ResumeRequest struct {
 	Signal string `protobuf:"bytes,2,opt,name=signal,proto3" json:"signal,omitempty"`
 	// payload carries optional key/value metadata.
 	// For approval: payload["decision"] = "approved" | "rejected"
-	//
-	//	payload["actor"]    = identity of approver (audit metadata).
+	//               payload["actor"]    = identity of approver (audit metadata).
 	Payload       map[string]string `protobuf:"bytes,3,rep,name=payload,proto3" json:"payload,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
