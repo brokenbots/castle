@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { RunDetailPage } from './RunDetailPage';
 import { store } from '../../store';
 
@@ -10,6 +10,25 @@ vi.mock('./watchRun', () => ({
 }));
 
 import { startWatch } from './watchRun';
+
+// Mutable fixture so tests can vary run metadata (CRI-131) without a second
+// module mock. UseGetRunQuery returns this object verbatim.
+const fixture = vi.hoisted(() => ({
+  data: {
+    runId: 'run-1',
+    criteriaId: 'ov-1',
+    workflowName: 'hello',
+    workflowHash:
+      'workflow "hello" {\n  start_at = "build"\n  step "build" {\n    transitions = {\n      "success" = "test"\n    }\n  }\n  step "test" {\n    transitions = {\n      "success" = "done"\n    }\n  }\n  state "done" { terminal = true }\n}',
+    status: 'running',
+    createdAt: new Date().toISOString(),
+    finalState: '',
+    failureReason: '',
+    ticket: '',
+    repoUrl: '',
+    prUrl: '',
+  } as Record<string, unknown>,
+}));
 
 vi.mock('../../api/castleApi', async () => {
   const actual = await vi.importActual<typeof import('../../api/castleApi')>(
@@ -20,23 +39,19 @@ vi.mock('../../api/castleApi', async () => {
     useGetRunQuery: () => ({
       isLoading: false,
       error: undefined,
-      data: {
-        runId: 'run-1',
-        criteriaId: 'ov-1',
-        workflowName: 'hello',
-        workflowHash:
-          'workflow "hello" {\n  start_at = "build"\n  step "build" {\n    transitions = {\n      "success" = "test"\n    }\n  }\n  step "test" {\n    transitions = {\n      "success" = "done"\n    }\n  }\n  state "done" { terminal = true }\n}',
-        status: 'running',
-        createdAt: new Date().toISOString(),
-        finalState: '',
-        failureReason: '',
-      },
+      data: fixture.data,
     }),
     useListEventsQuery: () => ({ data: [] }),
   };
 });
 
 describe('RunDetailPage', () => {
+  beforeEach(() => {
+    fixture.data.ticket = '';
+    fixture.data.repoUrl = '';
+    fixture.data.prUrl = '';
+  });
+
   test('starts WatchRun with sinceSeq=0 and subscriberId', async () => {
     const randomUUID = vi
       .spyOn(crypto, 'randomUUID')
@@ -77,6 +92,46 @@ describe('RunDetailPage', () => {
     expect(await screen.findByText('Workflow source')).toBeInTheDocument();
     expect(await screen.findByText('Step graph')).toBeInTheDocument();
     expect((await screen.findAllByText(/build/)).length).toBeGreaterThan(0);
+  });
+
+  test('renders ticket, repo and PR link for k8s-native runs', async () => {
+    fixture.data.ticket = 'CRI-131';
+    fixture.data.repoUrl = 'brokenbots/castle';
+    fixture.data.prUrl = 'https://github.com/brokenbots/castle/pull/42';
+
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    expect(await screen.findByText('CRI-131')).toBeInTheDocument();
+    expect(await screen.findByText('brokenbots/castle')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'PR' });
+    expect(link.getAttribute('href')).toBe('https://github.com/brokenbots/castle/pull/42');
+    expect(link.getAttribute('rel')).toBe('noreferrer');
+  });
+
+  test('does not render PR link for non-http prUrl values', async () => {
+    fixture.data.ticket = 'CRI-131';
+    fixture.data.prUrl = 'javascript:alert(1)';
+
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    expect(await screen.findByText('CRI-131')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'PR' })).not.toBeInTheDocument();
   });
 
   test('supports both proto and json codec selection', async () => {

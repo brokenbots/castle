@@ -214,6 +214,23 @@ export class CreateRunRequest extends Message<CreateRunRequest> {
    */
   workflowHash = "";
 
+  /**
+   * ticket is the external ticket identifier the run is attached to (e.g.
+   * "CRI-104"). Empty for agent-initiated runs. External orchestrators such
+   * as the criteria-k8s operator set it so UIs can show the ticket label.
+   *
+   * @generated from field: string ticket = 4;
+   */
+  ticket = "";
+
+  /**
+   * repo_url is the repository the run operates on (e.g. "brokenbots/castle").
+   * Empty for agent-initiated runs.
+   *
+   * @generated from field: string repo_url = 5;
+   */
+  repoUrl = "";
+
   constructor(data?: PartialMessage<CreateRunRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -225,6 +242,8 @@ export class CreateRunRequest extends Message<CreateRunRequest> {
     { no: 1, name: "criteria_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "workflow_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "workflow_hash", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "ticket", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "repo_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateRunRequest {
@@ -302,6 +321,31 @@ export class Run extends Message<Run> {
    */
   failureReason = "";
 
+  /**
+   * ticket is the external ticket identifier the run is attached to (e.g.
+   * "CRI-104"). Empty for agent-initiated runs. CRI-131.
+   *
+   * @generated from field: string ticket = 11;
+   */
+  ticket = "";
+
+  /**
+   * repo_url is the repository the run operates on. Empty for agent-initiated
+   * runs. CRI-131.
+   *
+   * @generated from field: string repo_url = 12;
+   */
+  repoUrl = "";
+
+  /**
+   * pr_url is the pull request URL produced by the run, when known. External
+   * orchestrators publish it via a run.metadata event once it is known.
+   * CRI-131.
+   *
+   * @generated from field: string pr_url = 13;
+   */
+  prUrl = "";
+
   constructor(data?: PartialMessage<Run>) {
     super();
     proto3.util.initPartial(data, this);
@@ -320,6 +364,9 @@ export class Run extends Message<Run> {
     { no: 8, name: "ended_at", kind: "message", T: Timestamp },
     { no: 9, name: "final_state", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "failure_reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "ticket", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 12, name: "repo_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 13, name: "pr_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Run {

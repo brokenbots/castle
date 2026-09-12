@@ -88,6 +88,88 @@ func TestOverseerCRUD(t *testing.T) {
 	}
 }
 
+// TestRunMetadataCRUD covers the CRI-131 k8s-native run metadata columns:
+// create-time ticket/repo_url persistence, list/get visibility, non-empty-only
+// promotion via SetRunMetadata, and the status-update path leaving metadata
+// intact.
+func TestRunMetadataCRUD(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "ov-1", Name: "k8s-operator", TokenHash: "x", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+
+	r := &store.Run{
+		ID: "r-meta", OverseerID: "ov-1", WorkflowName: "wf", Status: "pending",
+		CreatedAt: now,
+		Ticket:    "CRI-131", RepoURL: "brokenbots/castle",
+	}
+	if err := s.CreateRun(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := s.GetRun(ctx, "r-meta")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Ticket != "CRI-131" || got.RepoURL != "brokenbots/castle" || got.PRURL != "" {
+		t.Errorf("after create: ticket=%q repo=%q pr=%q", got.Ticket, got.RepoURL, got.PRURL)
+	}
+
+	runs, err := s.ListRuns(ctx, "", "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Ticket != "CRI-131" {
+		t.Errorf("list visibility: len=%d ticket=%q", len(runs), runs[0].Ticket)
+	}
+
+	// SetRunMetadata promotes only non-empty values; a later metadata event
+	// that omits ticket/repo_url must not clear them.
+	if err := s.SetRunMetadata(ctx, "r-meta", "", "", "https://github.com/brokenbots/castle/pull/42"); err != nil {
+		t.Fatalf("set metadata: %v", err)
+	}
+	got, err = s.GetRun(ctx, "r-meta")
+	if err != nil {
+		t.Fatalf("get after metadata: %v", err)
+	}
+	if got.PRURL != "https://github.com/brokenbots/castle/pull/42" || got.Ticket != "CRI-131" || got.RepoURL != "brokenbots/castle" {
+		t.Errorf("after metadata: ticket=%q repo=%q pr=%q", got.Ticket, got.RepoURL, got.PRURL)
+	}
+
+	// Run status transitions do not clobber published metadata.
+	got.Status = "succeeded"
+	if err := s.UpdateRun(ctx, got); err != nil {
+		t.Fatalf("update run: %v", err)
+	}
+	got, err = s.GetRun(ctx, "r-meta")
+	if err != nil {
+		t.Fatalf("get after status: %v", err)
+	}
+	if got.Status != "succeeded" || got.Ticket != "CRI-131" || got.PRURL != "https://github.com/brokenbots/castle/pull/42" {
+		t.Errorf("after status update: status=%q ticket=%q pr=%q", got.Status, got.Ticket, got.PRURL)
+	}
+
+	// Unknown run ids are a no-op, not an error.
+	if err := s.SetRunMetadata(ctx, "missing-run", "t", "r", "p"); err != nil {
+		t.Errorf("metadata for unknown run: %v", err)
+	}
+
+	// Agent-initiated runs keep NULL metadata until an orchestrator publishes.
+	if err := s.CreateRun(ctx, &store.Run{ID: "r-agent", OverseerID: "ov-1", WorkflowName: "wf", Status: "pending", CreatedAt: now}); err != nil {
+		t.Fatalf("create agent run: %v", err)
+	}
+	got, err = s.GetRun(ctx, "r-agent")
+	if err != nil {
+		t.Fatalf("get agent run: %v", err)
+	}
+	if got.Ticket != "" || got.RepoURL != "" || got.PRURL != "" {
+		t.Errorf("agent run metadata should be empty: %q/%q/%q", got.Ticket, got.RepoURL, got.PRURL)
+	}
+}
+
 func TestEventAppendAssignsMonotonicSeq(t *testing.T) {
 	s := tempStore(t)
 	ctx := context.Background()

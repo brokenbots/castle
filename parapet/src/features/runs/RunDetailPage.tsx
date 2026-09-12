@@ -65,6 +65,9 @@ export function RunDetailPage() {
 
   const workflowSource = run.data?.workflowHash ?? '';
   const edges = workflowSource ? extractStepGraph(workflowSource) : [];
+  // Only render the PR link for http(s) URLs; the publisher controls the
+  // value and must not be able to inject javascript: hrefs.
+  const prUrl = run.data?.prUrl?.startsWith('http://') || run.data?.prUrl?.startsWith('https://') ? run.data.prUrl : undefined;
 
   // Group events by for_each node
   const forEachNodes = useMemo(() => {
@@ -93,10 +96,25 @@ export function RunDetailPage() {
         <p className="text-sm text-slate-400 font-mono">{run.data.runId}</p>
         <div className="mt-2 flex items-start gap-4">
           <StatusPill status={run.data.status} pauseEvent={pauseState.pauseEvent} />
+          {run.data.ticket && (
+            <span className="text-sm">
+              ticket: <span className="font-mono">{run.data.ticket}</span>
+            </span>
+          )}
+          {run.data.repoUrl && (
+            <span className="text-sm">
+              repo: <span className="font-mono">{run.data.repoUrl}</span>
+            </span>
+          )}
           {run.data.finalState && (
             <span className="text-sm">
               final: <span className="font-mono">{run.data.finalState}</span>
             </span>
+          )}
+          {prUrl && (
+            <a className="text-sm text-sky-400 hover:underline" href={prUrl} target="_blank" rel="noreferrer">
+              PR
+            </a>
           )}
         </div>
       </header>

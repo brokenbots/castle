@@ -71,6 +71,11 @@ message Envelope {
     // RunOutputs — emitted when a run reaches terminal state with declared outputs (W09).
     // Outputs are emitted before run.completed, in declaration order.
     RunOutputs run_outputs = 33;
+    // RunMetadata — emitted by an external orchestrator (e.g. the criteria-k8s
+    // operator) to publish run metadata discovered during orchestration, such
+    // as the pull request URL. The server promotes known fields onto the run
+    // record and stores/fans out the event like any other envelope. CRI-131.
+    RunMetadata run_metadata = 34;
     // WatchReady is a protocol-level sentinel sent once at the start of a
     // WatchRun server-stream, after any persisted-event replay, to flush
     // response headers so the client's WatchRun call can return. It has no
@@ -299,4 +304,19 @@ message RunOutputs {
   // google.protobuf.Value typed_value field if programmatic typed consumption becomes a requirement
   // (e.g. W13 sub-workflow callers needing native type access). Until then, assume consumers will
   // JSON-parse value and understand it may be string/number/bool/null/array/object.
+}
+
+// RunMetadata — external orchestration metadata for a run (CRI-131). Emitted
+// by an orchestrator (e.g. the criteria-k8s operator) after the run record is
+// created, when metadata that was not known at create time (such as the pull
+// request URL) becomes available. Server behavior: promote known fields onto
+// the run record (only non-empty values overwrite) and persist/fan out the
+// event like any other envelope.
+message RunMetadata {
+  // ticket is the external ticket identifier; only overwrites when non-empty.
+  string ticket = 1;
+  // repo_url is the repository the run operates on; only overwrites when non-empty.
+  string repo_url = 2;
+  // pr_url is the pull request URL produced by the run; only overwrites when non-empty.
+  string pr_url = 3;
 }

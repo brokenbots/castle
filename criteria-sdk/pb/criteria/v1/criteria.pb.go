@@ -244,7 +244,14 @@ type CreateRunRequest struct {
 	CriteriaId   string                 `protobuf:"bytes,1,opt,name=criteria_id,json=criteriaId,proto3" json:"criteria_id,omitempty"`
 	WorkflowName string                 `protobuf:"bytes,2,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
 	// Hash of the compiled workflow; used by the server for de-duplication/tracing.
-	WorkflowHash  string `protobuf:"bytes,3,opt,name=workflow_hash,json=workflowHash,proto3" json:"workflow_hash,omitempty"`
+	WorkflowHash string `protobuf:"bytes,3,opt,name=workflow_hash,json=workflowHash,proto3" json:"workflow_hash,omitempty"`
+	// ticket is the external ticket identifier the run is attached to (e.g.
+	// "CRI-104"). Empty for agent-initiated runs. External orchestrators such
+	// as the criteria-k8s operator set it so UIs can show the ticket label.
+	Ticket string `protobuf:"bytes,4,opt,name=ticket,proto3" json:"ticket,omitempty"`
+	// repo_url is the repository the run operates on (e.g. "brokenbots/castle").
+	// Empty for agent-initiated runs.
+	RepoUrl       string `protobuf:"bytes,5,opt,name=repo_url,json=repoUrl,proto3" json:"repo_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -300,6 +307,20 @@ func (x *CreateRunRequest) GetWorkflowHash() string {
 	return ""
 }
 
+func (x *CreateRunRequest) GetTicket() string {
+	if x != nil {
+		return x.Ticket
+	}
+	return ""
+}
+
+func (x *CreateRunRequest) GetRepoUrl() string {
+	if x != nil {
+		return x.RepoUrl
+	}
+	return ""
+}
+
 // Run is the persisted record of a run (mirrors Phase 0 REST DTO).
 type Run struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -313,6 +334,16 @@ type Run struct {
 	EndedAt       *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
 	FinalState    string                 `protobuf:"bytes,9,opt,name=final_state,json=finalState,proto3" json:"final_state,omitempty"`
 	FailureReason string                 `protobuf:"bytes,10,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	// ticket is the external ticket identifier the run is attached to (e.g.
+	// "CRI-104"). Empty for agent-initiated runs. CRI-131.
+	Ticket string `protobuf:"bytes,11,opt,name=ticket,proto3" json:"ticket,omitempty"`
+	// repo_url is the repository the run operates on. Empty for agent-initiated
+	// runs. CRI-131.
+	RepoUrl string `protobuf:"bytes,12,opt,name=repo_url,json=repoUrl,proto3" json:"repo_url,omitempty"`
+	// pr_url is the pull request URL produced by the run, when known. External
+	// orchestrators publish it via a run.metadata event once it is known.
+	// CRI-131.
+	PrUrl         string `protobuf:"bytes,13,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -413,6 +444,27 @@ func (x *Run) GetFinalState() string {
 func (x *Run) GetFailureReason() string {
 	if x != nil {
 		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *Run) GetTicket() string {
+	if x != nil {
+		return x.Ticket
+	}
+	return ""
+}
+
+func (x *Run) GetRepoUrl() string {
+	if x != nil {
+		return x.RepoUrl
+	}
+	return ""
+}
+
+func (x *Run) GetPrUrl() string {
+	if x != nil {
+		return x.PrUrl
 	}
 	return ""
 }
@@ -1346,12 +1398,14 @@ const file_criteria_v1_criteria_proto_rawDesc = "" +
 	"criteriaId\"P\n" +
 	"\x11HeartbeatResponse\x12;\n" +
 	"\vserver_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"serverTime\"}\n" +
+	"serverTime\"\xb0\x01\n" +
 	"\x10CreateRunRequest\x12\x1f\n" +
 	"\vcriteria_id\x18\x01 \x01(\tR\n" +
 	"criteriaId\x12#\n" +
 	"\rworkflow_name\x18\x02 \x01(\tR\fworkflowName\x12#\n" +
-	"\rworkflow_hash\x18\x03 \x01(\tR\fworkflowHash\"\x94\x03\n" +
+	"\rworkflow_hash\x18\x03 \x01(\tR\fworkflowHash\x12\x16\n" +
+	"\x06ticket\x18\x04 \x01(\tR\x06ticket\x12\x19\n" +
+	"\brepo_url\x18\x05 \x01(\tR\arepoUrl\"\xde\x03\n" +
 	"\x03Run\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1f\n" +
 	"\vcriteria_id\x18\x02 \x01(\tR\n" +
@@ -1367,7 +1421,10 @@ const file_criteria_v1_criteria_proto_rawDesc = "" +
 	"\vfinal_state\x18\t \x01(\tR\n" +
 	"finalState\x12%\n" +
 	"\x0efailure_reason\x18\n" +
-	" \x01(\tR\rfailureReason\"L\n" +
+	" \x01(\tR\rfailureReason\x12\x16\n" +
+	"\x06ticket\x18\v \x01(\tR\x06ticket\x12\x19\n" +
+	"\brepo_url\x18\f \x01(\tR\arepoUrl\x12\x15\n" +
+	"\x06pr_url\x18\r \x01(\tR\x05prUrl\"L\n" +
 	"\x12ReattachRunRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1f\n" +
 	"\vcriteria_id\x18\x02 \x01(\tR\n" +

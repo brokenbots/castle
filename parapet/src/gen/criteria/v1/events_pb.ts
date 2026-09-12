@@ -278,6 +278,17 @@ export class Envelope extends Message<Envelope> {
     case: "runOutputs";
   } | {
     /**
+     * RunMetadata — emitted by an external orchestrator (e.g. the criteria-k8s
+     * operator) to publish run metadata discovered during orchestration, such
+     * as the pull request URL. The server promotes known fields onto the run
+     * record and stores/fans out the event like any other envelope. CRI-131.
+     *
+     * @generated from field: criteria.v1.RunMetadata run_metadata = 34;
+     */
+    value: RunMetadata;
+    case: "runMetadata";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -326,6 +337,7 @@ export class Envelope extends Message<Envelope> {
     { no: 31, name: "scope_iter_cursor_set", kind: "message", T: ScopeIterCursorSet, oneof: "payload" },
     { no: 32, name: "step_iteration_item", kind: "message", T: StepIterationItem, oneof: "payload" },
     { no: 33, name: "run_outputs", kind: "message", T: RunOutputs, oneof: "payload" },
+    { no: 34, name: "run_metadata", kind: "message", T: RunMetadata, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -1715,6 +1727,68 @@ export class RunOutputs_Output extends Message<RunOutputs_Output> {
 
   static equals(a: RunOutputs_Output | PlainMessage<RunOutputs_Output> | undefined, b: RunOutputs_Output | PlainMessage<RunOutputs_Output> | undefined): boolean {
     return proto3.util.equals(RunOutputs_Output, a, b);
+  }
+}
+
+/**
+ * RunMetadata — external orchestration metadata for a run (CRI-131). Emitted
+ * by an orchestrator (e.g. the criteria-k8s operator) after the run record is
+ * created, when metadata that was not known at create time (such as the pull
+ * request URL) becomes available. Server behavior: promote known fields onto
+ * the run record (only non-empty values overwrite) and persist/fan out the
+ * event like any other envelope.
+ *
+ * @generated from message criteria.v1.RunMetadata
+ */
+export class RunMetadata extends Message<RunMetadata> {
+  /**
+   * ticket is the external ticket identifier; only overwrites when non-empty.
+   *
+   * @generated from field: string ticket = 1;
+   */
+  ticket = "";
+
+  /**
+   * repo_url is the repository the run operates on; only overwrites when non-empty.
+   *
+   * @generated from field: string repo_url = 2;
+   */
+  repoUrl = "";
+
+  /**
+   * pr_url is the pull request URL produced by the run; only overwrites when non-empty.
+   *
+   * @generated from field: string pr_url = 3;
+   */
+  prUrl = "";
+
+  constructor(data?: PartialMessage<RunMetadata>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.RunMetadata";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ticket", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "repo_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "pr_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunMetadata {
+    return new RunMetadata().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RunMetadata {
+    return new RunMetadata().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RunMetadata {
+    return new RunMetadata().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RunMetadata | PlainMessage<RunMetadata> | undefined, b: RunMetadata | PlainMessage<RunMetadata> | undefined): boolean {
+    return proto3.util.equals(RunMetadata, a, b);
   }
 }
 

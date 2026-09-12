@@ -115,6 +115,15 @@ type Run struct {
 	PendingSignal string
 	// PausedAt records when the run entered the paused state (W05). Nil when not paused.
 	PausedAt *time.Time
+	// Ticket is the external ticket identifier the run is attached to (e.g.
+	// "CRI-104"); empty for agent-initiated runs. CRI-131.
+	Ticket string
+	// RepoURL is the repository the run operates on; empty for agent-initiated
+	// runs. CRI-131.
+	RepoURL string
+	// PRURL is the pull request URL produced by the run, when an external
+	// orchestrator has published it via a run.metadata event. CRI-131.
+	PRURL string
 }
 
 // Store is the persistence contract.
@@ -132,6 +141,10 @@ type Store interface {
 	GetRun(ctx context.Context, id string) (*Run, error)
 	ListRuns(ctx context.Context, overseerID, status string) ([]*Run, error)
 	UpdateRun(ctx context.Context, r *Run) error
+	// SetRunMetadata promotes non-empty metadata values (ticket, repo_url,
+	// pr_url) onto the run record without touching run status (CRI-131). Empty
+	// values leave the existing column untouched.
+	SetRunMetadata(ctx context.Context, runID, ticket, repoURL, prURL string) error
 
 	// Events
 	// AppendEvent persists ev and returns the assigned seq. When ev has a
