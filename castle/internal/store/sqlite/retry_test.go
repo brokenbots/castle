@@ -78,6 +78,37 @@ func TestIsTransient_DriverBusyError(t *testing.T) {
 	}
 }
 
+// TestIsTransientCode pins the code-based classification including extended
+// result codes (CRI-143 review): modernc.org/sqlite enables extended result
+// codes during connection setup, so transient faults can surface as
+// SQLITE_BUSY_SNAPSHOT (517), SQLITE_BUSY_RECOVERY (261) or
+// SQLITE_LOCKED_SHAREDCACHE (262) — all carry the transient primary code in
+// their low 8 bits.
+func TestIsTransientCode(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		want bool
+	}{
+		{"SQLITE_BUSY", sqliteBusy, true},
+		{"SQLITE_LOCKED", sqliteLocked, true},
+		{"SQLITE_INTERRUPT", sqliteInterrupt, true},
+		{"SQLITE_BUSY_SNAPSHOT", 517, true},
+		{"SQLITE_BUSY_RECOVERY", 261, true},
+		{"SQLITE_LOCKED_SHAREDCACHE", 262, true},
+		{"SQLITE_ERROR", 1, false},
+		{"SQLITE_READONLY", 8, false},
+		{"SQLITE_SCHEMA", 17, false},
+		{"SQLITE_ROW", 100, false},
+		{"SQLITE_CONSTRAINT", 19, false},
+	}
+	for _, tc := range cases {
+		if got := isTransientCode(tc.code); got != tc.want {
+			t.Errorf("%s (code %d): isTransientCode = %v, want %v", tc.name, tc.code, got, tc.want)
+		}
+	}
+}
+
 func TestRetryOnTransient(t *testing.T) {
 	t.Run("retries transient errors until success", func(t *testing.T) {
 		var attempts int

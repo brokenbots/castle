@@ -32,7 +32,15 @@ type Store struct {
 // collisions waiting instead of failing fast.
 const openDSN = "file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 
+// Open opens (or creates) the SQLite store database at path, running the
+// embedded migrations before the first caller touches the store. In-memory
+// DSNs are rejected: the dedicated reader handle only works for file-backed
+// databases (each pooled connection on a :memory: DSN gets its own private,
+// empty database, so reads would fail with "no such table" — CRI-143).
 func Open(path string) (*Store, error) {
+	if path == ":memory:" {
+		return nil, fmt.Errorf("sqlite: :memory: stores are not supported; use a file path")
+	}
 	db, err := sql.Open("sqlite", fmt.Sprintf(openDSN, path))
 	if err != nil {
 		return nil, err
@@ -416,6 +424,12 @@ func (s *Store) reapStaleAgentRunsAttempt(ctx context.Context, now time.Time, st
 // never clobbered (CRI-142 terminal invariants hold even under the
 // scan-then-write split).
 func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.Time, candidates []string, reapReason string) ([]string, error) {
+	// Nothing to reap: return before opening the transaction. The candidate
+	// placeholder list cannot even be derived from zero ids, so an empty
+	// candidate list must not reach the query builders below.
+	if len(candidates) == 0 {
+		return nil, nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

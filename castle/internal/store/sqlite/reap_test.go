@@ -575,6 +575,26 @@ func TestReapRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 	}
 }
 
+// TestReapRunIDs_EmptyCandidates pins reapRunIDs' contract on empty input
+// (CRI-143 review): with no candidates it must return (nil, nil) without
+// opening a transaction — the candidate placeholder list cannot be derived
+// from zero ids, and the pre-guard placeholder slicing panicked on an empty
+// list ("slice bounds out of range [:-1]").
+func TestReapRunIDs_EmptyCandidates(t *testing.T) {
+	f := newReapFixture(t)
+	for name, candidates := range map[string][]string{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			reaped, err := f.s.reapRunIDs(f.ctx, f.now, f.staleBefore, candidates, "agent heartbeat lost")
+			if err != nil {
+				t.Fatalf("reapRunIDs(%s candidates): %v", name, err)
+			}
+			if reaped != nil {
+				t.Fatalf("reaped = %v, want nil", reaped)
+			}
+		})
+	}
+}
+
 // TestReapStaleAgentRuns_TerminalTransitionRace drives the public reaper API
 // against concurrent run-resolution traffic (the live CRI-143 wedge window):
 // every reaper pass races CancelRun transitions on one of the two zombie

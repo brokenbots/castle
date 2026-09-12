@@ -31,6 +31,44 @@ func tempStore(t *testing.T) *Store {
 	return s
 }
 
+// TestOpenRejectsMemoryDSN pins the Open contract for in-memory DSNs (CRI-143
+// review): the dedicated reader handle only works for file-backed databases —
+// each pooled connection on a :memory: DSN gets its own private, empty
+// database, so reads would fail with "no such table" — so Open must reject
+// the path up front with the documented error instead of returning a broken
+// store.
+func TestOpenRejectsMemoryDSN(t *testing.T) {
+	s, err := Open(":memory:")
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("Open(:memory:) succeeded, want the documented rejection error")
+	}
+	if !strings.Contains(err.Error(), ":memory: stores are not supported") {
+		t.Fatalf("err = %v, want the documented :memory: rejection", err)
+	}
+}
+
+// TestReaderHandleSeesWrites is the reader-split regression for the path Open
+// accepts (CRI-143 review): reader-backed methods — ListOverseers and friends
+// query the dedicated reader pool — must observe rows written through the
+// serialized writer pool on a file-backed store.
+func TestReaderHandleSeesWrites(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	o := &store.Overseer{ID: "ov-reader", Name: "alice", TokenHash: "x", Status: "online", CreatedAt: now, LastSeenAt: now}
+	if err := s.CreateOverseer(ctx, o); err != nil {
+		t.Fatalf("CreateOverseer: %v", err)
+	}
+	list, err := s.ListOverseers(ctx)
+	if err != nil {
+		t.Fatalf("ListOverseers (reader-backed): %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "ov-reader" {
+		t.Fatalf("ListOverseers = %+v, want the seeded overseer", list)
+	}
+}
+
 // eventFromProto converts a wire envelope into the storage-neutral
 // store.Event representation used by the persistence layer. It is intentionally
 // local to the SQLite test package so storage tests can seed events without
@@ -82,7 +120,10 @@ func TestOverseerCRUD(t *testing.T) {
 	if got.Name != "alice" {
 		t.Errorf("name: %s", got.Name)
 	}
-	list, _ := s.ListOverseers(ctx)
+	list, err := s.ListOverseers(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
 	if len(list) != 1 {
 		t.Errorf("list len: %d", len(list))
 	}

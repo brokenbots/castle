@@ -49,16 +49,26 @@ func isTransient(err error) bool {
 	}
 	var serr *sqlite.Error
 	if errors.As(err, &serr) {
-		switch serr.Code() {
-		case sqliteBusy, sqliteLocked, sqliteInterrupt:
-			return true
-		}
-		return false
+		return isTransientCode(serr.Code())
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "interrupted (") ||
 		strings.Contains(msg, "database is locked") ||
 		strings.Contains(msg, "database table is locked")
+}
+
+// isTransientCode reports whether a raw sqlite result code is transient.
+// modernc.org/sqlite enables extended result codes during connection setup,
+// so the code can be an extended one (SQLITE_BUSY_SNAPSHOT 517,
+// SQLITE_BUSY_RECOVERY 261, SQLITE_LOCKED_SHAREDCACHE 262) whose low 8 bits
+// carry the transient primary code; matching the full code exactly would
+// classify those as fatal, so the primary code is masked before the switch.
+func isTransientCode(code int) bool {
+	switch code & 0xff {
+	case sqliteBusy, sqliteLocked, sqliteInterrupt:
+		return true
+	}
+	return false
 }
 
 // retryOnTransient runs fn until it succeeds, returns a non-transient error,

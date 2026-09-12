@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -174,7 +175,10 @@ func TestReattachScopeRoundtrip(t *testing.T) {
 
 func newTestStore(t *testing.T) *sqlite.Store {
 	t.Helper()
-	s, err := sqlite.Open(":memory:")
+	// Open rejects :memory: (each pooled connection on a :memory: DSN gets its
+	// own private database, so the dedicated reader handle can never see the
+	// migrated schema — CRI-143); tests use a temp file like production does.
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
