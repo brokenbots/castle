@@ -81,6 +81,8 @@ func (s *CriteriaServer) CreateRun(ctx context.Context, req *connect.Request[pb.
 		WorkflowHCL:  req.Msg.WorkflowHash,
 		Status:       "pending",
 		CreatedAt:    now,
+		Ticket:       req.Msg.Ticket,
+		RepoURL:      req.Msg.RepoUrl,
 	}
 	if err := s.Store.CreateRun(ctx, r); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -287,6 +289,15 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		if run.OverseerID != "" {
 			go s.dispatchForAgent(context.Background(), run.OverseerID)
 		}
+	case *criteria.Envelope_RunMetadata:
+		// External orchestrators (e.g. the criteria-k8s operator) publish run
+		// metadata such as the PR URL after the run record is created (CRI-131).
+		// Non-empty values are promoted onto the run row; the event itself is
+		// still stored and fanned out like any other envelope.
+		if p.RunMetadata == nil {
+			return
+		}
+		_ = s.Store.SetRunMetadata(ctx, env.RunId, p.RunMetadata.Ticket, p.RunMetadata.RepoUrl, p.RunMetadata.PrUrl)
 	case *criteria.Envelope_StepEntered:
 		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {

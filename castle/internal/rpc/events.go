@@ -134,6 +134,8 @@ func newPayloadForType(typ string) (proto.Message, error) {
 		return &pb.ScopeIterCursorSet{}, nil
 	case "run.outputs":
 		return &pb.RunOutputs{}, nil
+	case "run.metadata":
+		return &pb.RunMetadata{}, nil
 	default:
 		return nil, fmt.Errorf("unknown event type %q", typ)
 	}
@@ -191,6 +193,8 @@ func payloadMessage(env *criteria.Envelope) proto.Message {
 		return p.StepIterationItem
 	case *pb.Envelope_RunOutputs:
 		return p.RunOutputs
+	case *pb.Envelope_RunMetadata:
+		return p.RunMetadata
 	default:
 		return nil
 	}
@@ -248,6 +252,8 @@ func setPayload(env *criteria.Envelope, msg proto.Message) {
 		env.Payload = &criteria.Envelope_StepIterationItem{StepIterationItem: p}
 	case *pb.RunOutputs:
 		env.Payload = &pb.Envelope_RunOutputs{RunOutputs: p}
+	case *pb.RunMetadata:
+		env.Payload = &criteria.Envelope_RunMetadata{RunMetadata: p}
 	}
 }
 

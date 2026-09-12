@@ -20,6 +20,7 @@ export function RunListPage() {
         <thead className="text-left text-slate-400 border-b border-slate-800">
           <tr>
             <th className="py-2 pr-4">ID</th>
+            <th className="py-2 pr-4">Ticket</th>
             <th className="py-2 pr-4">Workflow</th>
             <th className="py-2 pr-4">Status</th>
             <th className="py-2 pr-4">Started</th>
@@ -33,6 +34,7 @@ export function RunListPage() {
                   {r.runId.slice(0, 8)}
                 </Link>
               </td>
+              <td className="py-2 pr-4 font-mono text-xs">{r.ticket ?? ''}</td>
               <td className="py-2 pr-4">{r.workflowName}</td>
               <td className={`py-2 pr-4 ${statusColor[r.status] ?? ''}`}>{r.status}</td>
               <td className="py-2 pr-4 text-slate-400">

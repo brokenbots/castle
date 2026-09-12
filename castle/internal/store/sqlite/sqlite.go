@@ -119,20 +119,25 @@ func (s *Store) MarkOfflineBefore(ctx context.Context, before time.Time) error {
 	return err
 }
 
+// runColumns is the projection scanned by run row readers; keep in sync with
+// scanRun and the migration that last altered the runs table.
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url"
+
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at) VALUES(?,?,?,?,?,?,?,?)`,
-		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(tsLayout))
+		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ticket,repo_url,pr_url) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(tsLayout),
+		nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL))
 	return err
 }
 
 func (s *Store) GetRun(ctx context.Context, id string) (*store.Run, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at FROM runs WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id)
 	return scanRun(row.Scan)
 }
 
 func (s *Store) ListRuns(ctx context.Context, overseerID, status string) ([]*store.Run, error) {
-	q := `SELECT id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at FROM runs WHERE 1=1`
+	q := `SELECT ` + runColumns + ` FROM runs WHERE 1=1`
 	args := []any{}
 	if overseerID != "" {
 		q += ` AND overseer_id=?`
@@ -167,7 +172,10 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var variableScope sql.NullString
 	var pendingSignal sql.NullString
 	var pausedAt sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt)
+	var ticket sql.NullString
+	var repoURL sql.NullString
+	var prURL sql.NullString
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -192,6 +200,15 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 		t, _ := time.Parse(tsLayout, pausedAt.String)
 		r.PausedAt = &t
 	}
+	if ticket.Valid {
+		r.Ticket = ticket.String
+	}
+	if repoURL.Valid {
+		r.RepoURL = repoURL.String
+	}
+	if prURL.Valid {
+		r.PRURL = prURL.String
+	}
 	return &r, nil
 }
 
@@ -204,6 +221,26 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=? WHERE id=?`,
 		r.Status, r.CurrentStep, r.LastSeq, ended, r.ID)
 	return err
+}
+
+// SetRunMetadata promotes non-empty metadata values (ticket, repo_url, pr_url)
+// onto the run record (CRI-131). Empty values leave the existing column
+// untouched so partial updates from later run.metadata events never clear
+// earlier metadata. Unknown run ids are a no-op.
+func (s *Store) SetRunMetadata(ctx context.Context, runID, ticket, repoURL, prURL string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET ticket=COALESCE(NULLIF(?, ''), ticket), repo_url=COALESCE(NULLIF(?, ''), repo_url), pr_url=COALESCE(NULLIF(?, ''), pr_url) WHERE id=?`,
+		ticket, repoURL, prURL, runID)
+	return err
+}
+
+// nonEmpty maps an empty string to SQL NULL so absent run metadata stays NULL
+// rather than an empty-text value (CRI-131).
+func nonEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // SetRunVariableScope persists a JSON-encoded variable scope snapshot (W04).

@@ -18,6 +18,9 @@ export interface Run {
   endedAt?: string;
   finalState: string;
   failureReason: string;
+  ticket?: string;
+  repoUrl?: string;
+  prUrl?: string;
 }
 
 export interface Agent {
@@ -48,6 +51,10 @@ function tsToIso(ts?: Timestamp): string | undefined {
   }
 }
 
+function orUndefined(s?: string): string | undefined {
+  return s ? s : undefined;
+}
+
 function mapRun(r: PbRun): Run {
   return {
     runId: r.runId,
@@ -60,6 +67,9 @@ function mapRun(r: PbRun): Run {
     endedAt: tsToIso(r.endedAt),
     finalState: r.finalState,
     failureReason: r.failureReason,
+    ticket: orUndefined(r.ticket),
+    repoUrl: orUndefined(r.repoUrl),
+    prUrl: orUndefined(r.prUrl),
   };
 }
 
