@@ -464,6 +464,15 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 		return nil, nil
 	}
 
+	// The surviving set can be a strict subset of the scanned candidates, so
+	// the UPDATE placeholder lists are derived from the re-validated ids —
+	// never reused from the candidates — keeping placeholders and args in
+	// lockstep (CRI-143 regression: a stale placeholder list failed the whole
+	// pass with "missing argument with index N" whenever re-validation dropped
+	// a candidate).
+	idPlaceholders := strings.Repeat("?,", len(ids))
+	idPlaceholders = idPlaceholders[:len(idPlaceholders)-1]
+
 	args := make([]any, 0, len(ids)+2)
 	args = append(args, now.Format(tsLayout), reapReason)
 	for _, id := range ids {
@@ -475,7 +484,7 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE runs
 		 SET status='failed', ended_at=?, failure_reason=?
-		 WHERE id IN (`+placeholders+`) AND status IN ('pending', 'running')`,
+		 WHERE id IN (`+idPlaceholders+`) AND status IN ('pending', 'running')`,
 		args...); err != nil {
 		return nil, err
 	}
@@ -493,7 +502,7 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE workflow_assignments
 		 SET state=?, terminal_reason=?, updated_at=?
-		 WHERE run_id IN (`+placeholders+`) AND state IN (?, ?)`,
+		 WHERE run_id IN (`+idPlaceholders+`) AND state IN (?, ?)`,
 		asgArgs...); err != nil {
 		return nil, err
 	}
