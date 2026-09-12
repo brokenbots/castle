@@ -336,7 +336,7 @@ func (s *Store) ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefo
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT r.id

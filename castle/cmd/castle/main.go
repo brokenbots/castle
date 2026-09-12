@@ -126,6 +126,10 @@ func main() {
 		os.Exit(1)
 	}
 	runReapStaleness := *agentHeartbeatInterval * time.Duration(*runReapMultiplier)
+	if *agentHeartbeatInterval <= 0 {
+		log.Error("invalid agent heartbeat interval", "agent_heartbeat_interval", *agentHeartbeatInterval)
+		os.Exit(1)
+	}
 	if *runReapMultiplier < 0 {
 		log.Error("invalid run reap multiplier", "run_reap_multiplier", *runReapMultiplier)
 		os.Exit(1)
@@ -276,15 +280,7 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					now := time.Now().UTC()
-					ids, err := st.ReapStaleAgentRuns(context.Background(), now, now.Add(-runReapStaleness))
-					if err != nil {
-						log.Error("run reaper", "err", err)
-						continue
-					}
-					for _, id := range ids {
-						log.Info("reaped run with stale agent heartbeat", "run_id", id, "reason", "agent heartbeat lost")
-					}
+					reapStaleRunsOnce(context.Background(), st, log, runReapStaleness)
 				}
 			}
 		}()
@@ -309,4 +305,20 @@ func main() {
 	shutdownCtx, sc := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sc()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// reapStaleRunsOnce performs one CRI-142 heartbeat-staleness reaping pass:
+// runs in pending/running whose owning agent's heartbeat is older than
+// staleness are stamped failed with reason "agent heartbeat lost". Split out
+// of the ticker goroutine so the now/staleBefore derivation is unit-testable.
+func reapStaleRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, staleness time.Duration) {
+	now := time.Now().UTC()
+	ids, err := st.ReapStaleAgentRuns(ctx, now, now.Add(-staleness))
+	if err != nil {
+		log.Error("run reaper", "err", err)
+		return
+	}
+	for _, id := range ids {
+		log.Info("reaped run with stale agent heartbeat", "run_id", id, "reason", "agent heartbeat lost")
+	}
 }

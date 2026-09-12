@@ -451,6 +451,13 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		if err != nil {
 			return
 		}
+		if isTerminalRunStatus(run.Status) {
+			// Terminal states are never rewritten (CRI-142): a late agent
+			// event after an operator CancelRun or heartbeat reaping must not
+			// flip the run out of its stamped terminal state. The event
+			// itself stays pollable via the event log.
+			return
+		}
 		now := time.Now().UTC()
 		run.EndedAt = &now
 		if p.RunCompleted != nil && p.RunCompleted.Success {
@@ -468,6 +475,10 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		s.scope.FlushNow(ctx, env.RunId)
 		run, err := s.Store.GetRun(ctx, env.RunId)
 		if err != nil {
+			return
+		}
+		if isTerminalRunStatus(run.Status) {
+			// See RunCompleted above: terminal stamps are final (CRI-142).
 			return
 		}
 		now := time.Now().UTC()

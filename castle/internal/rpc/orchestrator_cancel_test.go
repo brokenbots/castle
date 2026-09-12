@@ -80,6 +80,18 @@ func TestOrchestratorCancelRun_DefaultReason(t *testing.T) {
 	if resp.Msg.Run.GetFailureReason() != "cancelled by operator" {
 		t.Errorf("failure_reason = %q, want default", resp.Msg.Run.GetFailureReason())
 	}
+	if resp.Msg.Run.GetEndedAt() == nil || resp.Msg.Run.GetEndedAt().AsTime().IsZero() {
+		t.Errorf("ended_at not stamped: %v", resp.Msg.Run.GetEndedAt())
+	}
+}
+
+func TestOrchestratorCancelRun_EmptyRunId(t *testing.T) {
+	h := newOrchestratorHarness(t)
+	if _, err := h.cancelRun(t, h.orchestratorToken, "", ""); err == nil {
+		t.Fatal("cancel with empty run_id must fail")
+	} else if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("want %v, got %v", connect.CodeInvalidArgument, connect.CodeOf(err))
+	}
 }
 
 func TestOrchestratorCancelRun_ByOwningAgent(t *testing.T) {
@@ -95,6 +107,9 @@ func TestOrchestratorCancelRun_ByOwningAgent(t *testing.T) {
 	}
 	if got.Status != "cancelled" || got.FailureReason != "agent self-cleanup" {
 		t.Fatalf("cancelled run: status=%q reason=%q", got.Status, got.FailureReason)
+	}
+	if got.EndedAt == nil {
+		t.Fatalf("cancelled run: ended_at not stamped")
 	}
 }
 
@@ -178,6 +193,46 @@ func TestOrchestratorCancelRun_MarksAssignmentTerminal(t *testing.T) {
 	}
 	if got.State != store.WorkflowAssignmentStateTerminal || got.TerminalReason != "criteriarun deleted" {
 		t.Fatalf("assignment: state=%q reason=%q", got.State, got.TerminalReason)
+	}
+}
+
+// TestOrchestratorCancelRun_DurableAgainstLateAgentEvents pins cancel
+// durability (CRI-142): a still-live agent that submits terminal events after
+// the operator cancelled must not flip the run out of "cancelled". The late
+// events themselves stay pollable on the event log.
+func TestOrchestratorCancelRun_DurableAgainstLateAgentEvents(t *testing.T) {
+	h := newOrchestratorHarness(t)
+	runID := h.newAgentRun(t, "wf-cancel-late")
+
+	if _, err := h.cancelRun(t, h.orchestratorToken, runID, "criteriarun deleted"); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+
+	h.submitEvents(t, []*pb.Envelope{
+		criteria.NewEnvelope(runID, &pb.RunCompleted{Success: true}),
+		criteria.NewEnvelope(runID, &pb.RunFailed{Reason: "agent gave up"}),
+	})
+
+	got, err := h.ts.store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("store get: %v", err)
+	}
+	if got.Status != "cancelled" || got.FailureReason != "criteriarun deleted" {
+		t.Fatalf("cancel not durable: status=%q reason=%q", got.Status, got.FailureReason)
+	}
+
+	events := pollRunEvents(t, h, runID, 0)
+	var sawCompleted, sawFailed bool
+	for _, env := range events {
+		switch env.Payload.(type) {
+		case *pb.Envelope_RunCompleted:
+			sawCompleted = true
+		case *pb.Envelope_RunFailed:
+			sawFailed = true
+		}
+	}
+	if !sawCompleted || !sawFailed {
+		t.Fatalf("late agent events must remain pollable: completed=%v failed=%v (%d events)", sawCompleted, sawFailed, len(events))
 	}
 }
 

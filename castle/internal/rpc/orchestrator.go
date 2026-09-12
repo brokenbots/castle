@@ -17,13 +17,15 @@ import (
 )
 
 // OrchestratorServer implements criteria.v1.OrchestratorService (CRI-133):
-// the operator-facing polling read path over run lifecycle. Design note:
-// docs/adrs/ADR-0005-orchestrator-event-subscription.md.
+// the operator-facing API for reconciling run lifecycle directly from Castle.
+// Design note: docs/adrs/ADR-0005-orchestrator-event-subscription.md.
 //
-// The service is intentionally read-only and stateless: each call carries its
-// own since_seq cursor and the operator persists the returned continuation
-// cursor, so polling performs no writes against the single-replica SQLite
-// writer (CRI-78) and survives operator restarts.
+// The service is stateless and — with the single CRI-142 exception of
+// CancelRun, which stamps a run terminal when the operator deletes the
+// CriteriaRun — observation-only. Read calls carry their own since_seq cursor
+// and the operator persists the returned continuation cursor, so polling
+// performs no writes against the single-replica SQLite writer (CRI-78) and
+// survives operator restarts.
 type OrchestratorServer struct {
 	Store store.Store
 	Log   *slog.Logger
