@@ -58,6 +58,18 @@ func envOrDefaultInt(key string, fallback int) int {
 	return out
 }
 
+func envOrDefaultDuration(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	out, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return out
+}
+
 func flagWasSet(name string) bool {
 	set := false
 	flag.Visit(func(f *flag.Flag) {
@@ -96,6 +108,8 @@ func main() {
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
 	allowAnonReads := flag.Bool("allow-anon-reads", envOrDefaultBool("CASTLE_ALLOW_ANON_READS", !tlsDefault), "allow anonymous ServerService read RPCs")
 	eventBufferCapacity := flag.Int("event-buffer-capacity", envOrDefaultInt("CASTLE_EVENT_BUFFER_CAPACITY", hub.DefaultEventBufferCapacity), "in-memory events retained per run for WatchRun replay")
+	agentHeartbeatInterval := flag.Duration("agent-heartbeat-interval", envOrDefaultDuration("CASTLE_AGENT_HEARTBEAT_INTERVAL", 10*time.Second), "nominal criteria agent heartbeat cadence (or CASTLE_AGENT_HEARTBEAT_INTERVAL); the run reaper multiplies this to derive staleness")
+	runReapMultiplier := flag.Int("run-reap-multiplier", envOrDefaultInt("CASTLE_RUN_REAP_MULTIPLIER", 6), "reap pending/running runs whose agent heartbeat is older than this multiple of the heartbeat interval (or CASTLE_RUN_REAP_MULTIPLIER); 0 disables run reaping")
 	flag.Parse()
 
 	tlsEnabled := *tlsCert != "" || *tlsKey != ""
@@ -109,6 +123,11 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if *eventBufferCapacity <= 0 {
 		log.Error("invalid event buffer capacity", "event_buffer_capacity", *eventBufferCapacity)
+		os.Exit(1)
+	}
+	runReapStaleness := *agentHeartbeatInterval * time.Duration(*runReapMultiplier)
+	if *runReapMultiplier < 0 {
+		log.Error("invalid run reap multiplier", "run_reap_multiplier", *runReapMultiplier)
 		os.Exit(1)
 	}
 
@@ -243,6 +262,33 @@ func main() {
 			}
 		}
 	}()
+
+	// Background: reap runs whose owning agent's heartbeat went stale
+	// (CRI-142). Pending/running runs of dead agents are stamped failed with
+	// reason "agent heartbeat lost" so ListRuns stops accumulating zombies.
+	if *runReapMultiplier > 0 {
+		log.Info("run reaper enabled", "agent_heartbeat_interval", *agentHeartbeatInterval, "run_reap_multiplier", *runReapMultiplier, "staleness", runReapStaleness)
+		go func() {
+			t := time.NewTicker(15 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					now := time.Now().UTC()
+					ids, err := st.ReapStaleAgentRuns(context.Background(), now, now.Add(-runReapStaleness))
+					if err != nil {
+						log.Error("run reaper", "err", err)
+						continue
+					}
+					for _, id := range ids {
+						log.Info("reaped run with stale agent heartbeat", "run_id", id, "reason", "agent heartbeat lost")
+					}
+				}
+			}
+		}()
+	}
 
 	go func() {
 		log.Info("castle listening", "addr", *addr, "db", *dbPath, "tls", tlsCfg != nil, "event_buffer_capacity", *eventBufferCapacity)

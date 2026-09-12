@@ -473,6 +473,9 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		now := time.Now().UTC()
 		run.EndedAt = &now
 		run.Status = "failed"
+		if p.RunFailed != nil && p.RunFailed.Reason != "" {
+			run.FailureReason = p.RunFailed.Reason
+		}
 		_ = s.Store.UpdateRun(ctx, run)
 		_ = s.Store.MarkWorkflowAssignmentTerminal(ctx, env.RunId, "run failed")
 		if run.OverseerID != "" {

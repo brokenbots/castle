@@ -13,6 +13,10 @@ var ErrNotFound = errors.New("not found")
 
 var ErrInvalidLimit = errors.New("invalid list limit")
 
+// ErrRunTerminal is returned when an operator-initiated terminal transition
+// (CRI-142 CancelRun) targets a run that is already in a terminal state.
+var ErrRunTerminal = errors.New("run is terminal")
+
 // EventSchemaVersion is the current persisted event schema version. It tracks
 // the criteria.v1 envelope major version and is stored in the events table for
 // forward compatibility checks.
@@ -136,6 +140,11 @@ type Run struct {
 	// PRURL is the pull request URL produced by the run, when an external
 	// orchestrator has published it via a run.metadata event. CRI-131.
 	PRURL string
+	// FailureReason records why the run ended in failure or was cancelled
+	// (CRI-142): "agent heartbeat lost" for heartbeat-staleness reaping, the
+	// RunFailed event reason for agent-driven failures, or the operator's
+	// cancel reason for CancelRun.
+	FailureReason string
 }
 
 // Store is the persistence contract.
@@ -169,6 +178,19 @@ type Store interface {
 	// pr_url) onto the run record without touching run status (CRI-131). Empty
 	// values leave the existing column untouched.
 	SetRunMetadata(ctx context.Context, runID, ticket, repoURL, prURL string) error
+
+	// Reaping (CRI-142)
+	// ReapStaleAgentRuns stamps runs in status pending or running as failed
+	// with reason "agent heartbeat lost" when their owning agent's heartbeat
+	// is older than staleBefore. Runs without an owning agent (queued
+	// assignment work) and paused runs are left alone. Each reaped run's
+	// workflow assignment is marked terminal. Returns the reaped run IDs.
+	ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error)
+	// CancelRun stamps runID terminal as "cancelled" with the given reason
+	// (CRI-142). Terminal runs are never rewritten: an already terminal run
+	// returns ErrRunTerminal, an unknown id ErrNotFound. The cancelled run
+	// record is returned on success.
+	CancelRun(ctx context.Context, runID, reason string, now time.Time) (*Run, error)
 
 	// Events
 	// AppendEvent persists ev and returns the assigned seq. When ev has a

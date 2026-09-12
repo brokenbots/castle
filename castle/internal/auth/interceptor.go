@@ -48,12 +48,25 @@ var orchestratorProcedures = map[string]struct{}{
 	criteriav1connect.OrchestratorServiceListActiveRunsProcedure:     {},
 }
 
+// orchestratorWriteProcedures are OrchestratorService RPCs that mutate run
+// state on the operator's behalf (CRI-142 CancelRun). Orchestrator and agent
+// identities may invoke them, but — unlike the read surfaces above — they are
+// never exempted by dev-mode anonymous reads, so unauthenticated callers
+// cannot mutate run state even with --allow-anon-reads.
+var orchestratorWriteProcedures = map[string]struct{}{
+	criteriav1connect.OrchestratorServiceCancelRunProcedure: {},
+}
+
 // isOrchestratorAllowed reports whether an orchestrator identity may invoke
 // the procedure (CRI-133). Orchestrators get the read-only ServerService
-// surface plus OrchestratorService; every agent-owned write procedure
-// (CriteriaService, ServerService writes) is denied.
+// surface, OrchestratorService (including CRI-142 CancelRun), and nothing
+// else: every agent-owned write procedure (CriteriaService, ServerService
+// writes) is denied.
 func isOrchestratorAllowed(procedure string) bool {
 	if _, ok := orchestratorProcedures[procedure]; ok {
+		return true
+	}
+	if _, ok := orchestratorWriteProcedures[procedure]; ok {
 		return true
 	}
 	if _, ok := readOnlyServerProcedures[procedure]; ok {

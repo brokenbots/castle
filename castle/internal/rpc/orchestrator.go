@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"connectrpc.com/connect"
 
+	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
@@ -92,4 +94,57 @@ func (s *OrchestratorServer) ListActiveRuns(ctx context.Context, req *connect.Re
 		out = append(out, mapRun(r))
 	}
 	return connect.NewResponse(&pb.ListActiveRunsResponse{Runs: out}), nil
+}
+
+// CancelRun stamps one run terminal ("cancelled") on the operator's behalf
+// (CRI-142): deterministic cleanup when the operator deletes the
+// CriteriaRun, without requiring the owning agent to act.
+//
+// Auth boundary (CRI-133, extended by CRI-142): orchestrator identities may
+// cancel any run they can observe; agent identities may cancel only runs
+// they own. Anonymous callers are rejected — CancelRun is a write and is
+// never covered by dev-mode anonymous reads.
+func (s *OrchestratorServer) CancelRun(ctx context.Context, req *connect.Request[pb.CancelRunRequest]) (*connect.Response[pb.CancelRunResponse], error) {
+	if req.Msg.RunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
+	}
+
+	switch {
+	case auth.CallerOrchestratorID(ctx) != "":
+		// Operator identity: full visibility, any run is cancellable.
+		if _, err := s.Store.GetRun(ctx, req.Msg.RunId); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, err)
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	case auth.CallerCriteriaID(ctx) != "":
+		// Agent identity: ownership applies as on every other write RPC.
+		if _, _, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
+	}
+
+	reason := req.Msg.Reason
+	if reason == "" {
+		reason = "cancelled by operator"
+	}
+	run, err := s.Store.CancelRun(ctx, req.Msg.RunId, reason, time.Now().UTC())
+	if err != nil {
+		if errors.Is(err, store.ErrRunTerminal) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// Deterministic cleanup: queued or leased assignment work for this run is
+	// never re-dispatched once the run is operator-cancelled.
+	if err := s.Store.MarkWorkflowAssignmentTerminal(ctx, run.ID, reason); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&pb.CancelRunResponse{Run: mapRun(run)}), nil
 }
