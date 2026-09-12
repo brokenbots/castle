@@ -149,6 +149,13 @@ func (s *Store) ListOrchestrators(ctx context.Context) ([]*store.Orchestrator, e
 	return out, rows.Err()
 }
 
+// DeleteOrchestrator removes the orchestrator identity, revoking its accept
+// token (CRI-133). Deleting an unknown ID is a no-op.
+func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM orchestrators WHERE id = ?`, id)
+	return err
+}
+
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
 const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url"

@@ -87,9 +87,10 @@ func main() {
 	tlsClientCA := flag.String("tls-client-ca", envOrDefault("CASTLE_TLS_CLIENT_CA", ""), "mTLS client CA path (or CASTLE_TLS_CLIENT_CA)")
 	bootstrapToken := flag.String("bootstrap-token", envOrDefault("OVERLORD_CASTLE_BOOTSTRAP_TOKEN", ""), "bootstrap token for Register (or OVERLORD_CASTLE_BOOTSTRAP_TOKEN); empty = Register disabled")
 	// Orchestrator identity provisioning (CRI-133). The token is supplied via
-	// flag or env and persisted as a SHA-256 hash; it is never logged. Empty =
-	// orchestrator accept-token auth disabled.
-	orchestratorToken := flag.String("orchestrator-token", envOrDefault("CASTLE_ORCHESTRATOR_TOKEN", ""), "accept token for the orchestrator operator identity (or CASTLE_ORCHESTRATOR_TOKEN); empty = orchestrator auth disabled")
+	// flag or env and persisted as a SHA-256 hash; it is never logged. An
+	// empty value REVOKES the operator identity: the previously provisioned
+	// row is deleted, so its accept token stops authenticating immediately.
+	orchestratorToken := flag.String("orchestrator-token", envOrDefault("CASTLE_ORCHESTRATOR_TOKEN", ""), "accept token for the orchestrator operator identity (or CASTLE_ORCHESTRATOR_TOKEN); empty revokes the previously provisioned operator identity (disables orchestrator auth)")
 	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
@@ -136,8 +137,10 @@ func main() {
 	serverRPC := rpc.NewServerServer(st, h, log, controls)
 	orchestratorRPC := rpc.NewOrchestratorServer(st, log)
 
-	// Provision the orchestrator operator identity (CRI-133). Upserting is
-	// idempotent and rotates the token when the configured token changes.
+	// Provision or revoke the orchestrator operator identity (CRI-133).
+	// Upserting is idempotent and rotates the token when the configured token
+	// changes; running with an empty token deletes the identity so a retired
+	// credential stops authenticating.
 	if *orchestratorToken != "" {
 		if err := st.UpsertOrchestrator(context.Background(), &store.Orchestrator{
 			ID:        "orchestrator-operator",
@@ -149,6 +152,11 @@ func main() {
 			os.Exit(1)
 		}
 		log.Info("orchestrator identity provisioned", "orchestrator_id", "orchestrator-operator")
+	} else {
+		if err := st.DeleteOrchestrator(context.Background(), "orchestrator-operator"); err != nil {
+			log.Error("revoke orchestrator identity", "err", err)
+			os.Exit(1)
+		}
 	}
 
 	interceptors := []connect.Interceptor{

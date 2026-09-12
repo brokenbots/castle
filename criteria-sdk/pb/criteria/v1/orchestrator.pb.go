@@ -97,7 +97,8 @@ type SubscribeRunEventsResponse struct {
 	// events are the persisted envelopes with seq > since_seq, ascending by seq.
 	Events []*Envelope `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
 	// last_seq is the highest seq returned in this page; 0 when the page is
-	// empty. It is the value to persist as the per-run cursor.
+	// empty. Persist it as the per-run cursor ONLY after a non-empty page —
+	// on an empty page, keep the previously persisted cursor unchanged.
 	LastSeq uint64 `protobuf:"varint,2,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
 	// next_since_seq is set only when the page is full; pass it as since_seq to
 	// continue paging without waiting for the next reconcile interval.

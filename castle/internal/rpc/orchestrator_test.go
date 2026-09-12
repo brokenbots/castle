@@ -622,3 +622,88 @@ func TestOrchestratorAnonReadsInDevMode(t *testing.T) {
 		t.Errorf("anon SubscribeRunEvents must be allowed in dev mode: %v", err)
 	}
 }
+
+// --- Orchestrator identity lifecycle: provisioning and revocation ---
+
+// TestOrchestratorTokenRevocation covers the operator credential lifecycle
+// (CRI-133): a provisioned token observes run lifecycle, deleting the
+// identity — what main.go does when --orchestrator-token is empty — revokes
+// it at the wire, and a freshly configured token works again.
+func TestOrchestratorTokenRevocation(t *testing.T) {
+	h := newOrchestratorHarness(t)
+	runID := h.newAgentRun(t, "wf-revoke")
+	started := criteria.NewEnvelope(runID, &pb.RunStarted{WorkflowName: "wf-revoke", InitialStep: "s1"})
+	started.CorrelationId = "revoke-started"
+	h.submitEvents(t, []*pb.Envelope{started})
+
+	orchRead := func(token string) error {
+		req := connect.NewRequest(&pb.SubscribeRunEventsRequest{RunId: runID})
+		req.Header().Set("Authorization", "Bearer "+token)
+		_, err := h.orchClient.SubscribeRunEvents(context.Background(), req)
+		return err
+	}
+
+	// The provisioned token authenticates the orchestrator read path.
+	if err := orchRead(h.orchestratorToken); err != nil {
+		t.Fatalf("SubscribeRunEvents with provisioned token: %v", err)
+	}
+
+	// The flag-empty path deletes the identity; the retired token must now be
+	// rejected as unauthenticated.
+	if err := h.ts.store.DeleteOrchestrator(context.Background(), "orchestrator-operator"); err != nil {
+		t.Fatalf("revoke (flag-empty path): %v", err)
+	}
+	err := orchRead(h.orchestratorToken)
+	if err == nil {
+		t.Fatal("revoked token must not authenticate")
+	}
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("revoked token: want %v, got %v", connect.CodeUnauthenticated, connect.CodeOf(err))
+	}
+
+	// Re-configuring a fresh token re-provisions the identity.
+	const freshToken = "orchestrator-token-fresh"
+	provisionOrchestratorIdentity(t, h.ts.store, "orchestrator-operator", freshToken)
+	if err := orchRead(freshToken); err != nil {
+		t.Fatalf("SubscribeRunEvents with re-provisioned token: %v", err)
+	}
+}
+
+// --- Terminal failure observation ---
+
+// TestOrchestratorObserveRunFailed asserts the terminal failure path: the
+// operator observes run.failed on the read path with its payload intact and
+// stamps CriteriaRun status from GetRun without touching the PVC.
+func TestOrchestratorObserveRunFailed(t *testing.T) {
+	h := newOrchestratorHarness(t)
+	runID := h.newAgentRun(t, "wf-fail")
+
+	started := criteria.NewEnvelope(runID, &pb.RunStarted{WorkflowName: "wf-fail", InitialStep: "s1"})
+	started.CorrelationId = "fail-started"
+	failed := criteria.NewEnvelope(runID, &pb.RunFailed{Reason: "boom", Step: "s1"})
+	failed.CorrelationId = "fail-failed"
+	h.submitEvents(t, []*pb.Envelope{started, failed})
+
+	events := pollRunEvents(t, h, runID, 0)
+	if len(events) != 2 {
+		t.Fatalf("want 2 replayed events, got %d", len(events))
+	}
+	if got := criteria.TypeString(events[1]); got != "run.failed" {
+		t.Fatalf("expected run.failed discriminator, got %q", got)
+	}
+	f := events[1].Payload.(*pb.Envelope_RunFailed).RunFailed
+	if f.Reason != "boom" || f.Step != "s1" {
+		t.Fatalf("run.failed payload mismatch: %+v", f)
+	}
+
+	// Status stamping via the authenticated read surface.
+	req := connect.NewRequest(&pb.GetRunRequest{RunId: runID})
+	req.Header().Set("Authorization", "Bearer "+h.orchestratorToken)
+	runResp, err := h.cClient.GetRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if runResp.Msg.Status != "failed" {
+		t.Fatalf("run status after run.failed = %q, want failed", runResp.Msg.Status)
+	}
+}

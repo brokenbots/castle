@@ -117,3 +117,40 @@ func TestListOrchestrators_Empty(t *testing.T) {
 		t.Fatalf("want empty list, got %d", len(got))
 	}
 }
+
+func TestDeleteOrchestrator(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"orchestrator-operator", "orchestrator-secondary"} {
+		if err := s.UpsertOrchestrator(ctx, &store.Orchestrator{
+			ID: id, Name: "operator", TokenHash: "hash-" + id, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+
+	// Deleting one identity leaves the others and revokes its token.
+	if err := s.DeleteOrchestrator(ctx, "orchestrator-operator"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	got, err := s.ListOrchestrators(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "orchestrator-secondary" {
+		t.Fatalf("expected only orchestrator-secondary to remain, got %+v", got)
+	}
+
+	// Deleting an unknown ID is a no-op.
+	if err := s.DeleteOrchestrator(ctx, "orchestrator-missing"); err != nil {
+		t.Fatalf("delete unknown id: %v", err)
+	}
+	got, err = s.ListOrchestrators(ctx)
+	if err != nil {
+		t.Fatalf("list after unknown delete: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("unexpected list after unknown delete: %d entries", len(got))
+	}
+}

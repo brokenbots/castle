@@ -160,9 +160,10 @@ func authorizeOrchestratorProcedure(ctx context.Context, procedure string) error
 // authenticateHeaders validates the token and returns a context with the
 // caller's identity injected: criteria agent ID for agent tokens,
 // orchestrator ID for orchestrator tokens (CRI-133). Agent tokens take
-// precedence when both match (the hashes are different by construction; the
-// ordering only matters for identical token material, which would be a
-// configuration error surfaced by the token-hash unique index otherwise).
+// precedence when both match: the per-table token-hash UNIQUE indexes cannot
+// detect identical token material across tables, so in that (operator
+// misconfiguration) case the token acts as an agent and the orchestrator
+// identity it shadows is unreachable.
 func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header) (context.Context, error) {
 	tok, ok := TokenFromHeaders(h)
 	if !ok {

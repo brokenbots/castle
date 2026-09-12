@@ -156,6 +156,9 @@ type Store interface {
 	UpsertOrchestrator(ctx context.Context, o *Orchestrator) error
 	// ListOrchestrators returns all registered orchestrator identities.
 	ListOrchestrators(ctx context.Context) ([]*Orchestrator, error)
+	// DeleteOrchestrator removes the orchestrator identity, revoking its
+	// accept token (CRI-133). Deleting an unknown ID is a no-op.
+	DeleteOrchestrator(ctx context.Context, id string) error
 
 	// Runs
 	CreateRun(ctx context.Context, r *Run) error

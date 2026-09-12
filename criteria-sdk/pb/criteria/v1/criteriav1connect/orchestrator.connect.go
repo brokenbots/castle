@@ -57,9 +57,12 @@ type OrchestratorServiceClient interface {
 	// resume after an operator restart. Events are durable in the store, so
 	// replay is gapless and duplicate-free under interleaved writers.
 	//
-	// Cursor handling: `last_seq` is the highest seq in the page and is the
-	// value the operator should persist as its per-run cursor after consuming
-	// the page. When the page is full (len(events) == limit), `next_since_seq`
+	// Cursor handling: after consuming a NON-EMPTY page, persist `last_seq`
+	// (the highest seq in the page) as the per-run cursor. When the page is
+	// empty, keep the previously persisted cursor: `last_seq` is 0 on empty
+	// pages and must NOT be persisted, otherwise an idle run would reset its
+	// cursor to 0 and replay from the beginning on every reconcile. When the
+	// page is full (len(events) == limit), `next_since_seq`
 	// is also set so the operator can continue paging immediately; the
 	// terminal event of a run is a normal listable event.
 	SubscribeRunEvents(context.Context, *connect.Request[v1.SubscribeRunEventsRequest]) (*connect.Response[v1.SubscribeRunEventsResponse], error)
@@ -124,9 +127,12 @@ type OrchestratorServiceHandler interface {
 	// resume after an operator restart. Events are durable in the store, so
 	// replay is gapless and duplicate-free under interleaved writers.
 	//
-	// Cursor handling: `last_seq` is the highest seq in the page and is the
-	// value the operator should persist as its per-run cursor after consuming
-	// the page. When the page is full (len(events) == limit), `next_since_seq`
+	// Cursor handling: after consuming a NON-EMPTY page, persist `last_seq`
+	// (the highest seq in the page) as the per-run cursor. When the page is
+	// empty, keep the previously persisted cursor: `last_seq` is 0 on empty
+	// pages and must NOT be persisted, otherwise an idle run would reset its
+	// cursor to 0 and replay from the beginning on every reconcile. When the
+	// page is full (len(events) == limit), `next_since_seq`
 	// is also set so the operator can continue paging immediately; the
 	// terminal event of a run is a normal listable event.
 	SubscribeRunEvents(context.Context, *connect.Request[v1.SubscribeRunEventsRequest]) (*connect.Response[v1.SubscribeRunEventsResponse], error)

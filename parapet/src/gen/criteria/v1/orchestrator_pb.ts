@@ -85,7 +85,8 @@ export class SubscribeRunEventsResponse extends Message<SubscribeRunEventsRespon
 
   /**
    * last_seq is the highest seq returned in this page; 0 when the page is
-   * empty. It is the value to persist as the per-run cursor.
+   * empty. Persist it as the per-run cursor ONLY after a non-empty page —
+   * on an empty page, keep the previously persisted cursor unchanged.
    *
    * @generated from field: uint64 last_seq = 2;
    */

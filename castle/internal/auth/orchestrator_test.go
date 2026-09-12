@@ -163,3 +163,52 @@ func TestResolveOrchestratorToken(t *testing.T) {
 		t.Fatalf("unknown token must not resolve: o=%+v err=%v", o, err)
 	}
 }
+
+// TestOrchestratorTokenRevocation covers the operator credential lifecycle
+// (CRI-133): a provisioned token resolves, deleting the identity — what
+// main.go does when --orchestrator-token is empty — revokes it, and a
+// freshly configured token resolves again.
+func TestOrchestratorTokenRevocation(t *testing.T) {
+	db := newAuthTestStore(t)
+	ctx := context.Background()
+
+	const oldToken = "orchestrator-token-old"
+	if err := db.UpsertOrchestrator(ctx, &store.Orchestrator{
+		ID:        "orchestrator-operator",
+		Name:      "operator",
+		TokenHash: HashToken(oldToken),
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if o, err := ResolveOrchestratorToken(ctx, db, oldToken); o == nil || err != nil {
+		t.Fatalf("provisioned token must resolve (o=%v, err=%v)", o, err)
+	}
+
+	// Flag-empty path: the identity is deleted, so the retired token stops
+	// resolving.
+	if err := db.DeleteOrchestrator(ctx, "orchestrator-operator"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if o, err := ResolveOrchestratorToken(ctx, db, oldToken); o != nil || err != nil {
+		t.Fatalf("revoked token must not resolve (o=%v, err=%v)", o, err)
+	}
+
+	// Re-configuring a token re-provisions the identity; the old token stays
+	// invalid.
+	const newToken = "orchestrator-token-new"
+	if err := db.UpsertOrchestrator(ctx, &store.Orchestrator{
+		ID:        "orchestrator-operator",
+		Name:      "operator",
+		TokenHash: HashToken(newToken),
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	if o, err := ResolveOrchestratorToken(ctx, db, oldToken); o != nil || err != nil {
+		t.Fatalf("old token must stay invalid after re-provisioning (o=%v, err=%v)", o, err)
+	}
+	if o, err := ResolveOrchestratorToken(ctx, db, newToken); o == nil || err != nil {
+		t.Fatalf("freshly configured token must resolve (o=%v, err=%v)", o, err)
+	}
+}
