@@ -3,6 +3,10 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,5 +319,378 @@ func TestUpdateRun_PreservesFailureReason(t *testing.T) {
 	}
 	if got := f.getRun(t, "r-reason"); got.FailureReason != "criteriarun deleted" {
 		t.Fatalf("failure_reason clobbered: %q", got.FailureReason)
+	}
+}
+
+// TestReapStaleAgentRuns_ScanRunsWhileWriterBusy is the CRI-143 structural
+// regression: the reaper's staleness scan must run on the dedicated reader
+// connection and never queue behind the single serialized writer connection
+// that all RPC traffic shares. With the writer pinned by an open transaction
+// (as an in-flight RPC write would hold it), the pre-CRI-143 implementation —
+// which opened its scan in a transaction on that same pool — blocked for as
+// long as the writer stayed busy.
+func TestReapStaleAgentRuns_ScanRunsWhileWriterBusy(t *testing.T) {
+	f := newReapFixture(t)
+
+	// Hold the writer connection with an open transaction, like an in-flight
+	// RPC write would.
+	wtx, err := f.s.db.BeginTx(f.ctx, nil)
+	if err != nil {
+		t.Fatalf("begin writer tx: %v", err)
+	}
+	defer func() { _ = wtx.Rollback() }()
+
+	type result struct {
+		ids []string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ids, err := f.s.ReapStaleAgentRuns(f.ctx, time.Now().UTC(), time.Now().UTC().Add(-time.Minute))
+		done <- result{ids, err}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("reap with busy writer: %v", res.err)
+		}
+		if len(res.ids) != 0 {
+			t.Fatalf("empty store reaped runs: %v", res.ids)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("reaper scan blocked on the busy writer connection: the scan must run on the reader pool (CRI-143)")
+	}
+}
+
+// TestReapStaleAgentRuns_UnderConcurrentRPCTraffic is the CRI-143 live
+// regression (exit criteria): the reaper runs repeatedly while Register-like
+// heartbeats, SubmitEvents-like writes and read RPCs are all active, and no
+// non-reaper operation observes a transient fault. The reaper pass also
+// completes: the stale agent's zombies are stamped failed with "agent
+// heartbeat lost" while the fresh agent's runs stay untouched.
+func TestReapStaleAgentRuns_UnderConcurrentRPCTraffic(t *testing.T) {
+	f := newReapFixture(t)
+	ctx := f.ctx
+
+	f.createRun(t, "r-zombie-1", "agent-stale", "running")
+	f.createRun(t, "r-zombie-2", "agent-stale", "pending")
+	f.createRun(t, "r-live-1", "agent-fresh", "running")
+	f.createRun(t, "r-live-2", "agent-fresh", "running")
+
+	var (
+		mu     sync.Mutex
+		faults []string
+	)
+	record := func(op string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		faults = append(faults, fmt.Sprintf("%s: %v", op, err))
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	run := func(name string, op func(i int)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				op(i)
+			}
+		}()
+	}
+
+	// Register/Heartbeat-like traffic: the fresh agent's heartbeat stays live.
+	run("heartbeat", func(i int) {
+		if err := f.s.UpdateOverseerSeen(ctx, "agent-fresh", time.Now().UTC()); err != nil {
+			record("heartbeat", err)
+		}
+		time.Sleep(time.Millisecond)
+	})
+	// SubmitEvents-like traffic: ownership read plus a durable event append
+	// per envelope, alternating across both live runs.
+	run("submit-events", func(i int) {
+		runID := "r-live-1"
+		if i%2 == 0 {
+			runID = "r-live-2"
+		}
+		if _, err := f.s.GetRun(ctx, runID); err != nil {
+			record("submit get-run", err)
+			return
+		}
+		ev := &store.Event{
+			SchemaVersion: store.EventSchemaVersion,
+			RunID:         runID,
+			Type:          "step.log",
+			Ts:            time.Now().UTC(),
+			CorrelationID: fmt.Sprintf("corr-%d", i),
+			Payload:       []byte(`{"step":"s1"}`),
+		}
+		if _, _, err := f.s.AppendEvent(ctx, ev); err != nil {
+			record("submit append-event", err)
+		}
+	})
+	// Read-only RPCs: ListRuns, ListEvents (ListRunEvents), ListOverseers
+	// (ListAgents).
+	run("reads", func(i int) {
+		if _, err := f.s.ListRuns(ctx, "", ""); err != nil {
+			record("list-runs", err)
+		}
+		if _, err := f.s.ListEvents(ctx, "r-live-1", 0, 0); err != nil {
+			record("list-events", err)
+		}
+		if _, err := f.s.ListOverseers(ctx); err != nil {
+			record("list-agents", err)
+		}
+	})
+	// The reaper itself: repeated passes while the traffic above runs.
+	var reapPasses atomic.Int64
+	run("reaper", func(i int) {
+		_, err := f.s.ReapStaleAgentRuns(ctx, time.Now().UTC(), time.Now().UTC().Add(-60*time.Second))
+		if err != nil {
+			record("reaper", err)
+			return
+		}
+		reapPasses.Add(1)
+		time.Sleep(2 * time.Millisecond)
+	})
+
+	// Let the reaper collide with RPC traffic for a bounded window.
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	if passes := reapPasses.Load(); passes == 0 {
+		t.Fatal("reaper completed no successful passes under traffic")
+	}
+	if n := len(faults); n > 0 {
+		if n > 10 {
+			faults = faults[:10]
+		}
+		t.Fatalf("transient faults under concurrent reaping (%d total): %v", n, faults)
+	}
+
+	// The reaper stamped exactly the stale agent's zombies failed and left
+	// the fresh agent's runs untouched.
+	for _, id := range []string{"r-zombie-1", "r-zombie-2"} {
+		got := mustRun(t, f.s, ctx, id)
+		if got.Status != "failed" {
+			t.Fatalf("run %s: status = %q, want failed", id, got.Status)
+		}
+		if got.FailureReason != "agent heartbeat lost" {
+			t.Fatalf("run %s: failure_reason = %q, want %q", id, got.FailureReason, "agent heartbeat lost")
+		}
+		if got.EndedAt == nil {
+			t.Fatalf("run %s: ended_at not stamped", id)
+		}
+	}
+	for _, id := range []string{"r-live-1", "r-live-2"} {
+		got := mustRun(t, f.s, ctx, id)
+		if got.Status != "running" {
+			t.Fatalf("run %s: status = %q, want running (live run clobbered by the reaper)", id, got.Status)
+		}
+	}
+}
+
+// TestReapRunIDs_DropsResolvedCandidatesFromWrite is the CRI-143 re-validation
+// regression: when the write-transaction re-validation drops a strict subset
+// of the scanned candidates — a run resolved, or its agent heartbeated, between
+// the reader scan and the writer transaction — the surviving set is smaller
+// and the UPDATE placeholder lists must be derived from the surviving ids. The
+// pre-fix code reused the candidate-derived placeholder list, so any partial
+// drop failed the whole pass with "missing argument with index N", stamped
+// nothing, and returned an error (the exact race the re-validation exists to
+// handle).
+func TestReapRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
+	f := newReapFixture(t)
+	ctx := f.ctx
+
+	// Still-active zombies on the stale agent: both must be reaped.
+	f.createRun(t, "r-zombie-live", "agent-stale", "running")
+	f.createRun(t, "r-zombie-live-2", "agent-stale", "pending")
+	// Candidate that resolved before the write transaction.
+	f.createRun(t, "r-resolved", "agent-stale", "running")
+	if _, err := f.s.CancelRun(ctx, "r-resolved", "criteriarun deleted", f.now); err != nil {
+		t.Fatalf("cancel resolved run: %v", err)
+	}
+	// Candidate whose agent heartbeated back to life between the scan
+	// (heartbeat older than staleBefore) and the write (heartbeat fresh): its
+	// agent exists but its heartbeat is still stale when the candidate list is
+	// assembled, then the heartbeat lands before the write transaction.
+	if err := f.s.CreateOverseer(ctx, &store.Overseer{
+		ID: "agent-revived", Name: "agent-revived", TokenHash: "x", Status: "online",
+		CreatedAt: f.now.Add(-10 * time.Minute), LastSeenAt: f.now.Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("create overseer agent-revived: %v", err)
+	}
+	f.createRun(t, "r-heartbeated", "agent-revived", "running")
+	if err := f.s.UpdateOverseerSeen(ctx, "agent-revived", f.now.Add(time.Second)); err != nil {
+		t.Fatalf("heartbeat agent-revived: %v", err)
+	}
+
+	candidates := []string{"r-zombie-live", "r-zombie-live-2", "r-resolved", "r-heartbeated"}
+	reason := "agent heartbeat lost"
+	reaped, err := f.s.reapRunIDs(ctx, f.now, f.staleBefore, candidates, reason)
+	if err != nil {
+		t.Fatalf("reap with partially resolved candidates: %v", err)
+	}
+	wantReaped := []string{"r-zombie-live", "r-zombie-live-2"}
+	if !slices.Equal(reaped, wantReaped) {
+		t.Fatalf("reaped = %v, want %v", reaped, wantReaped)
+	}
+
+	for _, id := range wantReaped {
+		got := f.getRun(t, id)
+		if got.Status != "failed" {
+			t.Fatalf("run %s: status = %q, want failed", id, got.Status)
+		}
+		if got.FailureReason != reason {
+			t.Fatalf("run %s: failure_reason = %q, want %q", id, got.FailureReason, reason)
+		}
+		if got.EndedAt == nil {
+			t.Fatalf("run %s: ended_at not stamped", id)
+		}
+	}
+
+	// The resolved run keeps its own terminal state; the reaper never rewrites
+	// it (CRI-142 invariant under the scan-then-write split).
+	got := f.getRun(t, "r-resolved")
+	if got.Status != "cancelled" {
+		t.Fatalf("run r-resolved: status = %q, want cancelled", got.Status)
+	}
+	if got.FailureReason != "criteriarun deleted" {
+		t.Fatalf("run r-resolved: failure_reason clobbered: %q", got.FailureReason)
+	}
+	// The revived run is untouched.
+	got = f.getRun(t, "r-heartbeated")
+	if got.Status != "running" {
+		t.Fatalf("run r-heartbeated: status = %q, want running", got.Status)
+	}
+	if got.FailureReason != "" {
+		t.Fatalf("run r-heartbeated: failure_reason = %q, want empty", got.FailureReason)
+	}
+}
+
+// TestReapRunIDs_EmptyCandidates pins reapRunIDs' contract on empty input
+// (CRI-143 review): with no candidates it must return (nil, nil) without
+// opening a transaction — the candidate placeholder list cannot be derived
+// from zero ids, and the pre-guard placeholder slicing panicked on an empty
+// list ("slice bounds out of range [:-1]").
+func TestReapRunIDs_EmptyCandidates(t *testing.T) {
+	f := newReapFixture(t)
+	for name, candidates := range map[string][]string{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			reaped, err := f.s.reapRunIDs(f.ctx, f.now, f.staleBefore, candidates, "agent heartbeat lost")
+			if err != nil {
+				t.Fatalf("reapRunIDs(%s candidates): %v", name, err)
+			}
+			if reaped != nil {
+				t.Fatalf("reaped = %v, want nil", reaped)
+			}
+		})
+	}
+}
+
+// TestReapStaleAgentRuns_TerminalTransitionRace drives the public reaper API
+// against concurrent run-resolution traffic (the live CRI-143 wedge window):
+// every reaper pass races CancelRun transitions on one of the two zombie
+// candidates, so re-validation repeatedly sees a partial candidate drop.
+// Regardless of interleaving, the reaper must never return an error, must
+// always reap the unresolved zombie, and must never rewrite the resolved run.
+func TestReapStaleAgentRuns_TerminalTransitionRace(t *testing.T) {
+	f := newReapFixture(t)
+	ctx := f.ctx
+
+	f.createRun(t, "r-zombie-1", "agent-stale", "running")
+	f.createRun(t, "r-zombie-2", "agent-stale", "running")
+
+	var (
+		mu     sync.Mutex
+		faults []string
+	)
+	record := func(op string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		faults = append(faults, fmt.Sprintf("%s: %v", op, err))
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var reapPasses atomic.Int64
+
+	// Run-resolution traffic against one candidate.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := f.s.CancelRun(ctx, "r-zombie-2", "criteriarun deleted", time.Now().UTC()); err != nil && !errors.Is(err, store.ErrRunTerminal) {
+				record("cancel", err)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	// The reaper itself: repeated public passes over the same candidate set.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := f.s.ReapStaleAgentRuns(ctx, time.Now().UTC(), time.Now().UTC().Add(-60*time.Second)); err != nil {
+				record("reaper", err)
+				return
+			}
+			reapPasses.Add(1)
+		}
+	}()
+
+	time.Sleep(400 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	if passes := reapPasses.Load(); passes == 0 {
+		t.Fatal("reaper completed no successful passes under resolution traffic")
+	}
+	if n := len(faults); n > 0 {
+		if n > 10 {
+			faults = faults[:10]
+		}
+		t.Fatalf("faults under concurrent resolution (%d total): %v", n, faults)
+	}
+
+	// The unresolved zombie is reaped normally.
+	got := f.getRun(t, "r-zombie-1")
+	if got.Status != "failed" {
+		t.Fatalf("run r-zombie-1: status = %q, want failed", got.Status)
+	}
+	if got.FailureReason != "agent heartbeat lost" {
+		t.Fatalf("run r-zombie-1: failure_reason = %q, want %q", got.FailureReason, "agent heartbeat lost")
+	}
+	if got.EndedAt == nil {
+		t.Fatal("run r-zombie-1: ended_at not stamped")
+	}
+	// The resolved run is terminal via exactly one of the two legitimate
+	// paths; terminal runs are never rewritten afterwards.
+	got = f.getRun(t, "r-zombie-2")
+	if got.Status != "cancelled" && got.Status != "failed" {
+		t.Fatalf("run r-zombie-2: status = %q, want cancelled or failed", got.Status)
+	}
+	if got.FailureReason != "criteriarun deleted" && got.FailureReason != "agent heartbeat lost" {
+		t.Fatalf("run r-zombie-2: failure_reason = %q, want one of the two terminal reasons", got.FailureReason)
+	}
+	if got.EndedAt == nil {
+		t.Fatal("run r-zombie-2: ended_at not stamped")
 	}
 }
