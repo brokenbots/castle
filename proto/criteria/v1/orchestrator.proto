@@ -1,7 +1,13 @@
-// OrchestratorService — operator-facing read APIs for reconciling run
+// OrchestratorService — operator-facing APIs for reconciling run
 // lifecycle directly from Castle (CRI-133). Design note:
 // docs/adrs/ADR-0005-orchestrator-event-subscription.md (polling was chosen
 // over a server stream).
+//
+// The read RPCs are observation-only. CancelRun (CRI-142) is the single
+// operator-facing write: it stamps a run terminal in Castle when the operator
+// deliberately deletes the CriteriaRun, without requiring the owning agent
+// to act. It is never anonymously reachable and is not covered by dev-mode
+// anonymous reads.
 syntax = "proto3";
 
 package criteria.v1;
@@ -37,6 +43,25 @@ service OrchestratorService {
   // Terminal runs (succeeded | failed | cancelled) are excluded; their final
   // events remain pollable via SubscribeRunEvents.
   rpc ListActiveRuns(ListActiveRunsRequest) returns (ListActiveRunsResponse);
+
+  // CancelRun marks one run terminal (status "cancelled") on the operator's
+  // behalf (CRI-142). It exists for deterministic cleanup: when the operator
+  // deletes the CriteriaRun, it stamps the Castle run terminal itself instead
+  // of waiting for a dead agent's SubmitEvents.
+  //
+  // Semantics:
+  //   - Unknown run_id is NotFound.
+  //   - A run already in a terminal state (succeeded | failed | cancelled) is
+  //     FailedPrecondition; terminal states are never overwritten.
+  //   - The run is stamped "cancelled" with ended_at set and the supplied
+  //     reason (default "cancelled by operator") recorded as the run's
+  //     failure reason. Any queued or leased workflow assignment for the run
+  //     is also marked terminal so the work is never re-dispatched.
+  //
+  // Auth: orchestrator identities may cancel any run they can observe; agent
+  // identities may cancel only runs they own. Anonymous callers are rejected
+  // even in dev mode.
+  rpc CancelRun(CancelRunRequest) returns (CancelRunResponse);
 }
 
 // SubscribeRunEventsRequest anchors a single poll of a run's event stream.
@@ -69,4 +94,17 @@ message ListActiveRunsRequest {
 message ListActiveRunsResponse {
   // runs are the non-terminal runs (pending | running | paused).
   repeated criteria.v1.Run runs = 1;
+}
+
+message CancelRunRequest {
+  // run_id is the run to cancel. Required.
+  string run_id = 1;
+  // reason is audit metadata describing why the operator cancelled the run
+  // (e.g. "criteriarun deleted"). Empty selects "cancelled by operator".
+  string reason = 2;
+}
+
+message CancelRunResponse {
+  // run is the cancelled run record as persisted.
+  criteria.v1.Run run = 1;
 }

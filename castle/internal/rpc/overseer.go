@@ -280,6 +280,13 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		if err != nil {
 			return
 		}
+		if isTerminalRunStatus(run.Status) {
+			// Terminal states are never rewritten (CRI-142): a late agent
+			// RunStarted after an operator CancelRun or heartbeat reaping
+			// must not flip the run back to "running". The event itself
+			// stays pollable via the event log.
+			return
+		}
 		run.Status = "running"
 		if p.RunStarted != nil {
 			run.CurrentStep = p.RunStarted.InitialStep
@@ -451,6 +458,13 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		if err != nil {
 			return
 		}
+		if isTerminalRunStatus(run.Status) {
+			// Terminal states are never rewritten (CRI-142): a late agent
+			// event after an operator CancelRun or heartbeat reaping must not
+			// flip the run out of its stamped terminal state. The event
+			// itself stays pollable via the event log.
+			return
+		}
 		now := time.Now().UTC()
 		run.EndedAt = &now
 		if p.RunCompleted != nil && p.RunCompleted.Success {
@@ -470,9 +484,16 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		if err != nil {
 			return
 		}
+		if isTerminalRunStatus(run.Status) {
+			// See RunCompleted above: terminal stamps are final (CRI-142).
+			return
+		}
 		now := time.Now().UTC()
 		run.EndedAt = &now
 		run.Status = "failed"
+		if p.RunFailed != nil && p.RunFailed.Reason != "" {
+			run.FailureReason = p.RunFailed.Reason
+		}
 		_ = s.Store.UpdateRun(ctx, run)
 		_ = s.Store.MarkWorkflowAssignmentTerminal(ctx, env.RunId, "run failed")
 		if run.OverseerID != "" {

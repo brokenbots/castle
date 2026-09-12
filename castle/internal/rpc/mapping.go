@@ -36,15 +36,16 @@ func mapRun(r *store.Run) *pb.Run {
 		return nil
 	}
 	out := &pb.Run{
-		RunId:        r.ID,
-		CriteriaId:   r.OverseerID,
-		WorkflowName: r.WorkflowName,
-		WorkflowHash: r.WorkflowHCL,
-		Status:       r.Status,
-		CreatedAt:    timestamppb.New(r.CreatedAt),
-		Ticket:       r.Ticket,
-		RepoUrl:      r.RepoURL,
-		PrUrl:        r.PRURL,
+		RunId:         r.ID,
+		CriteriaId:    r.OverseerID,
+		WorkflowName:  r.WorkflowName,
+		WorkflowHash:  r.WorkflowHCL,
+		Status:        r.Status,
+		CreatedAt:     timestamppb.New(r.CreatedAt),
+		Ticket:        r.Ticket,
+		RepoUrl:       r.RepoURL,
+		PrUrl:         r.PRURL,
+		FailureReason: r.FailureReason,
 	}
 	if r.EndedAt != nil {
 		out.EndedAt = timestamppb.New(*r.EndedAt)

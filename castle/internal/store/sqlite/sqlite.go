@@ -158,7 +158,7 @@ func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
 
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
-const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url"
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 	_, err := s.db.ExecContext(ctx,
@@ -212,7 +212,8 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var ticket sql.NullString
 	var repoURL sql.NullString
 	var prURL sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL)
+	var failureReason sql.NullString
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -246,6 +247,9 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	if prURL.Valid {
 		r.PRURL = prURL.String
 	}
+	if failureReason.Valid {
+		r.FailureReason = failureReason.String
+	}
 	return &r, nil
 }
 
@@ -255,8 +259,8 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 		ended = r.EndedAt.Format(tsLayout)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=? WHERE id=?`,
-		r.Status, r.CurrentStep, r.LastSeq, ended, r.ID)
+		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=?, failure_reason=COALESCE(NULLIF(?, ''), failure_reason) WHERE id=?`,
+		r.Status, r.CurrentStep, r.LastSeq, ended, nonEmpty(r.FailureReason), r.ID)
 	return err
 }
 
@@ -317,6 +321,115 @@ func (s *Store) ClearRunPaused(ctx context.Context, runID string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status='running', pending_signal=NULL, paused_at=NULL WHERE id=?`, runID)
 	return err
+}
+
+// ReapStaleAgentRuns stamps runs in status pending or running as failed with
+// reason "agent heartbeat lost" when their owning criteria agent's heartbeat
+// (overseers.last_seen_at) is older than staleBefore (CRI-142). Runs without
+// an owning agent (queued assignment work) and paused runs are left alone;
+// terminal runs are never rewritten. Each reaped run's workflow assignment is
+// marked terminal so dead-agent work is never re-dispatched. Returns the IDs
+// of the reaped runs.
+func (s *Store) ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error) {
+	const reapReason = "agent heartbeat lost"
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT r.id
+		FROM runs r
+		JOIN overseers o ON o.id = r.overseer_id
+		WHERE r.status IN ('pending', 'running') AND o.last_seen_at < ?
+		ORDER BY r.created_at ASC, r.id ASC`,
+		staleBefore.Format(tsLayout))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		_ = tx.Rollback()
+		return nil, nil
+	}
+
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+
+	args := make([]any, 0, len(ids)+2)
+	args = append(args, now.Format(tsLayout), reapReason)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE runs
+		 SET status='failed', ended_at=?, failure_reason=?
+		 WHERE id IN (`+placeholders+`)`,
+		args...); err != nil {
+		return nil, err
+	}
+
+	// Mark queued or leased assignments for the reaped runs terminal so the
+	// dead agent's work is never re-queued or redelivered.
+	asgArgs := make([]any, 0, len(ids)+5)
+	asgArgs = append(asgArgs,
+		store.WorkflowAssignmentStateTerminal, reapReason, now.Format(tsLayout))
+	for _, id := range ids {
+		asgArgs = append(asgArgs, id)
+	}
+	asgArgs = append(asgArgs,
+		store.WorkflowAssignmentStateQueued, store.WorkflowAssignmentStateLeased)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET state=?, terminal_reason=?, updated_at=?
+		 WHERE run_id IN (`+placeholders+`) AND state IN (?, ?)`,
+		asgArgs...); err != nil {
+		return nil, err
+	}
+	return ids, tx.Commit()
+}
+
+// CancelRun stamps runID terminal as "cancelled" with the given reason
+// (CRI-142). The conditional update never rewrites an already terminal run,
+// so it cannot race a concurrent agent SubmitEvents terminal stamp into a
+// regression: whoever wins, the run stays terminal. Unknown run ids return
+// ErrNotFound; a run already terminal returns ErrRunTerminal. The updated run
+// record is returned on success.
+func (s *Store) CancelRun(ctx context.Context, runID, reason string, now time.Time) (*store.Run, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs
+		 SET status='cancelled', ended_at=?, failure_reason=COALESCE(NULLIF(?, ''), failure_reason)
+		 WHERE id=? AND status NOT IN ('succeeded', 'failed', 'cancelled')`,
+		now.Format(tsLayout), nonEmpty(reason), runID)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		if _, getErr := s.GetRun(ctx, runID); getErr != nil {
+			return nil, getErr
+		}
+		return nil, store.ErrRunTerminal
+	}
+	return s.GetRun(ctx, runID)
 }
 
 func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool, error) {
