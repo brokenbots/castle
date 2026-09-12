@@ -289,6 +289,29 @@ export class Envelope extends Message<Envelope> {
     case: "runMetadata";
   } | {
     /**
+     * AdapterLifecycleProvisionWanted / AdapterLifecycleReleased — engine-
+     * emitted adapter pod reconcile signals (CRI-115). The orchestrator
+     * observes these through the orchestrator event subscription API
+     * (CRI-133) and reconciles adapter pods per scope_instance_id. The server
+     * stores and fans them out verbatim without interpreting the fields.
+     * Permanent field numbers.
+     *
+     * permanent (CRI-115)
+     *
+     * @generated from field: criteria.v1.AdapterLifecycleProvisionWanted adapter_lifecycle_provision_wanted = 35;
+     */
+    value: AdapterLifecycleProvisionWanted;
+    case: "adapterLifecycleProvisionWanted";
+  } | {
+    /**
+     * permanent (CRI-115)
+     *
+     * @generated from field: criteria.v1.AdapterLifecycleReleased adapter_lifecycle_released = 36;
+     */
+    value: AdapterLifecycleReleased;
+    case: "adapterLifecycleReleased";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -338,6 +361,8 @@ export class Envelope extends Message<Envelope> {
     { no: 32, name: "step_iteration_item", kind: "message", T: StepIterationItem, oneof: "payload" },
     { no: 33, name: "run_outputs", kind: "message", T: RunOutputs, oneof: "payload" },
     { no: 34, name: "run_metadata", kind: "message", T: RunMetadata, oneof: "payload" },
+    { no: 35, name: "adapter_lifecycle_provision_wanted", kind: "message", T: AdapterLifecycleProvisionWanted, oneof: "payload" },
+    { no: 36, name: "adapter_lifecycle_released", kind: "message", T: AdapterLifecycleReleased, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -1789,6 +1814,130 @@ export class RunMetadata extends Message<RunMetadata> {
 
   static equals(a: RunMetadata | PlainMessage<RunMetadata> | undefined, b: RunMetadata | PlainMessage<RunMetadata> | undefined): boolean {
     return proto3.util.equals(RunMetadata, a, b);
+  }
+}
+
+/**
+ * AdapterLifecycleProvisionWanted — the engine requests provisioning of an
+ * adapter execution environment (pod) for a scope instance (CRI-115). The
+ * orchestrator reconciles the adapter pod for scope_instance_id upon observing
+ * this event via the orchestrator event subscription API (CRI-133). The
+ * server stores and fans out this event verbatim; it interprets none of the
+ * fields. All field numbers permanent.
+ *
+ * @generated from message criteria.v1.AdapterLifecycleProvisionWanted
+ */
+export class AdapterLifecycleProvisionWanted extends Message<AdapterLifecycleProvisionWanted> {
+  /**
+   * scope_instance_id identifies the adapter scope instance (run/step scope)
+   * the execution environment must be provisioned for; permanent.
+   *
+   * @generated from field: string scope_instance_id = 1;
+   */
+  scopeInstanceId = "";
+
+  /**
+   * shim_listen_address is the address the adapter shim listens on; permanent.
+   *
+   * @generated from field: string shim_listen_address = 2;
+   */
+  shimListenAddress = "";
+
+  /**
+   * token_ref is the reference to the secret holding the adapter token; permanent.
+   *
+   * @generated from field: string token_ref = 3;
+   */
+  tokenRef = "";
+
+  constructor(data?: PartialMessage<AdapterLifecycleProvisionWanted>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.AdapterLifecycleProvisionWanted";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "scope_instance_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "shim_listen_address", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "token_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdapterLifecycleProvisionWanted {
+    return new AdapterLifecycleProvisionWanted().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdapterLifecycleProvisionWanted {
+    return new AdapterLifecycleProvisionWanted().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdapterLifecycleProvisionWanted {
+    return new AdapterLifecycleProvisionWanted().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdapterLifecycleProvisionWanted | PlainMessage<AdapterLifecycleProvisionWanted> | undefined, b: AdapterLifecycleProvisionWanted | PlainMessage<AdapterLifecycleProvisionWanted> | undefined): boolean {
+    return proto3.util.equals(AdapterLifecycleProvisionWanted, a, b);
+  }
+}
+
+/**
+ * AdapterLifecycleReleased — the engine signals that the adapter execution
+ * environment for a scope instance is no longer needed and the orchestrator
+ * may release (tear down) the corresponding pod (CRI-115). The server stores
+ * and fans out this event verbatim; it interprets none of the fields. All
+ * field numbers permanent.
+ *
+ * @generated from message criteria.v1.AdapterLifecycleReleased
+ */
+export class AdapterLifecycleReleased extends Message<AdapterLifecycleReleased> {
+  /**
+   * scope_instance_id identifies the released adapter scope instance; permanent.
+   *
+   * @generated from field: string scope_instance_id = 1;
+   */
+  scopeInstanceId = "";
+
+  /**
+   * shim_listen_address is the address the adapter shim listened on; permanent.
+   *
+   * @generated from field: string shim_listen_address = 2;
+   */
+  shimListenAddress = "";
+
+  /**
+   * token_ref is the reference to the secret holding the adapter token; permanent.
+   *
+   * @generated from field: string token_ref = 3;
+   */
+  tokenRef = "";
+
+  constructor(data?: PartialMessage<AdapterLifecycleReleased>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.AdapterLifecycleReleased";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "scope_instance_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "shim_listen_address", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "token_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdapterLifecycleReleased {
+    return new AdapterLifecycleReleased().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdapterLifecycleReleased {
+    return new AdapterLifecycleReleased().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdapterLifecycleReleased {
+    return new AdapterLifecycleReleased().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdapterLifecycleReleased | PlainMessage<AdapterLifecycleReleased> | undefined, b: AdapterLifecycleReleased | PlainMessage<AdapterLifecycleReleased> | undefined): boolean {
+    return proto3.util.equals(AdapterLifecycleReleased, a, b);
   }
 }
 
