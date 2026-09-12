@@ -136,6 +136,10 @@ func newPayloadForType(typ string) (proto.Message, error) {
 		return &pb.RunOutputs{}, nil
 	case "run.metadata":
 		return &pb.RunMetadata{}, nil
+	case "adapter.lifecycle.provision_wanted":
+		return &pb.AdapterLifecycleProvisionWanted{}, nil
+	case "adapter.lifecycle.released":
+		return &pb.AdapterLifecycleReleased{}, nil
 	default:
 		return nil, fmt.Errorf("unknown event type %q", typ)
 	}
@@ -195,6 +199,10 @@ func payloadMessage(env *criteria.Envelope) proto.Message {
 		return p.RunOutputs
 	case *pb.Envelope_RunMetadata:
 		return p.RunMetadata
+	case *pb.Envelope_AdapterLifecycleProvisionWanted:
+		return p.AdapterLifecycleProvisionWanted
+	case *pb.Envelope_AdapterLifecycleReleased:
+		return p.AdapterLifecycleReleased
 	default:
 		return nil
 	}
@@ -254,6 +262,10 @@ func setPayload(env *criteria.Envelope, msg proto.Message) {
 		env.Payload = &pb.Envelope_RunOutputs{RunOutputs: p}
 	case *pb.RunMetadata:
 		env.Payload = &criteria.Envelope_RunMetadata{RunMetadata: p}
+	case *pb.AdapterLifecycleProvisionWanted:
+		env.Payload = &criteria.Envelope_AdapterLifecycleProvisionWanted{AdapterLifecycleProvisionWanted: p}
+	case *pb.AdapterLifecycleReleased:
+		env.Payload = &criteria.Envelope_AdapterLifecycleReleased{AdapterLifecycleReleased: p}
 	}
 }
 

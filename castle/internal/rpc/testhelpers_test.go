@@ -10,12 +10,14 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpcreflect"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
+	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/hub"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
@@ -25,11 +27,12 @@ import (
 )
 
 type testStack struct {
-	store    store.Store
-	hub      *hub.Hub
-	controls *ControlRegistry
-	criteria *CriteriaServer
-	server   *ServerServer
+	store        store.Store
+	hub          *hub.Hub
+	controls     *ControlRegistry
+	criteria     *CriteriaServer
+	server       *ServerServer
+	orchestrator *OrchestratorServer
 }
 
 func newTestStack(t *testing.T) *testStack {
@@ -47,11 +50,12 @@ func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 	h := hub.New()
 	controls := NewControlRegistry()
 	return &testStack{
-		store:    s,
-		hub:      h,
-		controls: controls,
-		criteria: NewCriteriaServer(s, h, log, controls),
-		server:   NewServerServer(s, h, log, controls),
+		store:        s,
+		hub:          h,
+		controls:     controls,
+		criteria:     NewCriteriaServer(s, h, log, controls),
+		server:       NewServerServer(s, h, log, controls),
+		orchestrator: NewOrchestratorServer(s, log),
 	}
 }
 
@@ -60,14 +64,17 @@ func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*h
 	mux := http.NewServeMux()
 	oPath, oHandler := criteriav1connect.NewCriteriaServiceHandler(s.criteria, opts...)
 	cPath, cHandler := criteriav1connect.NewServerServiceHandler(s.server, opts...)
+	orchPath, orchHandler := criteriav1connect.NewOrchestratorServiceHandler(s.orchestrator, opts...)
 	mux.Handle(oPath, oHandler)
 	mux.Handle(cPath, cHandler)
+	mux.Handle(orchPath, orchHandler)
 
 	// Mount reflection so e2e tests can assert the endpoint is reachable
 	// and exempt from auth.
 	reflector := grpcreflect.NewStaticReflector(
 		criteriav1connect.CriteriaServiceName,
 		criteriav1connect.ServerServiceName,
+		criteriav1connect.OrchestratorServiceName,
 	)
 	rPath, rHandler := grpcreflect.NewHandlerV1(reflector)
 	mux.Handle(rPath, rHandler)
@@ -82,6 +89,27 @@ func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*h
 	return tsrv,
 		criteriav1connect.NewCriteriaServiceClient(client, tsrv.URL),
 		criteriav1connect.NewServerServiceClient(client, tsrv.URL)
+}
+
+// orchestratorClient builds an OrchestratorServiceClient against the test
+// server returned by startServer.
+func orchestratorClient(tsrv *httptest.Server) criteriav1connect.OrchestratorServiceClient {
+	return criteriav1connect.NewOrchestratorServiceClient(h2cClient(), tsrv.URL)
+}
+
+// provisionOrchestratorIdentity stores an orchestrator accept-token identity
+// for wire-level tests. The returned token is what the client presents in the
+// Authorization header.
+func provisionOrchestratorIdentity(t *testing.T, st store.Store, id, token string) {
+	t.Helper()
+	if err := st.UpsertOrchestrator(context.Background(), &store.Orchestrator{
+		ID:        id,
+		Name:      "operator",
+		TokenHash: auth.HashToken(token),
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("provision orchestrator identity: %v", err)
+	}
 }
 
 func h2cClient() *http.Client {
