@@ -913,7 +913,7 @@ func TestWatchRun_CursorUpdate_FinalWriteRetriesBusy(t *testing.T) {
 }
 
 func TestWatchRun_CursorUpdate_IntermediateWriteRetriesBusy(t *testing.T) {
-	ts, fault := newFaultStack(t, /*failOnSeq=*/ 100, 0)
+	ts, fault := newFaultStack(t /*failOnSeq=*/, 100, 0)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
 	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
@@ -1453,4 +1453,3 @@ func TestControlRegistryEnqueueErrors(t *testing.T) {
 	}
 	r.Unregister("o1", ch)
 }
-

@@ -280,6 +280,13 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		if err != nil {
 			return
 		}
+		if isTerminalRunStatus(run.Status) {
+			// Terminal states are never rewritten (CRI-142): a late agent
+			// RunStarted after an operator CancelRun or heartbeat reaping
+			// must not flip the run back to "running". The event itself
+			// stays pollable via the event log.
+			return
+		}
 		run.Status = "running"
 		if p.RunStarted != nil {
 			run.CurrentStep = p.RunStarted.InitialStep

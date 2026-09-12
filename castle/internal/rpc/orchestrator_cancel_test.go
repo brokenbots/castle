@@ -236,6 +236,56 @@ func TestOrchestratorCancelRun_DurableAgainstLateAgentEvents(t *testing.T) {
 	}
 }
 
+// TestOrchestratorCancelRun_LateRunStartedStaysCancelled pins cancel
+// durability for the run-start path (CRI-142): a still-lease-held agent that
+// emits a late RunStarted after the operator cancelled must not flip the run
+// back to "running" while the cancel reason and ended_at stay stamped. The
+// event itself remains pollable on the event log.
+func TestOrchestratorCancelRun_LateRunStartedStaysCancelled(t *testing.T) {
+	h := newOrchestratorHarness(t)
+	runID := h.newAgentRun(t, "wf-cancel-late-started")
+
+	if _, err := h.cancelRun(t, h.orchestratorToken, runID, "criteriarun deleted"); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	cancelled, err := h.ts.store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("store get: %v", err)
+	}
+	if cancelled.EndedAt == nil {
+		t.Fatal("cancel did not stamp ended_at")
+	}
+
+	h.submitEvents(t, []*pb.Envelope{
+		criteria.NewEnvelope(runID, &pb.RunStarted{InitialStep: "late-start"}),
+	})
+
+	got, err := h.ts.store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("store get after late RunStarted: %v", err)
+	}
+	if got.Status != "cancelled" {
+		t.Fatalf("late RunStarted flipped cancelled run: status=%q", got.Status)
+	}
+	if got.FailureReason != "criteriarun deleted" {
+		t.Errorf("failure_reason not preserved: %q", got.FailureReason)
+	}
+	if got.EndedAt == nil || !got.EndedAt.Equal(*cancelled.EndedAt) {
+		t.Errorf("ended_at changed: got %v want %v", got.EndedAt, cancelled.EndedAt)
+	}
+
+	events := pollRunEvents(t, h, runID, 0)
+	var sawStarted bool
+	for _, env := range events {
+		if _, ok := env.Payload.(*pb.Envelope_RunStarted); ok {
+			sawStarted = true
+		}
+	}
+	if !sawStarted {
+		t.Fatalf("late RunStarted must remain pollable on the event log (%d events)", len(events))
+	}
+}
+
 // TestOrchestratorCancelRunAnonDenied pins the security boundary: CancelRun
 // is a write and is never covered by dev-mode anonymous reads — only the
 // read-only orchestrator procedures are.
