@@ -20,11 +20,20 @@ import (
 
 type Store struct {
 	db *sql.DB
+	// reader is a dedicated read handle on the same WAL database (CRI-143).
+	// Long scans — the run reaper's staleness scan — run here so they never
+	// queue behind or hold the single serialized writer connection that all
+	// RPC traffic shares.
+	reader *sql.DB
 }
 
+// openDSN is the pragma set every pool handle uses. WAL mode still allows
+// concurrent readers, and busy_timeout keeps rare cross-handle writer
+// collisions waiting instead of failing fast.
+const openDSN = "file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+
 func Open(path string) (*Store, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", fmt.Sprintf(openDSN, path))
 	if err != nil {
 		return nil, err
 	}
@@ -32,20 +41,35 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	reader, err := sql.Open("sqlite", fmt.Sprintf(openDSN, path))
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	// Serialize all SQLite writers through a single connection. WAL mode still
 	// allows concurrent readers, but multiple writer connections can return
 	// SQLITE_BUSY under load. A single open connection guarantees writers never
 	// conflict and matches the behavior observed when callers explicitly set
-	// SetMaxOpenConns(1).
+	// SetMaxOpenConns(1). The separate reader handle gives the run reaper's
+	// scan a connection that never competes with RPC work on this one (CRI-143).
 	db.SetMaxOpenConns(1)
-	return &Store{db: db}, nil
+	reader.SetMaxOpenConns(1)
+	return &Store{db: db, reader: reader}, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	dbErr := s.db.Close()
+	// Close the reader after the writer so in-flight RPC writes finish first.
+	if err := s.reader.Close(); dbErr == nil {
+		return err
+	}
+	return dbErr
+}
 
-// SetMaxOpenConns configures the maximum number of open database connections.
-// Open now defaults to 1 to serialize writers and avoid SQLITE_BUSY races.
-// Callers may override this for tests that need a different pool size.
+// SetMaxOpenConns configures the maximum number of open connections in the
+// writer pool. Open defaults the writer to 1 to serialize writers and avoid
+// SQLITE_BUSY races (CRI-78); the reader pool stays separate at 1 so reaper
+// scans can never queue behind RPC traffic (CRI-143).
 func (s *Store) SetMaxOpenConns(n int) { s.db.SetMaxOpenConns(n) }
 
 const (
@@ -83,7 +107,7 @@ func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, er
 }
 
 func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
+	rows, err := s.reader.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +155,7 @@ func (s *Store) UpsertOrchestrator(ctx context.Context, o *store.Orchestrator) e
 }
 
 func (s *Store) ListOrchestrators(ctx context.Context) ([]*store.Orchestrator, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,token_hash,created_at FROM orchestrators ORDER BY created_at ASC`)
+	rows, err := s.reader.QueryContext(ctx, `SELECT id,name,token_hash,created_at FROM orchestrators ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +209,7 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string) ([]*sto
 		args = append(args, status)
 	}
 	q += ` ORDER BY created_at DESC`
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.reader.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -330,15 +354,30 @@ func (s *Store) ClearRunPaused(ctx context.Context, runID string) error {
 // terminal runs are never rewritten. Each reaped run's workflow assignment is
 // marked terminal so dead-agent work is never re-dispatched. Returns the IDs
 // of the reaped runs.
+//
+// CRI-143: the staleness scan runs on the dedicated reader connection and the
+// writes go through one short transaction on the serialized writer pool, so a
+// reaper pass can never hold — or wedge — the connection RPC traffic shares.
+// Transient sqlite faults are retried with backoff (retry.go).
 func (s *Store) ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error) {
-	const reapReason = "agent heartbeat lost"
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return retryOnTransient(ctx, reapRetryPolicy, func() ([]string, error) {
+		return s.reapStaleAgentRunsAttempt(ctx, now, staleBefore)
+	})
+}
 
-	rows, err := tx.QueryContext(ctx, `
+// reapStaleAgentRunsAttempt performs one reaping pass. The candidate scan is a
+// plain read on the reader connection: with nothing to reap — the common case —
+// the writer connection is not touched at all.
+func (s *Store) reapStaleAgentRunsAttempt(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error) {
+	// Bound the pass so a wedged writer connection fails the tick instead of
+	// pinning the reaper goroutine (CRI-143). Each retry attempt gets a fresh
+	// budget.
+	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)
+	defer cancel()
+
+	const reapReason = "agent heartbeat lost"
+
+	rows, err := s.reader.QueryContext(ctx, `
 		SELECT r.id
 		FROM runs r
 		JOIN overseers o ON o.id = r.overseer_id
@@ -364,22 +403,79 @@ func (s *Store) ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefo
 	rows.Close()
 
 	if len(ids) == 0 {
-		_ = tx.Rollback()
 		return nil, nil
 	}
 
-	placeholders := strings.Repeat("?,", len(ids))
+	return s.reapRunIDs(ctx, now, staleBefore, ids, reapReason)
+}
+
+// reapRunIDs stamps the given candidates on the serialized writer pool. The
+// candidates were picked from a reader snapshot that may already be stale, so
+// the transaction re-validates staleness and reapability against current data:
+// runs whose agent heartbeated or reached a terminal state in between are
+// never clobbered (CRI-142 terminal invariants hold even under the
+// scan-then-write split).
+func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.Time, candidates []string, reapReason string) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	placeholders := strings.Repeat("?,", len(candidates))
 	placeholders = placeholders[:len(placeholders)-1]
+
+	// Re-validate inside the write transaction against the same staleness
+	// criteria as the scan: only still-active runs of agents whose heartbeat
+	// is still older than staleBefore survive into the UPDATE.
+	revalidateArgs := make([]any, 0, len(candidates)+1)
+	revalidateArgs = append(revalidateArgs, staleBefore.Format(tsLayout))
+	for _, id := range candidates {
+		revalidateArgs = append(revalidateArgs, id)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT r.id
+		FROM runs r
+		JOIN overseers o ON o.id = r.overseer_id
+		WHERE r.status IN ('pending', 'running') AND o.last_seen_at < ?
+		AND r.id IN (`+placeholders+`)
+		ORDER BY r.created_at ASC, r.id ASC`,
+		revalidateArgs...)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		_ = tx.Rollback()
+		return nil, nil
+	}
 
 	args := make([]any, 0, len(ids)+2)
 	args = append(args, now.Format(tsLayout), reapReason)
 	for _, id := range ids {
 		args = append(args, id)
 	}
+	// The status guard is defense in depth: terminal runs are never rewritten,
+	// even if a concurrent writer committed between the tx snapshot and the
+	// UPDATE.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE runs
 		 SET status='failed', ended_at=?, failure_reason=?
-		 WHERE id IN (`+placeholders+`)`,
+		 WHERE id IN (`+placeholders+`) AND status IN ('pending', 'running')`,
 		args...); err != nil {
 		return nil, err
 	}
@@ -502,7 +598,7 @@ func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limi
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT seq,type,ts,correlation_id,payload FROM events WHERE run_id=? AND seq>? ORDER BY seq ASC LIMIT ?`,
 		runID, since, normalized)
 	if err != nil {
@@ -517,7 +613,7 @@ func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT seq,type,ts,correlation_id,payload
 		 FROM events
 		 WHERE run_id=? AND seq>? AND type='step.log' AND json_extract(payload, '$.step')=?
@@ -905,7 +1001,7 @@ func scanAssignmentTx(ctx context.Context, tx *sql.Tx, query string, args ...any
 }
 
 func (s *Store) loadAssignmentLabels(ctx context.Context, assignmentID string) (map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT key, value FROM workflow_assignment_labels WHERE assignment_id=?`, assignmentID)
 	if err != nil {
 		return nil, err
@@ -1214,7 +1310,7 @@ func (s *Store) ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, cr
 	if criteriaID == "" {
 		return nil, errors.New("criteria_id required")
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.reader.QueryContext(ctx, `
 		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
 		       a.idempotency_key, a.created_at, a.updated_at, l.key, l.value
 		FROM workflow_assignments a

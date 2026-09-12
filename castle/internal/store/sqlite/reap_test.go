@@ -3,6 +3,9 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,5 +318,179 @@ func TestUpdateRun_PreservesFailureReason(t *testing.T) {
 	}
 	if got := f.getRun(t, "r-reason"); got.FailureReason != "criteriarun deleted" {
 		t.Fatalf("failure_reason clobbered: %q", got.FailureReason)
+	}
+}
+
+// TestReapStaleAgentRuns_ScanRunsWhileWriterBusy is the CRI-143 structural
+// regression: the reaper's staleness scan must run on the dedicated reader
+// connection and never queue behind the single serialized writer connection
+// that all RPC traffic shares. With the writer pinned by an open transaction
+// (as an in-flight RPC write would hold it), the pre-CRI-143 implementation —
+// which opened its scan in a transaction on that same pool — blocked for as
+// long as the writer stayed busy.
+func TestReapStaleAgentRuns_ScanRunsWhileWriterBusy(t *testing.T) {
+	f := newReapFixture(t)
+
+	// Hold the writer connection with an open transaction, like an in-flight
+	// RPC write would.
+	wtx, err := f.s.db.BeginTx(f.ctx, nil)
+	if err != nil {
+		t.Fatalf("begin writer tx: %v", err)
+	}
+	defer func() { _ = wtx.Rollback() }()
+
+	type result struct {
+		ids []string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ids, err := f.s.ReapStaleAgentRuns(f.ctx, time.Now().UTC(), time.Now().UTC().Add(-time.Minute))
+		done <- result{ids, err}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("reap with busy writer: %v", res.err)
+		}
+		if len(res.ids) != 0 {
+			t.Fatalf("empty store reaped runs: %v", res.ids)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("reaper scan blocked on the busy writer connection: the scan must run on the reader pool (CRI-143)")
+	}
+}
+
+// TestReapStaleAgentRuns_UnderConcurrentRPCTraffic is the CRI-143 live
+// regression (exit criteria): the reaper runs repeatedly while Register-like
+// heartbeats, SubmitEvents-like writes and read RPCs are all active, and no
+// non-reaper operation observes a transient fault. The reaper pass also
+// completes: the stale agent's zombies are stamped failed with "agent
+// heartbeat lost" while the fresh agent's runs stay untouched.
+func TestReapStaleAgentRuns_UnderConcurrentRPCTraffic(t *testing.T) {
+	f := newReapFixture(t)
+	ctx := f.ctx
+
+	f.createRun(t, "r-zombie-1", "agent-stale", "running")
+	f.createRun(t, "r-zombie-2", "agent-stale", "pending")
+	f.createRun(t, "r-live-1", "agent-fresh", "running")
+	f.createRun(t, "r-live-2", "agent-fresh", "running")
+
+	var (
+		mu     sync.Mutex
+		faults []string
+	)
+	record := func(op string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		faults = append(faults, fmt.Sprintf("%s: %v", op, err))
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	run := func(name string, op func(i int)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				op(i)
+			}
+		}()
+	}
+
+	// Register/Heartbeat-like traffic: the fresh agent's heartbeat stays live.
+	run("heartbeat", func(i int) {
+		if err := f.s.UpdateOverseerSeen(ctx, "agent-fresh", time.Now().UTC()); err != nil {
+			record("heartbeat", err)
+		}
+		time.Sleep(time.Millisecond)
+	})
+	// SubmitEvents-like traffic: ownership read plus a durable event append
+	// per envelope, alternating across both live runs.
+	run("submit-events", func(i int) {
+		runID := "r-live-1"
+		if i%2 == 0 {
+			runID = "r-live-2"
+		}
+		if _, err := f.s.GetRun(ctx, runID); err != nil {
+			record("submit get-run", err)
+			return
+		}
+		ev := &store.Event{
+			SchemaVersion: store.EventSchemaVersion,
+			RunID:         runID,
+			Type:          "step.log",
+			Ts:            time.Now().UTC(),
+			CorrelationID: fmt.Sprintf("corr-%d", i),
+			Payload:       []byte(`{"step":"s1"}`),
+		}
+		if _, _, err := f.s.AppendEvent(ctx, ev); err != nil {
+			record("submit append-event", err)
+		}
+	})
+	// Read-only RPCs: ListRuns, ListEvents (ListRunEvents), ListOverseers
+	// (ListAgents).
+	run("reads", func(i int) {
+		if _, err := f.s.ListRuns(ctx, "", ""); err != nil {
+			record("list-runs", err)
+		}
+		if _, err := f.s.ListEvents(ctx, "r-live-1", 0, 0); err != nil {
+			record("list-events", err)
+		}
+		if _, err := f.s.ListOverseers(ctx); err != nil {
+			record("list-agents", err)
+		}
+	})
+	// The reaper itself: repeated passes while the traffic above runs.
+	var reapPasses atomic.Int64
+	run("reaper", func(i int) {
+		_, err := f.s.ReapStaleAgentRuns(ctx, time.Now().UTC(), time.Now().UTC().Add(-60*time.Second))
+		if err != nil {
+			record("reaper", err)
+			return
+		}
+		reapPasses.Add(1)
+		time.Sleep(2 * time.Millisecond)
+	})
+
+	// Let the reaper collide with RPC traffic for a bounded window.
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	if passes := reapPasses.Load(); passes == 0 {
+		t.Fatal("reaper completed no successful passes under traffic")
+	}
+	if n := len(faults); n > 0 {
+		if n > 10 {
+			faults = faults[:10]
+		}
+		t.Fatalf("transient faults under concurrent reaping (%d total): %v", n, faults)
+	}
+
+	// The reaper stamped exactly the stale agent's zombies failed and left
+	// the fresh agent's runs untouched.
+	for _, id := range []string{"r-zombie-1", "r-zombie-2"} {
+		got := mustRun(t, f.s, ctx, id)
+		if got.Status != "failed" {
+			t.Fatalf("run %s: status = %q, want failed", id, got.Status)
+		}
+		if got.FailureReason != "agent heartbeat lost" {
+			t.Fatalf("run %s: failure_reason = %q, want %q", id, got.FailureReason, "agent heartbeat lost")
+		}
+		if got.EndedAt == nil {
+			t.Fatalf("run %s: ended_at not stamped", id)
+		}
+	}
+	for _, id := range []string{"r-live-1", "r-live-2"} {
+		got := mustRun(t, f.s, ctx, id)
+		if got.Status != "running" {
+			t.Fatalf("run %s: status = %q, want running (live run clobbered by the reaper)", id, got.Status)
+		}
 	}
 }
