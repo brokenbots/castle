@@ -1,4 +1,7 @@
 FROM golang:1.26-alpine AS build
+# go.work pins a newer patch than this base image ships; let the toolchain
+# self-update instead of failing with GOTOOLCHAIN=local errors.
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
 COPY . .
