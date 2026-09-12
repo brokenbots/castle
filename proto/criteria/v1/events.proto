@@ -76,6 +76,14 @@ message Envelope {
     // as the pull request URL. The server promotes known fields onto the run
     // record and stores/fans out the event like any other envelope. CRI-131.
     RunMetadata run_metadata = 34;
+    // AdapterLifecycleProvisionWanted / AdapterLifecycleReleased — engine-
+    // emitted adapter pod reconcile signals (CRI-115). The orchestrator
+    // observes these through the orchestrator event subscription API
+    // (CRI-133) and reconciles adapter pods per scope_instance_id. The server
+    // stores and fans them out verbatim without interpreting the fields.
+    // Permanent field numbers.
+    AdapterLifecycleProvisionWanted adapter_lifecycle_provision_wanted = 35; // permanent (CRI-115)
+    AdapterLifecycleReleased adapter_lifecycle_released = 36;               // permanent (CRI-115)
     // WatchReady is a protocol-level sentinel sent once at the start of a
     // WatchRun server-stream, after any persisted-event replay, to flush
     // response headers so the client's WatchRun call can return. It has no
@@ -319,4 +327,34 @@ message RunMetadata {
   string repo_url = 2;
   // pr_url is the pull request URL produced by the run; only overwrites when non-empty.
   string pr_url = 3;
+}
+
+// AdapterLifecycleProvisionWanted — the engine requests provisioning of an
+// adapter execution environment (pod) for a scope instance (CRI-115). The
+// orchestrator reconciles the adapter pod for scope_instance_id upon observing
+// this event via the orchestrator event subscription API (CRI-133). The
+// server stores and fans out this event verbatim; it interprets none of the
+// fields. All field numbers permanent.
+message AdapterLifecycleProvisionWanted {
+  // scope_instance_id identifies the adapter scope instance (run/step scope)
+  // the execution environment must be provisioned for; permanent.
+  string scope_instance_id = 1;
+  // shim_listen_address is the address the adapter shim listens on; permanent.
+  string shim_listen_address = 2;
+  // token_ref is the reference to the secret holding the adapter token; permanent.
+  string token_ref = 3;
+}
+
+// AdapterLifecycleReleased — the engine signals that the adapter execution
+// environment for a scope instance is no longer needed and the orchestrator
+// may release (tear down) the corresponding pod (CRI-115). The server stores
+// and fans out this event verbatim; it interprets none of the fields. All
+// field numbers permanent.
+message AdapterLifecycleReleased {
+  // scope_instance_id identifies the released adapter scope instance; permanent.
+  string scope_instance_id = 1;
+  // shim_listen_address is the address the adapter shim listened on; permanent.
+  string shim_listen_address = 2;
+  // token_ref is the reference to the secret holding the adapter token; permanent.
+  string token_ref = 3;
 }

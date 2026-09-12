@@ -41,6 +41,27 @@ var readOnlyServerProcedures = map[string]struct{}{
 	criteriav1connect.ServerServiceWatchRunProcedure:      {},
 }
 
+// orchestratorProcedures are the OrchestratorService RPCs (CRI-133). They are
+// read-only observation surfaces for the operator reconcile loop.
+var orchestratorProcedures = map[string]struct{}{
+	criteriav1connect.OrchestratorServiceSubscribeRunEventsProcedure: {},
+	criteriav1connect.OrchestratorServiceListActiveRunsProcedure:     {},
+}
+
+// isOrchestratorAllowed reports whether an orchestrator identity may invoke
+// the procedure (CRI-133). Orchestrators get the read-only ServerService
+// surface plus OrchestratorService; every agent-owned write procedure
+// (CriteriaService, ServerService writes) is denied.
+func isOrchestratorAllowed(procedure string) bool {
+	if _, ok := orchestratorProcedures[procedure]; ok {
+		return true
+	}
+	if _, ok := readOnlyServerProcedures[procedure]; ok {
+		return true
+	}
+	return false
+}
+
 // InterceptorOption configures an AuthInterceptor.
 type InterceptorOption func(*AuthInterceptor)
 
@@ -94,6 +115,9 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if err != nil {
 			return nil, err
 		}
+		if err := authorizeOrchestratorProcedure(newCtx, req.Spec().Procedure); err != nil {
+			return nil, err
+		}
 		return next(newCtx, req)
 	}
 }
@@ -111,12 +135,35 @@ func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 		if err != nil {
 			return err
 		}
+		if err := authorizeOrchestratorProcedure(newCtx, conn.Spec().Procedure); err != nil {
+			return err
+		}
 		return next(newCtx, conn)
 	}
 }
 
+// authorizeOrchestratorProcedure enforces the orchestrator auth boundary
+// (CRI-133): an orchestrator identity may invoke only the read-only
+// observation procedures. Agent-owned writes must be rejected so an operator
+// token can never be used to mutate agent state. Agent callers pass through
+// (CallerOrchestratorID is empty for them).
+func authorizeOrchestratorProcedure(ctx context.Context, procedure string) error {
+	if CallerOrchestratorID(ctx) == "" {
+		return nil
+	}
+	if isOrchestratorAllowed(procedure) {
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied, errors.New("orchestrator identities cannot invoke agent-owned procedures"))
+}
+
 // authenticateHeaders validates the token and returns a context with the
-// caller's criteria agent ID injected.
+// caller's identity injected: criteria agent ID for agent tokens,
+// orchestrator ID for orchestrator tokens (CRI-133). Agent tokens take
+// precedence when both match: the per-table token-hash UNIQUE indexes cannot
+// detect identical token material across tables, so in that (operator
+// misconfiguration) case the token acts as an agent and the orchestrator
+// identity it shadows is unreachable.
 func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header) (context.Context, error) {
 	tok, ok := TokenFromHeaders(h)
 	if !ok {
@@ -126,10 +173,17 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 	if err != nil {
 		return ctx, connect.NewError(connect.CodeInternal, err)
 	}
-	if o == nil {
+	if o != nil {
+		return context.WithValue(ctx, callerCriteriaIDKey{}, o.ID), nil
+	}
+	orch, err := ResolveOrchestratorToken(ctx, i.store, tok)
+	if err != nil {
+		return ctx, connect.NewError(connect.CodeInternal, err)
+	}
+	if orch == nil {
 		return ctx, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token"))
 	}
-	return context.WithValue(ctx, callerCriteriaIDKey{}, o.ID), nil
+	return context.WithValue(ctx, callerOrchestratorIDKey{}, orch.ID), nil
 }
 
 // handleRegister enforces the bootstrap-token gate for the Register RPC.
@@ -156,7 +210,14 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 
 func (i *AuthInterceptor) isExempt(procedure string) bool {
 	if i.allowAnonReads {
+		// Read-only observation surfaces (ServerService reads and the
+		// OrchestratorService subscription APIs, CRI-133) stay anonymously
+		// readable in dev mode so local tooling keeps working. Production
+		// TLS deployments do not enable this flag.
 		if _, ok := readOnlyServerProcedures[procedure]; ok {
+			return true
+		}
+		if _, ok := orchestratorProcedures[procedure]; ok {
 			return true
 		}
 	}

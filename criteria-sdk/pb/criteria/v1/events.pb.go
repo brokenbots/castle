@@ -127,6 +127,8 @@ type Envelope struct {
 	//	*Envelope_StepIterationItem
 	//	*Envelope_RunOutputs
 	//	*Envelope_RunMetadata
+	//	*Envelope_AdapterLifecycleProvisionWanted
+	//	*Envelope_AdapterLifecycleReleased
 	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -430,6 +432,24 @@ func (x *Envelope) GetRunMetadata() *RunMetadata {
 	return nil
 }
 
+func (x *Envelope) GetAdapterLifecycleProvisionWanted() *AdapterLifecycleProvisionWanted {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_AdapterLifecycleProvisionWanted); ok {
+			return x.AdapterLifecycleProvisionWanted
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetAdapterLifecycleReleased() *AdapterLifecycleReleased {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_AdapterLifecycleReleased); ok {
+			return x.AdapterLifecycleReleased
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetWatchReady() *WatchReady {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
@@ -560,6 +580,20 @@ type Envelope_RunMetadata struct {
 	RunMetadata *RunMetadata `protobuf:"bytes,34,opt,name=run_metadata,json=runMetadata,proto3,oneof"`
 }
 
+type Envelope_AdapterLifecycleProvisionWanted struct {
+	// AdapterLifecycleProvisionWanted / AdapterLifecycleReleased — engine-
+	// emitted adapter pod reconcile signals (CRI-115). The orchestrator
+	// observes these through the orchestrator event subscription API
+	// (CRI-133) and reconciles adapter pods per scope_instance_id. The server
+	// stores and fans them out verbatim without interpreting the fields.
+	// Permanent field numbers.
+	AdapterLifecycleProvisionWanted *AdapterLifecycleProvisionWanted `protobuf:"bytes,35,opt,name=adapter_lifecycle_provision_wanted,json=adapterLifecycleProvisionWanted,proto3,oneof"` // permanent (CRI-115)
+}
+
+type Envelope_AdapterLifecycleReleased struct {
+	AdapterLifecycleReleased *AdapterLifecycleReleased `protobuf:"bytes,36,opt,name=adapter_lifecycle_released,json=adapterLifecycleReleased,proto3,oneof"` // permanent (CRI-115)
+}
+
 type Envelope_WatchReady struct {
 	// WatchReady is a protocol-level sentinel sent once at the start of a
 	// WatchRun server-stream, after any persisted-event replay, to flush
@@ -617,6 +651,10 @@ func (*Envelope_StepIterationItem) isEnvelope_Payload() {}
 func (*Envelope_RunOutputs) isEnvelope_Payload() {}
 
 func (*Envelope_RunMetadata) isEnvelope_Payload() {}
+
+func (*Envelope_AdapterLifecycleProvisionWanted) isEnvelope_Payload() {}
+
+func (*Envelope_AdapterLifecycleReleased) isEnvelope_Payload() {}
 
 func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
@@ -2184,6 +2222,144 @@ func (x *RunMetadata) GetPrUrl() string {
 	return ""
 }
 
+// AdapterLifecycleProvisionWanted — the engine requests provisioning of an
+// adapter execution environment (pod) for a scope instance (CRI-115). The
+// orchestrator reconciles the adapter pod for scope_instance_id upon observing
+// this event via the orchestrator event subscription API (CRI-133). The
+// server stores and fans out this event verbatim; it interprets none of the
+// fields. All field numbers permanent.
+type AdapterLifecycleProvisionWanted struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// scope_instance_id identifies the adapter scope instance (run/step scope)
+	// the execution environment must be provisioned for; permanent.
+	ScopeInstanceId string `protobuf:"bytes,1,opt,name=scope_instance_id,json=scopeInstanceId,proto3" json:"scope_instance_id,omitempty"`
+	// shim_listen_address is the address the adapter shim listens on; permanent.
+	ShimListenAddress string `protobuf:"bytes,2,opt,name=shim_listen_address,json=shimListenAddress,proto3" json:"shim_listen_address,omitempty"`
+	// token_ref is the reference to the secret holding the adapter token; permanent.
+	TokenRef      string `protobuf:"bytes,3,opt,name=token_ref,json=tokenRef,proto3" json:"token_ref,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdapterLifecycleProvisionWanted) Reset() {
+	*x = AdapterLifecycleProvisionWanted{}
+	mi := &file_criteria_v1_events_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdapterLifecycleProvisionWanted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdapterLifecycleProvisionWanted) ProtoMessage() {}
+
+func (x *AdapterLifecycleProvisionWanted) ProtoReflect() protoreflect.Message {
+	mi := &file_criteria_v1_events_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdapterLifecycleProvisionWanted.ProtoReflect.Descriptor instead.
+func (*AdapterLifecycleProvisionWanted) Descriptor() ([]byte, []int) {
+	return file_criteria_v1_events_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *AdapterLifecycleProvisionWanted) GetScopeInstanceId() string {
+	if x != nil {
+		return x.ScopeInstanceId
+	}
+	return ""
+}
+
+func (x *AdapterLifecycleProvisionWanted) GetShimListenAddress() string {
+	if x != nil {
+		return x.ShimListenAddress
+	}
+	return ""
+}
+
+func (x *AdapterLifecycleProvisionWanted) GetTokenRef() string {
+	if x != nil {
+		return x.TokenRef
+	}
+	return ""
+}
+
+// AdapterLifecycleReleased — the engine signals that the adapter execution
+// environment for a scope instance is no longer needed and the orchestrator
+// may release (tear down) the corresponding pod (CRI-115). The server stores
+// and fans out this event verbatim; it interprets none of the fields. All
+// field numbers permanent.
+type AdapterLifecycleReleased struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// scope_instance_id identifies the released adapter scope instance; permanent.
+	ScopeInstanceId string `protobuf:"bytes,1,opt,name=scope_instance_id,json=scopeInstanceId,proto3" json:"scope_instance_id,omitempty"`
+	// shim_listen_address is the address the adapter shim listened on; permanent.
+	ShimListenAddress string `protobuf:"bytes,2,opt,name=shim_listen_address,json=shimListenAddress,proto3" json:"shim_listen_address,omitempty"`
+	// token_ref is the reference to the secret holding the adapter token; permanent.
+	TokenRef      string `protobuf:"bytes,3,opt,name=token_ref,json=tokenRef,proto3" json:"token_ref,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdapterLifecycleReleased) Reset() {
+	*x = AdapterLifecycleReleased{}
+	mi := &file_criteria_v1_events_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdapterLifecycleReleased) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdapterLifecycleReleased) ProtoMessage() {}
+
+func (x *AdapterLifecycleReleased) ProtoReflect() protoreflect.Message {
+	mi := &file_criteria_v1_events_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdapterLifecycleReleased.ProtoReflect.Descriptor instead.
+func (*AdapterLifecycleReleased) Descriptor() ([]byte, []int) {
+	return file_criteria_v1_events_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *AdapterLifecycleReleased) GetScopeInstanceId() string {
+	if x != nil {
+		return x.ScopeInstanceId
+	}
+	return ""
+}
+
+func (x *AdapterLifecycleReleased) GetShimListenAddress() string {
+	if x != nil {
+		return x.ShimListenAddress
+	}
+	return ""
+}
+
+func (x *AdapterLifecycleReleased) GetTokenRef() string {
+	if x != nil {
+		return x.TokenRef
+	}
+	return ""
+}
+
 type RunOutputs_Output struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                                     // output declaration name; permanent
@@ -2195,7 +2371,7 @@ type RunOutputs_Output struct {
 
 func (x *RunOutputs_Output) Reset() {
 	*x = RunOutputs_Output{}
-	mi := &file_criteria_v1_events_proto_msgTypes[30]
+	mi := &file_criteria_v1_events_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2207,7 +2383,7 @@ func (x *RunOutputs_Output) String() string {
 func (*RunOutputs_Output) ProtoMessage() {}
 
 func (x *RunOutputs_Output) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_events_proto_msgTypes[30]
+	mi := &file_criteria_v1_events_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2248,7 +2424,7 @@ var File_criteria_v1_events_proto protoreflect.FileDescriptor
 
 const file_criteria_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18criteria/v1/events.proto\x12\vcriteria.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf4\x0f\n" +
+	"\x18criteria/v1/events.proto\x12\vcriteria.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd8\x11\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -2283,7 +2459,9 @@ const file_criteria_v1_events_proto_rawDesc = "" +
 	"\x13step_iteration_item\x18  \x01(\v2\x1e.criteria.v1.StepIterationItemH\x00R\x11stepIterationItem\x12:\n" +
 	"\vrun_outputs\x18! \x01(\v2\x17.criteria.v1.RunOutputsH\x00R\n" +
 	"runOutputs\x12=\n" +
-	"\frun_metadata\x18\" \x01(\v2\x18.criteria.v1.RunMetadataH\x00R\vrunMetadata\x12:\n" +
+	"\frun_metadata\x18\" \x01(\v2\x18.criteria.v1.RunMetadataH\x00R\vrunMetadata\x12{\n" +
+	"\"adapter_lifecycle_provision_wanted\x18# \x01(\v2,.criteria.v1.AdapterLifecycleProvisionWantedH\x00R\x1fadapterLifecycleProvisionWanted\x12e\n" +
+	"\x1aadapter_lifecycle_released\x18$ \x01(\v2%.criteria.v1.AdapterLifecycleReleasedH\x00R\x18adapterLifecycleReleased\x12:\n" +
 	"\vwatch_ready\x18c \x01(\v2\x17.criteria.v1.WatchReadyH\x00R\n" +
 	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
@@ -2406,7 +2584,15 @@ const file_criteria_v1_events_proto_rawDesc = "" +
 	"\vRunMetadata\x12\x16\n" +
 	"\x06ticket\x18\x01 \x01(\tR\x06ticket\x12\x19\n" +
 	"\brepo_url\x18\x02 \x01(\tR\arepoUrl\x12\x15\n" +
-	"\x06pr_url\x18\x03 \x01(\tR\x05prUrl*k\n" +
+	"\x06pr_url\x18\x03 \x01(\tR\x05prUrl\"\x9a\x01\n" +
+	"\x1fAdapterLifecycleProvisionWanted\x12*\n" +
+	"\x11scope_instance_id\x18\x01 \x01(\tR\x0fscopeInstanceId\x12.\n" +
+	"\x13shim_listen_address\x18\x02 \x01(\tR\x11shimListenAddress\x12\x1b\n" +
+	"\ttoken_ref\x18\x03 \x01(\tR\btokenRef\"\x93\x01\n" +
+	"\x18AdapterLifecycleReleased\x12*\n" +
+	"\x11scope_instance_id\x18\x01 \x01(\tR\x0fscopeInstanceId\x12.\n" +
+	"\x13shim_listen_address\x18\x02 \x01(\tR\x11shimListenAddress\x12\x1b\n" +
+	"\ttoken_ref\x18\x03 \x01(\tR\btokenRef*k\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
@@ -2426,45 +2612,47 @@ func file_criteria_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_criteria_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_criteria_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_criteria_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_criteria_v1_events_proto_goTypes = []any{
-	(LogStream)(0),                 // 0: criteria.v1.LogStream
-	(*Envelope)(nil),               // 1: criteria.v1.Envelope
-	(*RunStarted)(nil),             // 2: criteria.v1.RunStarted
-	(*RunCompleted)(nil),           // 3: criteria.v1.RunCompleted
-	(*RunFailed)(nil),              // 4: criteria.v1.RunFailed
-	(*StepEntered)(nil),            // 5: criteria.v1.StepEntered
-	(*StepOutcome)(nil),            // 6: criteria.v1.StepOutcome
-	(*StepTransition)(nil),         // 7: criteria.v1.StepTransition
-	(*StepLog)(nil),                // 8: criteria.v1.StepLog
-	(*AdapterEvent)(nil),           // 9: criteria.v1.AdapterEvent
-	(*CriteriaHeartbeat)(nil),      // 10: criteria.v1.CriteriaHeartbeat
-	(*CriteriaDisconnected)(nil),   // 11: criteria.v1.CriteriaDisconnected
-	(*StepResumed)(nil),            // 12: criteria.v1.StepResumed
-	(*WatchReady)(nil),             // 13: criteria.v1.WatchReady
-	(*VariableSet)(nil),            // 14: criteria.v1.VariableSet
-	(*StepOutputCaptured)(nil),     // 15: criteria.v1.StepOutputCaptured
-	(*WaitEntered)(nil),            // 16: criteria.v1.WaitEntered
-	(*WaitResumed)(nil),            // 17: criteria.v1.WaitResumed
-	(*ApprovalRequested)(nil),      // 18: criteria.v1.ApprovalRequested
-	(*ApprovalDecision)(nil),       // 19: criteria.v1.ApprovalDecision
-	(*BranchEvaluated)(nil),        // 20: criteria.v1.BranchEvaluated
-	(*ForEachEntered)(nil),         // 21: criteria.v1.ForEachEntered
-	(*StepIterationStarted)(nil),   // 22: criteria.v1.StepIterationStarted
-	(*StepIterationCompleted)(nil), // 23: criteria.v1.StepIterationCompleted
-	(*ScopeIterCursorSet)(nil),     // 24: criteria.v1.ScopeIterCursorSet
-	(*StepIterationItem)(nil),      // 25: criteria.v1.StepIterationItem
-	(*RunOutputs)(nil),             // 26: criteria.v1.RunOutputs
-	(*RunMetadata)(nil),            // 27: criteria.v1.RunMetadata
-	nil,                            // 28: criteria.v1.StepOutputCaptured.OutputsEntry
-	nil,                            // 29: criteria.v1.WaitResumed.PayloadEntry
-	nil,                            // 30: criteria.v1.ApprovalDecision.PayloadEntry
-	(*RunOutputs_Output)(nil),      // 31: criteria.v1.RunOutputs.Output
-	(*timestamppb.Timestamp)(nil),  // 32: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),        // 33: google.protobuf.Struct
+	(LogStream)(0),                          // 0: criteria.v1.LogStream
+	(*Envelope)(nil),                        // 1: criteria.v1.Envelope
+	(*RunStarted)(nil),                      // 2: criteria.v1.RunStarted
+	(*RunCompleted)(nil),                    // 3: criteria.v1.RunCompleted
+	(*RunFailed)(nil),                       // 4: criteria.v1.RunFailed
+	(*StepEntered)(nil),                     // 5: criteria.v1.StepEntered
+	(*StepOutcome)(nil),                     // 6: criteria.v1.StepOutcome
+	(*StepTransition)(nil),                  // 7: criteria.v1.StepTransition
+	(*StepLog)(nil),                         // 8: criteria.v1.StepLog
+	(*AdapterEvent)(nil),                    // 9: criteria.v1.AdapterEvent
+	(*CriteriaHeartbeat)(nil),               // 10: criteria.v1.CriteriaHeartbeat
+	(*CriteriaDisconnected)(nil),            // 11: criteria.v1.CriteriaDisconnected
+	(*StepResumed)(nil),                     // 12: criteria.v1.StepResumed
+	(*WatchReady)(nil),                      // 13: criteria.v1.WatchReady
+	(*VariableSet)(nil),                     // 14: criteria.v1.VariableSet
+	(*StepOutputCaptured)(nil),              // 15: criteria.v1.StepOutputCaptured
+	(*WaitEntered)(nil),                     // 16: criteria.v1.WaitEntered
+	(*WaitResumed)(nil),                     // 17: criteria.v1.WaitResumed
+	(*ApprovalRequested)(nil),               // 18: criteria.v1.ApprovalRequested
+	(*ApprovalDecision)(nil),                // 19: criteria.v1.ApprovalDecision
+	(*BranchEvaluated)(nil),                 // 20: criteria.v1.BranchEvaluated
+	(*ForEachEntered)(nil),                  // 21: criteria.v1.ForEachEntered
+	(*StepIterationStarted)(nil),            // 22: criteria.v1.StepIterationStarted
+	(*StepIterationCompleted)(nil),          // 23: criteria.v1.StepIterationCompleted
+	(*ScopeIterCursorSet)(nil),              // 24: criteria.v1.ScopeIterCursorSet
+	(*StepIterationItem)(nil),               // 25: criteria.v1.StepIterationItem
+	(*RunOutputs)(nil),                      // 26: criteria.v1.RunOutputs
+	(*RunMetadata)(nil),                     // 27: criteria.v1.RunMetadata
+	(*AdapterLifecycleProvisionWanted)(nil), // 28: criteria.v1.AdapterLifecycleProvisionWanted
+	(*AdapterLifecycleReleased)(nil),        // 29: criteria.v1.AdapterLifecycleReleased
+	nil,                                     // 30: criteria.v1.StepOutputCaptured.OutputsEntry
+	nil,                                     // 31: criteria.v1.WaitResumed.PayloadEntry
+	nil,                                     // 32: criteria.v1.ApprovalDecision.PayloadEntry
+	(*RunOutputs_Output)(nil),               // 33: criteria.v1.RunOutputs.Output
+	(*timestamppb.Timestamp)(nil),           // 34: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),                 // 35: google.protobuf.Struct
 }
 var file_criteria_v1_events_proto_depIdxs = []int32{
-	32, // 0: criteria.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	34, // 0: criteria.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: criteria.v1.Envelope.run_started:type_name -> criteria.v1.RunStarted
 	3,  // 2: criteria.v1.Envelope.run_completed:type_name -> criteria.v1.RunCompleted
 	4,  // 3: criteria.v1.Envelope.run_failed:type_name -> criteria.v1.RunFailed
@@ -2490,18 +2678,20 @@ var file_criteria_v1_events_proto_depIdxs = []int32{
 	25, // 23: criteria.v1.Envelope.step_iteration_item:type_name -> criteria.v1.StepIterationItem
 	26, // 24: criteria.v1.Envelope.run_outputs:type_name -> criteria.v1.RunOutputs
 	27, // 25: criteria.v1.Envelope.run_metadata:type_name -> criteria.v1.RunMetadata
-	13, // 26: criteria.v1.Envelope.watch_ready:type_name -> criteria.v1.WatchReady
-	0,  // 27: criteria.v1.StepLog.stream:type_name -> criteria.v1.LogStream
-	33, // 28: criteria.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	28, // 29: criteria.v1.StepOutputCaptured.outputs:type_name -> criteria.v1.StepOutputCaptured.OutputsEntry
-	29, // 30: criteria.v1.WaitResumed.payload:type_name -> criteria.v1.WaitResumed.PayloadEntry
-	30, // 31: criteria.v1.ApprovalDecision.payload:type_name -> criteria.v1.ApprovalDecision.PayloadEntry
-	31, // 32: criteria.v1.RunOutputs.outputs:type_name -> criteria.v1.RunOutputs.Output
-	33, // [33:33] is the sub-list for method output_type
-	33, // [33:33] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	28, // 26: criteria.v1.Envelope.adapter_lifecycle_provision_wanted:type_name -> criteria.v1.AdapterLifecycleProvisionWanted
+	29, // 27: criteria.v1.Envelope.adapter_lifecycle_released:type_name -> criteria.v1.AdapterLifecycleReleased
+	13, // 28: criteria.v1.Envelope.watch_ready:type_name -> criteria.v1.WatchReady
+	0,  // 29: criteria.v1.StepLog.stream:type_name -> criteria.v1.LogStream
+	35, // 30: criteria.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	30, // 31: criteria.v1.StepOutputCaptured.outputs:type_name -> criteria.v1.StepOutputCaptured.OutputsEntry
+	31, // 32: criteria.v1.WaitResumed.payload:type_name -> criteria.v1.WaitResumed.PayloadEntry
+	32, // 33: criteria.v1.ApprovalDecision.payload:type_name -> criteria.v1.ApprovalDecision.PayloadEntry
+	33, // 34: criteria.v1.RunOutputs.outputs:type_name -> criteria.v1.RunOutputs.Output
+	35, // [35:35] is the sub-list for method output_type
+	35, // [35:35] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_criteria_v1_events_proto_init() }
@@ -2535,6 +2725,8 @@ func file_criteria_v1_events_proto_init() {
 		(*Envelope_StepIterationItem)(nil),
 		(*Envelope_RunOutputs)(nil),
 		(*Envelope_RunMetadata)(nil),
+		(*Envelope_AdapterLifecycleProvisionWanted)(nil),
+		(*Envelope_AdapterLifecycleReleased)(nil),
 		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
@@ -2543,7 +2735,7 @@ func file_criteria_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_criteria_v1_events_proto_rawDesc), len(file_criteria_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   31,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -60,6 +60,18 @@ type Overseer struct {
 	LastSeenAt time.Time
 }
 
+// Orchestrator is an operator-facing identity (CRI-133). Orchestrators
+// authenticate with accept-token auth like agents but hold read-only
+// authority: they observe run lifecycle via the OrchestratorService and may
+// not invoke agent-owned write procedures. The TokenHash is the SHA-256 hex
+// digest of the accept token.
+type Orchestrator struct {
+	ID        string
+	Name      string
+	TokenHash string
+	CreatedAt time.Time
+}
+
 // WorkflowAssignment is a durable, idempotent queued workflow submission.
 type WorkflowAssignment struct {
 	ID               string
@@ -135,6 +147,18 @@ type Store interface {
 	UpdateOverseerSeen(ctx context.Context, id string, ts time.Time) error
 	UpdateOverseerStatus(ctx context.Context, id, status string) error
 	MarkOfflineBefore(ctx context.Context, before time.Time) error
+
+	// Orchestrators (CRI-133)
+	// UpsertOrchestrator inserts or replaces the orchestrator record by ID.
+	// Updating an existing identity rotates its token: the new TokenHash
+	// invalidates previously issued accept tokens. CreatedAt is preserved on
+	// update.
+	UpsertOrchestrator(ctx context.Context, o *Orchestrator) error
+	// ListOrchestrators returns all registered orchestrator identities.
+	ListOrchestrators(ctx context.Context) ([]*Orchestrator, error)
+	// DeleteOrchestrator removes the orchestrator identity, revoking its
+	// accept token (CRI-133). Deleting an unknown ID is a no-op.
+	DeleteOrchestrator(ctx context.Context, id string) error
 
 	// Runs
 	CreateRun(ctx context.Context, r *Run) error

@@ -21,6 +21,7 @@ import (
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/hub"
 	"github.com/brokenbots/castle/castle/internal/rpc"
+	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
@@ -85,6 +86,11 @@ func main() {
 	tlsCA := flag.String("tls-ca", envOrDefault("CASTLE_TLS_CA", ""), "TLS CA bundle path (or CASTLE_TLS_CA)")
 	tlsClientCA := flag.String("tls-client-ca", envOrDefault("CASTLE_TLS_CLIENT_CA", ""), "mTLS client CA path (or CASTLE_TLS_CLIENT_CA)")
 	bootstrapToken := flag.String("bootstrap-token", envOrDefault("OVERLORD_CASTLE_BOOTSTRAP_TOKEN", ""), "bootstrap token for Register (or OVERLORD_CASTLE_BOOTSTRAP_TOKEN); empty = Register disabled")
+	// Orchestrator identity provisioning (CRI-133). The token is supplied via
+	// flag or env and persisted as a SHA-256 hash; it is never logged. An
+	// empty value REVOKES the operator identity: the previously provisioned
+	// row is deleted, so its accept token stops authenticating immediately.
+	orchestratorToken := flag.String("orchestrator-token", envOrDefault("CASTLE_ORCHESTRATOR_TOKEN", ""), "accept token for the orchestrator operator identity (or CASTLE_ORCHESTRATOR_TOKEN); empty revokes the previously provisioned operator identity (disables orchestrator auth)")
 	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
@@ -129,6 +135,29 @@ func main() {
 
 	criteriaRPC := rpc.NewCriteriaServer(st, h, log, controls)
 	serverRPC := rpc.NewServerServer(st, h, log, controls)
+	orchestratorRPC := rpc.NewOrchestratorServer(st, log)
+
+	// Provision or revoke the orchestrator operator identity (CRI-133).
+	// Upserting is idempotent and rotates the token when the configured token
+	// changes; running with an empty token deletes the identity so a retired
+	// credential stops authenticating.
+	if *orchestratorToken != "" {
+		if err := st.UpsertOrchestrator(context.Background(), &store.Orchestrator{
+			ID:        "orchestrator-operator",
+			Name:      "operator",
+			TokenHash: auth.HashToken(*orchestratorToken),
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			log.Error("provision orchestrator identity", "err", err)
+			os.Exit(1)
+		}
+		log.Info("orchestrator identity provisioned", "orchestrator_id", "orchestrator-operator")
+	} else {
+		if err := st.DeleteOrchestrator(context.Background(), "orchestrator-operator"); err != nil {
+			log.Error("revoke orchestrator identity", "err", err)
+			os.Exit(1)
+		}
+	}
 
 	interceptors := []connect.Interceptor{
 		auth.NewLoggingInterceptor(log),
@@ -138,18 +167,22 @@ func main() {
 	mux := http.NewServeMux()
 	critPath, critHandler := criteria.NewServiceHandler(criteriaRPC, connect.WithInterceptors(interceptors...))
 	serverPath, serverHandler := criteriav1connect.NewServerServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
+	orchestratorPath, orchestratorHandler := criteriav1connect.NewOrchestratorServiceHandler(orchestratorRPC, connect.WithInterceptors(interceptors...))
 	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
 		criteria.ServiceName,
 		criteriav1connect.ServerServiceName,
+		criteriav1connect.OrchestratorServiceName,
 	))
 	mux.Handle(critPath, critHandler)
 	mux.Handle(serverPath, serverHandler)
+	mux.Handle(orchestratorPath, orchestratorHandler)
 	mux.Handle(healthPath, healthHandler)
 
 	if *grpcReflection {
 		reflector := grpcreflect.NewStaticReflector(
 			criteria.ServiceName,
 			criteriav1connect.ServerServiceName,
+			criteriav1connect.OrchestratorServiceName,
 			grpchealth.HealthV1ServiceName,
 		)
 		rPathV1, rHandlerV1 := grpcreflect.NewHandlerV1(reflector)

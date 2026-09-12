@@ -119,6 +119,43 @@ func (s *Store) MarkOfflineBefore(ctx context.Context, before time.Time) error {
 	return err
 }
 
+// UpsertOrchestrator inserts or replaces an orchestrator identity (CRI-133).
+// On conflict, name and token_hash are replaced — rotating the token
+// invalidates previously issued accept tokens — and created_at is preserved.
+func (s *Store) UpsertOrchestrator(ctx context.Context, o *store.Orchestrator) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO orchestrators(id,name,token_hash,created_at) VALUES(?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, token_hash=excluded.token_hash`,
+		o.ID, o.Name, o.TokenHash, o.CreatedAt.Format(tsLayout))
+	return err
+}
+
+func (s *Store) ListOrchestrators(ctx context.Context) ([]*store.Orchestrator, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,token_hash,created_at FROM orchestrators ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*store.Orchestrator
+	for rows.Next() {
+		var o store.Orchestrator
+		var created string
+		if err := rows.Scan(&o.ID, &o.Name, &o.TokenHash, &created); err != nil {
+			return nil, err
+		}
+		o.CreatedAt, _ = time.Parse(tsLayout, created)
+		out = append(out, &o)
+	}
+	return out, rows.Err()
+}
+
+// DeleteOrchestrator removes the orchestrator identity, revoking its accept
+// token (CRI-133). Deleting an unknown ID is a no-op.
+func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM orchestrators WHERE id = ?`, id)
+	return err
+}
+
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
 const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url"
