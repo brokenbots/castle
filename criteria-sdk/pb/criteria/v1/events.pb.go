@@ -126,6 +126,7 @@ type Envelope struct {
 	//	*Envelope_ScopeIterCursorSet
 	//	*Envelope_StepIterationItem
 	//	*Envelope_RunOutputs
+	//	*Envelope_RunMetadata
 	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -420,6 +421,15 @@ func (x *Envelope) GetRunOutputs() *RunOutputs {
 	return nil
 }
 
+func (x *Envelope) GetRunMetadata() *RunMetadata {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_RunMetadata); ok {
+			return x.RunMetadata
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetWatchReady() *WatchReady {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
@@ -542,6 +552,14 @@ type Envelope_RunOutputs struct {
 	RunOutputs *RunOutputs `protobuf:"bytes,33,opt,name=run_outputs,json=runOutputs,proto3,oneof"`
 }
 
+type Envelope_RunMetadata struct {
+	// RunMetadata — emitted by an external orchestrator (e.g. the criteria-k8s
+	// operator) to publish run metadata discovered during orchestration, such
+	// as the pull request URL. The server promotes known fields onto the run
+	// record and stores/fans out the event like any other envelope. CRI-131.
+	RunMetadata *RunMetadata `protobuf:"bytes,34,opt,name=run_metadata,json=runMetadata,proto3,oneof"`
+}
+
 type Envelope_WatchReady struct {
 	// WatchReady is a protocol-level sentinel sent once at the start of a
 	// WatchRun server-stream, after any persisted-event replay, to flush
@@ -597,6 +615,8 @@ func (*Envelope_ScopeIterCursorSet) isEnvelope_Payload() {}
 func (*Envelope_StepIterationItem) isEnvelope_Payload() {}
 
 func (*Envelope_RunOutputs) isEnvelope_Payload() {}
+
+func (*Envelope_RunMetadata) isEnvelope_Payload() {}
 
 func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
@@ -2095,6 +2115,75 @@ func (x *RunOutputs) GetOutputs() []*RunOutputs_Output {
 	return nil
 }
 
+// RunMetadata — external orchestration metadata for a run (CRI-131). Emitted
+// by an orchestrator (e.g. the criteria-k8s operator) after the run record is
+// created, when metadata that was not known at create time (such as the pull
+// request URL) becomes available. Server behavior: promote known fields onto
+// the run record (only non-empty values overwrite) and persist/fan out the
+// event like any other envelope.
+type RunMetadata struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// ticket is the external ticket identifier; only overwrites when non-empty.
+	Ticket string `protobuf:"bytes,1,opt,name=ticket,proto3" json:"ticket,omitempty"`
+	// repo_url is the repository the run operates on; only overwrites when non-empty.
+	RepoUrl string `protobuf:"bytes,2,opt,name=repo_url,json=repoUrl,proto3" json:"repo_url,omitempty"`
+	// pr_url is the pull request URL produced by the run; only overwrites when non-empty.
+	PrUrl         string `protobuf:"bytes,3,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RunMetadata) Reset() {
+	*x = RunMetadata{}
+	mi := &file_criteria_v1_events_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RunMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RunMetadata) ProtoMessage() {}
+
+func (x *RunMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_criteria_v1_events_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RunMetadata.ProtoReflect.Descriptor instead.
+func (*RunMetadata) Descriptor() ([]byte, []int) {
+	return file_criteria_v1_events_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *RunMetadata) GetTicket() string {
+	if x != nil {
+		return x.Ticket
+	}
+	return ""
+}
+
+func (x *RunMetadata) GetRepoUrl() string {
+	if x != nil {
+		return x.RepoUrl
+	}
+	return ""
+}
+
+func (x *RunMetadata) GetPrUrl() string {
+	if x != nil {
+		return x.PrUrl
+	}
+	return ""
+}
+
 type RunOutputs_Output struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                                     // output declaration name; permanent
@@ -2106,7 +2195,7 @@ type RunOutputs_Output struct {
 
 func (x *RunOutputs_Output) Reset() {
 	*x = RunOutputs_Output{}
-	mi := &file_criteria_v1_events_proto_msgTypes[29]
+	mi := &file_criteria_v1_events_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2118,7 +2207,7 @@ func (x *RunOutputs_Output) String() string {
 func (*RunOutputs_Output) ProtoMessage() {}
 
 func (x *RunOutputs_Output) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_events_proto_msgTypes[29]
+	mi := &file_criteria_v1_events_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2159,7 +2248,7 @@ var File_criteria_v1_events_proto protoreflect.FileDescriptor
 
 const file_criteria_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18criteria/v1/events.proto\x12\vcriteria.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb5\x0f\n" +
+	"\x18criteria/v1/events.proto\x12\vcriteria.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf4\x0f\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -2193,7 +2282,8 @@ const file_criteria_v1_events_proto_rawDesc = "" +
 	"\x15scope_iter_cursor_set\x18\x1f \x01(\v2\x1f.criteria.v1.ScopeIterCursorSetH\x00R\x12scopeIterCursorSet\x12P\n" +
 	"\x13step_iteration_item\x18  \x01(\v2\x1e.criteria.v1.StepIterationItemH\x00R\x11stepIterationItem\x12:\n" +
 	"\vrun_outputs\x18! \x01(\v2\x17.criteria.v1.RunOutputsH\x00R\n" +
-	"runOutputs\x12:\n" +
+	"runOutputs\x12=\n" +
+	"\frun_metadata\x18\" \x01(\v2\x18.criteria.v1.RunMetadataH\x00R\vrunMetadata\x12:\n" +
 	"\vwatch_ready\x18c \x01(\v2\x17.criteria.v1.WatchReadyH\x00R\n" +
 	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
@@ -2312,7 +2402,11 @@ const file_criteria_v1_events_proto_rawDesc = "" +
 	"\x06Output\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value\x12#\n" +
-	"\rdeclared_type\x18\x03 \x01(\tR\fdeclaredType*k\n" +
+	"\rdeclared_type\x18\x03 \x01(\tR\fdeclaredType\"W\n" +
+	"\vRunMetadata\x12\x16\n" +
+	"\x06ticket\x18\x01 \x01(\tR\x06ticket\x12\x19\n" +
+	"\brepo_url\x18\x02 \x01(\tR\arepoUrl\x12\x15\n" +
+	"\x06pr_url\x18\x03 \x01(\tR\x05prUrl*k\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
@@ -2332,7 +2426,7 @@ func file_criteria_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_criteria_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_criteria_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_criteria_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_criteria_v1_events_proto_goTypes = []any{
 	(LogStream)(0),                 // 0: criteria.v1.LogStream
 	(*Envelope)(nil),               // 1: criteria.v1.Envelope
@@ -2361,15 +2455,16 @@ var file_criteria_v1_events_proto_goTypes = []any{
 	(*ScopeIterCursorSet)(nil),     // 24: criteria.v1.ScopeIterCursorSet
 	(*StepIterationItem)(nil),      // 25: criteria.v1.StepIterationItem
 	(*RunOutputs)(nil),             // 26: criteria.v1.RunOutputs
-	nil,                            // 27: criteria.v1.StepOutputCaptured.OutputsEntry
-	nil,                            // 28: criteria.v1.WaitResumed.PayloadEntry
-	nil,                            // 29: criteria.v1.ApprovalDecision.PayloadEntry
-	(*RunOutputs_Output)(nil),      // 30: criteria.v1.RunOutputs.Output
-	(*timestamppb.Timestamp)(nil),  // 31: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),        // 32: google.protobuf.Struct
+	(*RunMetadata)(nil),            // 27: criteria.v1.RunMetadata
+	nil,                            // 28: criteria.v1.StepOutputCaptured.OutputsEntry
+	nil,                            // 29: criteria.v1.WaitResumed.PayloadEntry
+	nil,                            // 30: criteria.v1.ApprovalDecision.PayloadEntry
+	(*RunOutputs_Output)(nil),      // 31: criteria.v1.RunOutputs.Output
+	(*timestamppb.Timestamp)(nil),  // 32: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),        // 33: google.protobuf.Struct
 }
 var file_criteria_v1_events_proto_depIdxs = []int32{
-	31, // 0: criteria.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	32, // 0: criteria.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: criteria.v1.Envelope.run_started:type_name -> criteria.v1.RunStarted
 	3,  // 2: criteria.v1.Envelope.run_completed:type_name -> criteria.v1.RunCompleted
 	4,  // 3: criteria.v1.Envelope.run_failed:type_name -> criteria.v1.RunFailed
@@ -2394,18 +2489,19 @@ var file_criteria_v1_events_proto_depIdxs = []int32{
 	24, // 22: criteria.v1.Envelope.scope_iter_cursor_set:type_name -> criteria.v1.ScopeIterCursorSet
 	25, // 23: criteria.v1.Envelope.step_iteration_item:type_name -> criteria.v1.StepIterationItem
 	26, // 24: criteria.v1.Envelope.run_outputs:type_name -> criteria.v1.RunOutputs
-	13, // 25: criteria.v1.Envelope.watch_ready:type_name -> criteria.v1.WatchReady
-	0,  // 26: criteria.v1.StepLog.stream:type_name -> criteria.v1.LogStream
-	32, // 27: criteria.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	27, // 28: criteria.v1.StepOutputCaptured.outputs:type_name -> criteria.v1.StepOutputCaptured.OutputsEntry
-	28, // 29: criteria.v1.WaitResumed.payload:type_name -> criteria.v1.WaitResumed.PayloadEntry
-	29, // 30: criteria.v1.ApprovalDecision.payload:type_name -> criteria.v1.ApprovalDecision.PayloadEntry
-	30, // 31: criteria.v1.RunOutputs.outputs:type_name -> criteria.v1.RunOutputs.Output
-	32, // [32:32] is the sub-list for method output_type
-	32, // [32:32] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	27, // 25: criteria.v1.Envelope.run_metadata:type_name -> criteria.v1.RunMetadata
+	13, // 26: criteria.v1.Envelope.watch_ready:type_name -> criteria.v1.WatchReady
+	0,  // 27: criteria.v1.StepLog.stream:type_name -> criteria.v1.LogStream
+	33, // 28: criteria.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	28, // 29: criteria.v1.StepOutputCaptured.outputs:type_name -> criteria.v1.StepOutputCaptured.OutputsEntry
+	29, // 30: criteria.v1.WaitResumed.payload:type_name -> criteria.v1.WaitResumed.PayloadEntry
+	30, // 31: criteria.v1.ApprovalDecision.payload:type_name -> criteria.v1.ApprovalDecision.PayloadEntry
+	31, // 32: criteria.v1.RunOutputs.outputs:type_name -> criteria.v1.RunOutputs.Output
+	33, // [33:33] is the sub-list for method output_type
+	33, // [33:33] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_criteria_v1_events_proto_init() }
@@ -2438,6 +2534,7 @@ func file_criteria_v1_events_proto_init() {
 		(*Envelope_ScopeIterCursorSet)(nil),
 		(*Envelope_StepIterationItem)(nil),
 		(*Envelope_RunOutputs)(nil),
+		(*Envelope_RunMetadata)(nil),
 		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
@@ -2446,7 +2543,7 @@ func file_criteria_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_criteria_v1_events_proto_rawDesc), len(file_criteria_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   30,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
