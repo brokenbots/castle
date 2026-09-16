@@ -61,4 +61,14 @@ export const handlers = [
       issued_at: new Date().toISOString(),
     });
   }),
+  http.post(serverPath('PauseRun'), async () => {
+    return HttpResponse.json({
+      issued_at: new Date().toISOString(),
+    });
+  }),
+  http.post(serverPath('StopRun'), async () => {
+    return HttpResponse.json({
+      issued_at: new Date().toISOString(),
+    });
+  }),
 ];
