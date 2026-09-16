@@ -11,6 +11,11 @@ import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
 
 // Runs fixture shape mirrors the ListRuns MSW handler (snake_case protojson).
+// started_at is part of the default shape because Castle stamps it on the
+// first transition to running (CRI-187), so every run that has started —
+// running or finished — carries it on the real wire; pass
+// `started_at: undefined` for the never-started shape (e.g. a pending run,
+// or a run reaped while still pending).
 function run(id: string, status: string, extra: Record<string, unknown> = {}) {
   return {
     run_id: id,
@@ -19,6 +24,7 @@ function run(id: string, status: string, extra: Record<string, unknown> = {}) {
     workflow_hash: 'deadbeef',
     status,
     created_at: '2026-02-05T08:30:00.000Z',
+    started_at: '2026-02-05T08:30:05.000Z',
     final_state: '',
     failure_reason: '',
     ...extra,
@@ -361,10 +367,10 @@ describe('RunListPage', () => {
           started_at: '2026-02-05T08:30:00.000Z',
           ended_at: '2026-02-05T08:31:30.000Z',
         }),
-        // No started_at: the duration column shows an em dash while the
-        // started column falls back to created_at, so give the row a ticket
-        // to keep the em dash unique.
-        run('run-2', 'failed', { ticket: 'CRI-188' }),
+        // The never-started wire shape (no started_at — a run reaped while
+        // still pending): the duration column shows an em dash, so give the
+        // row a ticket to keep the em dash unique.
+        run('run-2', 'failed', { ticket: 'CRI-188', started_at: undefined }),
       ],
       nextPageToken: '',
     }));
@@ -406,7 +412,12 @@ describe('RunListPage', () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     installListRuns(() => ({
-      runs: [run('run-1', 'succeeded', { created_at: '2026-02-05T08:30:00.000Z' })],
+      runs: [
+        run('run-1', 'succeeded', {
+          created_at: '2026-02-05T08:30:00.000Z',
+          started_at: '2026-02-05T08:30:00.000Z',
+        }),
+      ],
       nextPageToken: '',
     }));
 
@@ -421,6 +432,26 @@ describe('RunListPage', () => {
 
     expect(screen.getByText('5 minutes ago')).toBeInTheDocument();
     expect(screen.getByTitle(/2026/)).toBeInTheDocument();
+  });
+
+  test('never-started runs fall back to created_at for the started column', async () => {
+    const now = new Date('2026-02-05T08:32:00.000Z').getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    installListRuns(() => ({
+      runs: [run('run-1', 'pending', { started_at: undefined, ticket: 'CRI-189' })],
+      nextPageToken: '',
+    }));
+
+    renderPage();
+    await waitUntil(
+      () => screen.queryByText('2 minutes ago') !== null,
+      'relative fallback label rendered',
+      100,
+    );
+    expect(screen.getByText('2 minutes ago')).toBeInTheDocument();
+    // No started_at and no ended_at: the duration is unknown.
+    expect(screen.getByText('—')).toBeInTheDocument();
   });
 
   test('polls on an interval while a run is non-terminal', async () => {
@@ -540,6 +571,28 @@ describe('RunListPage', () => {
     );
     expect(screen.getByText('Refresh failed. Showing the last loaded runs.')).toBeInTheDocument();
     expect(screen.getByText('run-1')).toBeInTheDocument();
+  });
+
+  test('shows the refresh-failure indicator even when the last result was empty', async () => {
+    vi.useFakeTimers();
+    let fail = false;
+    installListRuns(() => {
+      if (fail) throw new Error('boom');
+      return { runs: [], nextPageToken: '' };
+    });
+
+    renderPage();
+    await waitUntil(() => screen.queryByText('No runs.') !== null, 'empty list rendered');
+
+    // No active runs means polling has stopped, so force a refetch of the
+    // page-1 cache entry the way a focus-triggered refetch would.
+    fail = true;
+    store.dispatch(castleApi.endpoints.listRuns.initiate({ status: '' }, { forceRefetch: true }));
+    await waitUntil(
+      () => screen.queryByText('Refresh failed.') !== null,
+      'refresh-failure indicator rendered for an empty list',
+    );
+    expect(screen.getByText('No runs.')).toBeInTheDocument();
   });
 
   test('does not poll while the tab is hidden', async () => {

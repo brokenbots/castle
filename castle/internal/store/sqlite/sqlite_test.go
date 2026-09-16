@@ -252,6 +252,100 @@ func ids(runs []*store.Run) []string {
 	return out
 }
 
+// TestRunStartedAtLifecycle covers the started_at contract (CRI-187): a
+// pending run has no start instant, the first transition to running stamps it
+// and later updates never rewrite it, terminal transitions preserve it, and a
+// run created already-running carries the caller-provided instant.
+func TestRunStartedAtLifecycle(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "ov-1", Name: "startedat", TokenHash: "x", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+	created := time.Date(2026, 2, 5, 8, 30, 0, 0, time.UTC)
+	if err := s.CreateRun(ctx, &store.Run{ID: "run-1", OverseerID: "ov-1", WorkflowName: "wf", Status: "pending", CreatedAt: created}); err != nil {
+		t.Fatalf("create run-1: %v", err)
+	}
+
+	got, err := s.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("get run-1: %v", err)
+	}
+	if got.StartedAt != nil {
+		t.Fatalf("pending run StartedAt = %v, want nil", got.StartedAt)
+	}
+
+	// First transition to running stamps the start instant.
+	started := created.Add(2 * time.Minute)
+	got.StartedAt = &started
+	got.Status = "running"
+	if err := s.UpdateRun(ctx, got); err != nil {
+		t.Fatalf("update to running: %v", err)
+	}
+	got, err = s.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("re-get run-1: %v", err)
+	}
+	if got.StartedAt == nil || !got.StartedAt.Equal(started) {
+		t.Fatalf("StartedAt = %v, want %v after first running transition", got.StartedAt, started)
+	}
+
+	// A later update carrying a different instant (e.g. a duplicate RunStarted
+	// re-stamp) must not overwrite the first stamp.
+	late := started.Add(5 * time.Minute)
+	got.StartedAt = &late
+	got.CurrentStep = "step-2"
+	if err := s.UpdateRun(ctx, got); err != nil {
+		t.Fatalf("update with late stamp: %v", err)
+	}
+	got, err = s.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("re-get run-1 after late stamp: %v", err)
+	}
+	if !got.StartedAt.Equal(started) {
+		t.Fatalf("StartedAt = %v, want first stamp %v", got.StartedAt, started)
+	}
+
+	// A terminal transition whose struct carries no StartedAt (handlers only
+	// set status/ended_at) must keep the stored stamp.
+	ended := started.Add(3 * time.Minute)
+	got.Status = "succeeded"
+	got.EndedAt = &ended
+	got.StartedAt = nil
+	if err := s.UpdateRun(ctx, got); err != nil {
+		t.Fatalf("update to terminal: %v", err)
+	}
+	got, err = s.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("re-get run-1 after terminal: %v", err)
+	}
+	if got.StartedAt == nil || !got.StartedAt.Equal(started) {
+		t.Fatalf("StartedAt = %v, want %v preserved across terminal transition", got.StartedAt, started)
+	}
+
+	// A run created already-running persists the caller-provided instant, and
+	// ListRuns projects it.
+	if err := s.CreateRun(ctx, &store.Run{ID: "run-2", OverseerID: "ov-1", WorkflowName: "wf", Status: "running", CreatedAt: created, StartedAt: &started}); err != nil {
+		t.Fatalf("create run-2: %v", err)
+	}
+	rows, _, err := s.ListRuns(ctx, "", "", 0, "")
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	byID := map[string]*store.Run{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if byID["run-2"].StartedAt == nil || !byID["run-2"].StartedAt.Equal(started) {
+		t.Fatalf("ListRuns run-2 StartedAt = %v, want %v", byID["run-2"].StartedAt, started)
+	}
+	if byID["run-1"].StartedAt == nil || !byID["run-1"].StartedAt.Equal(started) {
+		t.Fatalf("ListRuns run-1 StartedAt = %v, want %v", byID["run-1"].StartedAt, started)
+	}
+}
+
 // TestRunMetadataCRUD covers the CRI-131 k8s-native run metadata columns:
 // create-time ticket/repo_url persistence, list/get visibility, non-empty-only
 // promotion via SetRunMetadata, and the status-update path leaving metadata

@@ -50,6 +50,11 @@ func (s *ServerServer) GetAgent(ctx context.Context, req *connect.Request[pb.Get
 }
 
 func (s *ServerServer) ListRuns(ctx context.Context, req *connect.Request[pb.ListRunsRequest]) (*connect.Response[pb.ListRunsResponse], error) {
+	if req.Msg.Limit < 0 {
+		// A negative limit is meaningless input, not "unbounded" (the store's
+		// limit<=0 contract is internal-only).
+		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrInvalidLimit)
+	}
 	list, next, err := s.Store.ListRuns(ctx, req.Msg.CriteriaId, req.Msg.Status, int(req.Msg.Limit), req.Msg.PageToken)
 	if err != nil {
 		return nil, mapListRunsError(err)

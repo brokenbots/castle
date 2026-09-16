@@ -191,13 +191,17 @@ func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
 
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
-const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
+	var started any
+	if r.StartedAt != nil {
+		started = r.StartedAt.Format(tsLayout)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ticket,repo_url,pr_url) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(tsLayout),
-		nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL))
+		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL))
 	return err
 }
 
@@ -299,6 +303,7 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var r store.Run
 	var created string
 	var overseerID sql.NullString
+	var started sql.NullString
 	var ended sql.NullString
 	var variableScope sql.NullString
 	var pendingSignal sql.NullString
@@ -307,7 +312,7 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var repoURL sql.NullString
 	var prURL sql.NullString
 	var failureReason sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason)
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -318,6 +323,10 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 		r.OverseerID = overseerID.String
 	}
 	r.CreatedAt, _ = time.Parse(tsLayout, created)
+	if started.Valid {
+		t, _ := time.Parse(tsLayout, started.String)
+		r.StartedAt = &t
+	}
 	if ended.Valid {
 		t, _ := time.Parse(tsLayout, ended.String)
 		r.EndedAt = &t
@@ -352,9 +361,13 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 	if r.EndedAt != nil {
 		ended = r.EndedAt.Format(tsLayout)
 	}
+	var started any
+	if r.StartedAt != nil {
+		started = r.StartedAt.Format(tsLayout)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=?, failure_reason=COALESCE(NULLIF(?, ''), failure_reason) WHERE id=?`,
-		r.Status, r.CurrentStep, r.LastSeq, ended, nonEmpty(r.FailureReason), r.ID)
+		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=?, started_at=COALESCE(started_at, ?), failure_reason=COALESCE(NULLIF(?, ''), failure_reason) WHERE id=?`,
+		r.Status, r.CurrentStep, r.LastSeq, ended, started, nonEmpty(r.FailureReason), r.ID)
 	return err
 }
 

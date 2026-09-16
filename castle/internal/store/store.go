@@ -126,7 +126,11 @@ type Run struct {
 	CurrentStep  string
 	LastSeq      uint64
 	CreatedAt    time.Time
-	EndedAt      *time.Time
+	// StartedAt records when the run first entered the running state (CRI-187
+	// run-list durations). Nil until the first "running" transition; never
+	// rewritten afterwards, so reaped-never-started runs keep a nil StartedAt.
+	StartedAt *time.Time
+	EndedAt   *time.Time
 	// VariableScope holds the JSON-serialised run vars map (W04). Empty string
 	// means the run has no captured variable state yet.
 	VariableScope string

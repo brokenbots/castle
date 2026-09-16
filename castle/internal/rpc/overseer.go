@@ -288,6 +288,13 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 			return
 		}
 		run.Status = "running"
+		if run.StartedAt == nil {
+			// First transition to running stamps the start instant (CRI-187
+			// run-list durations); a duplicate or late RunStarted never
+			// rewrites it, and UpdateRun keeps the stored value anyway.
+			now := time.Now().UTC()
+			run.StartedAt = &now
+		}
 		if p.RunStarted != nil {
 			run.CurrentStep = p.RunStarted.InitialStep
 		}

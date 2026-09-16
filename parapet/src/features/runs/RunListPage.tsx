@@ -79,6 +79,9 @@ export function RunListPage() {
   // Pages fetched through "Load more". Page 1 stays in the listRuns cache
   // (and is what polling refreshes); these entries hold the older pages.
   const [cursorPages, setCursorPages] = useState<CursorPage[]>([]);
+  // Cursor pages are fetched once and never refreshed by polling (the poll
+  // refetches page 1 only), so a long-running run on page 2+ can show a stale
+  // status until the list is reloaded or the run re-enters refreshed page 1.
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
   const visible = useDocumentVisible();
@@ -194,8 +197,10 @@ export function RunListPage() {
           </select>
         </label>
       </div>
-      {!isLoading && error && runs.length > 0 && (
-        <p className="mb-2 text-rose-400">Refresh failed. Showing the last loaded runs.</p>
+      {!isLoading && error && data && (
+        <p className="mb-2 text-rose-400">
+          Refresh failed.{runs.length > 0 ? ' Showing the last loaded runs.' : ''}
+        </p>
       )}
       {isLoading ? (
         <p>Loading runs…</p>
