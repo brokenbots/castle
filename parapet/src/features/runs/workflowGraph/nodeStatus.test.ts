@@ -91,7 +91,7 @@ describe('selectNodeOverlay', () => {
       event(2, 'waitResumed', { node: 'hold', mode: 'duration' }),
       event(3, 'approvalRequested', { node: 'gate' }),
       event(4, 'approvalDecision', { node: 'gate', decision: 'approve' }),
-      event(5, 'branchEvaluated', { node: 'check', matched_arm: 'arm[0]', target: 'next' }),
+      event(5, 'branchEvaluated', { node: 'check', matchedArm: 'arm[0]', target: 'next' }),
     ]);
     expect(statuses.hold).toBe('succeeded');
     expect(statuses.gate).toBe('succeeded');

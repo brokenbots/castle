@@ -10,7 +10,7 @@ import { RunControls } from './RunControls';
 import { PauseAffordance } from './eventLog/PauseAffordance';
 import { ForEachStrip } from './eventLog/ForEachStrip';
 import { RunScopePanel } from './scopePanel/RunScopePanel';
-import { extractTextEdges, parseWorkflowHcl, WorkflowParseError, type WorkflowGraph } from './workflowGraph/parseWorkflowHcl';
+import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph } from './workflowGraph/parseWorkflowHcl';
 import { WorkflowDag } from './workflowGraph/WorkflowDag';
 import { eventBelongsToStep, selectNodeOverlay } from './workflowGraph/nodeStatus';
 
@@ -26,8 +26,10 @@ function parseGraph(source: string): WorkflowGraph | null {
   try {
     const graph = parseWorkflowHcl(source);
     return graph.nodes.length > 0 ? graph : null;
-  } catch (err) {
-    if (!(err instanceof WorkflowParseError)) throw err;
+  } catch {
+    // Any failure (typed or not — e.g. a RangeError from pathologically
+    // nested input) falls back; the page has no error boundary, so an
+    // escaping throw would blank it.
     return null;
   }
 }

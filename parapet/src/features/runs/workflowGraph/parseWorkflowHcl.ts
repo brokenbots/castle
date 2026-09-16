@@ -4,19 +4,25 @@ import type { HclBlock, HclValue } from './hcl';
 export { WorkflowParseError } from './hcl';
 
 /**
- * A node in the workflow graph parsed from HCL. `kind` mirrors the node
- * block types of the criteria workflow language; `target` marks transition
- * destinations the source never declares (rendered as placeholders).
+ * A node in the workflow graph parsed from HCL. `kind` mirrors the top-level
+ * node block types of the criteria workflow language; `target` marks
+ * transition destinations the source never declares (rendered as
+ * placeholders, which also covers the engine's implicit `_error` terminal).
  */
-export type WorkflowNodeKind = 'step' | 'branch' | 'for_each' | 'wait' | 'approval' | 'state' | 'target';
+export type WorkflowNodeKind = 'step' | 'switch' | 'wait' | 'approval' | 'state' | 'target';
 
 export interface WorkflowGraphNode {
   id: string;
   kind: WorkflowNodeKind;
-  /** Declared arms of a branch node, in declaration order. */
+  /** switch nodes: declared arms in declaration order. */
   arms?: { condition: string; target: string }[];
-  /** for_each payload: the items expression and the child ("do") step. */
-  forEach?: { items?: string; do?: string };
+  /**
+   * step nodes only: the iteration control declared on the step
+   * (`for_each`/`count`/`parallel`/`while`); `items` keeps the raw
+   * expression for display. The step itself is the iterating node — the
+   * event stream keys per-iteration events on the step name.
+   */
+  iteration?: { control: 'for_each' | 'count' | 'parallel' | 'while'; items?: string };
   /** state nodes only. */
   terminal?: boolean;
   /** state nodes only. */
@@ -32,23 +38,42 @@ export interface WorkflowGraphEdge {
 
 export interface WorkflowGraph {
   name: string;
-  /** `start_at` / `initial_state` of the workflow, when declared. */
+  /** `initial_state` of the workflow, when declared. */
   startAt: string | null;
   nodes: WorkflowGraphNode[];
   edges: WorkflowGraphEdge[];
 }
 
+/** Traversals that may appear as an outcome's `next` target. */
+const TRAVERSAL_QUALIFIERS = ['step', 'state', 'wait', 'switch', 'approval', 'subworkflow'];
+
+/**
+ * Strips the traversal qualifier (`step.`/`state.`/…) from a `next`
+ * traversal so node ids match the bare names the event stream carries
+ * (`StepOutcome.step`, `StepTransition.from/to`, `WaitEntered.node`, …).
+ */
+function traversalTarget(raw: string): string {
+  const name = raw.trim();
+  const match = new RegExp(`^(?:${TRAVERSAL_QUALIFIERS.join('|')})\\.(.+)$`).exec(name);
+  return match ? match[1] : name;
+}
+
 /**
  * Parses the criteria workflow HCL language into a step-graph model.
  *
- * Hand-rolled recursive-descent parser over the known HCL shapes (criteria
- * workflow reference): a `workflow` block containing `step` /
- * `branch`(alias `switch`) / `for_each` / `wait` / `approval` / `state`
- * nodes whose transitions are declared either as `outcome "<name>" {
- * transition_to = "<target>" }` blocks or as a `transitions = { "<outcome>"
- * = "<target>" }` map. Only this node/transition grammar is modeled;
- * unrelated blocks (`variable`, `agent`, `input`, …) parse generically and
- * are ignored.
+ * Hand-rolled recursive-descent reader over the generic HCL block shape
+ * (see {@link parseHclDocument}) plus this grammar mapping from the
+ * criteria workflow language (docs/LANGUAGE-SPEC.md): executable nodes are
+ * top-level content declarations — `step`/`state`/`switch`/`wait`/`approval`
+ * blocks, siblings of the unlabelled `workflow` header block whose `name`
+ * and `initial_state` attributes name the graph and its start node.
+ * Transitions are `outcome "<name>" { next = <traversal> }` blocks
+ * (`step.x`, `state.y`, `wait.w`, `switch.s`, `approval.a`,
+ * `subworkflow.n`); switches branch via `match { condition, next }` /
+ * `default { next }`; steps iterate via step-level `for_each`/`count`/
+ * `parallel`/`while` attributes. Other declarations (`variable`, `local`,
+ * `data`, `adapter`, `subworkflow`, `environment`, `output`,
+ * `permissions`, `policy`) parse generically and are ignored.
  *
  * Throws {@link WorkflowParseError} when the source is not parseable
  * workflow HCL; callers must keep their fallback rendering in that case.
@@ -66,9 +91,6 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
   const nodes = new Map<string, WorkflowGraphNode>();
   const edges: WorkflowGraphEdge[] = [];
   const seenEdges = new Set<string>();
-  // Child ("do") step -> declaring for_each node, used to resolve the
-  // synthetic `_continue` target back to the loop it belongs to.
-  const doOwners = new Map<string, string>();
 
   const addNode = (id: string, kind: WorkflowNodeKind): void => {
     if (!nodes.has(id)) nodes.set(id, { id, kind });
@@ -81,89 +103,73 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
     edges.push({ from, via, to });
   };
 
-  /** Outcome edges, shared by every executable node shape. */
+  /** `next = <traversal>` targets of `outcome` blocks. */
   const collectOutcomes = (block: HclBlock, from: string): void => {
     for (const sub of block.blocks) {
       if (sub.type !== 'outcome') continue;
       const via = sub.labels[0] ?? '';
-      const to = valueString(sub.attrs.get('transition_to'));
-      if (via && to) addEdge(from, via, to);
-    }
-    const transitions = block.attrs.get('transitions');
-    if (transitions?.kind === 'map') {
-      for (const key of transitions.keys) {
-        const to = valueString(transitions.entries.get(key));
-        if (key && to) addEdge(from, key, to);
-      }
+      const next = traversalTarget(valueRaw(sub.attrs.get('next')) ?? valueString(sub.attrs.get('next')) ?? '');
+      if (via && next) addEdge(from, via, next);
     }
   };
 
-  for (const block of workflow.blocks) {
+  for (const block of doc) {
     const id = block.labels[0] ?? '';
-    if (!id) continue;
     switch (block.type) {
-      case 'step':
-      case 'wait':
-      case 'approval': {
-        addNode(id, block.type as WorkflowGraphNode['kind']);
+      case 'step': {
+        if (!id) break;
+        addNode(id, 'step');
+        const node = nodes.get(id)!;
+        const control = ITERATION_CONTROLS.find((name) => block.attrs.has(name));
+        if (control) {
+          node.iteration = { control, items: valueRaw(block.attrs.get(control)) };
+        }
         collectOutcomes(block, id);
         break;
       }
-      case 'branch':
       case 'switch': {
-        addNode(id, 'branch');
+        if (!id) break;
+        addNode(id, 'switch');
         const node = nodes.get(id)!;
         node.arms = [];
         let armIndex = 0;
         for (const sub of block.blocks) {
-          const to = valueString(sub.attrs.get('transition_to'));
-          if (!to) continue;
-          if (sub.type === 'arm') {
-            const condition = valueRaw(sub.attrs.get('when')) ?? '';
-            node.arms.push({ condition, target: to });
-            addEdge(id, condition || `arm[${armIndex}]`, to);
+          if (sub.type === 'match') {
+            const condition = valueRaw(sub.attrs.get('condition')) ?? '';
+            const next = traversalTarget(valueRaw(sub.attrs.get('next')) ?? '');
+            if (!next) continue;
+            node.arms.push({ condition, target: next });
+            // Edge labels match BranchEvaluated.matched_arm ("arm[<index>]").
+            addEdge(id, `arm[${armIndex}]`, next);
+            armIndex++;
           } else if (sub.type === 'default') {
-            node.arms.push({ condition: '', target: to });
-            addEdge(id, 'default', to);
+            const next = traversalTarget(valueRaw(sub.attrs.get('next')) ?? '');
+            if (!next) continue;
+            node.arms.push({ condition: '', target: next });
+            addEdge(id, 'default', next);
           }
-          armIndex++;
         }
-        collectOutcomes(block, id);
         break;
       }
-      case 'for_each': {
-        addNode(id, 'for_each');
-        const node = nodes.get(id)!;
-        const doStep = valueString(block.attrs.get('do'));
-        node.forEach = {
-          items: valueRaw(block.attrs.get('items')),
-          do: doStep ?? undefined,
-        };
-        if (doStep) {
-          if (!doOwners.has(doStep)) doOwners.set(doStep, id);
-          addEdge(id, 'do', doStep);
-        }
+      case 'wait':
+      case 'approval': {
+        if (!id) break;
+        addNode(id, block.type);
         collectOutcomes(block, id);
         break;
       }
       case 'state': {
+        if (!id) break;
         addNode(id, 'state');
         const node = nodes.get(id)!;
         node.terminal = valueBool(block.attrs.get('terminal'));
         node.success = valueBool(block.attrs.get('success'));
-        collectOutcomes(block, id);
         break;
       }
       default:
+        // workflow/variable/local/data/adapter/subworkflow/… are not graph
+        // nodes; they parse generically above and are ignored here.
         break;
-    }
-  }
-
-  // `_continue` is the engine-internal "advance the loop cursor" target;
-  // render it as the loop-back edge into the for_each node that owns the step.
-  for (const edge of edges) {
-    if (edge.to === '_continue' && doOwners.has(edge.from)) {
-      edge.to = doOwners.get(edge.from)!;
     }
   }
 
@@ -176,12 +182,14 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
   }
 
   return {
-    name: workflow.labels[0] ?? '',
-    startAt: valueString(workflow.attrs.get('start_at') ?? workflow.attrs.get('initial_state')),
+    name: valueString(workflow.attrs.get('name')) ?? '',
+    startAt: valueString(workflow.attrs.get('initial_state')),
     nodes: [...nodes.values()],
     edges,
   };
 }
+
+const ITERATION_CONTROLS = ['for_each', 'count', 'parallel', 'while'] as const;
 
 function valueString(v?: HclValue): string | null {
   return v?.kind === 'string' ? v.value : null;
@@ -190,6 +198,7 @@ function valueString(v?: HclValue): string | null {
 function valueRaw(v?: HclValue): string | undefined {
   if (v?.kind === 'string') return v.text;
   if (v?.kind === 'raw') return v.text;
+  if (v?.kind === 'number') return v.text;
   if (v?.kind === 'list') {
     const items = v.items.map((item) => {
       if (item.kind === 'string') return `"${item.value}"`;

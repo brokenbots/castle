@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import type { WorkflowGraph, WorkflowGraphEdge, WorkflowGraphNode } from './parseWorkflowHcl';
+import tourSource from './fixtures/tour.chcl?raw';
+import { parseWorkflowHcl, type WorkflowGraph, type WorkflowGraphEdge, type WorkflowGraphNode } from './parseWorkflowHcl';
 import { WorkflowDag } from './WorkflowDag';
 import { selectNodeOverlay } from './nodeStatus';
 
@@ -22,47 +23,68 @@ function graph(partial?: Partial<WorkflowGraph>): WorkflowGraph {
   const nodes: WorkflowGraphNode[] = [
     { id: 'build', kind: 'step' },
     { id: 'test', kind: 'step' },
-    { id: 'deploy', kind: 'for_each', forEach: { do: 'build' } },
+    { id: 'deploy', kind: 'step', iteration: { control: 'for_each', items: '["api", "web"]' } },
+    { id: 'decide', kind: 'switch', arms: [{ condition: 'var.ok', target: 'done' }, { condition: '', target: 'done' }] },
     { id: 'done', kind: 'state', terminal: true, success: true },
   ];
   const edges: WorkflowGraphEdge[] = [
     { from: 'build', via: 'success', to: 'test' },
     { from: 'test', via: 'all_succeeded', to: 'deploy' },
-    { from: 'deploy', via: 'success', to: 'done' },
+    { from: 'deploy', via: 'arm[0]', to: 'decide' },
+    { from: 'decide', via: 'default', to: 'done' },
   ];
   return { name: 'demo', startAt: 'build', nodes: partial?.nodes ?? nodes, edges: partial?.edges ?? edges };
 }
 
+async function renderDag(element: React.ReactElement): Promise<void> {
+  render(element);
+  // React Flow renders edges in passes driven by ResizeObserver callbacks
+  // (container measure → node measure → edges); flush them inside act.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+}
+
 describe('WorkflowDag', () => {
-  test('renders one node per graph node and labeled edges per outcome', async () => {
-    render(<WorkflowDag graph={graph()} />);
-    // React Flow renders edges in passes driven by ResizeObserver callbacks
-    // (container measure → node measure → edges); flush them inside act.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+  test('renders one node per graph node and labeled edges per transition', async () => {
+    await renderDag(<WorkflowDag graph={graph()} />);
     const nodes = screen.getAllByTestId('dag-node');
-    expect(nodes).toHaveLength(4);
+    expect(nodes).toHaveLength(5);
     expect(nodes.map((n) => n.getAttribute('data-node-id'))).toContain('build');
     expect(screen.getByText('build')).toBeInTheDocument();
-    expect(screen.getByText('for_each')).toBeInTheDocument();
-    // Each outcome edge renders one SVG text label.
+    // The iterating step and the switch render their kind labels.
+    expect(screen.getByText('for_each · ["api", "web"]')).toBeInTheDocument();
+    expect(screen.getByText('switch')).toBeInTheDocument();
+    // Each outcome/arm edge renders one SVG text label.
     const edgeLabels = Array.from(document.querySelectorAll('.react-flow__edge-text')).map(
       (el) => el.textContent,
     );
-    expect(edgeLabels).toEqual(['success', 'all_succeeded', 'success']);
+    expect(edgeLabels).toEqual(['success', 'all_succeeded', 'arm[0]', 'default']);
+  });
+
+  test('renders the parsed tour fixture graph end to end', async () => {
+    await renderDag(<WorkflowDag graph={parseWorkflowHcl(tourSource)} />);
+    const nodes = screen.getAllByTestId('dag-node');
+    expect(nodes).toHaveLength(8);
+    expect(screen.getByText('for_each · ["alpha", "beta", "gamma"]')).toBeInTheDocument();
+    // Long items expressions are truncated in the badge.
+    expect(screen.getByText('parallel · ["auth", "catalog", "billin…')).toBeInTheDocument();
+    expect(screen.getByText('wait')).toBeInTheDocument();
+    const edgeLabels = Array.from(document.querySelectorAll('.react-flow__edge-text')).map(
+      (el) => el.textContent,
+    );
+    expect(edgeLabels).toContain('elapsed');
+    expect(edgeLabels).toContain('arm[0]');
+    expect(edgeLabels).toContain('default');
   });
 
   test('shows live status marks and pulse on the running node', async () => {
-    render(
+    await renderDag(
       <WorkflowDag
         graph={graph()}
         statuses={{ build: 'running', test: 'succeeded' }}
       />,
     );
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
     const buildCard = screen.getByText('build').closest('[data-testid="dag-node"]');
     expect(buildCard?.className).toContain('animate-pulse');
     expect(screen.getByLabelText('status running')).toBeInTheDocument();
@@ -70,33 +92,39 @@ describe('WorkflowDag', () => {
   });
 
   test('dims unvisited nodes and highlights failed ones', async () => {
-    render(
+    await renderDag(
       <WorkflowDag
         graph={graph()}
         statuses={{ build: 'failed' }}
       />,
     );
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
     const failedCard = screen.getByText('build').closest('[data-testid="dag-node"]');
     expect(failedCard?.className).toContain('border-rose-500');
     const idleCard = screen.getByText('done').closest('[data-testid="dag-node"]');
     expect(idleCard?.className).toContain('opacity-60');
   });
 
-  test('renders for_each iteration progress badge', async () => {
-    render(
+  test('prefers live iteration progress over the declared control badge', async () => {
+    await renderDag(
       <WorkflowDag
         graph={graph()}
         statuses={{ deploy: 'running' }}
         forEachProgress={{ deploy: { total: 3, started: 2, outcome: null, anyFailed: false } }}
       />,
     );
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
     expect(screen.getByText('2/3')).toBeInTheDocument();
+    expect(screen.queryByText('for_each · ["api", "web"]')).not.toBeInTheDocument();
+  });
+
+  test('shows the aggregate outcome once the loop completes', async () => {
+    await renderDag(
+      <WorkflowDag
+        graph={graph()}
+        statuses={{ deploy: 'succeeded' }}
+        forEachProgress={{ deploy: { total: 3, started: 3, outcome: 'all_succeeded', anyFailed: false } }}
+      />,
+    );
+    expect(screen.getByText('all_succeeded (3)')).toBeInTheDocument();
   });
 
   test('calls onSelect with the clicked node id', async () => {
@@ -111,12 +139,9 @@ describe('WorkflowDag', () => {
     const overlay = selectNodeOverlay([
       { schemaVersion: 1, runId: 'r', seq: 1, type: 'stepEntered', ts: '', correlationId: '', payload: { step: 'build' } },
     ]);
-    render(<WorkflowDag graph={graph()} statuses={overlay.statuses} />);
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await renderDag(<WorkflowDag graph={graph()} statuses={overlay.statuses} />);
     expect(screen.getByLabelText('status running')).toBeInTheDocument();
     // Unvisited nodes stay dimmed/idle.
-    expect(screen.getAllByLabelText('status idle')).toHaveLength(3);
+    expect(screen.getAllByLabelText('status idle')).toHaveLength(4);
   });
 });

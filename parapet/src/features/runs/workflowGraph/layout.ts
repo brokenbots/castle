@@ -10,10 +10,11 @@ export interface NodePosition {
 }
 
 /**
- * Layered (Sugiyama-lite) layout: breadth-first layers from `start_at`, with
- * nodes unreachable from it layered from their own roots (in declaration
- * order) so nothing is dropped. Nodes are centered horizontally per layer.
- * Deterministic: the result depends only on the graph.
+ * Layered (Sugiyama-lite) layout: breadth-first layers from the workflow's
+ * `initial_state`, with nodes unreachable from it layered from their own
+ * roots (in declaration order) so nothing is dropped. Nodes are centered
+ * horizontally per layer. Deterministic: the result depends only on the
+ * graph.
  */
 export function layoutWorkflow(
   graph: WorkflowGraph,

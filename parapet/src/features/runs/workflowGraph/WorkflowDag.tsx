@@ -46,8 +46,7 @@ const STATUS_CLASS: Record<StepNodeStatus, string> = {
 
 const KIND_LABEL: Record<WorkflowGraphNode['kind'], string> = {
   step: 'step',
-  branch: 'branch',
-  for_each: 'for_each',
+  switch: 'switch',
   wait: 'wait',
   approval: 'approval',
   state: 'state',
@@ -56,8 +55,7 @@ const KIND_LABEL: Record<WorkflowGraphNode['kind'], string> = {
 
 const KIND_CLASS: Record<WorkflowNodeKind, string> = {
   step: 'text-sky-300',
-  branch: 'text-amber-300',
-  for_each: 'text-purple-300',
+  switch: 'text-amber-300',
   wait: 'text-slate-300',
   approval: 'text-slate-300',
   state: 'text-emerald-300/80',
@@ -154,7 +152,13 @@ function buildFlow(
   const positions = layoutWorkflow(graph);
   const nodes: WorkflowFlowNode[] = graph.nodes.map((node) => {
     const progress = forEachProgress[node.id];
-    const badge = progress ? formatProgress(progress) : undefined;
+    // Live per-iteration progress wins; otherwise show the declared
+    // iteration control of the step.
+    const badge = progress
+      ? formatProgress(progress)
+      : node.iteration
+        ? iterationBadge(node.iteration)
+        : undefined;
     return {
       id: node.id,
       type: 'workflow' as const,
@@ -184,4 +188,10 @@ function formatProgress(progress: ForEachProgress): string | undefined {
   }
   if (progress.total === null && progress.started === 0) return undefined;
   return `${progress.started}/${progress.total ?? '?'}`;
+}
+
+/** Declared iteration control of a step, e.g. `for_each · ["a", "b"]`. */
+function iterationBadge(iteration: NonNullable<WorkflowGraphNode['iteration']>): string {
+  const items = iteration.items ? ` · ${truncate(iteration.items)}` : '';
+  return `${iteration.control}${items}`;
 }

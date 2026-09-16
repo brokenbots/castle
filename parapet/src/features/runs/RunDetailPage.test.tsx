@@ -83,8 +83,11 @@ const fixture = vi.hoisted(() => ({
     runId: 'run-1',
     criteriaId: 'ov-1',
     workflowName: 'hello',
+    // Real criteria dialect: executable nodes are top-level blocks and
+    // outcomes route via `next = <traversal>` (the workflowHash field
+    // carries the full workflow source).
     workflowHash:
-      'workflow "hello" {\n  start_at = "build"\n  step "build" {\n    transitions = {\n      "success" = "test"\n    }\n  }\n  step "test" {\n    transitions = {\n      "success" = "done"\n    }\n  }\n  state "done" { terminal = true }\n}',
+      'workflow {\n  name = "hello"\n  initial_state = "build"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}',
     status: 'running',
     createdAt: new Date().toISOString(),
     finalState: '',
@@ -595,6 +598,34 @@ describe('RunDetailPage', () => {
       expect(edgeRows).toHaveLength(2);
       expect(edgeRows[0].textContent).toBe('build --success--> test');
       expect(edgeRows[1].textContent).toBe('test --success--> done');
+    } finally {
+      fixture.data.workflowHash = originalSource;
+    }
+  });
+
+  test('falls back to the empty text-edge notice on malformed real-dialect source', async () => {
+    // A real-shaped source truncated mid-block: the parser rejects the
+    // unclosed `step` block, and the regex fallback finds no `transitions`
+    // maps in the current dialect — the panel renders the empty-state
+    // notice instead of blanking.
+    const originalSource = fixture.data.workflowHash;
+    fixture.data.workflowHash =
+      'workflow {\n  name = "hello"\n  initial_state = "build"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n';
+
+    try {
+      render(
+        <Provider store={store}>
+          <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <Routes>
+              <Route path="/runs/:id" element={<RunDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </Provider>,
+      );
+
+      expect(await screen.findByText('Step graph')).toBeInTheDocument();
+      expect(screen.getByText('No step transitions found.')).toBeInTheDocument();
+      expect(document.querySelector('[data-testid="workflow-dag"]')).toBeNull();
     } finally {
       fixture.data.workflowHash = originalSource;
     }

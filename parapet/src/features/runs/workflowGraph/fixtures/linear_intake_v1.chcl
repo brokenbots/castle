@@ -1,88 +1,402 @@
-workflow "linear_intake_v1" {
-  version       = "1"
-  initial_state = "triage"
+// Faithful reduction of brokenbots/workflow-example linear_intake_v1/main.chcl
+// (SHA 1eadf6d3): every step, switch, state and outcome/next edge of the real
+// workflow is preserved; script bodies and comments are trimmed to keep the
+// fixture reviewable. This is the current criteria workflow language:
+// executable nodes are top-level content declarations, outcomes route via
+// `next = <traversal>`, switches use match/default, and iteration is a
+// step-level attribute.
+workflow {
+    name             = "linear_intake_v1"
+    version          = "1"
+    criteria_version = ">=0.5.9, <0.6.0"
+    initial_state    = "fetch_ticket"
+    target_state     = "handler_complete"
 
-  variable "team" {
-    type    = "string"
-    default = "platform"
-  }
+    policy {
+        max_total_steps = 80
+    }
+}
 
-  agent "analyst" {
-    adapter  = "copilot"
-    on_crash = "fail"
-  }
+// Captured from the child run's declared outputs; empty means triage died
+// before its intake or verdict gate recorded one.
+data "internal" "verdict" {
+    type  = string
+    value = ""
+}
 
-  step "triage" {
-    agent = "analyst"
+data "internal" "workstream_file" {
+    type  = string
+    value = ""
+}
+
+data "internal" "ticket_terminal" {
+    type  = bool
+    value = false
+}
+
+subworkflow "qa_triage" {
+    source = "../qa_triage_v1"
     input {
-      prompt = "Triage the ticket for team ${var.team}"
+        bug_report_file = "${var.intake_root}/${var.ticket_id}/${var.ticket_id}.md"
+        repo_dir        = var.repo_dir
     }
-    outcome "success" { transition_to = "check_env" }
-    outcome "failure" { transition_to = "failed" }
-  }
+}
 
-  branch "check_env" {
-    arm {
-      when          = var.team == "platform"
-      transition_to = "deploy_services"
-    }
-    arm {
-      when          = var.team == "web"
-      transition_to = "deploy_web"
-    }
-    default {
-      transition_to = "escalate"
-    }
-  }
-
-  for_each "deploy_services" {
-    items = ["api", "web", "worker"]
-    do    = "deploy_one"
-    outcome "all_succeeded" { transition_to = "report" }
-    outcome "any_failed"    { transition_to = "rollback" }
-  }
-
-  step "deploy_one" {
-    adapter = "shell"
+step "fetch_ticket" {
+    target = adapter.shell.intake
     input {
-      command = "deploy ${each.value} --index ${each.index}"
+        command = templatefile("./scripts/fetch_ticket.sh.tftpl", {
+            intake_root = var.intake_root
+            ticket_id   = var.ticket_id
+        })
     }
-    outcome "success" { transition_to = "_continue" }
-    outcome "failure" { transition_to = "_continue" }
-  }
+    outcome "success" { next = step.check_ticket_state }
+    outcome "failure" { next = state.ticket_not_found }
+}
 
-  step "deploy_web" {
-    adapter = "shell"
+step "check_ticket_state" {
+    target = adapter.shell.intake
     input {
-      command = "deploy web"
+        command = templatefile("./scripts/check_ticket_state.sh.tftpl", {})
     }
-    outcome "success" { transition_to = "report" }
-    outcome "failure" { transition_to = "rollback" }
-  }
+    outcome "success" {
+        next = switch.route_after_state_check
+        write {
+            target = data.internal.ticket_terminal.value
+            value  = output.stdout == "terminal"
+        }
+    }
+    outcome "failure" { next = state.failed }
+}
 
-  step "escalate" {
-    adapter = "shell"
+switch "route_after_state_check" {
+    match {
+        condition = data.internal.ticket_terminal.value
+        next      = state.already_complete
+    }
+    default { next = step.check_approved_plan }
+}
+
+step "check_approved_plan" {
+    target = adapter.shell.intake
     input {
-      command = "page oncall"
+        command = templatefile("./scripts/check_approved_plan.sh.tftpl", {})
     }
-    outcome "success" { transition_to = "failed" }
-  }
+    outcome "success" {
+        next = switch.route_after_plan_check
+        write {
+            target = data.internal.resume_approved_plan.value
+            value  = output.stdout == "resume"
+        }
+    }
+    outcome "failure" { next = state.failed }
+}
 
-  step "rollback" {
-    adapter = "shell"
+switch "route_after_plan_check" {
+    match {
+        condition = data.internal.resume_approved_plan.value
+        next      = step.set_bug_label
+    }
+    default { next = step.check_internal_label }
+}
+
+step "check_internal_label" {
+    target      = adapter.shell.intake
+    allow_tools = []
     input {
-      command = "rollback"
+        command = templatefile("./scripts/check_internal_label.sh.tftpl", {})
     }
-    outcome "success" { transition_to = "failed" }
-  }
+    outcome "success" {
+        next = switch.route_internal_label
+        write {
+            target = data.internal.internal_reproduced.value
+            value  = output.stdout == "skip_triage"
+        }
+    }
+    outcome "failure" { next = state.failed }
+}
 
-  state "report" {
+switch "route_internal_label" {
+    match {
+        condition = data.internal.internal_reproduced.value
+        next      = step.write_confirmed_workstream
+    }
+    default { next = step.classify_ticket }
+}
+
+step "write_confirmed_workstream" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/write_confirmed_workstream.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_confirmed_bug_label }
+    outcome "failure" { next = state.failed }
+}
+
+step "classify_ticket" {
+    target      = adapter.copilot.intake_classifier
+    max_visits  = var.max_agent_visits
+    allow_tools = ["*"]
+
+    input {
+        prompt = templatefile("./agents/classify_ticket.md.tftpl", {
+            ticket_id = var.ticket_id
+            repo_dir  = var.repo_dir
+        })
+    }
+
+    outcome "bug_written" { next = step.set_bug_label }
+    outcome "confirmed_bug_written" {
+        next = step.set_confirmed_bug_label
+        write {
+            target = data.internal.verdict.value
+            value  = "confirmed_bug"
+        }
+        write {
+            target = data.internal.workstream_file.value
+            value  = "${var.intake_root}/${var.ticket_id}/workstreams/${var.ticket_id}.md"
+        }
+    }
+    outcome "feature_written" {
+        next = step.set_feature_label
+        write {
+            target = data.internal.verdict.value
+            value  = "feature"
+        }
+    }
+    outcome "already_complete" { next = state.already_complete }
+    outcome "needs_human"      { next = step.comment_unusable_ticket }
+    outcome "failure"          { next = state.failed }
+    outcome "default"          { next = state.failed }
+}
+
+step "set_bug_label" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/set_classification_label.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_triage_state }
+    outcome "failure" { next = state.failed }
+}
+
+step "set_triage_state" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/set_review_state.sh.tftpl", {})
+    }
+    outcome "success" { next = step.run_qa_triage }
+    outcome "failure" { next = state.failed }
+}
+
+step "set_feature_label" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/set_classification_label.sh.tftpl", {})
+    }
+    outcome "success" { next = step.comment_handler_started }
+    outcome "failure" { next = state.failed }
+}
+
+step "set_confirmed_bug_label" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/set_classification_label.sh.tftpl", {})
+    }
+    outcome "success" { next = step.comment_handler_started }
+    outcome "failure" { next = state.failed }
+}
+
+// Capture the child's declared outputs on both outcomes; an engine failure
+// exposes typed null outputs, which retain the empty defaults.
+step "run_qa_triage" {
+    target = subworkflow.qa_triage
+
+    outcome "success" {
+        next = switch.route_qa_result
+        write {
+            target = data.internal.verdict.value
+            value  = subworkflow.verdict != null ? subworkflow.verdict : ""
+        }
+        write {
+            target = data.internal.workstream_file.value
+            value  = subworkflow.workstream_file != null ? subworkflow.workstream_file : ""
+        }
+    }
+    outcome "failure" {
+        next = switch.route_qa_result
+        write {
+            target = data.internal.verdict.value
+            value  = subworkflow.verdict != null ? subworkflow.verdict : ""
+        }
+    }
+}
+
+switch "route_qa_result" {
+    match {
+        condition = data.internal.verdict.value == ""
+        next      = step.comment_triage_failed
+    }
+    match {
+        condition = startswith(data.internal.verdict.value, "needs_human_") || data.internal.verdict.value == "needs_design_decision"
+        next      = step.comment_needs_human
+    }
+    default { next = step.review_qa_output }
+}
+
+step "review_qa_output" {
+    target      = adapter.copilot.triage_reviewer
+    max_visits  = var.max_agent_visits
+    allow_tools = ["*"]
+
+    input {
+        prompt = templatefile("./agents/review_qa_output.md.tftpl", {
+            ticket_id = var.ticket_id
+            verdict   = data.internal.verdict.value
+        })
+    }
+
+    outcome "valid_run_handler" { next = switch.route_handler }
+    outcome "invalid_close"     { next = step.comment_invalid }
+    outcome "needs_human"       { next = step.comment_needs_human }
+    outcome "failure"           { next = step.comment_triage_failed }
+    outcome "default"           { next = step.comment_triage_failed }
+}
+
+switch "route_handler" {
+    match {
+        condition = data.internal.workstream_file.value != ""
+        next      = step.comment_handler_started
+    }
+    default { next = step.comment_needs_human }
+}
+
+step "run_handler" {
+    target = subworkflow.handler
+
+    outcome "success" {
+        next = step.comment_handler_done
+        write {
+            target = data.internal.pr_url.value
+            value  = subworkflow.pr_url
+        }
+    }
+    outcome "failure" { next = step.comment_handler_failed }
+}
+
+step "comment_unusable_ticket" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/comment_unusable_ticket.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_review_state }
+    outcome "failure" { next = state.failed }
+}
+
+step "comment_triage_failed" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/comment_triage_failed.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_review_state }
+    outcome "failure" { next = state.failed }
+}
+
+step "comment_invalid" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/comment_invalid.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_review_state }
+    outcome "failure" { next = state.failed }
+}
+
+step "comment_needs_human" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/comment_needs_human.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_review_state }
+    outcome "failure" { next = state.failed }
+}
+
+step "comment_handler_started" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/comment_handler_started.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_work_state }
+    outcome "failure" { next = state.failed }
+}
+
+step "set_work_state" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/set_review_state.sh.tftpl", {})
+    }
+    outcome "success" { next = step.run_handler }
+    outcome "failure" { next = state.failed }
+}
+
+step "comment_handler_done" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/comment_handler_done.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_done_state }
+    outcome "failure" { next = state.failed }
+}
+
+step "set_done_state" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/set_review_state.sh.tftpl", {})
+    }
+    outcome "success" { next = state.handler_complete }
+    outcome "failure" { next = state.failed }
+}
+
+step "comment_handler_failed" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/comment_handler_failed.sh.tftpl", {})
+    }
+    outcome "success" { next = step.set_review_state }
+    outcome "failure" { next = state.failed }
+}
+
+step "set_review_state" {
+    target = adapter.shell.intake
+    input {
+        command = templatefile("./scripts/set_review_state.sh.tftpl", {})
+    }
+    outcome "success" { next = state.awaiting_human }
+    outcome "failure" { next = state.failed }
+}
+
+// Terminal states.
+state "handler_complete" {
     terminal = true
     success  = true
-  }
+}
 
-  state "failed" {
+state "already_complete" {
+    terminal = true
+    success  = true
+}
+
+// Not a failure: a run that ends by asking a human to decide is a legitimate
+// conclusion; the ticket carries the context and sits in the review state.
+state "awaiting_human" {
+    terminal = true
+    success  = true
+}
+
+state "ticket_not_found" {
     terminal = true
     success  = false
-  }
+}
+
+state "failed" {
+    terminal = true
+    success  = false
 }
