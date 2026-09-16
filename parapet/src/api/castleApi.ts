@@ -1,6 +1,6 @@
 import { createApi } from '@reduxjs/toolkit/query/react';
 import { fakeBaseQuery } from '@reduxjs/toolkit/query';
-import { ConnectError } from '@connectrpc/connect';
+import { Code, ConnectError } from '@connectrpc/connect';
 import { Timestamp } from '@bufbuild/protobuf';
 import { server } from './client';
 import type { Run as PbRun } from '../gen/criteria/v1/criteria_pb';
@@ -104,9 +104,21 @@ export function mapEnvelope(e: Envelope): EventEnvelope {
   };
 }
 
+// connect-es types Code as a numeric enum; surface the canonical
+// lower_snake connect code string (e.g. "failed_precondition") so the UI can
+// render readable inline errors.
+function connectCodeName(code: Code): string {
+  const name = Code[code];
+  if (!name) return String(code);
+  return (
+    name.charAt(0).toLowerCase() +
+    name.slice(1).replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
+  );
+}
+
 function toError(err: unknown) {
   if (err instanceof ConnectError) {
-    return { status: err.code, data: err.rawMessage };
+    return { status: connectCodeName(err.code), data: err.rawMessage };
   }
   return { status: 'CUSTOM_ERROR', data: err instanceof Error ? err.message : String(err) };
 }
@@ -150,13 +162,38 @@ export const castleApi = createApi({
       providesTags: ['Agent'],
     }),
     resume: b.mutation<
-      { accepted: boolean },
+      { issuedAt?: string },
       { runId: string; signal?: string; payload?: Record<string, string> }
     >({
       queryFn: async ({ runId }) => {
         try {
-          await server.resumeRun({ runId });
-          return { data: { accepted: true } };
+          const resp = await server.resumeRun({ runId });
+          return { data: { issuedAt: tsToIso(resp.issuedAt) } };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      invalidatesTags: (_r, _e, { runId }) => [{ type: 'Run', id: runId }],
+    }),
+    pauseRun: b.mutation<{ issuedAt?: string }, { runId: string }>({
+      queryFn: async ({ runId }) => {
+        try {
+          const resp = await server.pauseRun({ runId });
+          return { data: { issuedAt: tsToIso(resp.issuedAt) } };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      invalidatesTags: (_r, _e, { runId }) => [{ type: 'Run', id: runId }],
+    }),
+    stopRun: b.mutation<
+      { issuedAt?: string },
+      { runId: string; reason?: string }
+    >({
+      queryFn: async ({ runId, reason }) => {
+        try {
+          const resp = await server.stopRun({ runId, reason: reason ?? '' });
+          return { data: { issuedAt: tsToIso(resp.issuedAt) } };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -171,4 +208,6 @@ export const {
   useGetRunQuery,
   useListAgentsQuery,
   useResumeMutation,
+  usePauseRunMutation,
+  useStopRunMutation,
 } = castleApi;

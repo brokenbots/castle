@@ -6,6 +6,7 @@ import { selectPauseState } from './runsSlice';
 import { useRunEventLog } from './eventLog/useRunEventLog';
 import { EventLog } from './eventLog/EventLog';
 import { StatusPill } from './StatusPill';
+import { RunControls } from './RunControls';
 import { PauseAffordance } from './eventLog/PauseAffordance';
 import { ForEachStrip } from './eventLog/ForEachStrip';
 import { RunScopePanel } from './scopePanel/RunScopePanel';
@@ -72,6 +73,7 @@ export function RunDetailPage() {
         <p className="text-sm text-slate-400 font-mono">{run.data.runId}</p>
         <div className="mt-2 flex items-start gap-4">
           <StatusPill status={run.data.status} pauseEvent={pauseState.pauseEvent} />
+          <RunControls runId={run.data.runId} status={run.data.status} pauseState={pauseState} />
           {run.data.ticket && (
             <span className="text-sm">
               ticket: <span className="font-mono">{run.data.ticket}</span>
