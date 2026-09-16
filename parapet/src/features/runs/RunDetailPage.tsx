@@ -1,25 +1,14 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { useDispatch, useSelector } from 'react-redux';
-import {
-  useGetRunQuery,
-  useListEventsQuery,
-  EventEnvelope,
-} from '../../api/castleApi';
-import { selectRunEvents, selectPauseState, runsSlice } from './runsSlice';
-import { subscriberIdForSession } from './subscriberId';
-import { startWatch } from './watchRun';
+import { useSelector } from 'react-redux';
+import { useGetRunQuery, type EventEnvelope } from '../../api/castleApi';
+import { selectPauseState } from './runsSlice';
+import { useRunEventLog } from './eventLog/useRunEventLog';
+import { EventLog } from './eventLog/EventLog';
 import { StatusPill } from './StatusPill';
 import { PauseAffordance } from './eventLog/PauseAffordance';
-import { BranchDecisionEntry } from './eventLog/BranchDecisionEntry';
 import { ForEachStrip } from './eventLog/ForEachStrip';
 import { RunScopePanel } from './scopePanel/RunScopePanel';
-
-function renderPayload(e: EventEnvelope) {
-  const p = e.payload as Record<string, unknown> | undefined;
-  if (e.type === 'stepLog') return String((p as { chunk?: string } | undefined)?.chunk ?? '');
-  return JSON.stringify(p ?? null);
-}
 
 type Edge = { from: string; to: string; via: string };
 
@@ -40,28 +29,8 @@ function extractStepGraph(source: string): Edge[] {
 export function RunDetailPage() {
   const { id = '' } = useParams();
   const run = useGetRunQuery(id);
-  const initial = useListEventsQuery({ runId: id });
-  const dispatch = useDispatch();
-  const live = useSelector(selectRunEvents(id));
+  const { events, log, loadEarlier } = useRunEventLog(id);
   const pauseState = useSelector(selectPauseState(id));
-  const subscriberId = useMemo(() => subscriberIdForSession(), []);
-
-  useEffect(() => {
-    if (!id) return;
-    const ctrl = new AbortController();
-    void startWatch(id, 0, subscriberId, dispatch, ctrl.signal);
-    return () => {
-      ctrl.abort();
-      dispatch(runsSlice.actions.runCleared(id));
-    };
-  }, [id, dispatch, subscriberId]);
-
-  const events = useMemo(() => {
-    const bySeq = new Map<number, EventEnvelope>();
-    for (const e of initial.data ?? []) bySeq.set(e.seq, e);
-    for (const e of live) bySeq.set(e.seq, e);
-    return Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
-  }, [initial.data, live]);
 
   const workflowSource = run.data?.workflowHash ?? '';
   const edges = workflowSource ? extractStepGraph(workflowSource) : [];
@@ -135,20 +104,12 @@ export function RunDetailPage() {
 
       <section>
         <h3 className="text-lg font-semibold mb-2">Events</h3>
-        <div className="font-mono text-xs bg-slate-900 rounded p-3 max-h-[60vh] overflow-auto">
-          {events.map((e) => {
-            if (e.type === 'branchEvaluated') {
-              return <BranchDecisionEntry key={e.seq} event={e} />;
-            }
-            return (
-              <div key={e.seq} className="border-b border-slate-800/60 py-1 flex gap-3">
-                <span className="text-slate-500 w-12 shrink-0">#{e.seq}</span>
-                <span className="text-sky-400 w-40 shrink-0">{e.type}</span>
-                <span className="whitespace-pre-wrap break-all">{renderPayload(e)}</span>
-              </div>
-            );
-          })}
-        </div>
+        <EventLog
+          events={events}
+          hasEarlier={log.hasEarlier}
+          loadingEarlier={log.loadingEarlier}
+          onLoadEarlier={loadEarlier}
+        />
       </section>
       <section>
         <h3 className="text-lg font-semibold mb-2">Workflow source</h3>

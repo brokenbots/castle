@@ -7,7 +7,7 @@ import { http, HttpResponse } from 'msw';
 // source of truth. Streaming RPCs (e.g. WatchRun) are left unhandled here —
 // tests that rely on live tail mock the client module directly.
 
-function serverPath(method: string): string {
+export function serverPath(method: string): string {
   return `/criteria.v1.ServerService/${method}`;
 }
 
