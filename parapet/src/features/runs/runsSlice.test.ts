@@ -53,6 +53,22 @@ describe('runsSlice.eventReceived', () => {
     expect(state.events.r1.map((e) => e.seq)).toEqual([1, 2]);
     expect(state.events.r2.map((e) => e.seq)).toEqual([1]);
   });
+
+  test('dedupes events across page boundaries', () => {
+    // The newest page of a run ends at seq 1002 and a backward seek (or the
+    // watch replay) re-delivered the boundary events; the ordered insert
+    // must keep one copy per seq, in order.
+    const state = run([
+      makeEnv('r1', 1001),
+      makeEnv('r1', 1002),
+      makeEnv('r1', 500),
+      makeEnv('r1', 501),
+      makeEnv('r1', 501),
+      makeEnv('r1', 500),
+      makeEnv('r1', 1000),
+    ]);
+    expect(state.events.r1.map((e) => e.seq)).toEqual([500, 501, 1000, 1001, 1002]);
+  });
 });
 
 describe('runsSlice.runCleared', () => {

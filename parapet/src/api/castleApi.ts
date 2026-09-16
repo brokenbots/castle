@@ -114,7 +114,7 @@ function toError(err: unknown) {
 export const castleApi = createApi({
   reducerPath: 'castleApi',
   baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
-  tagTypes: ['Run', 'Agent', 'Events'],
+  tagTypes: ['Run', 'Agent'],
   endpoints: (b) => ({
     listRuns: b.query<Run[], void>({
       queryFn: async () => {
@@ -149,20 +149,6 @@ export const castleApi = createApi({
       },
       providesTags: ['Agent'],
     }),
-    listEvents: b.query<EventEnvelope[], { runId: string; since?: number }>({
-      queryFn: async ({ runId, since = 0 }) => {
-        try {
-          const resp = await server.listRunEvents({
-            runId,
-            sinceSeq: BigInt(since),
-          });
-          return { data: resp.events.map(mapEnvelope) };
-        } catch (err) {
-          return { error: toError(err) };
-        }
-      },
-      providesTags: (_r, _e, { runId }) => [{ type: 'Events', id: runId }],
-    }),
     resume: b.mutation<
       { accepted: boolean },
       { runId: string; signal?: string; payload?: Record<string, string> }
@@ -175,10 +161,7 @@ export const castleApi = createApi({
           return { error: toError(err) };
         }
       },
-      invalidatesTags: (_r, _e, { runId }) => [
-        { type: 'Run', id: runId },
-        { type: 'Events', id: runId },
-      ],
+      invalidatesTags: (_r, _e, { runId }) => [{ type: 'Run', id: runId }],
     }),
   }),
 });
@@ -187,6 +170,5 @@ export const {
   useListRunsQuery,
   useGetRunQuery,
   useListAgentsQuery,
-  useListEventsQuery,
   useResumeMutation,
 } = castleApi;
