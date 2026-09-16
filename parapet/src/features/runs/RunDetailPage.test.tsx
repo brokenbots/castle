@@ -519,4 +519,52 @@ describe('RunDetailPage', () => {
     });
     expect(await screen.findByText('chunk 30')).toBeInTheDocument();
   });
+
+  test('does not live-tail a running-status run whose log holds a terminal event', async () => {
+    // The run status can lag the event stream: a 'running' run whose log
+    // already ends with a terminal event is finished, so the view must not
+    // jump to the bottom.
+    fixture.data.status = 'running';
+    server.use(
+      http.post(serverPath('ListRunEvents'), async () => {
+        const events = [
+          ...wireEvents(30),
+          {
+            schemaVersion: 1,
+            runId: 'run-1',
+            seq: '31',
+            ts: new Date(0).toISOString(),
+            correlationId: '',
+            runCompleted: {},
+          },
+        ];
+        return HttpResponse.json({ events, last_seq: '31' });
+      }),
+    );
+
+    render(
+      <Provider store={store}>
+        <MemoryRouter
+          initialEntries={['/runs/run-1']}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    await vi.waitFor(() =>
+      expect(selectRunEvents('run-1')(store.getState())).toHaveLength(31),
+    );
+    const scroller = screen.getByTestId('event-log-scroll');
+    // The terminal event disables live tailing despite the 'running' status:
+    // no pin, no jump, and the log opens at its anchor (newest page, oldest
+    // windowed chunk on top) with scrollTop still at 0.
+    expect(scroller.scrollTop).toBe(0);
+    expect(screen.getByText('chunk 2')).toBeInTheDocument();
+    expect(screen.getByText('chunk 30')).toBeInTheDocument();
+    expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+  });
 });

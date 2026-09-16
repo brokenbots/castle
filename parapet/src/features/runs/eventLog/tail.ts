@@ -14,6 +14,8 @@ export interface TailState {
 
 export interface TailAction {
   type: 'eventArrived' | 'scrolledAtBottom' | 'scrolledUp' | 'jumpRequested' | 'autoFollowChanged';
+  /** Number of newly arrived events; several can land in a single render. */
+  count?: number;
   enabled?: boolean;
 }
 
@@ -25,10 +27,13 @@ export const initialTailState = (): TailState => ({
 
 export function tailReducer(state: TailState, action: TailAction): TailState {
   switch (action.type) {
-    case 'eventArrived':
+    case 'eventArrived': {
       // Arrivals only accumulate unseen counts while following and not pinned.
       if (!state.autoFollow || state.pinned) return state;
-      return { ...state, unseen: state.unseen + 1 };
+      const count = action.count ?? 1;
+      if (count <= 0) return state;
+      return { ...state, unseen: state.unseen + count };
+    }
     case 'scrolledAtBottom':
       if (!state.autoFollow || state.pinned) return state;
       return { ...state, pinned: true, unseen: 0 };

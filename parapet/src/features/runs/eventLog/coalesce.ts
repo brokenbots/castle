@@ -17,7 +17,7 @@ export interface EventItem {
  */
 export interface StepLogBlock {
   kind: 'stepLogBlock';
-  /** Grouping key: correlation id, or the stepLog's step node. */
+  /** Grouping key: the step node, or the correlation id as a fallback. */
   key: string;
   /** Node name of the step, when the payloads carry one. */
   step: string;
@@ -31,16 +31,18 @@ export interface StepLogBlock {
 export type EventLogItem = EventItem | StepLogBlock;
 
 /**
- * Identity of the step execution a stepLog chunk belongs to. The envelope
- * correlation id wins when present; otherwise the chunk's step node names
- * the execution. An empty key means the chunk carries no identity at all,
- * so it is never coalesced — merging unidentifiable chunks could fuse
- * output of unrelated steps.
+ * Identity of the step execution a stepLog chunk belongs to. The stepLog's
+ * step node is the identity: a step's chunks stream under one node while
+ * every envelope carries a fresh transport correlation id (ids are unique
+ * within a run, so keying on them would never group real chunks). The
+ * correlation id is only a fallback for payloads without a step node. An
+ * empty key means the chunk carries no identity at all, so it is never
+ * coalesced — merging unidentifiable chunks could fuse output of unrelated
+ * steps.
  */
 export function stepLogGroupKey(e: EventEnvelope): string {
   if (e.type !== 'stepLog') return '';
-  const step = (e.payload as { step?: string } | undefined)?.step ?? '';
-  return e.correlationId || step;
+  return blockStep(e) || e.correlationId;
 }
 
 /**
@@ -52,6 +54,9 @@ export function stepLogGroupKey(e: EventEnvelope): string {
  *
  * Grouping is position-based on the seq-ordered event list, so chunks that
  * span event-log page loads still form one block once both pages are loaded.
+ * Corollary: two consecutive executions of the same step node (e.g. a retry)
+ * merge into one block when nothing interleaves between them — the log
+ * carries no execution counter to separate them.
  */
 export function coalesceStepLogs(events: EventEnvelope[]): EventLogItem[] {
   const items: EventLogItem[] = [];

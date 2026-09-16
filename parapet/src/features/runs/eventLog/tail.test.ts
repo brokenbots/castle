@@ -13,6 +13,22 @@ describe('tailReducer', () => {
     expect(state).toEqual({ autoFollow: true, pinned: false, unseen: 2 });
   });
 
+  test('counts a batched arrival by its event count, not one per update', () => {
+    const state = tailReducer(initialTailState(), { type: 'eventArrived', count: 3 });
+    expect(state).toEqual({ autoFollow: true, pinned: false, unseen: 3 });
+  });
+
+  test('accumulates batched arrivals onto the existing unseen count', () => {
+    let state = tailReducer(initialTailState(), { type: 'eventArrived', count: 2 });
+    state = tailReducer(state, { type: 'eventArrived', count: 2 });
+    expect(state).toEqual({ autoFollow: true, pinned: false, unseen: 4 });
+  });
+
+  test('ignores non-positive arrival counts', () => {
+    const state = initialTailState();
+    expect(tailReducer(state, { type: 'eventArrived', count: 0 })).toBe(state);
+  });
+
   test('does not count arrivals once the view is pinned', () => {
     let state = tailReducer(initialTailState(), { type: 'scrolledAtBottom' });
     const before = state;

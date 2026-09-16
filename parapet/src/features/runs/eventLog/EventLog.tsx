@@ -166,20 +166,29 @@ export function EventLog({ events, running, hasEarlier, loadingEarlier, onLoadEa
     seenSeqRef.current = latestSeq;
     if (prev === null || latestSeq === null || latestSeq <= prev) return;
     const arrived = events.reduce((count, e) => (e.seq > prev ? count + 1 : count), 0);
-    if (arrived > 0) dispatch({ type: 'eventArrived' });
+    if (arrived > 0) dispatch({ type: 'eventArrived', count: arrived });
   }, [latestSeq, events]);
 
   // When a run starts (including a page load of an already-running run with
-  // history), jump to the bottom once. Opting into auto-follow re-pins the
-  // same way.
+  // history), jump to the bottom once — but only while auto-follow is
+  // enabled, and only once the log has content: with no events yet the
+  // terminal-event guard (run data arriving before the event log) cannot
+  // have evaluated, so jumping then would pin a finished run whose status
+  // still says running. The transition stays unhandled until the log
+  // settles, so a run that starts with an empty log still jumps on its
+  // first event.
   const runningRef = useRef(false);
   useLayoutEffect(() => {
     const was = runningRef.current;
+    if (!running || was) {
+      runningRef.current = running;
+      return;
+    }
+    if (!tail.autoFollow || events.length === 0) return;
     runningRef.current = running;
-    if (!running || was) return;
     dispatch({ type: 'jumpRequested' });
     scrollToBottom();
-  }, [running, scrollToBottom]);
+  }, [running, tail.autoFollow, events.length, scrollToBottom]);
 
   const handleAutoFollowChange = (checked: boolean) => {
     dispatch({ type: 'autoFollowChanged', enabled: checked });

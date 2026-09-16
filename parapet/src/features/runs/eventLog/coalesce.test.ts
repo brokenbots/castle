@@ -33,12 +33,15 @@ function other(seq: number, type = 'runStatus'): EventEnvelope {
 }
 
 describe('stepLogGroupKey', () => {
-  test('prefers the correlation id over the step node', () => {
-    expect(stepLogGroupKey(stepLog(1, { correlationId: 'corr-1', step: 'build' }))).toBe('corr-1');
+  test('keys on the step node; per-chunk correlation ids do not affect grouping', () => {
+    // Wire-conformant shape: one step's chunks stream under the same node
+    // while every envelope carries a unique transport correlation id.
+    expect(stepLogGroupKey(stepLog(1, { step: 'build', correlationId: 'corr-1' }))).toBe('build');
+    expect(stepLogGroupKey(stepLog(2, { step: 'build', correlationId: 'corr-2' }))).toBe('build');
   });
 
-  test('falls back to the step node when no correlation id is set', () => {
-    expect(stepLogGroupKey(stepLog(1, { step: 'build' }))).toBe('build');
+  test('falls back to the correlation id when the payload has no step node', () => {
+    expect(stepLogGroupKey(stepLog(1, { correlationId: 'corr-1' }))).toBe('corr-1');
   });
 
   test('is empty for chunks without any identity', () => {
@@ -56,22 +59,43 @@ describe('coalesceStepLogs', () => {
   });
 
   test('keeps a lone chunk as a plain event row', () => {
-    const items = coalesceStepLogs([stepLog(1, { correlationId: 'corr-1' })]);
+    const items = coalesceStepLogs([stepLog(1, { step: 'build', correlationId: 'corr-1' })]);
     expect(items).toEqual([{ kind: 'event', event: expect.objectContaining({ seq: 1 }) }]);
   });
 
-  test('groups consecutive chunks with the same correlation id into one block', () => {
+  test('groups 500 chunks of one step with distinct correlation ids into a single block', () => {
+    // The realistic streaming shape: every chunk of the step carries its
+    // own transport correlation id (ids are unique within a run), so only
+    // the step node can group them.
+    const events = Array.from({ length: 500 }, (_, i) =>
+      stepLog(i + 1, { step: 'build', correlationId: `corr-${i + 1}` }),
+    );
+    const items = coalesceStepLogs(events);
+
+    expect(items).toHaveLength(1);
+    const block = items[0];
+    expect(block.kind).toBe('stepLogBlock');
+    if (block.kind !== 'stepLogBlock') return;
+    expect(block.key).toBe('build');
+    expect(block.events).toHaveLength(500);
+    expect(block.startSeq).toBe(1);
+    expect(block.endSeq).toBe(500);
+    expect(block.tailText).toBe('chunk 500');
+    expect(block.fullText.split('\n')).toHaveLength(500);
+  });
+
+  test('groups consecutive chunks of one step into one block spanning their correlation ids', () => {
     const items = coalesceStepLogs([
-      stepLog(1, { correlationId: 'corr-1', chunk: 'first' }),
-      stepLog(2, { correlationId: 'corr-1', chunk: 'second' }),
-      stepLog(3, { correlationId: 'corr-1', chunk: 'third' }),
+      stepLog(1, { step: 'build', correlationId: 'corr-1', chunk: 'first' }),
+      stepLog(2, { step: 'build', correlationId: 'corr-2', chunk: 'second' }),
+      stepLog(3, { step: 'build', correlationId: 'corr-3', chunk: 'third' }),
     ]);
 
     expect(items).toHaveLength(1);
     const block = items[0];
     expect(block.kind).toBe('stepLogBlock');
     if (block.kind !== 'stepLogBlock') return;
-    expect(block.key).toBe('corr-1');
+    expect(block.key).toBe('build');
     expect(block.events.map((e) => e.seq)).toEqual([1, 2, 3]);
     expect(block.startSeq).toBe(1);
     expect(block.endSeq).toBe(3);
@@ -79,7 +103,7 @@ describe('coalesceStepLogs', () => {
     expect(block.tailText).toBe('third');
   });
 
-  test('groups consecutive chunks by step node when correlation id is empty', () => {
+  test('groups consecutive chunks by step node when no correlation id is set', () => {
     const items = coalesceStepLogs([
       stepLog(1, { step: 'build', chunk: 'a' }),
       stepLog(2, { step: 'build', chunk: 'b' }),
@@ -97,7 +121,22 @@ describe('coalesceStepLogs', () => {
     });
   });
 
-  test('starts a new block when the correlation id changes', () => {
+  test('does not merge chunks of different steps', () => {
+    const items = coalesceStepLogs([
+      stepLog(1, { step: 'build', correlationId: 'corr-1' }),
+      stepLog(2, { step: 'build', correlationId: 'corr-2' }),
+      stepLog(3, { step: 'test', correlationId: 'corr-3' }),
+      stepLog(4, { step: 'test', correlationId: 'corr-4' }),
+    ]);
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ kind: 'stepLogBlock', key: 'build', startSeq: 1, endSeq: 2 });
+    expect(items[1]).toMatchObject({ kind: 'stepLogBlock', key: 'test', startSeq: 3, endSeq: 4 });
+  });
+
+  test('starts a new block when the correlation id changes for step-less chunks', () => {
+    // Fallback identity: chunks without a step node can only group by
+    // correlation id, so an id change breaks the run.
     const items = coalesceStepLogs([
       stepLog(1, { correlationId: 'corr-1' }),
       stepLog(2, { correlationId: 'corr-1' }),
@@ -112,11 +151,11 @@ describe('coalesceStepLogs', () => {
 
   test('breaks runs at non-stepLog events so they interleave chronologically', () => {
     const items = coalesceStepLogs([
-      stepLog(1, { correlationId: 'corr-1', chunk: 'a' }),
-      stepLog(2, { correlationId: 'corr-1', chunk: 'b' }),
+      stepLog(1, { step: 'build', correlationId: 'corr-1', chunk: 'a' }),
+      stepLog(2, { step: 'build', correlationId: 'corr-2', chunk: 'b' }),
       other(3),
-      stepLog(4, { correlationId: 'corr-1', chunk: 'c' }),
-      stepLog(5, { correlationId: 'corr-1', chunk: 'd' }),
+      stepLog(4, { step: 'build', correlationId: 'corr-4', chunk: 'c' }),
+      stepLog(5, { step: 'build', correlationId: 'corr-5', chunk: 'd' }),
     ]);
 
     expect(items.map((item) => item.kind)).toEqual(['stepLogBlock', 'event', 'stepLogBlock']);
@@ -145,11 +184,11 @@ describe('coalesceStepLogs', () => {
     // loaded tail (seq 4..5); coalescing runs on the merged seq-ordered
     // list, so the block spans the old page boundary.
     const merged = [
-      stepLog(1, { correlationId: 'corr-1' }),
-      stepLog(2, { correlationId: 'corr-1' }),
-      stepLog(3, { correlationId: 'corr-1' }),
-      stepLog(4, { correlationId: 'corr-1' }),
-      stepLog(5, { correlationId: 'corr-1' }),
+      stepLog(1, { step: 'build', correlationId: 'corr-1' }),
+      stepLog(2, { step: 'build', correlationId: 'corr-2' }),
+      stepLog(3, { step: 'build', correlationId: 'corr-3' }),
+      stepLog(4, { step: 'build', correlationId: 'corr-4' }),
+      stepLog(5, { step: 'build', correlationId: 'corr-5' }),
     ];
     const items = coalesceStepLogs(merged);
 

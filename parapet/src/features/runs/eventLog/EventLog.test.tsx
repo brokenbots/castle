@@ -108,10 +108,13 @@ function logProps(events: EventEnvelope[], running: boolean, hasEarlier = false)
   );
 }
 
-// stepLog chunks WITH a correlation id: these are the ones that coalesce.
-// env() keeps correlationId '' (no identity), so existing fixtures stay plain rows.
-function keyedEnv(seq: number, correlationId = 'corr-1'): EventEnvelope {
-  return { ...env(seq), correlationId };
+// stepLog chunks WITH a step node: the identity coalescing groups on. The
+// transport correlation id is unique per chunk on wire-conformant data, so
+// it must not be the grouping identity — and its uniqueness must not break
+// grouping. env() keeps correlationId '' and no step (no identity), so
+// existing fixtures stay plain rows.
+function keyedEnv(seq: number, step = 'build'): EventEnvelope {
+  return { ...env(seq), correlationId: `corr-${seq}`, payload: { step, chunk: `chunk ${seq}` } };
 }
 
 function otherEnv(seq: number): EventEnvelope {
@@ -282,7 +285,7 @@ describe('step log coalescing', () => {
   test('keeps non-log events interleaved around coalesced blocks', () => {
     // chunk 1 is a lone run (plain row); chunks 3+4 form a block; the
     // runStatus events interleave chronologically in between.
-    const events = [keyedEnv(1, 'corr-a'), otherEnv(2), keyedEnv(3, 'corr-a'), keyedEnv(4, 'corr-a'), otherEnv(5)];
+    const events = [keyedEnv(1, 'build'), otherEnv(2), keyedEnv(3, 'build'), keyedEnv(4, 'build'), otherEnv(5)];
     renderLog(events);
 
     const rows = screen.getAllByTestId('event-log-row');
@@ -290,6 +293,8 @@ describe('step log coalescing', () => {
     // The lone chunk stays a plain event row.
     expect(rows[0].querySelector('[data-testid="step-log-toggle"]')).toBeNull();
     expect(rows[0].textContent).toContain('chunk 1');
+    // The intervening non-log event is its own row, in order.
+    expect(rows[1].textContent).toContain('event 2');
     // The consecutive run coalesces into one block showing the tail chunk.
     expect(rows[2].querySelector('[data-testid="step-log-toggle"]')).not.toBeNull();
     expect(rows[2].textContent).toContain('chunk 4');
@@ -361,6 +366,21 @@ describe('live tail', () => {
     await userEvent.click(screen.getByTestId('jump-to-latest'));
     expect(scroller.scrollTop).toBe(scroller.scrollHeight);
     expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+  });
+
+  test('counts multiple arrivals in one update behind the pin', () => {
+    const { rerender } = renderLog(thousand, { running: true });
+    const scroller = screen.getByTestId('event-log-scroll');
+
+    act(() => {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+
+    // Two chunks land in a single render while detached: the badge counts
+    // events, not render batches.
+    rerender(logProps([...thousand, env(thousand.length + 1), env(thousand.length + 2)], true));
+    expect(screen.getByTestId('jump-to-latest')).toHaveTextContent('Jump to latest (2 unseen)');
   });
 
   test('re-pins when the user scrolls back to the bottom', () => {
