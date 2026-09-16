@@ -1,0 +1,88 @@
+workflow "linear_intake_v1" {
+  version       = "1"
+  initial_state = "triage"
+
+  variable "team" {
+    type    = "string"
+    default = "platform"
+  }
+
+  agent "analyst" {
+    adapter  = "copilot"
+    on_crash = "fail"
+  }
+
+  step "triage" {
+    agent = "analyst"
+    input {
+      prompt = "Triage the ticket for team ${var.team}"
+    }
+    outcome "success" { transition_to = "check_env" }
+    outcome "failure" { transition_to = "failed" }
+  }
+
+  branch "check_env" {
+    arm {
+      when          = var.team == "platform"
+      transition_to = "deploy_services"
+    }
+    arm {
+      when          = var.team == "web"
+      transition_to = "deploy_web"
+    }
+    default {
+      transition_to = "escalate"
+    }
+  }
+
+  for_each "deploy_services" {
+    items = ["api", "web", "worker"]
+    do    = "deploy_one"
+    outcome "all_succeeded" { transition_to = "report" }
+    outcome "any_failed"    { transition_to = "rollback" }
+  }
+
+  step "deploy_one" {
+    adapter = "shell"
+    input {
+      command = "deploy ${each.value} --index ${each.index}"
+    }
+    outcome "success" { transition_to = "_continue" }
+    outcome "failure" { transition_to = "_continue" }
+  }
+
+  step "deploy_web" {
+    adapter = "shell"
+    input {
+      command = "deploy web"
+    }
+    outcome "success" { transition_to = "report" }
+    outcome "failure" { transition_to = "rollback" }
+  }
+
+  step "escalate" {
+    adapter = "shell"
+    input {
+      command = "page oncall"
+    }
+    outcome "success" { transition_to = "failed" }
+  }
+
+  step "rollback" {
+    adapter = "shell"
+    input {
+      command = "rollback"
+    }
+    outcome "success" { transition_to = "failed" }
+  }
+
+  state "report" {
+    terminal = true
+    success  = true
+  }
+
+  state "failed" {
+    terminal = true
+    success  = false
+  }
+}
