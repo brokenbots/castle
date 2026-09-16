@@ -70,3 +70,148 @@ describe('castleApi run-control mutations', () => {
     });
   });
 });
+
+// Runs fixture shape mirrors the ListRuns MSW handler (snake_case protojson).
+function runFixture(id: string, status: string, extra: Record<string, unknown> = {}) {
+  return {
+    run_id: id,
+    criteria_id: 'crn:v1:criteria:workflow/demo',
+    workflow_name: 'demo',
+    workflow_hash: 'deadbeef',
+    status,
+    created_at: '2026-02-05T08:30:00.000Z',
+    final_state: '',
+    failure_reason: '',
+    ...extra,
+  };
+}
+
+describe('castleApi listRuns', () => {
+  test('sends status filter and limit on the first request', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    server.use(
+      http.post(serverPath('ListRuns'), async ({ request }) => {
+        bodies.push((await request.json().catch(() => ({}))) as Record<string, unknown>);
+        return HttpResponse.json({ runs: [runFixture('run-1', 'succeeded')], next_page_token: '' });
+      }),
+    );
+
+    await store.dispatch(castleApi.endpoints.listRuns.initiate({ status: 'running' }));
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].status).toBe('running');
+    expect(bodies[0].limit).toBe(50);
+  });
+
+  test('passes the pagination cursor on follow-up requests and accumulates pages', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    server.use(
+      http.post(serverPath('ListRuns'), async ({ request }) => {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        bodies.push(body);
+        const pageToken = String(body.pageToken ?? body.page_token ?? '');
+        if (pageToken === '') {
+          return HttpResponse.json({
+            runs: [runFixture('run-1', 'succeeded'), runFixture('run-2', 'running')],
+            next_page_token: 'tok-2',
+          });
+        }
+        return HttpResponse.json({ runs: [runFixture('run-3', 'failed')], next_page_token: '' });
+      }),
+    );
+
+    await store.dispatch(castleApi.endpoints.listRuns.initiate({ status: '' }));
+    await store.dispatch(
+      castleApi.endpoints.listRuns.initiate(
+        { status: '', pageToken: 'tok-2' },
+        { forceRefetch: true },
+      ),
+    );
+
+    expect(bodies).toHaveLength(2);
+    expect(String(bodies[1].pageToken ?? bodies[1].page_token ?? '')).toBe('tok-2');
+
+    const state = store.getState();
+    const page1 = castleApi.endpoints.listRuns.select({ status: '' })(state).data;
+    expect(page1?.runs.map((r) => r.runId)).toEqual(['run-1', 'run-2', 'run-3']);
+    expect(page1?.nextPageToken).toBe('');
+  });
+
+  test('keeps one cache entry per status filter', async () => {
+    server.use(
+      http.post(serverPath('ListRuns'), async ({ request }) => {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const status = String(body.status ?? '');
+        return HttpResponse.json({
+          runs: [runFixture(`run-${status || 'all'}`, status || 'succeeded')],
+          next_page_token: '',
+        });
+      }),
+    );
+
+    await store.dispatch(castleApi.endpoints.listRuns.initiate({ status: '' }));
+    await store.dispatch(castleApi.endpoints.listRuns.initiate({ status: 'running' }));
+
+    const state = store.getState();
+    expect(castleApi.endpoints.listRuns.select({ status: '' })(state).data?.runs[0].runId).toBe(
+      'run-all',
+    );
+    expect(castleApi.endpoints.listRuns.select({ status: 'running' })(state).data?.runs[0].runId).toBe(
+      'run-running',
+    );
+  });
+
+  test('deduplicates repeated cursor fetches instead of duplicating rows', async () => {
+    server.use(
+      http.post(serverPath('ListRuns'), async ({ request }) => {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const pageToken = String(body.pageToken ?? body.page_token ?? '');
+        if (pageToken === '') {
+          return HttpResponse.json({
+            runs: [runFixture('run-1', 'succeeded')],
+            next_page_token: 'tok-2',
+          });
+        }
+        return HttpResponse.json({
+          runs: [runFixture('run-2', 'running'), runFixture('run-1', 'succeeded')],
+          next_page_token: '',
+        });
+      }),
+    );
+
+    await store.dispatch(castleApi.endpoints.listRuns.initiate({ status: '' }));
+    await store.dispatch(
+      castleApi.endpoints.listRuns.initiate(
+        { status: '', pageToken: 'tok-2' },
+        { forceRefetch: true },
+      ),
+    );
+    await store.dispatch(
+      castleApi.endpoints.listRuns.initiate(
+        { status: '', pageToken: 'tok-2' },
+        { forceRefetch: true },
+      ),
+    );
+
+    const page = castleApi.endpoints.listRuns.select({ status: '' })(store.getState()).data;
+    expect(page?.runs.map((r) => r.runId)).toEqual(['run-1', 'run-2']);
+  });
+
+  test('maps connect errors onto the readable error shape', async () => {
+    server.use(
+      http.post(
+        serverPath('ListRuns'),
+        () =>
+          new HttpResponse(
+            JSON.stringify({ code: 'unavailable', message: 'criteria store offline' }),
+            { status: 503, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+
+    await store.dispatch(castleApi.endpoints.listRuns.initiate({ status: '' }));
+
+    const entry = castleApi.endpoints.listRuns.select({ status: '' })(store.getState());
+    expect(entry.error).toEqual({ status: 'unavailable', data: 'criteria store offline' });
+  });
+});

@@ -123,19 +123,51 @@ function toError(err: unknown) {
   return { status: 'CUSTOM_ERROR', data: err instanceof Error ? err.message : String(err) };
 }
 
+export interface ListRunsArgs {
+  // Optional status filter ('' means no filter, i.e. all runs).
+  status?: string;
+  // Pagination cursor from a previous ListRunsResponse.next_page_token.
+  pageToken?: string;
+}
+
+export interface RunsPage {
+  runs: Run[];
+  // '' when the server has no further page.
+  nextPageToken: string;
+}
+
+// Page size requested for every ListRuns call (page_token cursor paging).
+export const RUNS_PAGE_LIMIT = 50;
+
 export const castleApi = createApi({
   reducerPath: 'castleApi',
   baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
   tagTypes: ['Run', 'Agent'],
   endpoints: (b) => ({
-    listRuns: b.query<Run[], void>({
-      queryFn: async () => {
+    listRuns: b.query<RunsPage, ListRunsArgs>({
+      queryFn: async ({ status = '', pageToken = '' }) => {
         try {
-          const resp = await server.listRuns({});
-          return { data: resp.runs.map(mapRun) };
+          const resp = await server.listRuns({ status, limit: RUNS_PAGE_LIMIT, pageToken });
+          return { data: { runs: resp.runs.map(mapRun), nextPageToken: resp.nextPageToken } };
         } catch (err) {
           return { error: toError(err) };
         }
+      },
+      // One cache entry per status filter so "Load more" pages accumulate in
+      // place: pageToken is deliberately excluded from the key. Any caller
+      // adding criteriaId must include it here too.
+      serializeQueryArgs: ({ endpointName, queryArgs }) =>
+        `${endpointName}(${queryArgs.status ?? ''})`,
+      merge: (current, incoming, { arg }) => {
+        // First page (initial load, poll, refetch): the fresh page IS the
+        // list, so statuses of the newest runs stay live across polls.
+        if (!arg.pageToken) return incoming;
+        // Cursor page: update loaded rows in place (Map keeps their order)
+        // and append newly seen runs, so repeated fetches or racing requests
+        // cannot introduce duplicates.
+        const byId = new Map(current.runs.map((r) => [r.runId, r] as const));
+        for (const r of incoming.runs) byId.set(r.runId, r);
+        return { runs: [...byId.values()], nextPageToken: incoming.nextPageToken };
       },
       providesTags: ['Run'],
     }),
