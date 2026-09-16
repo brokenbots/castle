@@ -71,6 +71,95 @@ describe('castleApi run-control mutations', () => {
   });
 });
 
+describe('castleApi inspectRun', () => {
+  // Wire shape mirrors the protojson canonical form (snake_case, int64 as a
+  // string) that connect-web produces and parses.
+  const inspectionFixture = {
+    run_id: 'run-1',
+    session_id: 'sess-7',
+    adapter: 'claude-code',
+    current_step: 'build',
+    pending_permissions: '2',
+    last_activity_at: '2026-09-16T17:00:00.000Z',
+    state_json: '{"step":"build","ok":true}',
+  };
+
+  test('maps the InspectRun response onto the camelCase inspection shape', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    server.use(
+      http.post(serverPath('InspectRun'), async ({ request }) => {
+        bodies.push((await request.json().catch(() => ({}))) as Record<string, unknown>);
+        return HttpResponse.json(inspectionFixture);
+      }),
+    );
+
+    const res = await store.dispatch(
+      castleApi.endpoints.inspectRun.initiate({ runId: 'run-1' }),
+    );
+
+    expect(bodies).toHaveLength(1);
+    expect(String(bodies[0].runId ?? bodies[0].run_id)).toBe('run-1');
+    expect(res.data).toEqual({
+      runId: 'run-1',
+      sessionId: 'sess-7',
+      adapter: 'claude-code',
+      currentStep: 'build',
+      pendingPermissions: 2,
+      lastActivityAt: '2026-09-16T17:00:00.000Z',
+      stateJson: '{"step":"build","ok":true}',
+    });
+  });
+
+  test('passes empty and malformed state_json through verbatim', async () => {
+    server.use(
+      http.post(serverPath('InspectRun'), () =>
+        HttpResponse.json({
+          run_id: 'run-1',
+          session_id: '',
+          adapter: '',
+          current_step: '',
+          pending_permissions: '0',
+          state_json: '{not json',
+        }),
+      ),
+    );
+
+    const res = await store.dispatch(
+      castleApi.endpoints.inspectRun.initiate({ runId: 'run-1' }),
+    );
+
+    expect(res.data).toEqual({
+      runId: 'run-1',
+      sessionId: '',
+      adapter: '',
+      currentStep: '',
+      pendingPermissions: 0,
+      lastActivityAt: undefined,
+      stateJson: '{not json',
+    });
+  });
+
+  test('maps connect errors onto the readable error shape', async () => {
+    server.use(
+      http.post(
+        serverPath('InspectRun'),
+        () =>
+          new HttpResponse(
+            JSON.stringify({ code: 'not_found', message: 'run not found' }),
+            { status: 404, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+
+    const res = await store.dispatch(
+      castleApi.endpoints.inspectRun.initiate({ runId: 'run-1' }),
+    );
+
+    expect(res.data).toBeUndefined();
+    expect(res.error).toEqual({ status: 'not_found', data: 'run not found' });
+  });
+});
+
 // Runs fixture shape mirrors the ListRuns MSW handler (snake_case protojson).
 function runFixture(id: string, status: string, extra: Record<string, unknown> = {}) {
   return {

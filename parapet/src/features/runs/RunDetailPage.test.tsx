@@ -747,4 +747,24 @@ describe('RunDetailPage', () => {
     expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
     expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
   });
+
+  test('renders the Inspection section from the InspectRun response', async () => {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    // Values come from the default InspectRun MSW handler; the blank
+    // adapter state degrades to the empty notice instead of a viewer.
+    expect(await screen.findByText('Inspection')).toBeInTheDocument();
+    expect(screen.getByTestId('inspection-current-step')).toHaveTextContent('build');
+    expect(screen.getByText('local')).toBeInTheDocument();
+    expect(screen.getByText('sess-1')).toBeInTheDocument();
+    expect(screen.getByTestId('adapter-state-empty')).toBeInTheDocument();
+  });
 });

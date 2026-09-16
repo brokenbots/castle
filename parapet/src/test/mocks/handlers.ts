@@ -42,6 +42,17 @@ export const handlers = [
   http.post(serverPath('ListRunEvents'), () =>
     HttpResponse.json({ events: [], last_seq: '0' }),
   ),
+  http.post(serverPath('InspectRun'), () =>
+    HttpResponse.json({
+      run_id: 'run-1',
+      session_id: 'sess-1',
+      adapter: 'local',
+      current_step: 'build',
+      pending_permissions: '0',
+      last_activity_at: new Date().toISOString(),
+      state_json: '',
+    }),
+  ),
   http.post(serverPath('ListAgents'), () =>
     HttpResponse.json({
       agents: [
