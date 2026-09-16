@@ -5,8 +5,7 @@ import {
   useStopRunMutation,
   type EventEnvelope,
 } from '../../api/castleApi';
-
-const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+import { RUN_TERMINAL_STATUSES } from './runStatus';
 
 interface RunControlsProps {
   runId: string;
@@ -43,7 +42,7 @@ export function RunControls({ runId, status, pauseState }: RunControlsProps) {
   // the run status can lag it, and a control-paused run reports "paused"
   // before any wait event lands, so accept either.
   const isPaused = pauseState.isPaused || status === 'paused';
-  const terminal = TERMINAL_STATUSES.has(status);
+  const terminal = RUN_TERMINAL_STATUSES.has(status);
   const busy = pauseMeta.isLoading || resumeMeta.isLoading || stopMeta.isLoading;
 
   const canPause = status === 'running' && !isPaused;

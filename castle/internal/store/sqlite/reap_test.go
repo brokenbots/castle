@@ -437,7 +437,7 @@ func TestReapStaleAgentRuns_UnderConcurrentRPCTraffic(t *testing.T) {
 	// Read-only RPCs: ListRuns, ListEvents (ListRunEvents), ListOverseers
 	// (ListAgents).
 	run("reads", func(i int) {
-		if _, err := f.s.ListRuns(ctx, "", ""); err != nil {
+		if _, _, err := f.s.ListRuns(ctx, "", "", 0, ""); err != nil {
 			record("list-runs", err)
 		}
 		if _, err := f.s.ListEvents(ctx, "r-live-1", 0, 0); err != nil {

@@ -123,20 +123,47 @@ function toError(err: unknown) {
   return { status: 'CUSTOM_ERROR', data: err instanceof Error ? err.message : String(err) };
 }
 
+export interface ListRunsArgs {
+  // Optional status filter ('' means no filter, i.e. all runs).
+  status?: string;
+  // Pagination cursor from a previous ListRunsResponse.next_page_token.
+  pageToken?: string;
+}
+
+export interface RunsPage {
+  runs: Run[];
+  // '' when the server has no further page.
+  nextPageToken: string;
+}
+
+// Page size requested for every ListRuns call (page_token cursor paging).
+export const RUNS_PAGE_LIMIT = 50;
+
 export const castleApi = createApi({
   reducerPath: 'castleApi',
   baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
   tagTypes: ['Run', 'Agent'],
   endpoints: (b) => ({
-    listRuns: b.query<Run[], void>({
-      queryFn: async () => {
+    listRuns: b.query<RunsPage, ListRunsArgs>({
+      queryFn: async ({ status = '', pageToken = '' }) => {
         try {
-          const resp = await server.listRuns({});
-          return { data: resp.runs.map(mapRun) };
+          const resp = await server.listRuns({ status, limit: RUNS_PAGE_LIMIT, pageToken });
+          return { data: { runs: resp.runs.map(mapRun), nextPageToken: resp.nextPageToken } };
         } catch (err) {
           return { error: toError(err) };
         }
       },
+      // One cache entry per (status, pageToken) so "Load more" pages are
+      // separate entries the component accumulates itself. RTK Query
+      // refetches (polling, tag invalidation) re-initiate a cache entry with
+      // its stored originalArgs, so a shared key would let the cursor args
+      // from "Load more" hijack page 1's poll and make every poll refetch
+      // the last cursor page. Keeping pageToken in the key pins page 1's
+      // entry to pageToken '' so polls always refresh page 1; the cursor
+      // entries are unsubscribed one-shot fetches that no poll targets. Any
+      // caller adding criteriaId must include it here too.
+      serializeQueryArgs: ({ endpointName, queryArgs }) =>
+        `${endpointName}(${queryArgs.status ?? ''}|${queryArgs.pageToken ?? ''})`,
       providesTags: ['Run'],
     }),
     getRun: b.query<Run, string>({

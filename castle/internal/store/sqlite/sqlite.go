@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -190,13 +191,17 @@ func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
 
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
-const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
+	var started any
+	if r.StartedAt != nil {
+		started = r.StartedAt.Format(tsLayout)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,ticket,repo_url,pr_url) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(tsLayout),
-		nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL))
+		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL))
 	return err
 }
 
@@ -205,7 +210,43 @@ func (s *Store) GetRun(ctx context.Context, id string) (*store.Run, error) {
 	return scanRun(row.Scan)
 }
 
-func (s *Store) ListRuns(ctx context.Context, overseerID, status string) ([]*store.Run, error) {
+// runCursor is the opaque ListRuns continuation token: the (created_at, id)
+// sort key of the last row of the previous page, base64url-encoded so the
+// client can neither read nor forge meaningful values.
+type runCursor struct {
+	CreatedAt string `json:"created_at"`
+	ID        string `json:"id"`
+}
+
+func encodeRunCursor(created, id string) string {
+	b, _ := json.Marshal(runCursor{CreatedAt: created, ID: id})
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeRunCursor(token string) (created, id string, err error) {
+	if token == "" {
+		return "", "", nil
+	}
+	b, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %s", store.ErrInvalidCursor, err)
+	}
+	var c runCursor
+	if err := json.Unmarshal(b, &c); err != nil {
+		return "", "", fmt.Errorf("%w: %s", store.ErrInvalidCursor, err)
+	}
+	if c.CreatedAt == "" || c.ID == "" {
+		return "", "", fmt.Errorf("%w: missing sort key fields", store.ErrInvalidCursor)
+	}
+	return c.CreatedAt, c.ID, nil
+}
+
+// ListRuns pages runs newest-first. limit > 0 fetches at most limit rows and
+// returns a continuation token whenever a further row exists (one extra row
+// is probed so an exactly-full final page does not hand out a dead token);
+// limit <= 0 returns every matching row with no token. The cursor predicate
+// mirrors the ORDER BY, so a token stays valid across intervening inserts.
+func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
 	q := `SELECT ` + runColumns + ` FROM runs WHERE 1=1`
 	args := []any{}
 	if overseerID != "" {
@@ -216,27 +257,53 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string) ([]*sto
 		q += ` AND status=?`
 		args = append(args, status)
 	}
-	q += ` ORDER BY created_at DESC`
+	cursorCreated, cursorID, err := decodeRunCursor(pageToken)
+	if err != nil {
+		return nil, "", err
+	}
+	if cursorCreated != "" {
+		q += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, cursorCreated, cursorCreated, cursorID)
+	}
+	q += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		// Probe one row past the page so the token is only issued when a
+		// next page actually exists.
+		q += ` LIMIT ?`
+		args = append(args, limit+1)
+	}
 	rows, err := s.reader.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	var out []*store.Run
 	for rows.Next() {
 		r, err := scanRun(rows.Scan)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if limit > 0 && len(out) > limit {
+		last := out[limit-1]
+		// Format reproduces the stored text exactly (RFC3339Nano round-trips
+		// through parse), so the cursor key matches the ORDER BY values.
+		next = encodeRunCursor(last.CreatedAt.Format(tsLayout), last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
 }
 
 func scanRun(scan func(...any) error) (*store.Run, error) {
 	var r store.Run
 	var created string
 	var overseerID sql.NullString
+	var started sql.NullString
 	var ended sql.NullString
 	var variableScope sql.NullString
 	var pendingSignal sql.NullString
@@ -245,7 +312,7 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var repoURL sql.NullString
 	var prURL sql.NullString
 	var failureReason sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason)
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -256,6 +323,10 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 		r.OverseerID = overseerID.String
 	}
 	r.CreatedAt, _ = time.Parse(tsLayout, created)
+	if started.Valid {
+		t, _ := time.Parse(tsLayout, started.String)
+		r.StartedAt = &t
+	}
 	if ended.Valid {
 		t, _ := time.Parse(tsLayout, ended.String)
 		r.EndedAt = &t
@@ -290,9 +361,13 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 	if r.EndedAt != nil {
 		ended = r.EndedAt.Format(tsLayout)
 	}
+	var started any
+	if r.StartedAt != nil {
+		started = r.StartedAt.Format(tsLayout)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=?, failure_reason=COALESCE(NULLIF(?, ''), failure_reason) WHERE id=?`,
-		r.Status, r.CurrentStep, r.LastSeq, ended, nonEmpty(r.FailureReason), r.ID)
+		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=?, started_at=COALESCE(started_at, ?), failure_reason=COALESCE(NULLIF(?, ''), failure_reason) WHERE id=?`,
+		r.Status, r.CurrentStep, r.LastSeq, ended, started, nonEmpty(r.FailureReason), r.ID)
 	return err
 }
 

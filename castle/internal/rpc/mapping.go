@@ -50,5 +50,8 @@ func mapRun(r *store.Run) *pb.Run {
 	if r.EndedAt != nil {
 		out.EndedAt = timestamppb.New(*r.EndedAt)
 	}
+	if r.StartedAt != nil {
+		out.StartedAt = timestamppb.New(*r.StartedAt)
+	}
 	return out
 }

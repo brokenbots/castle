@@ -129,6 +129,223 @@ func TestOverseerCRUD(t *testing.T) {
 	}
 }
 
+// TestListRunsPagesByKeysetCursor covers server-side paging (CRI-187): with
+// more runs than the page limit, the continuation token resumes exactly where
+// the previous page stopped, pages neither overlap nor skip rows, an
+// exactly-full final page yields no dead token, and a remainder that fits in
+// one page returns no token. Tied created_at values are disambiguated by the
+// id tiebreaker, and a malformed token fails with ErrInvalidCursor.
+func TestListRunsPagesByKeysetCursor(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "ov-1", Name: "paging", TokenHash: "x", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+
+	// Alternating timestamps exercise both ORDER BY branches: pairs share a
+	// created_at so the id tiebreaker decides their relative order.
+	base := time.Date(2026, 2, 5, 8, 30, 0, 0, time.UTC)
+	wantIDs := make([]string, 0, 7)
+	for i := 0; i < 7; i++ {
+		id := fmt.Sprintf("run-%02d", i)
+		wantIDs = append(wantIDs, id)
+		status := "succeeded"
+		if i%2 == 1 {
+			status = "running"
+		}
+		r := &store.Run{
+			ID:           id,
+			OverseerID:   "ov-1",
+			WorkflowName: "wf",
+			Status:       status,
+			CreatedAt:    base.Add(time.Duration(i%2) * time.Minute),
+		}
+		if err := s.CreateRun(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+
+	t.Run("no limit returns every run with no token", func(t *testing.T) {
+		all, next, err := s.ListRuns(ctx, "", "", 0, "")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if next != "" {
+			t.Fatalf("next token %q, want empty without a limit", next)
+		}
+		if len(all) != len(wantIDs) {
+			t.Fatalf("len=%d want %d", len(all), len(wantIDs))
+		}
+	})
+
+	t.Run("pages resume at the cursor and cover every run once", func(t *testing.T) {
+		seen := map[string]bool{}
+		var order []string
+		pageToken := ""
+		for page := 0; ; page++ {
+			rows, next, err := s.ListRuns(ctx, "", "", 3, pageToken)
+			if err != nil {
+				t.Fatalf("page %d: %v", page, err)
+			}
+			if page > 0 && len(rows) == 0 {
+				t.Fatalf("page %d returned no rows for a live token; dead cursor page", page)
+			}
+			for _, r := range rows {
+				if seen[r.ID] {
+					t.Fatalf("run %s returned on two pages", r.ID)
+				}
+				seen[r.ID] = true
+				order = append(order, r.ID)
+			}
+			if next == "" {
+				break
+			}
+			if page > 100 {
+				t.Fatal("paging did not terminate")
+			}
+			pageToken = next
+		}
+		if len(seen) != len(wantIDs) {
+			t.Fatalf("paged traversal saw %d runs, want %d", len(seen), len(wantIDs))
+		}
+		// Newest first: later timestamps, then higher id within a tie.
+		wantOrder := []string{"run-05", "run-03", "run-01", "run-06", "run-04", "run-02", "run-00"}
+		if strings.Join(order, ",") != strings.Join(wantOrder, ",") {
+			t.Fatalf("order = %v, want %v", order, wantOrder)
+		}
+	})
+
+	t.Run("status filter pages independently", func(t *testing.T) {
+		rows, next, err := s.ListRuns(ctx, "", "running", 2, "")
+		if err != nil {
+			t.Fatalf("first page: %v", err)
+		}
+		if len(rows) != 2 || rows[0].ID != "run-05" || rows[1].ID != "run-03" {
+			t.Fatalf("first page = %v/%v, want run-05,run-03", ids(rows), "run-05,run-03")
+		}
+		rows, next2, err := s.ListRuns(ctx, "", "running", 2, next)
+		if err != nil {
+			t.Fatalf("second page: %v", err)
+		}
+		if next2 != "" {
+			t.Fatalf("second page returned token %q, want empty when the remainder fits", next2)
+		}
+		if len(rows) != 1 || rows[0].ID != "run-01" {
+			t.Fatalf("second page = %v, want run-01", ids(rows))
+		}
+	})
+
+	t.Run("malformed token is rejected", func(t *testing.T) {
+		if _, _, err := s.ListRuns(ctx, "", "", 3, "not-a-cursor"); !errors.Is(err, store.ErrInvalidCursor) {
+			t.Fatalf("err = %v, want ErrInvalidCursor", err)
+		}
+	})
+}
+
+func ids(runs []*store.Run) []string {
+	out := make([]string, 0, len(runs))
+	for _, r := range runs {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
+// TestRunStartedAtLifecycle covers the started_at contract (CRI-187): a
+// pending run has no start instant, the first transition to running stamps it
+// and later updates never rewrite it, terminal transitions preserve it, and a
+// run created already-running carries the caller-provided instant.
+func TestRunStartedAtLifecycle(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	if err := s.CreateOverseer(ctx, &store.Overseer{ID: "ov-1", Name: "startedat", TokenHash: "x", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+	created := time.Date(2026, 2, 5, 8, 30, 0, 0, time.UTC)
+	if err := s.CreateRun(ctx, &store.Run{ID: "run-1", OverseerID: "ov-1", WorkflowName: "wf", Status: "pending", CreatedAt: created}); err != nil {
+		t.Fatalf("create run-1: %v", err)
+	}
+
+	got, err := s.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("get run-1: %v", err)
+	}
+	if got.StartedAt != nil {
+		t.Fatalf("pending run StartedAt = %v, want nil", got.StartedAt)
+	}
+
+	// First transition to running stamps the start instant.
+	started := created.Add(2 * time.Minute)
+	got.StartedAt = &started
+	got.Status = "running"
+	if err := s.UpdateRun(ctx, got); err != nil {
+		t.Fatalf("update to running: %v", err)
+	}
+	got, err = s.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("re-get run-1: %v", err)
+	}
+	if got.StartedAt == nil || !got.StartedAt.Equal(started) {
+		t.Fatalf("StartedAt = %v, want %v after first running transition", got.StartedAt, started)
+	}
+
+	// A later update carrying a different instant (e.g. a duplicate RunStarted
+	// re-stamp) must not overwrite the first stamp.
+	late := started.Add(5 * time.Minute)
+	got.StartedAt = &late
+	got.CurrentStep = "step-2"
+	if err := s.UpdateRun(ctx, got); err != nil {
+		t.Fatalf("update with late stamp: %v", err)
+	}
+	got, err = s.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("re-get run-1 after late stamp: %v", err)
+	}
+	if !got.StartedAt.Equal(started) {
+		t.Fatalf("StartedAt = %v, want first stamp %v", got.StartedAt, started)
+	}
+
+	// A terminal transition whose struct carries no StartedAt (handlers only
+	// set status/ended_at) must keep the stored stamp.
+	ended := started.Add(3 * time.Minute)
+	got.Status = "succeeded"
+	got.EndedAt = &ended
+	got.StartedAt = nil
+	if err := s.UpdateRun(ctx, got); err != nil {
+		t.Fatalf("update to terminal: %v", err)
+	}
+	got, err = s.GetRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("re-get run-1 after terminal: %v", err)
+	}
+	if got.StartedAt == nil || !got.StartedAt.Equal(started) {
+		t.Fatalf("StartedAt = %v, want %v preserved across terminal transition", got.StartedAt, started)
+	}
+
+	// A run created already-running persists the caller-provided instant, and
+	// ListRuns projects it.
+	if err := s.CreateRun(ctx, &store.Run{ID: "run-2", OverseerID: "ov-1", WorkflowName: "wf", Status: "running", CreatedAt: created, StartedAt: &started}); err != nil {
+		t.Fatalf("create run-2: %v", err)
+	}
+	rows, _, err := s.ListRuns(ctx, "", "", 0, "")
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	byID := map[string]*store.Run{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if byID["run-2"].StartedAt == nil || !byID["run-2"].StartedAt.Equal(started) {
+		t.Fatalf("ListRuns run-2 StartedAt = %v, want %v", byID["run-2"].StartedAt, started)
+	}
+	if byID["run-1"].StartedAt == nil || !byID["run-1"].StartedAt.Equal(started) {
+		t.Fatalf("ListRuns run-1 StartedAt = %v, want %v", byID["run-1"].StartedAt, started)
+	}
+}
+
 // TestRunMetadataCRUD covers the CRI-131 k8s-native run metadata columns:
 // create-time ticket/repo_url persistence, list/get visibility, non-empty-only
 // promotion via SetRunMetadata, and the status-update path leaving metadata
@@ -159,7 +376,7 @@ func TestRunMetadataCRUD(t *testing.T) {
 		t.Errorf("after create: ticket=%q repo=%q pr=%q", got.Ticket, got.RepoURL, got.PRURL)
 	}
 
-	runs, err := s.ListRuns(ctx, "", "")
+	runs, _, err := s.ListRuns(ctx, "", "", 0, "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
