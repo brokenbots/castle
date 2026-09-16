@@ -7,6 +7,7 @@ import { useRunEventLog } from './eventLog/useRunEventLog';
 import { EventLog } from './eventLog/EventLog';
 import { StatusPill } from './StatusPill';
 import { RunControls } from './RunControls';
+import { RunInspection } from './RunInspection';
 import { PauseAffordance } from './eventLog/PauseAffordance';
 import { ForEachStrip } from './eventLog/ForEachStrip';
 import { RunScopePanel } from './scopePanel/RunScopePanel';
@@ -121,6 +122,8 @@ export function RunDetailPage() {
           )}
         </div>
       </header>
+
+      <RunInspection runId={id} status={run.data.status} />
 
       {pauseState.isPaused && pauseState.pauseEvent && (
         <section>

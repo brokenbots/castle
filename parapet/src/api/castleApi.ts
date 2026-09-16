@@ -4,7 +4,7 @@ import { Code, ConnectError } from '@connectrpc/connect';
 import { Timestamp } from '@bufbuild/protobuf';
 import { server } from './client';
 import type { Run as PbRun } from '../gen/criteria/v1/criteria_pb';
-import type { Agent as PbAgent } from '../gen/criteria/v1/server_pb';
+import type { Agent as PbAgent, InspectRunResponse as PbInspectRunResponse } from '../gen/criteria/v1/server_pb';
 import type { Envelope } from '../gen/criteria/v1/events_pb';
 
 export interface Run {
@@ -30,6 +30,24 @@ export interface Agent {
   status: string;
   registeredAt?: string;
   lastSeenAt?: string;
+}
+
+// Adapter inspection summary returned by ServerService.InspectRun.
+export interface RunInspection {
+  runId: string;
+  sessionId: string;
+  adapter: string;
+  currentStep: string;
+  pendingPermissions: number;
+  lastActivityAt?: string;
+  // Opaque adapter state; the host pretty-prints any well-formed JSON.
+  stateJson: string;
+}
+
+export interface InspectRunArgs {
+  runId: string;
+  // Optional adapter session id; empty asks the server for the summary.
+  sessionId?: string;
 }
 
 export interface EventEnvelope {
@@ -81,6 +99,18 @@ function mapAgent(a: PbAgent): Agent {
     status: a.status,
     registeredAt: tsToIso(a.registeredAt),
     lastSeenAt: tsToIso(a.lastSeenAt),
+  };
+}
+
+function mapRunInspection(r: PbInspectRunResponse): RunInspection {
+  return {
+    runId: r.runId,
+    sessionId: r.sessionId,
+    adapter: r.adapter,
+    currentStep: r.currentStep,
+    pendingPermissions: Number(r.pendingPermissions),
+    lastActivityAt: tsToIso(r.lastActivityAt),
+    stateJson: r.stateJson ?? '',
   };
 }
 
@@ -177,6 +207,19 @@ export const castleApi = createApi({
       },
       providesTags: (_r, _e, id) => [{ type: 'Run', id }],
     }),
+    inspectRun: b.query<RunInspection, InspectRunArgs>({
+      queryFn: async ({ runId, sessionId = '' }) => {
+        try {
+          const resp = await server.inspectRun({ runId, sessionId });
+          return { data: mapRunInspection(resp) };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      // Shares the Run id tag with getRun so control mutations
+      // (pause/resume/stop) also refresh the adapter inspection.
+      providesTags: (_r, _e, { runId }) => [{ type: 'Run', id: runId }],
+    }),
     listAgents: b.query<Agent[], void>({
       queryFn: async () => {
         try {
@@ -233,6 +276,7 @@ export const castleApi = createApi({
 export const {
   useListRunsQuery,
   useGetRunQuery,
+  useInspectRunQuery,
   useListAgentsQuery,
   useResumeMutation,
   usePauseRunMutation,
