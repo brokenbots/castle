@@ -53,6 +53,12 @@ export function useRunEventLog(runId: string): RunEventLogView {
     })
       .then((outcome) => {
         if (!aliveRef.current) return;
+        // Seed the store with everything the walk fetched, in seq order, so
+        // derived views see the full history. The store dedupes by seq, so
+        // re-dispatching the retained page below is a no-op.
+        for (const e of outcome.walked) {
+          dispatch(runsSlice.actions.eventReceived(e));
+        }
         for (const e of outcome.retained) {
           dispatch(runsSlice.actions.eventReceived(e));
         }

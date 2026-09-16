@@ -86,34 +86,54 @@ export interface AnchorOutcome {
   oldestLoaded: number | null;
   /** Events of the retained newest page; the caller dispatches them. */
   retained: EventEnvelope[];
+  /**
+   * Every event fetched while walking to the newest page, in seq order
+   * (including the retained page). The caller seeds these into the store so
+   * derived views see the full walked history; the store dedupes by seq, so
+   * re-dispatching the retained page is a no-op.
+   */
+  walked: EventEnvelope[];
 }
 
 /**
  * Anchors the event log at the newest events. ListRunEvents pages
  * forward-only (since_seq is an exclusive lower bound and next_since_seq is
  * only set on full pages), so reaching the newest page requires walking from
- * 0. Intermediate pages are discarded: only the final page is retained, and
- * the caller dispatches just those events into the store. Runs whose event
- * count is an exact page multiple end the walk with an empty probe, in which
- * case the preceding full page is the tail.
+ * 0. Every walked event is returned in `walked` so the caller can seed the
+ * full history into the store; `retained` is the newest page and still
+ * defines `anchor` and `oldestLoaded`. Runs whose event count is an exact
+ * page multiple end the walk with an empty probe, in which case the
+ * preceding full page is the tail.
  */
 export async function anchorRunEventLog(fetchPage: FetchEventPage): Promise<AnchorOutcome> {
   let since = 0;
   let staged: { events: EventEnvelope[]; lastSeq: number } | null = null;
+  const walked: EventEnvelope[] = [];
   for (;;) {
     const page = await fetchPage(since, EVENT_PAGE_SIZE);
+    walked.push(...page.events);
     if (page.events.length === 0) {
       // No newer events: a staged full page is the tail, else the run is empty.
       if (staged) {
-        return { anchor: staged.lastSeq, oldestLoaded: staged.events[0].seq, retained: staged.events };
+        return {
+          anchor: staged.lastSeq,
+          oldestLoaded: staged.events[0].seq,
+          retained: staged.events,
+          walked,
+        };
       }
-      return { anchor: 0, oldestLoaded: null, retained: [] };
+      return { anchor: 0, oldestLoaded: null, retained: [], walked };
     }
     if (page.nextSinceSeq !== null && page.nextSinceSeq > since) {
       staged = { events: page.events, lastSeq: page.lastSeq };
       since = page.nextSinceSeq;
       continue;
     }
-    return { anchor: page.lastSeq, oldestLoaded: page.events[0].seq, retained: page.events };
+    return {
+      anchor: page.lastSeq,
+      oldestLoaded: page.events[0].seq,
+      retained: page.events,
+      walked,
+    };
   }
 }

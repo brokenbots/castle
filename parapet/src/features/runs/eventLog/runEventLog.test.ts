@@ -43,10 +43,17 @@ function fakeServer(total: number) {
 }
 
 describe('anchorRunEventLog', () => {
-  test('retains only the tail page of a multi-page run', async () => {
+  test('seeds every walked event and retains the tail page of a multi-page run', async () => {
     const { calls, fetchPage } = fakeServer(1000);
     const outcome = await anchorRunEventLog(fetchPage);
 
+    // Every event fetched while walking is handed back, in seq order —
+    // not just the tail.
+    expect(outcome.walked.map((e) => e.seq)).toEqual(
+      Array.from({ length: 1000 }, (_, i) => i + 1),
+    );
+    // Anchor semantics are unchanged: they still come from the retained
+    // tail page, not the walked history.
     expect(outcome.anchor).toBe(1000);
     expect(outcome.oldestLoaded).toBe(501);
     expect(outcome.retained.map((e) => e.seq)).toEqual(
@@ -68,6 +75,12 @@ describe('anchorRunEventLog', () => {
     expect(outcome.retained.map((e) => e.seq)).toEqual(
       Array.from({ length: 500 }, (_, i) => i + 1001),
     );
+    // No truncation across multiple walked pages: the walk accumulates all
+    // 1500 events in order without duplicates.
+    expect(outcome.walked.map((e) => e.seq)).toEqual(
+      Array.from({ length: 1500 }, (_, i) => i + 1),
+    );
+    expect(new Set(outcome.walked.map((e) => e.seq)).size).toBe(1500);
     expect(calls.map((c) => c.since)).toEqual([0, 500, 1000, 1500]);
   });
 
@@ -80,6 +93,10 @@ describe('anchorRunEventLog', () => {
     expect(outcome.retained.map((e) => e.seq)).toEqual(
       Array.from({ length: 123 }, (_, i) => i + 1),
     );
+    // A single non-full page: walked equals retained.
+    expect(outcome.walked.map((e) => e.seq)).toEqual(
+      Array.from({ length: 123 }, (_, i) => i + 1),
+    );
     expect(calls.map((c) => c.since)).toEqual([0]);
   });
 
@@ -87,7 +104,7 @@ describe('anchorRunEventLog', () => {
     const { calls, fetchPage } = fakeServer(0);
     const outcome = await anchorRunEventLog(fetchPage);
 
-    expect(outcome).toEqual({ anchor: 0, oldestLoaded: null, retained: [] });
+    expect(outcome).toEqual({ anchor: 0, oldestLoaded: null, retained: [], walked: [] });
     expect(calls).toEqual([{ since: 0, limit: EVENT_PAGE_SIZE }]);
   });
 
@@ -101,6 +118,7 @@ describe('anchorRunEventLog', () => {
     expect(calls).toBe(1);
     expect(outcome.anchor).toBe(1);
     expect(outcome.oldestLoaded).toBe(1);
+    expect(outcome.walked.map((e) => e.seq)).toEqual([1]);
   });
 });
 
