@@ -31,6 +31,31 @@ describe('selectNodeOverlay', () => {
     expect(other.statuses.build).toBe('failed');
   });
 
+  test('marks engine failure outcomes with no error payload as failed', () => {
+    // The engine emits `outcome: "failure"` with a nil error for loader and
+    // dominant step failures (adapterhost loader, node_step, while_iteration).
+    const { statuses } = selectNodeOverlay([
+      event(1, 'stepEntered', { step: 'build' }),
+      event(2, 'stepOutcome', { step: 'build', outcome: 'failure' }),
+    ]);
+    expect(statuses.build).toBe('failed');
+
+    // Declared adapter outcomes other than success/ok are failures too,
+    // mirroring the engine's ConsoleSink and watch CLI rendering.
+    const declared = selectNodeOverlay([
+      event(1, 'stepEntered', { step: 'build' }),
+      event(2, 'stepOutcome', { step: 'build', outcome: 'needs_human' }),
+    ]);
+    expect(declared.statuses.build).toBe('failed');
+
+    // "ok" is an accepted success alias (engine console_sink.go / watch.go).
+    const ok = selectNodeOverlay([
+      event(1, 'stepEntered', { step: 'build' }),
+      event(2, 'stepOutcome', { step: 'build', outcome: 'ok' }),
+    ]);
+    expect(ok.statuses.build).toBe('succeeded');
+  });
+
   test('re-entry of a completed step flips it back to running', () => {
     const { statuses } = selectNodeOverlay([
       event(1, 'stepEntered', { step: 'build' }),

@@ -734,5 +734,17 @@ describe('RunDetailPage', () => {
     fireEvent.click(screen.getByTestId('clear-step-filter'));
     expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
     expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
+
+    // Clicking a node re-applies the filter; clicking the already-selected
+    // node toggles it back off.
+    act(() => {
+      fireEvent.click(document.querySelector('[data-node-id="test"]')!);
+    });
+    expect(screen.getByTestId('step-filter')).toHaveTextContent('Filtered to step: test');
+    act(() => {
+      fireEvent.click(document.querySelector('[data-node-id="test"]')!);
+    });
+    expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
+    expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
   });
 });

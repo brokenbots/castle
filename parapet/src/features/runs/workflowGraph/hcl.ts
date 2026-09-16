@@ -1,7 +1,8 @@
 /**
  * A minimal generic reader for the subset of HCL the criteria workflow
- * language uses: `block "label" { attr = value; nested { … } }` with string,
- * number, bool, list, map and raw-expression values. Not a full HCL
+ * language uses: `block "label" { attr = value; nested { … } }` with string
+ * (quoted or heredoc `<<TAG`/`<<-TAG`), number, bool, list, map and
+ * raw-expression values. Not a full HCL
  * implementation — anything outside the workflow grammar is either captured
  * as a raw expression or reported as a {@link WorkflowParseError}.
  */
@@ -38,6 +39,7 @@ export interface HclBlock {
 type Tok =
   | { t: 'ident'; s: string }
   | { t: 'string'; s: string; v: string }
+  | { t: 'heredoc'; s: string; v: string }
   | { t: 'num'; s: string }
   | { t: 'punct'; s: string }
   | { t: 'nl' };
@@ -94,10 +96,76 @@ function scan(src: string): Tok[] {
       i += 2;
       continue;
     }
+    if (c === '<' && src[i + 1] === '<' && inValuePosition(toks)) {
+      const heredoc = scanHeredoc(src, i);
+      if (heredoc) {
+        toks.push({ t: 'heredoc', s: heredoc.text, v: heredoc.value });
+        i = heredoc.next;
+        continue;
+      }
+      // Not a heredoc intro after all — fall through to generic punctuation.
+    }
     toks.push({ t: 'punct', s: c });
     i++;
   }
   return toks;
+}
+
+/** True when the last non-newline token is an `=` (i.e. a value follows). */
+function inValuePosition(toks: Tok[]): boolean {
+  for (let i = toks.length - 1; i >= 0; i--) {
+    const tok = toks[i];
+    if (tok.t === 'nl') continue;
+    return tok.t === 'punct' && tok.s === '=';
+  }
+  return false;
+}
+
+/**
+ * Scans a heredoc literal (`<<TAG` or `<<-TAG` for an indented terminator)
+ * starting at the `<<`. Body lines are captured verbatim; `<<-` dedents the
+ * captured value by the common leading whitespace of its non-empty lines.
+ * Returns null when the intro line is not a well-formed heredoc opener.
+ */
+function scanHeredoc(src: string, start: number): { next: number; text: string; value: string } | null {
+  let i = start + 2;
+  const indented = src[i] === '-';
+  if (indented) i++;
+  const tag = /^[A-Za-z0-9_]+/.exec(src.slice(i))?.[0];
+  if (!tag) return null;
+  i += tag.length;
+  const nl = src.indexOf('\n', i);
+  const tail = src.slice(i, nl === -1 ? src.length : nl).replace(/\r$/, '');
+  if (!/^\s*(?:(?:#|\/\/).*)?$/.test(tail)) return null;
+  if (nl === -1) throw new WorkflowParseError(`unterminated heredoc "${tag}"`);
+
+  const body: string[] = [];
+  let pos = nl + 1;
+  for (;;) {
+    const lineEnd = src.indexOf('\n', pos);
+    const line = src.slice(pos, lineEnd === -1 ? src.length : lineEnd).replace(/\r$/, '');
+    if (indented ? line.trim() === tag : line === tag) {
+      // `next` stops right after the terminator tag; the trailing newline
+      // is left in place so the scanner resumes on the enclosing block's
+      // next line.
+      return { next: pos + line.length, text: src.slice(start, pos + line.length), value: joinBody(body, indented) };
+    }
+    if (lineEnd === -1) throw new WorkflowParseError(`unterminated heredoc "${tag}"`);
+    body.push(line);
+    pos = lineEnd + 1;
+  }
+}
+
+/** Joins heredoc body lines, dedenting `<<-` bodies to their common prefix. */
+function joinBody(lines: string[], dedent: boolean): string {
+  if (!dedent) return lines.join('\n');
+  let common = Infinity;
+  for (const line of lines) {
+    if (line.trim() === '') continue;
+    common = Math.min(common, /^[ \t]*/.exec(line)![0].length);
+  }
+  if (!Number.isFinite(common) || common <= 0) return lines.join('\n');
+  return lines.map((line) => (line.trim() === '' ? '' : line.slice(common))).join('\n');
 }
 
 function scanString(src: string, start: number): { next: number; text: string; value: string } {
@@ -207,6 +275,7 @@ function expectPunct(cursor: Cursor, s: string, what: string): void {
 function describe(tok: Tok | undefined): string {
   if (!tok) return 'end of input';
   if (tok.t === 'nl') return 'newline';
+  if (tok.t === 'heredoc') return `heredoc ${tok.s.split('\n')[0]}`;
   return tok.t === 'string' ? `string ${tok.s}` : `"${tok.s}"`;
 }
 
@@ -312,6 +381,10 @@ function parseValue(cursor: Cursor, stops: Set<string>): HclValue {
     if (tok.s === 'false') return { kind: 'bool', value: false };
     return scanRaw(cursor, stops, [tok.s]);
   }
+  if (tok.t === 'heredoc') {
+    cursor.pos++;
+    return { kind: 'string', text: tok.s, value: tok.v };
+  }
   if (tok.t === 'punct' && tok.s === '[') return parseList(cursor);
   if (tok.t === 'punct' && tok.s === '{') return parseMap(cursor);
   return scanRaw(cursor, stops, []);
@@ -324,6 +397,11 @@ function scanRaw(cursor: Cursor, stops: Set<string>, head: string[]): HclValue {
   for (;;) {
     const tok = peek(cursor);
     if (!tok) break;
+    // A trailing backslash joins the next line into the same raw value.
+    if (tok.t === 'punct' && tok.s === '\\' && cursor.toks[cursor.pos + 1]?.t === 'nl') {
+      cursor.pos += 2;
+      continue;
+    }
     if (depth === 0) {
       if (tok.t === 'nl' || (tok.t === 'punct' && stops.has(tok.s))) break;
       // An identifier followed by "=" starts the next attribute; without

@@ -22,8 +22,11 @@ export interface WorkflowDagProps {
   forEachProgress?: Record<string, ForEachProgress>;
   /** Currently selected node id, if any. */
   selectedId?: string | null;
-  /** Called with the node id when a node is clicked. */
-  onSelect?: (nodeId: string) => void;
+  /**
+   * Called with the clicked node id, or with null when the already-selected
+   * node is clicked again (toggling the selection off).
+   */
+  onSelect?: (nodeId: string | null) => void;
 }
 
 interface WorkflowNodeData extends Record<string, unknown> {
@@ -113,7 +116,7 @@ export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, select
   );
 
   const handleNodeClick = onSelect
-    ? (_event: MouseEvent, node: WorkflowFlowNode) => onSelect(node.id)
+    ? (_event: MouseEvent, node: WorkflowFlowNode) => onSelect(node.id === selectedId ? null : node.id)
     : undefined;
 
   return (

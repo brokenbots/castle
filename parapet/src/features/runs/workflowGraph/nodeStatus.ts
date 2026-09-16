@@ -39,7 +39,7 @@ function num(v: unknown): number | undefined {
  * ones, and — via ForEachStrip data (forEachEntered/stepIteration*) —
  * per-iteration progress for for_each nodes. Nodes without an event stay
  * unvisited (idle/dimmed). Later events win, so a retried step flips back to
- * running and an errored completion overrides an earlier success.
+ * running and a failed completion overrides an earlier success.
  */
 export function selectNodeOverlay(events: EventEnvelope[]): NodeOverlay {
   const statuses: Record<string, StepNodeStatus> = {};
@@ -65,7 +65,12 @@ export function selectNodeOverlay(events: EventEnvelope[]): NodeOverlay {
       case 'stepOutcome': {
         const step = str(p?.step);
         if (!step) break;
-        const failed = str(p?.outcome) === 'error' || str(p?.error) !== undefined;
+        // The engine's dominant failure paths emit `outcome: "failure"` (or
+        // any non-success verdict) with no error payload, so only a
+        // success/ok outcome without an error text counts as succeeded —
+        // the same rule the engine's ConsoleSink and watch CLI apply.
+        const outcome = str(p?.outcome);
+        const failed = !(outcome === 'success' || outcome === 'ok') || str(p?.error) !== undefined;
         statuses[step] = failed ? 'failed' : 'succeeded';
         break;
       }

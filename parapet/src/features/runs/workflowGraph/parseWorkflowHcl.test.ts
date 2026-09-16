@@ -1,12 +1,16 @@
 import { describe, expect, test } from 'vitest';
+import credentialIsolationSource from './fixtures/credential_isolation.chcl?raw';
 import linearIntakeSource from './fixtures/linear_intake_v1.chcl?raw';
 import tourSource from './fixtures/tour.chcl?raw';
+import { parseHclDocument } from './hcl';
 import { parseWorkflowHcl, WorkflowParseError, extractTextEdges } from './parseWorkflowHcl';
 
 // Fixtures are real .chcl workflows: linear_intake_v1 is a faithful
 // reduction of brokenbots/workflow-example linear_intake_v1/main.chcl
 // (identical node/edge graph), tour is verbatim from the criteria repo's
-// examples and covers step-level iteration, wait and switch.
+// examples and covers step-level iteration, wait and switch, and
+// credential_isolation is verbatim from the linear_intake_v1 test suite and
+// covers `<<-EOT` heredoc command bodies.
 describe('parseWorkflowHcl', () => {
   test('parses the real linear_intake_v1 workflow into a step graph', () => {
     const graph = parseWorkflowHcl(linearIntakeSource);
@@ -97,7 +101,7 @@ describe('parseWorkflowHcl', () => {
     ]);
 
     const edges = graph.edges.map((e) => `${e.from} -${e.via}-> ${e.to}`);
-    // Arm labels match BranchEvaluated.matched_arm ("arm[<index>]" / "default").
+    // Arm edges are labelled by declaration order ("arm[<index>]" / "default").
     expect(edges).toContain('route_after_state_check -arm[0]-> already_complete');
     expect(edges).toContain('route_after_state_check -default-> check_approved_plan');
     expect(edges).toContain('route_qa_result -arm[0]-> comment_triage_failed');
@@ -274,6 +278,106 @@ describe('parseWorkflowHcl', () => {
     expect(graph.startAt).toBe('a');
     expect(graph.nodes.map((n) => n.id)).toEqual(['a', 'b', 'done']);
     expect(graph.edges).toEqual([{ from: 'a', via: 'success', to: 'b' }, { from: 'b', via: 'success', to: 'done' }]);
+  });
+
+  test('parses the real credential_isolation heredoc workflow into a step graph', () => {
+    // Real .chcl workflows carry `command = <<-EOT … EOT` bodies; the
+    // heredoc must parse (not fall back to the text-edge regex) so the run
+    // DAG renders for these runs.
+    const graph = parseWorkflowHcl(credentialIsolationSource);
+
+    expect(graph.name).toBe('credential_isolation');
+    expect(graph.startAt).toBe('workflow_identity');
+    expect(graph.nodes).toHaveLength(4);
+    expect(graph.edges).toHaveLength(4);
+
+    const kinds = Object.fromEntries(graph.nodes.map((n) => [n.id, n.kind]));
+    expect(kinds).toEqual({
+      workflow_identity: 'step',
+      reviewer_identity: 'step',
+      passed: 'state',
+      failed: 'state',
+    });
+    expect(graph.nodes.find((n) => n.id === 'passed')).toMatchObject({ terminal: true, success: true });
+    expect(graph.nodes.find((n) => n.id === 'failed')).toMatchObject({ terminal: true, success: false });
+
+    const edges = graph.edges.map((e) => `${e.from} -${e.via}-> ${e.to}`);
+    expect(edges).toEqual([
+      'workflow_identity -success-> reviewer_identity',
+      'workflow_identity -failure-> failed',
+      'reviewer_identity -success-> passed',
+      'reviewer_identity -failure-> failed',
+    ]);
+  });
+
+  test('captures heredoc command bodies verbatim as string values', () => {
+    const doc = parseHclDocument(credentialIsolationSource);
+    const step = doc.find((b) => b.type === 'step' && b.labels[0] === 'workflow_identity');
+    const input = step?.blocks.find((b) => b.type === 'input');
+
+    // `<<-EOT` dedents the body to the common leading whitespace and keeps
+    // newlines inside the value; `$${…}` shell escapes survive verbatim.
+    const command = input?.attrs.get('command');
+    expect(command).toMatchObject({
+      kind: 'string',
+      value: [
+        'test "$GH_TOKEN" = "workflow-sentinel"',
+        'test -z "$${WORKFLOW_GITHUB_TOKEN+x}"',
+        'test -z "$${REVIEWER_GITHUB_TOKEN+x}"',
+        'test -z "$${LINEAR_API_KEY+x}"',
+      ].join('\n'),
+    });
+    expect(command?.kind === 'string' && command.text.startsWith('<<-EOT')).toBe(true);
+  });
+
+  test('joins line-continued raw expressions and resolves traversal initial_state', () => {
+    const graph = parseWorkflowHcl(
+      [
+        'workflow {',
+        '  name          = "continued"',
+        '  initial_state = step.check',
+        '}',
+        'switch "check" {',
+        '  match {',
+        '    condition = var.a || \\',
+        '                var.b',
+        '    next = state.ok',
+        '  }',
+        '  default { next = state.fail }',
+        '}',
+        'state "ok" { terminal = true success = true }',
+        'state "fail" { terminal = true success = false }',
+      ].join('\n'),
+    );
+
+    // The backslash continuation keeps the condition a single raw
+    // expression instead of ending the value at the newline.
+    expect(graph.nodes.find((n) => n.id === 'check')?.arms).toEqual([
+      { condition: 'var.a || var.b', target: 'ok' },
+      { condition: '', target: 'fail' },
+    ]);
+    // Traversal-form initial_state resolves like its quoted form.
+    expect(graph.startAt).toBe('check');
+    expect(graph.edges.map((e) => `${e.from} -${e.via}-> ${e.to}`)).toEqual([
+      'check -arm[0]-> ok',
+      'check -default-> fail',
+    ]);
+
+    // Without the continuation the multiline condition is unparseable and
+    // the page must keep its fallback rendering.
+    expect(() =>
+      parseWorkflowHcl(
+        [
+          'workflow { name = "broken" }',
+          'switch "check" {',
+          '  match {',
+          '    condition = var.a ||',
+          '                var.b',
+          '  }',
+          '}',
+        ].join('\n'),
+      ),
+    ).toThrow(WorkflowParseError);
   });
 
   test('throws WorkflowParseError for malformed or non-workflow sources', () => {

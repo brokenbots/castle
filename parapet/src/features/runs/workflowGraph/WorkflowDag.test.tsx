@@ -135,6 +135,17 @@ describe('WorkflowDag', () => {
     await vi.waitFor(() => expect(onSelect).toHaveBeenCalledWith('test'));
   });
 
+  test('toggles the selection off when the already-selected node is clicked again', async () => {
+    const onSelect = vi.fn();
+    render(<WorkflowDag graph={graph()} selectedId="test" onSelect={onSelect} />);
+    fireEvent.click(screen.getByText('test'));
+    await vi.waitFor(() => expect(onSelect).toHaveBeenCalledWith(null));
+
+    // A different node still selects normally.
+    fireEvent.click(screen.getByText('build'));
+    await vi.waitFor(() => expect(onSelect).toHaveBeenCalledWith('build'));
+  });
+
   test('derives overlay state through selectNodeOverlay', async () => {
     const overlay = selectNodeOverlay([
       { schemaVersion: 1, runId: 'r', seq: 1, type: 'stepEntered', ts: '', correlationId: '', payload: { step: 'build' } },

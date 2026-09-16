@@ -59,6 +59,15 @@ function traversalTarget(raw: string): string {
 }
 
 /**
+ * Resolves a traversal attribute (`next`, `initial_state`) to its target
+ * text: quoted strings resolve to their unquoted value, raw traversals
+ * (`next = step.a`) to their captured expression text.
+ */
+function traversalValue(v?: HclValue): string {
+  return valueString(v) ?? valueRaw(v) ?? '';
+}
+
+/**
  * Parses the criteria workflow HCL language into a step-graph model.
  *
  * Hand-rolled recursive-descent reader over the generic HCL block shape
@@ -108,7 +117,7 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
     for (const sub of block.blocks) {
       if (sub.type !== 'outcome') continue;
       const via = sub.labels[0] ?? '';
-      const next = traversalTarget(valueRaw(sub.attrs.get('next')) ?? valueString(sub.attrs.get('next')) ?? '');
+      const next = traversalTarget(traversalValue(sub.attrs.get('next')));
       if (via && next) addEdge(from, via, next);
     }
   };
@@ -136,14 +145,15 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
         for (const sub of block.blocks) {
           if (sub.type === 'match') {
             const condition = valueRaw(sub.attrs.get('condition')) ?? '';
-            const next = traversalTarget(valueRaw(sub.attrs.get('next')) ?? '');
+            const next = traversalTarget(traversalValue(sub.attrs.get('next')));
             if (!next) continue;
             node.arms.push({ condition, target: next });
-            // Edge labels match BranchEvaluated.matched_arm ("arm[<index>]").
+            // Arm edges are labelled by declaration order ("arm[<index>]"); the
+            // default arm is labelled "default".
             addEdge(id, `arm[${armIndex}]`, next);
             armIndex++;
           } else if (sub.type === 'default') {
-            const next = traversalTarget(valueRaw(sub.attrs.get('next')) ?? '');
+            const next = traversalTarget(traversalValue(sub.attrs.get('next')));
             if (!next) continue;
             node.arms.push({ condition: '', target: next });
             addEdge(id, 'default', next);
@@ -183,7 +193,7 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
 
   return {
     name: valueString(workflow.attrs.get('name')) ?? '',
-    startAt: valueString(workflow.attrs.get('initial_state')),
+    startAt: traversalTarget(traversalValue(workflow.attrs.get('initial_state'))) || null,
     nodes: [...nodes.values()],
     edges,
   };

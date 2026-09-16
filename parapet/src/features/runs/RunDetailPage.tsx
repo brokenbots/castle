@@ -176,7 +176,9 @@ export function RunDetailPage() {
             statuses={overlay.statuses}
             forEachProgress={overlay.forEach}
             selectedId={selected}
-            onSelect={(nodeId) => setSelectedStep({ runId: run.data!.runId, step: nodeId })}
+            onSelect={(nodeId) =>
+              setSelectedStep(nodeId === null ? null : { runId: run.data!.runId, step: nodeId })
+            }
           />
         ) : fallbackEdges.length === 0 ? (
           <p className="text-sm text-slate-400">No step transitions found.</p>
