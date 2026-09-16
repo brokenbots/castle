@@ -24,10 +24,22 @@ vi.mock('./watchRun', () => ({
 import { startWatch } from './watchRun';
 
 // jsdom has no layout; react-virtual (via EventLog) reads offsetHeight and
-// renders nothing when it measures 0.
+// renders nothing when it measures 0. measureElement additionally reads
+// getBoundingClientRect (always zeros in jsdom), so give it a real box too.
 beforeAll(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    right: 800,
+    bottom: 16,
+    width: 800,
+    height: 16,
+    toJSON: () => ({}),
+  });
 });
 
 // Mutable fixture so tests can vary run metadata (CRI-131) without a second
@@ -178,8 +190,9 @@ describe('RunDetailPage', () => {
 
   test('anchors at the newest page and lazy-loads older events', async () => {
     // A 1000-event run served page-by-page from a stateful MSW handler.
-    // The initial walk must retain only the newest page; older history is
-    // fetched on demand through the "Load earlier events" control.
+    // The initial walk seeds every fetched page into the store (no silent
+    // truncation); the anchor still sits at the newest page and older
+    // history stays reachable through the "Load earlier events" control.
     // Wire shape: protojson flattens the payload oneof, so the case name is
     // a top-level key; connect-web serializes request fields lowerCamelCase.
     const all = Array.from({ length: 1000 }, (_, i) => ({
@@ -230,10 +243,11 @@ describe('RunDetailPage', () => {
       </Provider>,
     );
 
-    // Tail page only: the newest page is present in the DOM (windowed), the
-    // oldest page is not loaded yet.
-    expect(await screen.findByText('chunk 501')).toBeInTheDocument();
-    expect(screen.queryByText('chunk 1')).not.toBeInTheDocument();
+    // The walk seeds the full history, so the oldest chunk renders
+    // (windowed) immediately; the mid-run chunk 501 is off-window until
+    // scrolled to.
+    expect(await screen.findByText('chunk 1')).toBeInTheDocument();
+    expect(screen.queryByText('chunk 501')).not.toBeInTheDocument();
 
     // Watch anchored at the newest seq (no full-history replay), after the
     // anchor walk resolves. Mock calls accumulate across tests in this file,
@@ -243,15 +257,16 @@ describe('RunDetailPage', () => {
     expect(lastWatchCall?.[0]).toBe('run-1');
     expect(lastWatchCall?.[1]).toBe(1000);
 
-    // The store holds exactly the retained tail page (seq 501..1000).
+    // The store holds every walked event (seq 1..1000), not just the tail.
     expect(selectRunEvents('run-1')(store.getState()).map((e) => e.seq)).toEqual(
-      Array.from({ length: 500 }, (_, i) => i + 501),
+      Array.from({ length: 1000 }, (_, i) => i + 1),
     );
 
-    // Only a window of the 500 loaded events is in the DOM.
+    // Only a window of the 1000 walked events is in the DOM (16px measured
+    // rows: ~38 visible + 12 overscan).
     expect(
       screen.getAllByTestId('event-log-row').length,
-    ).toBeLessThan(50);
+    ).toBeLessThan(60);
 
     const loadEarlier = await screen.findByRole('button', {
       name: 'Load earlier events',
@@ -270,13 +285,15 @@ describe('RunDetailPage', () => {
       ).not.toBeInTheDocument(),
     );
 
-    // The reader's position is preserved across the prepend: the scroll
-    // offset shifted down by the estimated height of the 500 new head rows.
+    // The load-earlier fetch is entirely duplicates (the walk already
+    // seeded the full history), so nothing is prepended and the reader
+    // does not move.
     const scroller = screen.getByTestId('event-log-scroll');
-    expect(scroller.scrollTop).toBeGreaterThan(0);
+    expect(scroller.scrollTop).toBe(0);
 
-    // Even with all 1000 events loaded, only a window is in the DOM.
-    expect(screen.getAllByTestId('event-log-row').length).toBeLessThan(50);
+    // Even with all 1000 events loaded, only a window is in the DOM
+    // (16px measured rows: ~38 visible + 12 overscan).
+    expect(screen.getAllByTestId('event-log-row').length).toBeLessThan(60);
 
     // Walk probes (since 0, continuation at 500) + the load-earlier seek
     // back to since 0.

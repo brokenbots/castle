@@ -37,6 +37,16 @@ export function EventLog({ events, hasEarlier, loadingEarlier, onLoadEarlier }: 
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => estimateEventHeight(events[index]),
     overscan: 12,
+    // Measure the real row box so long single-line payloads get their true
+    // height (the length-based estimate underestimates them); fall back to
+    // the estimate when the box is not readable yet (e.g. jsdom).
+    measureElement: (el) => {
+      const measured = el?.getBoundingClientRect().height ?? 0;
+      if (measured > 0) return measured;
+      const index = Number(el?.getAttribute('data-index') ?? '0');
+      const event = events[index];
+      return event ? estimateEventHeight(event) : ROW_BASE_PX + LINE_HEIGHT_PX;
+    },
   });
 
   // Keep the reader's position stable when an older page is prepended: shift
@@ -82,12 +92,17 @@ export function EventLog({ events, hasEarlier, loadingEarlier, onLoadEarlier }: 
               <div
                 key={event.seq}
                 data-testid="event-log-row"
+                data-index={row.index}
+                ref={virtualizer.measureElement}
                 style={{
                   position: 'absolute',
                   top: 0,
                   left: 0,
                   width: '100%',
                   height: row.size,
+                  // Guard against a stale estimate painting this row over
+                  // the next one before the virtualizer remeasures it.
+                  overflow: 'hidden',
                   transform: `translateY(${row.start}px)`,
                 }}
                 className="border-b border-slate-800/60 py-1 flex gap-3"

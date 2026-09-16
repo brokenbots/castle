@@ -16,10 +16,23 @@ vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
 // jsdom has no layout: offsetWidth/offsetHeight measure 0 and react-virtual
 // (which reads offsetHeight via getRect) renders nothing. Give elements a
-// plausible size so the virtualizer computes a real window.
+// plausible size so the virtualizer computes a real window. measureElement
+// additionally reads getBoundingClientRect (always zeros in jsdom), so give
+// measured rows a real height too.
 beforeAll(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    right: 800,
+    bottom: 16,
+    width: 800,
+    height: 16,
+    toJSON: () => ({}),
+  });
 });
 
 function env(seq: number, chunk = `chunk ${seq}`): EventEnvelope {
@@ -70,11 +83,26 @@ describe('EventLog', () => {
 
     const rows = screen.getAllByTestId('event-log-row');
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows.length).toBeLessThan(50);
+    // 16px measured rows: ceil(600/16) = 38 visible + 12 overscan.
+    expect(rows.length).toBeLessThan(60);
 
     // The window opens at the top of the loaded list.
     expect(screen.getByText('chunk 1')).toBeInTheDocument();
     expect(screen.queryByText('chunk 1000')).not.toBeInTheDocument();
+  });
+
+  test('measures rendered rows from their real boxes', () => {
+    renderLog(thousand);
+
+    // measureElement reads the real box (stubbed to 16px per row here);
+    // without it rows would sit at the 25px estimate offsets, so a long
+    // single-line payload would keep its underestimated position and could
+    // paint over the next row.
+    const rows = screen.getAllByTestId('event-log-row');
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows[1].style.transform).toBe('translateY(16px)');
+    expect(rows[1].style.height).toBe('16px');
+    expect(rows[1].style.overflow).toBe('hidden');
   });
 
   test('renders the newest rows after scrolling to the bottom', () => {
