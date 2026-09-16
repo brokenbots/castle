@@ -43,8 +43,8 @@ export function EventLog({ events, hasEarlier, loadingEarlier, onLoadEarlier }: 
     measureElement: (el) => {
       const measured = el?.getBoundingClientRect().height ?? 0;
       if (measured > 0) return measured;
-      const index = Number(el?.getAttribute('data-index') ?? '0');
-      const event = events[index];
+      const index = Number(el?.getAttribute('data-index') ?? Number.NaN);
+      const event = Number.isFinite(index) ? events[index] : undefined;
       return event ? estimateEventHeight(event) : ROW_BASE_PX + LINE_HEIGHT_PX;
     },
   });
@@ -99,9 +99,10 @@ export function EventLog({ events, hasEarlier, loadingEarlier, onLoadEarlier }: 
                   top: 0,
                   left: 0,
                   width: '100%',
-                  height: row.size,
-                  // Guard against a stale estimate painting this row over
-                  // the next one before the virtualizer remeasures it.
+                  // Deliberately no height: measureElement reads this
+                  // element's border box, so a height pinned to the
+                  // estimate would make it observe the estimate instead of
+                  // the real content height.
                   overflow: 'hidden',
                   transform: `translateY(${row.start}px)`,
                 }}

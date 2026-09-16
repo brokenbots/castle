@@ -17,21 +17,44 @@ vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 // jsdom has no layout: offsetWidth/offsetHeight measure 0 and react-virtual
 // (which reads offsetHeight via getRect) renders nothing. Give elements a
 // plausible size so the virtualizer computes a real window. measureElement
-// additionally reads getBoundingClientRect (always zeros in jsdom), so give
-// measured rows a real height too.
+// reads getBoundingClientRect, so model the browser box contract faithfully:
+// a committed inline height pins the border box (CSS: height wins over
+// content); otherwise the box fits the content — payload text wraps at the
+// container width (~104 12px-monospace chars at this 800px box; 16px per
+// line + 9px row padding). A stub contradicting an element's committed
+// height would let row-measurement tests pass on the row-pinning behaviour
+// they exist to catch.
+const PAYLOAD_CHARS_PER_LINE = 104;
+const ROW_LINE_PX = 16;
+const ROW_BASE_PX = 9;
+
 beforeAll(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(800);
-  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
-    x: 0,
-    y: 0,
-    top: 0,
-    left: 0,
-    right: 800,
-    bottom: 16,
-    width: 800,
-    height: 16,
-    toJSON: () => ({}),
+  vi.spyOn(
+    HTMLElement.prototype,
+    'getBoundingClientRect',
+  ).mockImplementation(function (this: HTMLElement) {
+    const pinned = Number.parseFloat(this.style.height);
+    const textLength = this.textContent?.length ?? 0;
+    const wrappedLines = Math.max(
+      1,
+      Math.ceil(textLength / PAYLOAD_CHARS_PER_LINE),
+    );
+    const height = Number.isNaN(pinned)
+      ? ROW_BASE_PX + wrappedLines * ROW_LINE_PX
+      : pinned;
+    return {
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 800,
+      bottom: height,
+      width: 800,
+      height,
+      toJSON: () => ({}),
+    };
   });
 });
 
@@ -83,8 +106,8 @@ describe('EventLog', () => {
 
     const rows = screen.getAllByTestId('event-log-row');
     expect(rows.length).toBeGreaterThan(0);
-    // 16px measured rows: ceil(600/16) = 38 visible + 12 overscan.
-    expect(rows.length).toBeLessThan(60);
+    // 25px rows: ceil(600/25) = 24 visible + 12 overscan.
+    expect(rows.length).toBeLessThan(50);
 
     // The window opens at the top of the loaded list.
     expect(screen.getByText('chunk 1')).toBeInTheDocument();
@@ -92,17 +115,22 @@ describe('EventLog', () => {
   });
 
   test('measures rendered rows from their real boxes', () => {
-    renderLog(thousand);
+    // A 240-char single-line payload: the estimator pins 2 lines (41px),
+    // but at this 800px-wide box it actually wraps to 3 lines (57px). With
+    // the stub modelling the browser box contract, measureElement can only
+    // see 57px if the row's height is not pinned to the estimate — so this
+    // test fails while the row style pins height.
+    renderLog([env(1, 'x'.repeat(240)), env(2), env(3)]);
 
-    // measureElement reads the real box (stubbed to 16px per row here);
-    // without it rows would sit at the 25px estimate offsets, so a long
-    // single-line payload would keep its underestimated position and could
-    // paint over the next row.
     const rows = screen.getAllByTestId('event-log-row');
-    expect(rows.length).toBeGreaterThan(1);
-    expect(rows[1].style.transform).toBe('translateY(16px)');
-    expect(rows[1].style.height).toBe('16px');
-    expect(rows[1].style.overflow).toBe('hidden');
+    expect(rows.length).toBe(3);
+    // The row box is not pinned to the estimate, so measurement can work.
+    expect(rows[0].style.height).toBe('');
+    expect(rows[1].style.height).toBe('');
+    // Row 1 sits at row 0's measured box (3 wrapped lines = 57px), not at
+    // the 41px estimate; content must not be clipped into the estimate.
+    expect(rows[1].style.transform).toBe('translateY(57px)');
+    expect(rows[0].style.overflow).toBe('hidden');
   });
 
   test('renders the newest rows after scrolling to the bottom', () => {
