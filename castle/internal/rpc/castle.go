@@ -50,15 +50,15 @@ func (s *ServerServer) GetAgent(ctx context.Context, req *connect.Request[pb.Get
 }
 
 func (s *ServerServer) ListRuns(ctx context.Context, req *connect.Request[pb.ListRunsRequest]) (*connect.Response[pb.ListRunsResponse], error) {
-	list, err := s.Store.ListRuns(ctx, req.Msg.CriteriaId, req.Msg.Status)
+	list, next, err := s.Store.ListRuns(ctx, req.Msg.CriteriaId, req.Msg.Status, int(req.Msg.Limit), req.Msg.PageToken)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, mapListRunsError(err)
 	}
 	out := make([]*pb.Run, 0, len(list))
 	for _, r := range list {
 		out = append(out, mapRun(r))
 	}
-	return connect.NewResponse(&pb.ListRunsResponse{Runs: out}), nil
+	return connect.NewResponse(&pb.ListRunsResponse{Runs: out, NextPageToken: next}), nil
 }
 
 func (s *ServerServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {

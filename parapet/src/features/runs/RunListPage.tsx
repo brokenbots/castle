@@ -27,8 +27,11 @@ const STATUS_FILTERS = [
 
 // A page fetched through "Load more". Page 1 lives in the listRuns cache
 // (and is what polling refreshes); these entries hold the older pages.
+// `pageToken` is the cursor this page was requested with; `nextPageToken` is
+// the continuation token the server returned for it — the cursor chain.
 interface CursorPage {
   pageToken: string;
+  nextPageToken: string;
   runs: Run[];
 }
 
@@ -84,15 +87,21 @@ export function RunListPage() {
   // under the new one. Kept in sync in onChange, synchronously.
   const statusRef = useRef(statusFilter);
 
-  // The polling gate needs the runs currently in cache (a poll must stop
-  // once every run is terminal). It reads only page 1 — the cache entry
-  // polling actually refreshes — so terminal cursor rows cannot keep the
-  // poll alive forever. Subscribing to the same cache entry via the
-  // endpoint selector shares the data without a second request.
-  const hasActiveRuns = useSelector((state: RootState) => {
+  // The polling gate needs the runs currently loaded (a poll must stop once
+  // every run is terminal). Page 1 is read from the cache entry polling
+  // actually refreshes — via the endpoint selector, sharing data without a
+  // second request. Cursor pages are component state, read directly: a
+  // non-terminal older row keeps the poll alive so its status can still
+  // refresh when the run re-enters a refreshed page 1; once every loaded run
+  // is terminal the poll stops.
+  const page1HasActiveRuns = useSelector((state: RootState) => {
     const cached = castleApi.endpoints.listRuns.select({ status: statusFilter })(state).data;
     return (cached?.runs ?? []).some((r) => !RUN_TERMINAL_STATUSES.has(r.status));
   });
+  const cursorPagesHaveActiveRuns = cursorPages.some((p) =>
+    p.runs.some((r) => !RUN_TERMINAL_STATUSES.has(r.status)),
+  );
+  const hasActiveRuns = page1HasActiveRuns || cursorPagesHaveActiveRuns;
 
   const { data, isLoading, error } = useListRunsQuery(
     { status: statusFilter },
@@ -105,7 +114,13 @@ export function RunListPage() {
     },
   );
   const firstPageRuns = data?.runs ?? [];
-  const cursor = data?.nextPageToken ?? '';
+  // The next "Load more" cursor: once older pages exist, the most recent
+  // page's own continuation token is the source of truth (page 1's token is
+  // only consumed by the first click). Chain it so every click advances.
+  const cursor =
+    cursorPages.length > 0
+      ? cursorPages[cursorPages.length - 1].nextPageToken
+      : (data?.nextPageToken ?? '');
   // Page 1 first; older cursor pages fill in behind it. First occurrence
   // wins so a run that reappeared in a refreshed page 1 keeps its live
   // status instead of the stale cursor-page copy.
@@ -140,7 +155,10 @@ export function RunListPage() {
       setCursorPages((pages) =>
         pages.some((p) => p.pageToken === requestedCursor)
           ? pages
-          : [...pages, { pageToken: requestedCursor, runs: page.runs }],
+          : [
+              ...pages,
+              { pageToken: requestedCursor, nextPageToken: page.nextPageToken, runs: page.runs },
+            ],
       );
     } catch {
       if (statusRef.current === requestedFor) setLoadMoreError(true);

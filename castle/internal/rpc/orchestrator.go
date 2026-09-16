@@ -84,7 +84,7 @@ func (s *OrchestratorServer) SubscribeRunEvents(ctx context.Context, req *connec
 // loop (CRI-133). Terminal runs are excluded; their final events remain
 // pollable via SubscribeRunEvents.
 func (s *OrchestratorServer) ListActiveRuns(ctx context.Context, req *connect.Request[pb.ListActiveRunsRequest]) (*connect.Response[pb.ListActiveRunsResponse], error) {
-	all, err := s.Store.ListRuns(ctx, "", "")
+	all, _, err := s.Store.ListRuns(ctx, "", "", 0, "")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

@@ -57,3 +57,10 @@ func mapListEventsError(err error) error {
 		return connect.NewError(connect.CodeInternal, err)
 	}
 }
+
+func mapListRunsError(err error) error {
+	if errors.Is(err, store.ErrInvalidCursor) {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewError(connect.CodeInternal, err)
+}

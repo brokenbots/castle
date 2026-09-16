@@ -84,7 +84,7 @@ func TestSubmitWorkflowAssignment_Idempotent(t *testing.T) {
 		t.Fatalf("expected same run id, got %s want %s", second.Msg.RunId, first.Msg.RunId)
 	}
 
-	runs, err := ts.store.ListRuns(ctx, "", "")
+	runs, _, err := ts.store.ListRuns(ctx, "", "", 0, "")
 	if err != nil {
 		t.Fatalf("list runs: %v", err)
 	}

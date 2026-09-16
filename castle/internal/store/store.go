@@ -13,6 +13,10 @@ var ErrNotFound = errors.New("not found")
 
 var ErrInvalidLimit = errors.New("invalid list limit")
 
+// ErrInvalidCursor is returned when a continuation page token cannot be
+// decoded (e.g. a hand-crafted or truncated cursor).
+var ErrInvalidCursor = errors.New("invalid page token")
+
 // ErrRunTerminal is returned when an operator-initiated terminal transition
 // (CRI-142 CancelRun) targets a run that is already in a terminal state.
 var ErrRunTerminal = errors.New("run is terminal")
@@ -172,7 +176,13 @@ type Store interface {
 	// Runs
 	CreateRun(ctx context.Context, r *Run) error
 	GetRun(ctx context.Context, id string) (*Run, error)
-	ListRuns(ctx context.Context, overseerID, status string) ([]*Run, error)
+	// ListRuns returns runs newest-first (created_at DESC, id DESC). When
+	// limit is positive at most limit rows are returned; limit <= 0 returns
+	// every matching row. pageToken continues a previous page: pass the
+	// token returned by the prior call ("" starts from the newest run). The
+	// returned token is "" when no further page exists. A non-empty token
+	// that cannot be decoded fails with ErrInvalidCursor.
+	ListRuns(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*Run, string, error)
 	UpdateRun(ctx context.Context, r *Run) error
 	// SetRunMetadata promotes non-empty metadata values (ticket, repo_url,
 	// pr_url) onto the run record without touching run status (CRI-131). Empty

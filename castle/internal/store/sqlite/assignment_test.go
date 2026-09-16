@@ -179,7 +179,7 @@ func TestCreateWorkflowAssignment_IdempotentAfterRestart(t *testing.T) {
 		t.Fatalf("expected same run id after restart, got %s want %s", second.RunID, first.RunID)
 	}
 
-	runs, err := s2.ListRuns(ctx, "", "")
+	runs, _, err := s2.ListRuns(ctx, "", "", 0, "")
 	if err != nil {
 		t.Fatalf("list runs: %v", err)
 	}

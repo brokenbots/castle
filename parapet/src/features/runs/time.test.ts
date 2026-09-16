@@ -30,6 +30,13 @@ describe('formatRelativeTime', () => {
     expect(formatRelativeTime('2025-01-01T12:00:00Z', now)).toBe('just now');
   });
 
+  it('renders the whole sub-minute window as "just now", never "0 minutes ago"', () => {
+    // 45-59s previously skipped the "just now" branch and floored to
+    // "0 minutes ago".
+    expect(formatRelativeTime('2025-01-01T11:59:15Z', now)).toBe('just now');
+    expect(formatRelativeTime('2025-01-01T11:59:01Z', now)).toBe('just now');
+  });
+
   it('renders singular and plural minutes', () => {
     expect(formatRelativeTime('2025-01-01T11:55:00Z', now)).toBe('5 minutes ago');
     expect(formatRelativeTime('2025-01-01T11:59:00Z', now)).toBe('1 minute ago');

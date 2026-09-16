@@ -284,6 +284,49 @@ describe('RunListPage', () => {
     expect(bodyPageToken(bodies[1])).toBe('tok-2');
   });
 
+  // Regression: loadMore used to consume page 1's nextPageToken on every
+  // click, so the second "Load more" re-requested the same cursor page and
+  // runs past the second page were unreachable.
+  test('Load more walks a three-page cursor chain and hides the button at the end', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns((pageToken) => {
+      switch (pageToken) {
+        case '':
+          return { runs: [run('run-1', 'succeeded')], nextPageToken: 'tok-2' };
+        case 'tok-2':
+          return { runs: [run('run-2', 'succeeded')], nextPageToken: 'tok-3' };
+        case 'tok-3':
+          return { runs: [run('run-3', 'succeeded')], nextPageToken: '' };
+        default:
+          throw new Error(`unexpected page token ${pageToken}`);
+      }
+    });
+
+    renderPage();
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
+
+    // Click 1: page 1's token ('tok-2') requests page 2 and appends its rows.
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('run-2')).toBeInTheDocument();
+    expect(bodies).toHaveLength(2);
+    expect(bodyPageToken(bodies[1])).toBe('tok-2');
+
+    // Click 2: page 2's own continuation token ('tok-3') requests page 3 —
+    // re-using 'tok-2' would be rejected by the responder above.
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('run-3')).toBeInTheDocument();
+    expect(bodies).toHaveLength(3);
+    expect(bodyPageToken(bodies[2])).toBe('tok-3');
+
+    // Every page is still listed, oldest page last.
+    expect(screen.getByText('run-1')).toBeInTheDocument();
+    expect(screen.getByText('run-2')).toBeInTheDocument();
+    expect(screen.getByText('run-3')).toBeInTheDocument();
+
+    // The final page has no continuation: the button is gone.
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
   test('Load more failure keeps the loaded rows and shows an inline error', async () => {
     const user = userEvent.setup();
     const bodies = installListRuns((pageToken) => {

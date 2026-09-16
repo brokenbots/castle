@@ -21,7 +21,9 @@ export function formatRelativeTime(iso: string, now: number): string {
   if (Number.isNaN(t)) return '';
   const delta = Math.max(0, now - t);
   const seconds = Math.floor(delta / 1000);
-  if (seconds < 45) return 'just now';
+  // Sub-minute deltas render as "just now" (45-59s would otherwise fall into
+  // the minute branch with a floored 0 and read "0 minutes ago").
+  if (seconds < 60) return 'just now';
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return minutes === 1 ? '1 minute ago' : `${minutes} minutes ago`;
   const hours = Math.floor(minutes / 60);
