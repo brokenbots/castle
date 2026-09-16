@@ -1,10 +1,10 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { RunListPage, RUN_LIST_POLL_INTERVAL_MS } from './RunListPage';
+import { RunListPage } from './RunListPage';
 import { castleApi } from '../../api/castleApi';
 import { store } from '../../store';
 import { server } from '../../test/mocks/server';
@@ -40,8 +40,18 @@ function installListRuns(responder: (pageToken: string, status: string) => ListR
       bodies.push(body);
       const pageToken = String(body.pageToken ?? body.page_token ?? '');
       const status = String(body.status ?? '');
-      const page = responder(pageToken, status);
-      return HttpResponse.json({ runs: page.runs, next_page_token: page.nextPageToken });
+      try {
+        const page = responder(pageToken, status);
+        return HttpResponse.json({ runs: page.runs, next_page_token: page.nextPageToken });
+      } catch {
+        // Responders throw to simulate a failing request; surface it as a
+        // connect-style HTTP error instead of a raw handler exception
+        // (which MSW would log as an unhandled failure).
+        return HttpResponse.json(
+          { code: 'unavailable', message: 'simulated ListRuns failure' },
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        );
+      }
     }),
   );
   return bodies;
@@ -65,13 +75,70 @@ function renderPage() {
   );
 }
 
-// Flushing an in-flight fetch under fake timers: the mocked chain (MSW ->
-// undici -> connect -> RTK Query) needs real event-loop turns, so advance a
-// little faked time (yielding between timer batches) inside act.
-async function settle() {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(100);
+// Yields one REAL macrotask turn: undici delivers mocked socket I/O only when
+// the event loop polls, and faked-timer advances interleave merely microtasks.
+// MessageChannel is not faked, so its callback runs on the host event loop.
+function yieldRealTask(): Promise<void> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      resolve();
+    };
+    channel.port2.postMessage(0);
   });
+}
+
+// Redux ignores unknown actions, but notifying subscribers makes React-Redux
+// re-check every selector inside unstable_batchedUpdates, which flushes any
+// pending render synchronously. Store updates that complete inside a faked
+// timer callback or between two act scopes are otherwise only applied at the
+// next act exit, which the steps below cannot wait for.
+const FLUSH_TEST_RENDER = { type: '__test/flush' };
+
+// One bounded retry step under fake timers. Each step is its own act so
+// React's passive effects (where RTK Query dispatches subscription updates,
+// e.g. starting or stopping the poll timer) flush at the step boundary;
+// the flush dispatches recover renders whose store update landed outside
+// the previous act. A fixed fake-time budget cannot bound the real
+// event-loop turns the mocked chain (MSW -> undici -> connect -> RTK Query)
+// needs, hence the observable-condition loop and the single final assertion.
+async function waitUntil(cond: () => boolean, what: string, advanceMs = 500): Promise<void> {
+  for (let i = 0; i < 80 && !cond(); i += 1) {
+    await act(async () => {
+      store.dispatch(FLUSH_TEST_RENDER);
+      if (advanceMs > 0) {
+        await vi.advanceTimersByTimeAsync(advanceMs);
+      }
+      await yieldRealTask();
+      store.dispatch(FLUSH_TEST_RENDER);
+    });
+  }
+  expect(cond(), what).toBe(true);
+}
+
+// Proves a negative over a window longer than two poll intervals, advancing
+// in per-step acts so a terminal poll response can land and its render plus
+// polling teardown complete between steps before the next interval tick.
+async function advanceQuietly(expectNoChange: () => number): Promise<number> {
+  const before = expectNoChange();
+  for (let i = 0; i < 6 && before === expectNoChange(); i += 1) {
+    await act(async () => {
+      store.dispatch(FLUSH_TEST_RENDER);
+      await vi.advanceTimersByTimeAsync(7_000);
+      await yieldRealTask();
+      store.dispatch(FLUSH_TEST_RENDER);
+    });
+  }
+  return expectNoChange();
+}
+
+// Whether the run row whose ID cell contains `id` shows `status`. Scoped to
+// the row so the <option> labels of the status filter (which share their
+// text with run statuses) cannot satisfy a queryByText assertion.
+function rowHasStatus(id: string, status: string): boolean {
+  const row = screen.queryByText(id)?.closest('tr');
+  return row != null && within(row).queryByText(status) !== null;
 }
 
 function hideTab() {
@@ -276,12 +343,18 @@ describe('RunListPage', () => {
     }));
 
     renderPage();
-    await settle();
+    // Small steps keep the mocked clock near startedAt + 30s so the elapsed
+    // label stays in the "30s" bucket regardless of how many event-loop turns
+    // the mocked chain needs to land the response.
+    await waitUntil(() => screen.queryByText('30s') !== null, 'initial elapsed 30s rendered', 100);
     expect(screen.getByText('30s')).toBeInTheDocument();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(31_000);
+      await yieldRealTask();
+      store.dispatch(FLUSH_TEST_RENDER);
     });
+    await waitUntil(() => screen.queryByText('1m 01s') !== null, 'elapsed advanced to 1m 01s', 0);
     expect(screen.getByText('1m 01s')).toBeInTheDocument();
   });
 
@@ -295,7 +368,13 @@ describe('RunListPage', () => {
     }));
 
     renderPage();
-    await settle();
+    // Small steps keep the mocked clock near 08:35 so the relative label
+    // stays in the "5 minutes ago" bucket while the response lands.
+    await waitUntil(
+      () => screen.queryByText('5 minutes ago') !== null,
+      'relative started label rendered',
+      100,
+    );
 
     expect(screen.getByText('5 minutes ago')).toBeInTheDocument();
     expect(screen.getByTitle(/2026/)).toBeInTheDocument();
@@ -309,19 +388,13 @@ describe('RunListPage', () => {
     }));
 
     renderPage();
-    await settle();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
     expect(bodies).toHaveLength(1);
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(13_000);
-    });
-    await settle();
+    await waitUntil(() => bodies.length >= 2, 'first poll request sent');
     expect(bodies.length).toBeGreaterThanOrEqual(2);
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(13_000);
-    });
-    await settle();
+    await waitUntil(() => bodies.length >= 3, 'second poll request sent');
     expect(bodies.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -334,29 +407,96 @@ describe('RunListPage', () => {
     }));
 
     renderPage();
-    await settle();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'initial run rendered');
     expect(bodies).toHaveLength(1);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(13_000);
-    });
-    await settle();
-    expect(bodies.length).toBeGreaterThanOrEqual(2);
 
     // From here on the server only reports terminal runs.
     serveRunning = false;
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(13_000);
-    });
-    await settle();
+    await waitUntil(() => bodies.length >= 2, 'poll request sent while running');
+    expect(bodies.length).toBeGreaterThanOrEqual(2);
+    // Prove the terminal response landed and was applied before asserting
+    // that nothing else is requested.
+    await waitUntil(() => rowHasStatus('run-1', 'succeeded'), 'terminal run status rendered');
+
     const settledCallCount = bodies.length;
-    expect(settledCallCount).toBeGreaterThanOrEqual(3);
+    const afterQuietWindow = await advanceQuietly(() => bodies.length);
+    expect(afterQuietWindow).toBe(settledCallCount);
+    expect(bodies.length).toBe(settledCallCount);
+  });
+
+  // Regression: RTK Query polls re-initiate a cache entry with its stored
+  // originalArgs, so after "Load more" overwrote those args with the cursor,
+  // polling silently refetched the cursor page and page 1 went stale.
+  test('polls refresh page 1 after Load more appends a cursor page', async () => {
+    vi.useFakeTimers();
+    let serveFresh = false;
+    const bodies = installListRuns((pageToken) => {
+      if (pageToken !== '') return { runs: [run('run-2', 'failed')], nextPageToken: '' };
+      if (!serveFresh) return { runs: [run('run-1', 'running')], nextPageToken: 'tok-2' };
+      return {
+        runs: [run('run-1', 'succeeded'), run('run-2', 'cancelled')],
+        nextPageToken: '',
+      };
+    });
+
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'page-1 run rendered');
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(40_000);
+      fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     });
-    await settle();
-    expect(bodies.length).toBe(settledCallCount);
+    await waitUntil(
+      () => bodies.some((body) => bodyPageToken(body) === 'tok-2'),
+      'cursor page requested',
+    );
+    await waitUntil(() => screen.queryByText('run-2') !== null, 'cursor row rendered');
+
+    serveFresh = true;
+    await waitUntil(
+      () =>
+        rowHasStatus('run-1', 'succeeded') &&
+        bodyPageToken(bodies[bodies.length - 1]) === '',
+      'page-1 refreshed by a poll after Load more',
+    );
+
+    expect(bodyPageToken(bodies[bodies.length - 1])).toBe('');
+    expect(bodyStatus(bodies[bodies.length - 1])).toBe('');
+    // The appended cursor row is still listed once, its stale copy replaced
+    // by the fresh page-1 data.
+    expect(screen.getAllByText('run-2')).toHaveLength(1);
+    // Status-text assertions are scoped to the row: the status filter's
+    // <option> labels share their text with run statuses.
+    const run1Row = screen.getByText('run-1').closest('tr');
+    expect(run1Row).not.toBeNull();
+    expect(within(run1Row!).queryByText('running')).not.toBeInTheDocument();
+    const run2Row = screen.getByText('run-2').closest('tr');
+    expect(run2Row).not.toBeNull();
+    expect(within(run2Row!).queryByText('failed')).not.toBeInTheDocument();
+    expect(within(run2Row!).getByText('cancelled')).toBeInTheDocument();
+  });
+
+  test('shows an indicator when a background refresh fails', async () => {
+    vi.useFakeTimers();
+    let fail = false;
+    const bodies = installListRuns(() => {
+      if (fail) throw new Error('boom');
+      return { runs: [run('run-1', 'running')], nextPageToken: '' };
+    });
+
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'initial run rendered');
+
+    fail = true;
+    await waitUntil(() => bodies.length >= 2, 'poll request sent');
+    await waitUntil(
+      () => screen.queryByText('Refresh failed. Showing the last loaded runs.') !== null,
+      'refresh-failure indicator rendered',
+    );
+    expect(screen.getByText('Refresh failed. Showing the last loaded runs.')).toBeInTheDocument();
+    expect(screen.getByText('run-1')).toBeInTheDocument();
   });
 
   test('does not poll while the tab is hidden', async () => {
@@ -368,20 +508,23 @@ describe('RunListPage', () => {
 
     hideTab();
     renderPage();
-    await settle();
-    expect(bodies).toHaveLength(1);
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'initial run rendered');
+
+    const hiddenCount = bodies.length;
+    expect(hiddenCount).toBeGreaterThanOrEqual(1);
+    const afterQuietWindow = await advanceQuietly(() => bodies.length);
+    expect(afterQuietWindow).toBe(hiddenCount);
+    expect(bodies.length).toBe(hiddenCount);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(40_000);
+      store.dispatch(FLUSH_TEST_RENDER);
+      showTab();
     });
-    await settle();
-    expect(bodies).toHaveLength(1);
-
-    showTab();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(RUN_LIST_POLL_INTERVAL_MS + 1_000);
-    });
-    await settle();
-    expect(bodies.length).toBeGreaterThan(1);
+    await waitUntil(
+      () => bodies.length > hiddenCount,
+      'poll request sent after becoming visible',
+    );
+    expect(bodies.length).toBeGreaterThan(hiddenCount);
   });
 });

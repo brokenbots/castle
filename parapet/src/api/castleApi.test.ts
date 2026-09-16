@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { castleApi } from './castleApi';
 import { store } from '../store';
 import { server } from '../test/mocks/server';
@@ -103,7 +103,7 @@ describe('castleApi listRuns', () => {
     expect(bodies[0].limit).toBe(50);
   });
 
-  test('passes the pagination cursor on follow-up requests and accumulates pages', async () => {
+  test('serves page 1 and a cursor page as separate cache entries', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     server.use(
       http.post(serverPath('ListRuns'), async ({ request }) => {
@@ -133,8 +133,14 @@ describe('castleApi listRuns', () => {
 
     const state = store.getState();
     const page1 = castleApi.endpoints.listRuns.select({ status: '' })(state).data;
-    expect(page1?.runs.map((r) => r.runId)).toEqual(['run-1', 'run-2', 'run-3']);
-    expect(page1?.nextPageToken).toBe('');
+    expect(page1?.runs.map((r) => r.runId)).toEqual(['run-1', 'run-2']);
+    expect(page1?.nextPageToken).toBe('tok-2');
+    const cursorPage = castleApi.endpoints.listRuns.select({
+      status: '',
+      pageToken: 'tok-2',
+    })(state).data;
+    expect(cursorPage?.runs.map((r) => r.runId)).toEqual(['run-3']);
+    expect(cursorPage?.nextPageToken).toBe('');
   });
 
   test('keeps one cache entry per status filter', async () => {
@@ -161,7 +167,7 @@ describe('castleApi listRuns', () => {
     );
   });
 
-  test('deduplicates repeated cursor fetches instead of duplicating rows', async () => {
+  test('refetches a cursor page in place without touching the first page', async () => {
     server.use(
       http.post(serverPath('ListRuns'), async ({ request }) => {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
@@ -186,15 +192,86 @@ describe('castleApi listRuns', () => {
         { forceRefetch: true },
       ),
     );
+
+    const cursorSelect = castleApi.endpoints.listRuns.select({ status: '', pageToken: 'tok-2' });
+    const page1Select = castleApi.endpoints.listRuns.select({ status: '' });
+    expect(cursorSelect(store.getState()).data?.runs.map((r) => r.runId)).toEqual([
+      'run-2',
+      'run-1',
+    ]);
+    expect(page1Select(store.getState()).data?.runs.map((r) => r.runId)).toEqual(['run-1']);
+    expect(page1Select(store.getState()).data?.nextPageToken).toBe('tok-2');
+
+    // A repeated cursor fetch replaces that page's entry in place; page 1
+    // stays exactly as the last page-1 fetch returned it.
     await store.dispatch(
       castleApi.endpoints.listRuns.initiate(
         { status: '', pageToken: 'tok-2' },
         { forceRefetch: true },
       ),
     );
+    expect(cursorSelect(store.getState()).data?.runs.map((r) => r.runId)).toEqual([
+      'run-2',
+      'run-1',
+    ]);
+    expect(page1Select(store.getState()).data?.runs.map((r) => r.runId)).toEqual(['run-1']);
+  });
 
-    const page = castleApi.endpoints.listRuns.select({ status: '' })(store.getState()).data;
-    expect(page?.runs.map((r) => r.runId)).toEqual(['run-1', 'run-2']);
+  test('invalidating the Run tag refetches every loaded page', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    let page1Fetches = 0;
+    let cursorFetches = 0;
+    server.use(
+      http.post(serverPath('ListRuns'), async ({ request }) => {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        bodies.push(body);
+        const pageToken = String(body.pageToken ?? body.page_token ?? '');
+        if (pageToken === '') {
+          page1Fetches += 1;
+          return HttpResponse.json({
+            runs: [runFixture(`run-1-${page1Fetches}`, 'succeeded')],
+            next_page_token: 'tok-2',
+          });
+        }
+        cursorFetches += 1;
+        return HttpResponse.json({
+          runs: [runFixture(`run-3-${cursorFetches}`, 'failed')],
+          next_page_token: '',
+        });
+      }),
+    );
+
+    await store.dispatch(castleApi.endpoints.listRuns.initiate({ status: '' }));
+    await store.dispatch(
+      castleApi.endpoints.listRuns.initiate(
+        { status: '', pageToken: 'tok-2' },
+        { forceRefetch: true },
+      ),
+    );
+    expect(bodies).toHaveLength(2);
+
+    store.dispatch(castleApi.util.invalidateTags(['Run']));
+    // Wait for both refetched responses to be committed to the store —
+    // a recorded request body does not imply its response has landed.
+    await vi.waitFor(() => {
+      const state = store.getState();
+      expect(
+        castleApi.endpoints.listRuns.select({ status: '' })(state).data?.runs[0].runId,
+      ).toBe('run-1-2');
+      expect(
+        castleApi.endpoints.listRuns.select({ status: '', pageToken: 'tok-2' })(state).data?.runs[0]
+          .runId,
+      ).toBe('run-3-2');
+    });
+
+    // Both pages refetched independently — page 1 keeps its own cursor-free
+    // args so polls and invalidations can never re-request the cursor page.
+    const refetchedTokens = bodies
+      .slice(2)
+      .map((body) => String(body.pageToken ?? body.page_token ?? ''))
+      .sort();
+    expect(refetchedTokens).toEqual(['', 'tok-2']);
+    expect(bodies).toHaveLength(4);
   });
 
   test('maps connect errors onto the readable error shape', async () => {

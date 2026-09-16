@@ -153,22 +153,17 @@ export const castleApi = createApi({
           return { error: toError(err) };
         }
       },
-      // One cache entry per status filter so "Load more" pages accumulate in
-      // place: pageToken is deliberately excluded from the key. Any caller
-      // adding criteriaId must include it here too.
+      // One cache entry per (status, pageToken) so "Load more" pages are
+      // separate entries the component accumulates itself. RTK Query
+      // refetches (polling, tag invalidation) re-initiate a cache entry with
+      // its stored originalArgs, so a shared key would let the cursor args
+      // from "Load more" hijack page 1's poll and make every poll refetch
+      // the last cursor page. Keeping pageToken in the key pins page 1's
+      // entry to pageToken '' so polls always refresh page 1; the cursor
+      // entries are unsubscribed one-shot fetches that no poll targets. Any
+      // caller adding criteriaId must include it here too.
       serializeQueryArgs: ({ endpointName, queryArgs }) =>
-        `${endpointName}(${queryArgs.status ?? ''})`,
-      merge: (current, incoming, { arg }) => {
-        // First page (initial load, poll, refetch): the fresh page IS the
-        // list, so statuses of the newest runs stay live across polls.
-        if (!arg.pageToken) return incoming;
-        // Cursor page: update loaded rows in place (Map keeps their order)
-        // and append newly seen runs, so repeated fetches or racing requests
-        // cannot introduce duplicates.
-        const byId = new Map(current.runs.map((r) => [r.runId, r] as const));
-        for (const r of incoming.runs) byId.set(r.runId, r);
-        return { runs: [...byId.values()], nextPageToken: incoming.nextPageToken };
-      },
+        `${endpointName}(${queryArgs.status ?? ''}|${queryArgs.pageToken ?? ''})`,
       providesTags: ['Run'],
     }),
     getRun: b.query<Run, string>({

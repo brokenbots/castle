@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { castleApi, useListRunsQuery, type Run } from '../../api/castleApi';
 import type { AppDispatch, RootState } from '../../store';
-import { RUN_TERMINAL_STATUSES } from './runStatus';
+import { RUN_STATUS_TEXT_COLORS, RUN_TERMINAL_STATUSES } from './runStatus';
 import {
   durationBetweenMs,
   formatAbsoluteTime,
@@ -24,6 +24,13 @@ const STATUS_FILTERS = [
   { value: 'failed', label: 'failed' },
   { value: 'cancelled', label: 'cancelled' },
 ] as const;
+
+// A page fetched through "Load more". Page 1 lives in the listRuns cache
+// (and is what polling refreshes); these entries hold the older pages.
+interface CursorPage {
+  pageToken: string;
+  runs: Run[];
+}
 
 function useDocumentVisible(): boolean {
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
@@ -48,22 +55,11 @@ function useNow(enabled: boolean, intervalMs: number): number {
   return now;
 }
 
-// statusColor mirrors the run-detail page's StatusPill palette.
-const statusColor: Record<string, string> = {
-  running: 'text-amber-400',
-  succeeded: 'text-emerald-400',
-  failed: 'text-rose-400',
-  pending: 'text-slate-400',
-  cancelled: 'text-slate-500',
-};
-
-function StartedCell({ run }: { run: Run }) {
+function StartedCell({ run, now }: { run: Run; now: number }) {
   const startedIso = run.startedAt ?? run.createdAt;
   if (!startedIso) return <>—</>;
   return (
-    <span title={formatAbsoluteTime(startedIso)}>
-      {formatRelativeTime(startedIso, Date.now())}
-    </span>
+    <span title={formatAbsoluteTime(startedIso)}>{formatRelativeTime(startedIso, now)}</span>
   );
 }
 
@@ -77,19 +73,27 @@ function DurationCell({ run }: { run: Run }) {
 export function RunListPage() {
   const dispatch = useDispatch<AppDispatch>();
   const [statusFilter, setStatusFilter] = useState('');
+  // Pages fetched through "Load more". Page 1 stays in the listRuns cache
+  // (and is what polling refreshes); these entries hold the older pages.
+  const [cursorPages, setCursorPages] = useState<CursorPage[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
   const visible = useDocumentVisible();
+  // Guards "Load more" appends against a filter change that raced the
+  // in-flight request: a response for the previous filter must not land
+  // under the new one. Kept in sync in onChange, synchronously.
+  const statusRef = useRef(statusFilter);
 
   // The polling gate needs the runs currently in cache (a poll must stop
-  // once every run is terminal). Subscribing to the same cache entry via
-  // the endpoint selector shares the data without a second request.
+  // once every run is terminal). It reads only page 1 — the cache entry
+  // polling actually refreshes — so terminal cursor rows cannot keep the
+  // poll alive forever. Subscribing to the same cache entry via the
+  // endpoint selector shares the data without a second request.
   const hasActiveRuns = useSelector((state: RootState) => {
     const cached = castleApi.endpoints.listRuns.select({ status: statusFilter })(state).data;
     return (cached?.runs ?? []).some((r) => !RUN_TERMINAL_STATUSES.has(r.status));
   });
 
-  // The hook arg stays the first page; polling always refreshes page 1.
   const { data, isLoading, error } = useListRunsQuery(
     { status: statusFilter },
     {
@@ -100,22 +104,46 @@ export function RunListPage() {
         visible && hasActiveRuns ? RUN_LIST_POLL_INTERVAL_MS : 0,
     },
   );
-  const runs = data?.runs ?? [];
+  const firstPageRuns = data?.runs ?? [];
   const cursor = data?.nextPageToken ?? '';
+  // Page 1 first; older cursor pages fill in behind it. First occurrence
+  // wins so a run that reappeared in a refreshed page 1 keeps its live
+  // status instead of the stale cursor-page copy.
+  const runs = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Run[] = [];
+    for (const r of [...firstPageRuns, ...cursorPages.flatMap((p) => p.runs)]) {
+      if (seen.has(r.runId)) continue;
+      seen.add(r.runId);
+      out.push(r);
+    }
+    return out;
+  }, [firstPageRuns, cursorPages]);
+  // Relative "started" labels advance on a 30s clock even when no run is
+  // active (DurationCell keeps its own 1s live clock for running rows).
+  const now = useNow(visible, 30_000);
 
   const loadMore = async () => {
+    const requestedFor = statusFilter;
+    const requestedCursor = cursor;
     setLoadingMore(true);
     setLoadMoreError(false);
     const subscription = dispatch(
       castleApi.endpoints.listRuns.initiate(
-        { status: statusFilter, pageToken: cursor },
+        { status: requestedFor, pageToken: requestedCursor },
         { forceRefetch: true },
       ),
     );
     try {
-      await subscription.unwrap();
+      const page = await subscription.unwrap();
+      if (statusRef.current !== requestedFor) return;
+      setCursorPages((pages) =>
+        pages.some((p) => p.pageToken === requestedCursor)
+          ? pages
+          : [...pages, { pageToken: requestedCursor, runs: page.runs }],
+      );
     } catch {
-      setLoadMoreError(true);
+      if (statusRef.current === requestedFor) setLoadMoreError(true);
     } finally {
       subscription.unsubscribe();
       setLoadingMore(false);
@@ -123,9 +151,9 @@ export function RunListPage() {
   };
 
   return (
-    <div className="p-6">
+    <div>
       <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Runs</h1>
+        <h2 className="text-2xl font-semibold">Runs</h2>
         <label htmlFor="run-status-filter" className="flex items-center gap-2 text-sm">
           Status
           <select
@@ -133,7 +161,10 @@ export function RunListPage() {
             className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm"
             value={statusFilter}
             onChange={(e) => {
-              setStatusFilter(e.target.value);
+              const next = e.target.value;
+              statusRef.current = next;
+              setStatusFilter(next);
+              setCursorPages([]);
               setLoadMoreError(false);
             }}
           >
@@ -145,6 +176,9 @@ export function RunListPage() {
           </select>
         </label>
       </div>
+      {!isLoading && error && runs.length > 0 && (
+        <p className="mb-2 text-rose-400">Refresh failed. Showing the last loaded runs.</p>
+      )}
       {isLoading ? (
         <p>Loading runs…</p>
       ) : error && !data ? (
@@ -173,9 +207,11 @@ export function RunListPage() {
                 </td>
                 <td className="px-2 py-1">{run.ticket ?? '—'}</td>
                 <td className="px-2 py-1">{run.workflowName}</td>
-                <td className={`px-2 py-1 ${statusColor[run.status] ?? ''}`}>{run.status}</td>
+                <td className={`px-2 py-1 ${RUN_STATUS_TEXT_COLORS[run.status] ?? ''}`}>
+                  {run.status}
+                </td>
                 <td className="px-2 py-1">
-                  <StartedCell run={run} />
+                  <StartedCell run={run} now={now} />
                 </td>
                 <td className="px-2 py-1">
                   <DurationCell run={run} />
