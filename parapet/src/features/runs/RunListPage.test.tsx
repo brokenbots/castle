@@ -528,15 +528,23 @@ describe('RunListPage', () => {
     await waitUntil(() => screen.queryByText('run-2') !== null, 'cursor row rendered');
 
     serveFresh = true;
+    // Count page-1 requests rather than inspecting the last body: lockstep
+    // cursor-page refreshes (the companion regression below) interleave
+    // tok-2 requests with poll ticks, so the last body is not reliably a
+    // page-1 request. Polls must keep requesting page 1 (pageToken '',
+    // status '') — a poll that re-initiated the stored cursor args would
+    // refresh the cursor page and leave page 1 stale.
     await waitUntil(
       () =>
-        rowHasStatus('run-1', 'succeeded') &&
-        bodyPageToken(bodies[bodies.length - 1]) === '',
+        bodies.filter((body) => bodyPageToken(body) === '').length >= 2 &&
+        rowHasStatus('run-1', 'succeeded'),
       'page-1 refreshed by a poll after Load more',
     );
-
-    expect(bodyPageToken(bodies[bodies.length - 1])).toBe('');
-    expect(bodyStatus(bodies[bodies.length - 1])).toBe('');
+    const page1Requests = bodies.filter((body) => bodyPageToken(body) === '');
+    expect(page1Requests.length).toBeGreaterThanOrEqual(2);
+    // Every page-1 request carries the page-1 args, never the stored cursor
+    // args from "Load more".
+    expect(page1Requests.every((body) => bodyStatus(body) === '')).toBe(true);
     // The appended cursor row is still listed once, its stale copy replaced
     // by the fresh page-1 data.
     expect(screen.getAllByText('run-2')).toHaveLength(1);
@@ -549,6 +557,51 @@ describe('RunListPage', () => {
     expect(run2Row).not.toBeNull();
     expect(within(run2Row!).queryByText('failed')).not.toBeInTheDocument();
     expect(within(run2Row!).getByText('cancelled')).toBeInTheDocument();
+  });
+
+  // Regression: cursor pages used to be fetched once and never refreshed by
+  // polling, so a non-terminal run on page 2+ kept the poll gate open forever
+  // while its row stayed stale with a ticking live duration. Cursor pages
+  // must refresh in lockstep with the page-1 poll and stop once they report
+  // terminal.
+  test('polls refresh cursor pages and stop once they go terminal', async () => {
+    vi.useFakeTimers();
+    let serveTerminalCursor = false;
+    const bodies = installListRuns((pageToken) => {
+      if (pageToken === '') return { runs: [run('run-1', 'succeeded')], nextPageToken: 'tok-2' };
+      if (pageToken === 'tok-2') {
+        return serveTerminalCursor
+          ? { runs: [run('run-2', 'succeeded')], nextPageToken: '' }
+          : { runs: [run('run-2', 'running')], nextPageToken: '' };
+      }
+      throw new Error(`unexpected page token ${pageToken}`);
+    });
+
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'page-1 run rendered');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    });
+    await waitUntil(
+      () => bodies.some((body) => bodyPageToken(body) === 'tok-2'),
+      'cursor page requested',
+    );
+    await waitUntil(() => rowHasStatus('run-2', 'running'), 'cursor row rendered as running');
+
+    // From here on the cursor page reports terminal runs.
+    serveTerminalCursor = true;
+    await waitUntil(
+      () => bodies.filter((body) => bodyPageToken(body) === 'tok-2').length >= 2,
+      'cursor page refreshed by a poll',
+    );
+    await waitUntil(() => rowHasStatus('run-2', 'succeeded'), 'terminal cursor status rendered');
+
+    const settledCallCount = bodies.length;
+    const afterQuietWindow = await advanceQuietly(() => bodies.length);
+    expect(afterQuietWindow).toBeLessThanOrEqual(settledCallCount);
+    expect(bodies.length).toBeLessThanOrEqual(settledCallCount);
   });
 
   test('shows an indicator when a background refresh fails', async () => {

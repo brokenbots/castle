@@ -25,10 +25,10 @@ const STATUS_FILTERS = [
   { value: 'cancelled', label: 'cancelled' },
 ] as const;
 
-// A page fetched through "Load more". Page 1 lives in the listRuns cache
-// (and is what polling refreshes); these entries hold the older pages.
-// `pageToken` is the cursor this page was requested with; `nextPageToken` is
-// the continuation token the server returned for it — the cursor chain.
+// A page fetched through "Load more". Page 1 lives in the listRuns cache;
+// these entries hold the older pages. `pageToken` is the cursor this page
+// was requested with; `nextPageToken` is the continuation token the server
+// returned for it — the cursor chain.
 interface CursorPage {
   pageToken: string;
   nextPageToken: string;
@@ -79,9 +79,10 @@ export function RunListPage() {
   // Pages fetched through "Load more". Page 1 stays in the listRuns cache
   // (and is what polling refreshes); these entries hold the older pages.
   const [cursorPages, setCursorPages] = useState<CursorPage[]>([]);
-  // Cursor pages are fetched once and never refreshed by polling (the poll
-  // refetches page 1 only), so a long-running run on page 2+ can show a stale
-  // status until the list is reloaded or the run re-enters refreshed page 1.
+  // Cursor pages are refreshed in lockstep with the page-1 poll: while at
+  // least one loaded run is non-terminal, every poll tick also re-dispatches
+  // each loaded cursor (see the refresh effect below), so page 2+ rows
+  // transition in place instead of going stale.
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
   const visible = useDocumentVisible();
@@ -94,9 +95,9 @@ export function RunListPage() {
   // every run is terminal). Page 1 is read from the cache entry polling
   // actually refreshes — via the endpoint selector, sharing data without a
   // second request. Cursor pages are component state, read directly: a
-  // non-terminal older row keeps the poll alive so its status can still
-  // refresh when the run re-enters a refreshed page 1; once every loaded run
-  // is terminal the poll stops.
+  // non-terminal older row keeps the poll alive so the lockstep cursor
+  // refresh (below) can transition it in place; once every loaded run is
+  // terminal the poll stops.
   const page1HasActiveRuns = useSelector((state: RootState) => {
     const cached = castleApi.endpoints.listRuns.select({ status: statusFilter })(state).data;
     return (cached?.runs ?? []).some((r) => !RUN_TERMINAL_STATUSES.has(r.status));
@@ -105,6 +106,13 @@ export function RunListPage() {
     p.runs.some((r) => !RUN_TERMINAL_STATUSES.has(r.status)),
   );
   const hasActiveRuns = page1HasActiveRuns || cursorPagesHaveActiveRuns;
+  // Page 1's last fulfillment timestamp: every (re)fetch of the page-1 cache
+  // entry (initial load, poll tick) bumps it. It is the poll tick the
+  // lockstep cursor-page refresh below keys on. Polls target the page-1
+  // entry only, so a cursor refresh landing never re-triggers it.
+  const page1FulfilledAt = useSelector((state: RootState) =>
+    castleApi.endpoints.listRuns.select({ status: statusFilter })(state).fulfilledTimeStamp,
+  );
 
   const { data, isLoading, error } = useListRunsQuery(
     { status: statusFilter },
@@ -170,6 +178,48 @@ export function RunListPage() {
       setLoadingMore(false);
     }
   };
+
+  // Cursor pages refresh in lockstep with the page-1 poll: whenever page 1
+  // is (re)fetched while the poll gate is open — each poll tick — every
+  // loaded cursor is re-dispatched so page 2+ rows transition in place, and
+  // once the refreshed pages are all terminal the gate closes, polling
+  // stops, and no further cursor refreshes are dispatched. lastPage1FetchedAt
+  // pins the effect to actual page-1 fetches: the remaining dependencies
+  // (gate inputs, cursor-page commits) can change between polls and must not
+  // dispatch refreshes on their own.
+  const lastPage1FetchedAt = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (page1FulfilledAt === lastPage1FetchedAt.current) return;
+    lastPage1FetchedAt.current = page1FulfilledAt;
+    if (!visible || !hasActiveRuns) return;
+    if (cursorPages.length === 0) return;
+    const requestedFor = statusFilter;
+    for (const page of cursorPages) {
+      const requestedCursor = page.pageToken;
+      const subscription = dispatch(
+        castleApi.endpoints.listRuns.initiate(
+          { status: requestedFor, pageToken: requestedCursor },
+          { forceRefetch: true },
+        ),
+      );
+      void subscription
+        .unwrap()
+        .then((refreshed) => {
+          if (statusRef.current !== requestedFor) return;
+          setCursorPages((current) =>
+            current.map((p) =>
+              p.pageToken === requestedCursor ? { ...p, runs: refreshed.runs } : p,
+            ),
+          );
+        })
+        .catch(() => {
+          // A failed cursor refresh keeps the previously loaded rows; the
+          // poll stays alive while they are non-terminal and the next tick
+          // retries.
+        })
+        .finally(() => subscription.unsubscribe());
+    }
+  }, [page1FulfilledAt, visible, hasActiveRuns, statusFilter, cursorPages, dispatch]);
 
   return (
     <div>
