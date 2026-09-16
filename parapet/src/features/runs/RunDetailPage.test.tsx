@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -13,7 +13,7 @@ import {
 } from 'vitest';
 import { RunDetailPage } from './RunDetailPage';
 import { store } from '../../store';
-import { selectRunEvents } from './runsSlice';
+import { selectRunEvents, runsSlice } from './runsSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
 
@@ -83,8 +83,11 @@ const fixture = vi.hoisted(() => ({
     runId: 'run-1',
     criteriaId: 'ov-1',
     workflowName: 'hello',
+    // Real criteria dialect: executable nodes are top-level blocks and
+    // outcomes route via `next = <traversal>` (the workflowHash field
+    // carries the full workflow source).
     workflowHash:
-      'workflow "hello" {\n  start_at = "build"\n  step "build" {\n    transitions = {\n      "success" = "test"\n    }\n  }\n  step "test" {\n    transitions = {\n      "success" = "done"\n    }\n  }\n  state "done" { terminal = true }\n}',
+      'workflow {\n  name = "hello"\n  initial_state = "build"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}',
     status: 'running',
     createdAt: new Date().toISOString(),
     finalState: '',
@@ -566,5 +569,182 @@ describe('RunDetailPage', () => {
     expect(screen.getByText('chunk 2')).toBeInTheDocument();
     expect(screen.getByText('chunk 30')).toBeInTheDocument();
     expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+  });
+
+  test('falls back to the text-edge list when the workflow source does not parse', async () => {
+    // A stray token inside the transitions map makes the HCL parser reject
+    // the source, while the legacy regex still finds the step blocks — the
+    // panel degrades to the text-edge list instead of blanking.
+    const originalSource = fixture.data.workflowHash;
+    fixture.data.workflowHash =
+      'workflow "hello" {\n  start_at = "build"\n  step "build" {\n    transitions = {\n      "success" = "test" oops\n}\n  step "test" {\n    transitions = {\n      "success" = "done"\n}\n  state "done" { terminal = true }\n}';
+
+    try {
+      render(
+        <Provider store={store}>
+          <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <Routes>
+              <Route path="/runs/:id" element={<RunDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </Provider>,
+      );
+
+      expect(await screen.findByText('Step graph')).toBeInTheDocument();
+      // No DAG is rendered; the text-edge fallback keeps the panel populated.
+      expect(document.querySelector('[data-testid="workflow-dag"]')).toBeNull();
+      const graphSection = screen.getByText('Step graph').closest('section')!;
+      const edgeRows = graphSection.querySelectorAll('div.bg-slate-900 > div');
+      expect(edgeRows).toHaveLength(2);
+      expect(edgeRows[0].textContent).toBe('build --success--> test');
+      expect(edgeRows[1].textContent).toBe('test --success--> done');
+    } finally {
+      fixture.data.workflowHash = originalSource;
+    }
+  });
+
+  test('falls back to the empty text-edge notice on malformed real-dialect source', async () => {
+    // A real-shaped source truncated mid-block: the parser rejects the
+    // unclosed `step` block, and the regex fallback finds no `transitions`
+    // maps in the current dialect — the panel renders the empty-state
+    // notice instead of blanking.
+    const originalSource = fixture.data.workflowHash;
+    fixture.data.workflowHash =
+      'workflow {\n  name = "hello"\n  initial_state = "build"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n';
+
+    try {
+      render(
+        <Provider store={store}>
+          <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <Routes>
+              <Route path="/runs/:id" element={<RunDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </Provider>,
+      );
+
+      expect(await screen.findByText('Step graph')).toBeInTheDocument();
+      expect(screen.getByText('No step transitions found.')).toBeInTheDocument();
+      expect(document.querySelector('[data-testid="workflow-dag"]')).toBeNull();
+    } finally {
+      fixture.data.workflowHash = originalSource;
+    }
+  });
+
+  test('highlights the active step from the event stream and dims unvisited nodes', async () => {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('[data-testid="dag-node"]')).toHaveLength(3),
+    );
+    act(() => {
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 101,
+          type: 'stepEntered',
+          correlationId: '',
+          payload: { step: 'build' },
+        }),
+      );
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 102,
+          type: 'stepOutcome',
+          correlationId: '',
+          payload: { step: 'test', outcome: 'success' },
+        }),
+      );
+    });
+
+    // The entered step pulses, the completed one shows success, and the
+    // unvisited terminal node stays dimmed.
+    const buildCard = document.querySelector('[data-node-id="build"]');
+    const testCard = document.querySelector('[data-node-id="test"]');
+    const doneCard = document.querySelector('[data-node-id="done"]');
+    expect(buildCard?.className).toContain('animate-pulse');
+    expect(testCard?.className).toContain('border-emerald-400/70');
+    expect(doneCard?.className).toContain('opacity-60');
+    expect(screen.getByLabelText('status running')).toBeInTheDocument();
+    expect(screen.getByLabelText('status succeeded')).toBeInTheDocument();
+  });
+
+  test('clicking a node filters the log to that step and the filter can clear', async () => {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('[data-testid="dag-node"]')).toHaveLength(3),
+    );
+    act(() => {
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 201,
+          type: 'stepOutcome',
+          correlationId: '',
+          payload: { step: 'build', outcome: 'success' },
+        }),
+      );
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 202,
+          type: 'stepOutcome',
+          correlationId: '',
+          payload: { step: 'test', outcome: 'success' },
+        }),
+      );
+    });
+    expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
+    expect(screen.getByText('{"step":"test","outcome":"success"}')).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(document.querySelector('[data-node-id="test"]')!);
+    });
+    // The chip names the step and the log shows only that step's events.
+    expect(screen.getByTestId('step-filter')).toHaveTextContent('Filtered to step: test');
+    expect(screen.queryByText('{"step":"build","outcome":"success"}')).not.toBeInTheDocument();
+    expect(screen.getByText('{"step":"test","outcome":"success"}')).toBeInTheDocument();
+    // The selected node is highlighted in the graph.
+    expect(document.querySelector('[data-node-id="test"]')?.className).toContain('ring-2');
+
+    fireEvent.click(screen.getByTestId('clear-step-filter'));
+    expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
+    expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
+
+    // Clicking a node re-applies the filter; clicking the already-selected
+    // node toggles it back off.
+    act(() => {
+      fireEvent.click(document.querySelector('[data-node-id="test"]')!);
+    });
+    expect(screen.getByTestId('step-filter')).toHaveTextContent('Filtered to step: test');
+    act(() => {
+      fireEvent.click(document.querySelector('[data-node-id="test"]')!);
+    });
+    expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
+    expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
   });
 });

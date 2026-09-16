@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { useGetRunQuery, type EventEnvelope } from '../../api/castleApi';
@@ -10,21 +10,28 @@ import { RunControls } from './RunControls';
 import { PauseAffordance } from './eventLog/PauseAffordance';
 import { ForEachStrip } from './eventLog/ForEachStrip';
 import { RunScopePanel } from './scopePanel/RunScopePanel';
+import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph } from './workflowGraph/parseWorkflowHcl';
+import { WorkflowDag } from './workflowGraph/WorkflowDag';
+import { eventBelongsToStep, selectNodeOverlay } from './workflowGraph/nodeStatus';
 
-type Edge = { from: string; to: string; via: string };
-
-function extractStepGraph(source: string): Edge[] {
-  const edges: Edge[] = [];
-  const stepBlocks = source.match(/step\s+"[^"]+"\s*\{[\s\S]*?\n\}/g) ?? [];
-  for (const block of stepBlocks) {
-    const stepName = block.match(/step\s+"([^"]+)"/)?.[1];
-    if (!stepName) continue;
-    const transitions = block.matchAll(/"([^"]+)"\s*=\s*"([^"]+)"/g);
-    for (const tr of transitions) {
-      edges.push({ from: stepName, via: tr[1], to: tr[2] });
-    }
+/**
+ * Parses the run's workflow HCL into the DAG model. The `workflowHash` run
+ * field carries the full workflow source (castle rpc mapping), so the graph
+ * is derived entirely client-side. Any parse failure — or a source with no
+ * parseable nodes — yields null and the page keeps the text-edge fallback,
+ * so the panel never blanks.
+ */
+function parseGraph(source: string): WorkflowGraph | null {
+  if (!source) return null;
+  try {
+    const graph = parseWorkflowHcl(source);
+    return graph.nodes.length > 0 ? graph : null;
+  } catch {
+    // Any failure (typed or not — e.g. a RangeError from pathologically
+    // nested input) falls back; the page has no error boundary, so an
+    // escaping throw would blank it.
+    return null;
   }
-  return edges;
 }
 
 export function RunDetailPage() {
@@ -32,9 +39,27 @@ export function RunDetailPage() {
   const run = useGetRunQuery(id);
   const { events, log, loadEarlier } = useRunEventLog(id);
   const pauseState = useSelector(selectPauseState(id));
+  const [selectedStep, setSelectedStep] = useState<{ runId: string; step: string } | null>(null);
 
   const workflowSource = run.data?.workflowHash ?? '';
-  const edges = workflowSource ? extractStepGraph(workflowSource) : [];
+  const graph = useMemo(() => parseGraph(workflowSource), [workflowSource]);
+  const fallbackEdges = useMemo(
+    () => (graph ? [] : workflowSource ? extractTextEdges(workflowSource) : []),
+    [graph, workflowSource],
+  );
+  // The overlay maps the event stream onto graph nodes: running (pulsing)
+  // for the active step, succeeded/failed for finished ones, per-iteration
+  // for_each progress from ForEachStrip data, and unvisited nodes dimmed.
+  const overlay = useMemo(
+    () => (graph ? selectNodeOverlay(events) : { statuses: {}, forEach: {} }),
+    [graph, events],
+  );
+  const selected = selectedStep && selectedStep.runId === (run.data?.runId ?? '') ? selectedStep.step : null;
+  const visibleEvents = useMemo(
+    () => (selected ? events.filter((e) => eventBelongsToStep(e, selected)) : events),
+    [events, selected],
+  );
+
   // Only render the PR link for http(s) URLs; the publisher controls the
   // value and must not be able to inject javascript: hrefs.
   const prUrl = run.data?.prUrl?.startsWith('http://') || run.data?.prUrl?.startsWith('https://') ? run.data.prUrl : undefined;
@@ -111,10 +136,26 @@ export function RunDetailPage() {
         </section>
       )}
 
+      {selected && (
+        <div className="flex items-center gap-2 text-xs" data-testid="step-filter">
+          <span className="rounded bg-sky-950 px-2 py-1 text-sky-300 border border-sky-800 font-mono">
+            Filtered to step: {selected}
+          </span>
+          <button
+            type="button"
+            data-testid="clear-step-filter"
+            onClick={() => setSelectedStep(null)}
+            className="text-slate-400 hover:text-slate-200"
+          >
+            Clear filter
+          </button>
+        </div>
+      )}
+
       <section>
         <h3 className="text-lg font-semibold mb-2">Events</h3>
         <EventLog
-          events={events}
+          events={visibleEvents}
           running={running}
           hasEarlier={log.hasEarlier}
           loadingEarlier={log.loadingEarlier}
@@ -129,11 +170,21 @@ export function RunDetailPage() {
       </section>
       <section>
         <h3 className="text-lg font-semibold mb-2">Step graph</h3>
-        {edges.length === 0 ? (
+        {graph ? (
+          <WorkflowDag
+            graph={graph}
+            statuses={overlay.statuses}
+            forEachProgress={overlay.forEach}
+            selectedId={selected}
+            onSelect={(nodeId) =>
+              setSelectedStep(nodeId === null ? null : { runId: run.data!.runId, step: nodeId })
+            }
+          />
+        ) : fallbackEdges.length === 0 ? (
           <p className="text-sm text-slate-400">No step transitions found.</p>
         ) : (
           <div className="bg-slate-900 rounded p-3 text-xs font-mono">
-            {edges.map((edge, i) => (
+            {fallbackEdges.map((edge, i) => (
               <div key={`${edge.from}:${edge.via}:${edge.to}:${i}`} className="py-1 border-b last:border-b-0 border-slate-800">
                 <span className="text-sky-300">{edge.from}</span>
                 <span className="text-slate-500"> --{edge.via}--&gt; </span>
