@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -39,6 +39,16 @@ const ROW_BASE_PX = 9;
 beforeAll(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(800);
+  // Tail logic reads the scroll metrics to detect "at bottom"; model the
+  // scroller as a 600px viewport over its committed inner height.
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.getAttribute('data-testid') === 'event-log-scroll' ? 600 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute('data-testid') !== 'event-log-scroll') return 0;
+    const inner = this.firstElementChild;
+    return inner ? inner.getBoundingClientRect().height : 0;
+  });
   vi.spyOn(
     HTMLElement.prototype,
     'getBoundingClientRect',
@@ -117,6 +127,9 @@ describe('RunDetailPage', () => {
     fixture.data.ticket = '';
     fixture.data.repoUrl = '';
     fixture.data.prUrl = '';
+    // Live-tail affordances key off run status; make the shared fixture's
+    // status explicit so tests that change it don't leak.
+    fixture.data.status = 'running';
   });
 
   test('starts WatchRun with sinceSeq=0 and subscriberId', async () => {
@@ -226,6 +239,9 @@ describe('RunDetailPage', () => {
   });
 
   test('anchors at the newest page and lazy-loads older events', async () => {
+    // A completed run: the live-tail affordances stay off so the log window
+    // opens at the top of the loaded list.
+    fixture.data.status = 'completed';
     // A 1000-event run served page-by-page from a stateful MSW handler.
     // The initial walk seeds every fetched page into the store (no silent
     // truncation); the anchor still sits at the newest page and older
@@ -464,5 +480,43 @@ describe('RunDetailPage', () => {
       selectRunEvents('run-1')(store.getState()).map((e) => e.seq),
     ).toEqual(Array.from({ length: 1000 }, (_, i) => i + 1));
     warn.mockRestore();
+  });
+
+  test('jumps to the bottom when a running run loads with history', async () => {
+    // The page loads an already-running run with existing history: the log
+    // must end up pinned at the bottom (live tail), not at the top.
+    server.use(
+      http.post(serverPath('ListRunEvents'), async () => {
+        const events = wireEvents(30);
+        return HttpResponse.json({ events, last_seq: '30' });
+      }),
+    );
+
+    render(
+      <Provider store={store}>
+        <MemoryRouter
+          initialEntries={['/runs/run-1']}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    await vi.waitFor(() =>
+      expect(selectRunEvents('run-1')(store.getState())).toHaveLength(30),
+    );
+    const scroller = screen.getByTestId('event-log-scroll');
+    await vi.waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(0));
+    // Pinned at the bottom: no jump affordance.
+    expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+
+    // The newest chunk is actually in view once the window follows the pin.
+    act(() => {
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(await screen.findByText('chunk 30')).toBeInTheDocument();
   });
 });

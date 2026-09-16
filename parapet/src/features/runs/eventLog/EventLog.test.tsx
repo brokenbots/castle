@@ -2,7 +2,8 @@ import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi, beforeAll } from 'vitest';
 import type { EventEnvelope } from '../../../api/castleApi';
-import { EventLog, estimateEventHeight } from './EventLog';
+import { coalesceStepLogs } from './coalesce';
+import { EventLog, estimateEventHeight, estimateItemHeight } from './EventLog';
 
 // jsdom has no ResizeObserver; react-virtual needs one. Scoped to this file
 // (vitest isolates globals per test file, so setup.ts's AbortController
@@ -31,6 +32,16 @@ const ROW_BASE_PX = 9;
 beforeAll(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(800);
+  // Tail logic reads the scroll metrics to detect "at bottom"; model the
+  // scroller as a 600px viewport over its committed inner height.
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    return this.getAttribute('data-testid') === 'event-log-scroll' ? 600 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute('data-testid') !== 'event-log-scroll') return 0;
+    const inner = this.firstElementChild;
+    return inner ? inner.getBoundingClientRect().height : 0;
+  });
   vi.spyOn(
     HTMLElement.prototype,
     'getBoundingClientRect',
@@ -75,6 +86,7 @@ function renderLog(events: EventEnvelope[], props?: Partial<Parameters<typeof Ev
   const result = render(
     <EventLog
       events={events}
+      running={false}
       hasEarlier={false}
       loadingEarlier={false}
       onLoadEarlier={onLoadEarlier}
@@ -83,6 +95,40 @@ function renderLog(events: EventEnvelope[], props?: Partial<Parameters<typeof Ev
   );
   return { onLoadEarlier, rerender: result.rerender };
 }
+
+function logProps(events: EventEnvelope[], running: boolean, hasEarlier = false) {
+  return (
+    <EventLog
+      events={events}
+      running={running}
+      hasEarlier={hasEarlier}
+      loadingEarlier={false}
+      onLoadEarlier={() => {}}
+    />
+  );
+}
+
+// stepLog chunks WITH a correlation id: these are the ones that coalesce.
+// env() keeps correlationId '' (no identity), so existing fixtures stay plain rows.
+function keyedEnv(seq: number, correlationId = 'corr-1'): EventEnvelope {
+  return { ...env(seq), correlationId };
+}
+
+function otherEnv(seq: number): EventEnvelope {
+  return {
+    schemaVersion: 1,
+    runId: 'run-1',
+    seq,
+    type: 'runStatus',
+    ts: new Date(0).toISOString(),
+    correlationId: '',
+    payload: { detail: `event ${seq}` },
+  };
+}
+
+// Plain 25px rows at this stub: the standard large fixture for both the
+// virtualization and live-tail suites.
+const thousand = Array.from({ length: 1000 }, (_, i) => env(i + 1));
 
 describe('estimateEventHeight', () => {
   test('single-line payload estimates one line plus row padding', () => {
@@ -99,8 +145,6 @@ describe('estimateEventHeight', () => {
 });
 
 describe('EventLog', () => {
-  const thousand = Array.from({ length: 1000 }, (_, i) => env(i + 1));
-
   test('renders only a window of rows for large logs', () => {
     renderLog(thousand);
 
@@ -154,6 +198,7 @@ describe('EventLog', () => {
     rerender(
       <EventLog
         events={thousand}
+        running={false}
         hasEarlier={false}
         loadingEarlier={false}
         onLoadEarlier={() => {}}
@@ -183,5 +228,179 @@ describe('EventLog', () => {
     renderLog(thousand.slice(0, 10), { hasEarlier: false });
 
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+});
+
+describe('estimateItemHeight', () => {
+  const [block] = coalesceStepLogs([keyedEnv(1), keyedEnv(2)]);
+  if (!block || block.kind !== 'stepLogBlock') throw new Error('expected a coalesced block');
+
+  test('collapsed blocks estimate a header line plus the tail', () => {
+    expect(estimateItemHeight(block, false)).toBe(9 + 2 * 16);
+  });
+
+  test('expanded blocks estimate from the full output', () => {
+    expect(estimateItemHeight(block, true)).toBe(9 + 3 * 16);
+  });
+});
+
+describe('step log coalescing', () => {
+  test('renders 500 consecutive chunks of one step as a single collapsed block', () => {
+    const events = Array.from({ length: 500 }, (_, i) => keyedEnv(i + 1));
+    renderLog(events);
+
+    const rows = screen.getAllByTestId('event-log-row');
+    expect(rows).toHaveLength(1);
+    const toggle = screen.getByTestId('step-log-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    // The header counts the coalesced chunks…
+    expect(toggle).toHaveTextContent('×500');
+    // …and the body shows only the tail of the output, not the whole log.
+    expect(screen.getByText('chunk 500')).toBeInTheDocument();
+    expect(screen.queryByText('chunk 499')).not.toBeInTheDocument();
+    expect(screen.queryByText('chunk 1')).not.toBeInTheDocument();
+  });
+
+  test('expands the block to the full output and collapses back', async () => {
+    const events = Array.from({ length: 500 }, (_, i) => keyedEnv(i + 1));
+    renderLog(events);
+
+    const toggle = screen.getByTestId('step-log-toggle');
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    // The full output (joined chunks) is now rendered in the row.
+    const rows = screen.getAllByTestId('event-log-row');
+    expect(rows[0].textContent).toContain('chunk 1');
+    expect(rows[0].textContent).toContain('chunk 250');
+    expect(rows[0].textContent).toContain('chunk 500');
+
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(rows[0].textContent).not.toContain('chunk 1\n');
+  });
+
+  test('keeps non-log events interleaved around coalesced blocks', () => {
+    // chunk 1 is a lone run (plain row); chunks 3+4 form a block; the
+    // runStatus events interleave chronologically in between.
+    const events = [keyedEnv(1, 'corr-a'), otherEnv(2), keyedEnv(3, 'corr-a'), keyedEnv(4, 'corr-a'), otherEnv(5)];
+    renderLog(events);
+
+    const rows = screen.getAllByTestId('event-log-row');
+    expect(rows.map((row) => row.getAttribute('data-seq'))).toEqual(['1', '2', '3', '5']);
+    // The lone chunk stays a plain event row.
+    expect(rows[0].querySelector('[data-testid="step-log-toggle"]')).toBeNull();
+    expect(rows[0].textContent).toContain('chunk 1');
+    // The consecutive run coalesces into one block showing the tail chunk.
+    expect(rows[2].querySelector('[data-testid="step-log-toggle"]')).not.toBeNull();
+    expect(rows[2].textContent).toContain('chunk 4');
+    expect(rows[3].textContent).toContain('event 5');
+  });
+
+  test('coalesces chunks that arrive across page loads and keeps the reader anchored', () => {
+    // The newest page contains only the step's last chunk: it renders as a
+    // lone (plain) event row.
+    const tail = [keyedEnv(1000)];
+    const { rerender } = renderLog(tail);
+    expect(screen.getAllByTestId('event-log-row')).toHaveLength(1);
+    const scroller = screen.getByTestId('event-log-scroll');
+    expect(scroller.scrollTop).toBe(0);
+
+    // Loading the older page merges the chunks into a single block spanning
+    // the page boundary.
+    const older = Array.from({ length: 999 }, (_, i) => keyedEnv(i + 1));
+    rerender(logProps([...older, ...tail], false));
+
+    const rows = screen.getAllByTestId('event-log-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('×1000');
+    expect(screen.queryByText('chunk 1')).not.toBeInTheDocument();
+    expect(screen.getByText('chunk 1000')).toBeInTheDocument();
+    // The reader stays anchored at the old first chunk: the block header
+    // line plus the 999 chunk rows that moved in front of it.
+    expect(scroller.scrollTop).toBe(16 + 999 * 25);
+  });
+});
+
+describe('live tail', () => {
+  test('pins to the bottom when a running run mounts and auto-follow defaults to on', () => {
+    renderLog(thousand, { running: true });
+
+    const scroller = screen.getByTestId('event-log-scroll');
+    expect(screen.getByTestId('auto-follow-toggle')).toBeChecked();
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
+  });
+
+  test('does not jump to the bottom for a completed run', () => {
+    renderLog(thousand);
+
+    const scroller = screen.getByTestId('event-log-scroll');
+    expect(scroller.scrollTop).toBe(0);
+    expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+  });
+
+  test('detaches on scroll-up and reports the unseen count behind the pin', async () => {
+    const { rerender } = renderLog(thousand, { running: true });
+    const scroller = screen.getByTestId('event-log-scroll');
+
+    // Scrolling up releases the pin; nothing is unseen yet, so the
+    // affordance shows without a count…
+    act(() => {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(screen.getByTestId('jump-to-latest')).toBeInTheDocument();
+    expect(screen.getByTestId('jump-to-latest')).toHaveTextContent('Jump to latest');
+
+    // …arrivals accumulate behind the pin and the count grows.
+    rerender(logProps([...thousand, env(thousand.length + 1)], true));
+    expect(screen.getByTestId('jump-to-latest')).toHaveTextContent('Jump to latest (1 unseen)');
+    rerender(logProps([...thousand, env(thousand.length + 1), env(thousand.length + 2)], true));
+    expect(screen.getByTestId('jump-to-latest')).toHaveTextContent('Jump to latest (2 unseen)');
+
+    // Activating the affordance re-pins the view to the bottom.
+    await userEvent.click(screen.getByTestId('jump-to-latest'));
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
+    expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+  });
+
+  test('re-pins when the user scrolls back to the bottom', () => {
+    const { rerender } = renderLog(thousand, { running: true });
+    const scroller = screen.getByTestId('event-log-scroll');
+
+    act(() => {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    rerender(logProps([...thousand, env(thousand.length + 1)], true));
+    expect(screen.getByTestId('jump-to-latest')).toHaveTextContent('(1 unseen)');
+
+    // Scrolling back down re-pins and clears the unseen count.
+    act(() => {
+      scroller.scrollTop = 1e9;
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+  });
+
+  test('stops following new output when auto-follow is opted out', async () => {
+    const { rerender } = renderLog(thousand, { running: true });
+    const scroller = screen.getByTestId('event-log-scroll');
+
+    await userEvent.click(screen.getByTestId('auto-follow-toggle'));
+    // Park the view away from the bottom after opting out.
+    act(() => {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+
+    rerender(logProps([...thousand, env(thousand.length + 1)], true));
+    // No following while opted out, and no jump affordance either (it only
+    // exists while auto-follow is enabled).
+    expect(scroller.scrollTop).toBe(0);
+    expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+
+    // Re-enabling re-pins the view at the bottom.
+    await userEvent.click(screen.getByTestId('auto-follow-toggle'));
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 });

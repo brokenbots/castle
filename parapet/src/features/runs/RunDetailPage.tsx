@@ -38,6 +38,13 @@ export function RunDetailPage() {
   // value and must not be able to inject javascript: hrefs.
   const prUrl = run.data?.prUrl?.startsWith('http://') || run.data?.prUrl?.startsWith('https://') ? run.data.prUrl : undefined;
 
+  // A run is live-tailing while its status is running and no terminal event
+  // has arrived yet (the status can lag the event stream).
+  const running = useMemo(() => {
+    if (!run.data || run.data.status !== 'running') return false;
+    return !events.some((e) => e.type === 'runCompleted' || e.type === 'runFailed');
+  }, [run.data, events]);
+
   // Group events by for_each node
   const forEachNodes = useMemo(() => {
     const nodes = new Map<string, EventEnvelope[]>();
@@ -106,6 +113,7 @@ export function RunDetailPage() {
         <h3 className="text-lg font-semibold mb-2">Events</h3>
         <EventLog
           events={events}
+          running={running}
           hasEarlier={log.hasEarlier}
           loadingEarlier={log.loadingEarlier}
           onLoadEarlier={loadEarlier}
