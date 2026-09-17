@@ -1,8 +1,9 @@
 import { createApi } from '@reduxjs/toolkit/query/react';
 import { fakeBaseQuery } from '@reduxjs/toolkit/query';
-import { Code, ConnectError } from '@connectrpc/connect';
+import { ConnectError } from '@connectrpc/connect';
 import { Timestamp } from '@bufbuild/protobuf';
 import { server } from './client';
+import { connectCodeName } from './errors';
 import type { Run as PbRun } from '../gen/criteria/v1/criteria_pb';
 import type { Agent as PbAgent, InspectRunResponse as PbInspectRunResponse } from '../gen/criteria/v1/server_pb';
 import type { Envelope } from '../gen/criteria/v1/events_pb';
@@ -134,18 +135,9 @@ export function mapEnvelope(e: Envelope): EventEnvelope {
   };
 }
 
-// connect-es types Code as a numeric enum; surface the canonical
-// lower_snake connect code string (e.g. "failed_precondition") so the UI can
-// render readable inline errors.
-function connectCodeName(code: Code): string {
-  const name = Code[code];
-  if (!name) return String(code);
-  return (
-    name.charAt(0).toLowerCase() +
-    name.slice(1).replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
-  );
-}
-
+// connect-es types Code as a numeric enum; connectCodeName surfaces the
+// canonical lower_snake connect code string (e.g. "failed_precondition") so
+// the UI can render readable inline errors.
 function toError(err: unknown) {
   if (err instanceof ConnectError) {
     return { status: connectCodeName(err.code), data: err.rawMessage };

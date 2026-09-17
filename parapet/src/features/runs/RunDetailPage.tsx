@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { useGetRunQuery, type EventEnvelope } from '../../api/castleApi';
+import { classifyError } from '../../api/errors';
 import { selectPauseState } from './runsSlice';
 import { useRunEventLog } from './eventLog/useRunEventLog';
 import { EventLog } from './eventLog/EventLog';
@@ -12,6 +13,7 @@ import { PauseAffordance } from './eventLog/PauseAffordance';
 import { ForEachStrip } from './eventLog/ForEachStrip';
 import { RunScopePanel } from './scopePanel/RunScopePanel';
 import { PageHeader } from '../../components/PageHeader';
+import { PageState } from '../../components/PageState';
 import { DockedPanel } from '../../components/DockedPanel';
 import { Breadcrumbs } from '../../components/Breadcrumbs';
 import { useDocumentTitle } from '../../shell/useDocumentTitle';
@@ -42,7 +44,7 @@ function parseGraph(source: string): WorkflowGraph | null {
 export function RunDetailPage() {
   const { id = '' } = useParams();
   const run = useGetRunQuery(id);
-  const { events, log, loadEarlier } = useRunEventLog(id);
+  const { events, log, loadEarlier, watch, reconnect } = useRunEventLog(id);
   const pauseState = useSelector(selectPauseState(id));
   const [selectedStep, setSelectedStep] = useState<{ runId: string; step: string } | null>(null);
   // The scope view lives in a docked right-side panel (part of the page
@@ -100,8 +102,40 @@ export function RunDetailPage() {
     return nodes;
   }, [events]);
 
-  if (run.isLoading) return <p>Loading…</p>;
-  if (run.error || !run.data) return <p className="text-danger">Run not found.</p>;
+  if (run.isLoading) {
+    return <PageState loading title="Loading run…" testId="run-detail-loading" />;
+  }
+
+  if (run.error || !run.data) {
+    const kind = run.error ? classifyError(run.error) : 'unknown';
+    // Auth failures prompt re-authentication (and flip the app gate) instead
+    // of a dead-end failure; everything else distinguishes not-found from a
+    // server failure and offers retry/back navigation.
+    if (kind === 'unauthenticated') {
+      return <PageState error kind="unauthenticated" />;
+    }
+    return (
+      <PageState
+        error
+        kind={kind}
+        title={kind === 'not_found' ? 'Run not found.' : 'Failed to load this run.'}
+        detail={
+          kind === 'not_found'
+            ? "This run doesn't exist or was removed."
+            : 'Castle is unreachable or failed to answer. Try again.'
+        }
+        onRetry={kind === 'not_found' ? undefined : () => void run.refetch()}
+        action={
+          <Link
+            to="/runs"
+            className="text-body text-ink-muted hover:text-ink hover:underline"
+          >
+            Back to runs
+          </Link>
+        }
+      />
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 items-stretch gap-4" data-testid="run-detail-layout">
@@ -165,6 +199,40 @@ export function RunDetailPage() {
             )}
           </div>
         </PageHeader>
+
+        {/* watchRun liveness: surface stream loss to the user instead of
+            only logging it. While reconnecting show the bounded-backoff
+            progress; once retries are exhausted offer a manual reconnect. */}
+        {watch && (watch.state === 'reconnecting' || watch.state === 'lost' || watch.state === 'unauthenticated') && (
+          <div
+            data-testid="stream-status"
+            data-state={watch.state}
+            role="status"
+            className="flex flex-wrap items-center gap-3 rounded-md border border-line bg-surface px-4 py-2 text-body"
+          >
+            {watch.state === 'reconnecting' && (
+              <span className="text-ink-muted" data-testid="stream-reconnecting">
+                Live tail lost — reconnecting (attempt {watch.attempt}/{watch.maxAttempts})…
+              </span>
+            )}
+            {watch.state === 'lost' && (
+              <>
+                <span className="text-danger">Live tail lost — reconnect attempts failed.</span>
+                <button
+                  type="button"
+                  data-testid="stream-reconnect"
+                  className="rounded-md border border-line-strong px-3 py-1.5 text-body text-ink hover:bg-surface-raised"
+                  onClick={reconnect}
+                >
+                  Reconnect
+                </button>
+              </>
+            )}
+            {watch.state === 'unauthenticated' && (
+              <span className="text-danger">Live tail stopped — sign in again to resume.</span>
+            )}
+          </div>
+        )}
 
         <RunInspection runId={id} status={run.data.status} />
 

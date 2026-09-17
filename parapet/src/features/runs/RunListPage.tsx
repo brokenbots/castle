@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { castleApi, useListRunsQuery, type Run } from '../../api/castleApi';
+import { classifyError } from '../../api/errors';
 import type { AppDispatch, RootState } from '../../store';
 import { PageHeader } from '../../components/PageHeader';
+import { PageState } from '../../components/PageState';
 import { RUN_STATUS_TEXT_COLORS, RUN_TERMINAL_STATUSES } from './runStatus';
 import { DurationCell, StartedCell, useDocumentVisible, useNow } from './runCells';
 
@@ -95,7 +97,7 @@ export function RunListPage() {
     castleApi.endpoints.listRuns.select({ status: statusFilter })(state).fulfilledTimeStamp,
   );
 
-  const { data, isLoading, error } = useListRunsQuery(
+  const { data, isLoading, error, refetch } = useListRunsQuery(
     { status: statusFilter },
     {
       // A fresh visit to the list always re-issues page 1 so runs created
@@ -106,6 +108,7 @@ export function RunListPage() {
     },
   );
   const firstPageRuns = data?.runs ?? [];
+  const errorKind = error ? classifyError(error) : undefined;
   // The next "Load more" cursor: once older pages exist, the most recent
   // page's own continuation token is the source of truth (page 1's token is
   // only consumed by the first click). Chain it so every click advances.
@@ -232,16 +235,41 @@ export function RunListPage() {
         }
       />
       {!isLoading && error && data && (
-        <p className="mb-2 text-danger">
-          Refresh failed.{runs.length > 0 ? ' Showing the last loaded runs.' : ''}
-        </p>
+        <div className="mb-2 flex items-center gap-3">
+          <p className="text-danger">
+            Refresh failed.{runs.length > 0 ? ' Showing the last loaded runs.' : ''}
+          </p>
+          <button
+            type="button"
+            data-testid="run-list-retry-refresh"
+            className="rounded-md border border-line-strong px-2 py-1 text-body text-ink hover:bg-surface-raised"
+            onClick={() => void refetch()}
+          >
+            Try again
+          </button>
+        </div>
       )}
       {isLoading ? (
-        <p>Loading runs…</p>
+        <PageState loading title="Loading runs…" testId="run-list-loading" />
       ) : error && !data ? (
-        <p className="text-rose-400">Failed to load runs.</p>
+        errorKind === 'unauthenticated' ? (
+          <PageState error kind="unauthenticated" />
+        ) : (
+          <PageState
+            error
+            kind={errorKind}
+            title="Failed to load runs."
+            detail="Castle is unreachable or failed to answer. Try again."
+            onRetry={() => void refetch()}
+          />
+        )
       ) : runs.length === 0 ? (
-        <p className="text-slate-400">No runs.</p>
+        <PageState
+          empty
+          title="No runs yet."
+          detail="Runs appear here once Castle starts executing workflows."
+          testId="run-list-empty"
+        />
       ) : (
         <table className="w-full text-left text-sm">
           <thead className="text-slate-400">

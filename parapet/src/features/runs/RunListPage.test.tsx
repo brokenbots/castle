@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { RunListPage } from './RunListPage';
 import { castleApi } from '../../api/castleApi';
 import { store } from '../../store';
+import { selectAuthExpired, sessionRecovered } from '../../features/auth/sessionSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
 
@@ -209,7 +210,7 @@ describe('RunListPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('No runs.')).toBeInTheDocument();
+    expect(await screen.findByText('No runs yet.')).toBeInTheDocument();
   });
 
   test('shows the error state when the request fails', async () => {
@@ -384,6 +385,63 @@ describe('RunListPage', () => {
 
 // URL query param sync: the status filter lives in the URL so filtered views
 // are shareable and deep-linkable (CRI-191).
+describe('RunListPage auth expiry and retry', () => {
+  afterEach(() => {
+    store.dispatch(sessionRecovered());
+  });
+
+  test('prompts re-authentication instead of a generic failure when the session expires', async () => {
+    server.use(
+      http.post(
+        serverPath('ListRuns'),
+        () =>
+          HttpResponse.json(
+            { code: 'unauthenticated', message: 'token rejected' },
+            { status: 401 },
+          ),
+      ),
+    );
+
+    renderPage();
+
+    // Auth failures get their own state — not the plain-text "Failed to load
+    // runs." dead end.
+    expect(await screen.findByText('Session expired')).toBeInTheDocument();
+    expect(
+      screen.getByText('Your token was rejected by Castle. Sign in again to continue.'),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('page-state-reauth'));
+    expect(selectAuthExpired(store.getState())).toBe(true);
+  });
+
+  test('retries the initial load from the error state', async () => {
+    let failing = true;
+    server.use(
+      http.post(serverPath('ListRuns'), () => {
+        if (failing) {
+          return new HttpResponse(JSON.stringify({ code: 'unavailable', message: 'offline' }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return HttpResponse.json({
+          runs: [run('run-1', 'running', { ticket: 'CRI-192' })],
+          next_page_token: '',
+        });
+      }),
+    );
+
+    renderPage();
+
+    const retry = await screen.findByTestId('page-state-retry', {}, { timeout: 3000 });
+    failing = false;
+    await userEvent.click(retry);
+
+    expect(await screen.findByText('CRI-192')).toBeInTheDocument();
+  });
+});
+
 describe('RunListPage URL param sync', () => {
   // Renders the page at an arbitrary entry URL and exposes the live router
   // location so interactions can assert on the resulting URL.
@@ -770,7 +828,7 @@ describe('RunListPage URL param sync', () => {
     });
 
     renderPage();
-    await waitUntil(() => screen.queryByText('No runs.') !== null, 'empty list rendered');
+    await waitUntil(() => screen.queryByText('No runs yet.') !== null, 'empty list rendered');
 
     // No active runs means polling has stopped, so force a refetch of the
     // page-1 cache entry the way a focus-triggered refetch would.
@@ -780,7 +838,7 @@ describe('RunListPage URL param sync', () => {
       () => screen.queryByText('Refresh failed.') !== null,
       'refresh-failure indicator rendered for an empty list',
     );
-    expect(screen.getByText('No runs.')).toBeInTheDocument();
+    expect(screen.getByText('No runs yet.')).toBeInTheDocument();
   });
 
   test('does not poll while the tab is hidden', async () => {

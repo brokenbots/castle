@@ -15,7 +15,7 @@ function makeEnv(runId: string, seq: number, type = 'stepLog'): EventEnvelope {
 }
 
 function run(events: EventEnvelope[]): RunsState {
-  let state: RunsState = { events: {} };
+  let state: RunsState = { events: {}, watch: {} };
   for (const e of events) {
     state = runsSlice.reducer(state, runsSlice.actions.eventReceived(e));
   }
@@ -82,10 +82,53 @@ describe('runsSlice.runCleared', () => {
 
 describe('selectRunEvents', () => {
   test('returns a stable empty reference when a run is unknown', () => {
-    const state = { runs: { events: {} } };
+    const state = { runs: { events: {}, watch: {} } };
     const a = selectRunEvents('missing')(state);
     const b = selectRunEvents('missing')(state);
     expect(a).toBe(b);
     expect(a).toEqual([]);
+  });
+});
+
+describe('runsSlice.watch status', () => {
+  test('watchStatusChanged stores the latest status per run', () => {
+    let state: RunsState = { events: {}, watch: {} };
+    state = runsSlice.reducer(
+      state,
+      runsSlice.actions.watchStatusChanged({ runId: 'r1', status: { state: 'connecting', attempt: 0, maxAttempts: 5 } }),
+    );
+    expect(state.watch.r1).toEqual({ state: 'connecting', attempt: 0, maxAttempts: 5 });
+    state = runsSlice.reducer(
+      state,
+      runsSlice.actions.watchStatusChanged({ runId: 'r1', status: { state: 'reconnecting', attempt: 2, maxAttempts: 5 } }),
+    );
+    state = runsSlice.reducer(
+      state,
+      runsSlice.actions.watchStatusChanged({ runId: 'r2', status: { state: 'live', attempt: 0, maxAttempts: 5 } }),
+    );
+    expect(state.watch.r1).toMatchObject({ state: 'reconnecting', attempt: 2 });
+    expect(state.watch.r2).toMatchObject({ state: 'live' });
+  });
+
+  test('watchEnded drops the status so liveness UI disappears', () => {
+    let state: RunsState = { events: {}, watch: {} };
+    state = runsSlice.reducer(
+      state,
+      runsSlice.actions.watchStatusChanged({ runId: 'r1', status: { state: 'live', attempt: 0, maxAttempts: 5 } }),
+    );
+    state = runsSlice.reducer(state, runsSlice.actions.watchEnded('r1'));
+    expect(state.watch.r1).toBeUndefined();
+  });
+
+  test('runCleared also drops the watch status', () => {
+    let state: RunsState = { events: {}, watch: {} };
+    state = runsSlice.reducer(state, runsSlice.actions.eventReceived(makeEnv('r1', 1)));
+    state = runsSlice.reducer(
+      state,
+      runsSlice.actions.watchStatusChanged({ runId: 'r1', status: { state: 'lost', attempt: 6, maxAttempts: 5 } }),
+    );
+    state = runsSlice.reducer(state, runsSlice.actions.runCleared('r1'));
+    expect(state.events.r1).toBeUndefined();
+    expect(state.watch.r1).toBeUndefined();
   });
 });

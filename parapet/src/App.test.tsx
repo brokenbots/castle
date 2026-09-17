@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import { App } from './App';
 import { store } from './store';
 import { castleApi } from './api/castleApi';
+import { selectAuthExpired, sessionRecovered, sessionExpired } from './features/auth/sessionSlice';
 import { clearAuthToken, getAuthToken, setAuthToken } from './authToken';
 import { RunListPage } from './features/runs/RunListPage';
 import { RunDetailPage } from './features/runs/RunDetailPage';
@@ -51,6 +52,9 @@ async function signIn(token: string) {
 // same when executed in isolation.
 beforeEach(() => {
   clearAuthToken();
+  // Module-level session state is shared across tests; clear any expired
+  // flag a previous test left behind so the gate starts neutral.
+  store.dispatch(sessionRecovered());
   store.dispatch(castleApi.util.resetApiState());
 });
 
@@ -214,5 +218,36 @@ describe('App shell', () => {
 describe('document title', () => {
   test('the tab is branded Parapet — Castle', () => {
     expect(indexHtml).toContain('<title>Parapet — Castle</title>');
+  });
+});
+
+describe('App auth expiry', () => {
+  test('returns to the login page with an expiry notice when the session expires mid-session', async () => {
+    renderApp();
+    await signIn('valid-token-123456');
+    expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
+
+    act(() => store.dispatch(sessionExpired()));
+
+    expect(screen.getByTestId('login-brand')).toBeInTheDocument();
+    const notice = screen.getByTestId('login-notice');
+    expect(notice).toHaveAttribute('role', 'status');
+    expect(notice).toHaveTextContent('Your session expired. Sign in again to continue.');
+    // The stale token is dropped so the API transport cannot reuse it.
+    expect(getAuthToken()).toBe('');
+  });
+
+  test('clears the expiry flag after signing back in', async () => {
+    renderApp();
+    await signIn('valid-token-123456');
+    expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
+
+    act(() => store.dispatch(sessionExpired()));
+    await signIn('fresh-token-123456');
+
+    expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
+    expect(getAuthToken()).toBe('fresh-token-123456');
+    expect(selectAuthExpired(store.getState())).toBe(false);
+    expect(screen.queryByTestId('login-notice')).not.toBeInTheDocument();
   });
 });
