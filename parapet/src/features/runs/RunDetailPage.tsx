@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { useGetRunQuery, type EventEnvelope } from '../../api/castleApi';
 import { selectPauseState } from './runsSlice';
@@ -13,6 +13,8 @@ import { ForEachStrip } from './eventLog/ForEachStrip';
 import { RunScopePanel } from './scopePanel/RunScopePanel';
 import { PageHeader } from '../../components/PageHeader';
 import { DockedPanel } from '../../components/DockedPanel';
+import { Breadcrumbs } from '../../components/Breadcrumbs';
+import { useDocumentTitle } from '../../shell/useDocumentTitle';
 import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph } from './workflowGraph/parseWorkflowHcl';
 import { WorkflowDag } from './workflowGraph/WorkflowDag';
 import { eventBelongsToStep, selectNodeOverlay } from './workflowGraph/nodeStatus';
@@ -47,6 +49,10 @@ export function RunDetailPage() {
   // layout, never overlapping the log). The dock can be closed and reopened
   // from the header's Scope toggle.
   const [scopeOpen, setScopeOpen] = useState(true);
+
+  // The tab title reflects the current run's workflow name; while loading it
+  // falls back to the base title.
+  useDocumentTitle(run.data?.workflowName);
 
   const workflowSource = run.data?.workflowHash ?? '';
   const graph = useMemo(() => parseGraph(workflowSource), [workflowSource]);
@@ -100,6 +106,23 @@ export function RunDetailPage() {
   return (
     <div className="flex h-full min-h-0 items-stretch gap-4" data-testid="run-detail-layout">
       <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+        {/* Breadcrumb trail plus a back affordance: deep-linked runs exit to
+            the run list without relying on browser back. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+          <Breadcrumbs
+            items={[{ label: 'Runs', to: '/runs' }, { label: run.data.workflowName }]}
+          />
+          <Link
+            to="/runs"
+            data-testid="run-back"
+            className="inline-flex shrink-0 items-center gap-1 text-body text-ink-muted hover:text-ink hover:underline"
+          >
+            <svg aria-hidden viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M10 3 5 8l5 5" />
+            </svg>
+            Back to runs
+          </Link>
+        </div>
         <PageHeader
           title={run.data.workflowName}
           meta={run.data.runId}

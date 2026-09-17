@@ -1,16 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { castleApi, useListRunsQuery, type Run } from '../../api/castleApi';
 import type { AppDispatch, RootState } from '../../store';
 import { PageHeader } from '../../components/PageHeader';
 import { RUN_STATUS_TEXT_COLORS, RUN_TERMINAL_STATUSES } from './runStatus';
-import {
-  durationBetweenMs,
-  formatAbsoluteTime,
-  formatDuration,
-  formatRelativeTime,
-} from './time';
+import { DurationCell, StartedCell, useDocumentVisible, useNow } from './runCells';
 
 // Poll cadence while the tab is visible and at least one loaded run is not
 // in a terminal state. When either condition stops holding, pollingInterval
@@ -36,47 +31,22 @@ interface CursorPage {
   runs: Run[];
 }
 
-function useDocumentVisible(): boolean {
-  const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
-  useEffect(() => {
-    const onChange = () => setVisible(document.visibilityState === 'visible');
-    document.addEventListener('visibilitychange', onChange);
-    return () => document.removeEventListener('visibilitychange', onChange);
-  }, []);
-  return visible;
-}
-
-// A clock that ticks at intervalMs while enabled; used for live elapsed
-// durations and relative "started" labels.
-function useNow(enabled: boolean, intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!enabled) return;
-    setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
-    return () => window.clearInterval(id);
-  }, [enabled, intervalMs]);
-  return now;
-}
-
-function StartedCell({ run, now }: { run: Run; now: number }) {
-  const startedIso = run.startedAt ?? run.createdAt;
-  if (!startedIso) return <>—</>;
-  return (
-    <span title={formatAbsoluteTime(startedIso)}>{formatRelativeTime(startedIso, now)}</span>
-  );
-}
-
-function DurationCell({ run }: { run: Run }) {
-  const live = !RUN_TERMINAL_STATUSES.has(run.status) && !run.endedAt && Boolean(run.startedAt);
-  const now = useNow(live, 1_000);
-  const ms = durationBetweenMs(run.startedAt, run.endedAt, now);
-  return <>{ms === undefined ? '—' : formatDuration(ms)}</>;
+// Builds the URL query for a run-list status filter; the empty filter clears
+// the param so the unfiltered view is the canonical `/runs` URL.
+function statusSearchParams(status: string): URLSearchParams {
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  return params;
 }
 
 export function RunListPage() {
   const dispatch = useDispatch<AppDispatch>();
-  const [statusFilter, setStatusFilter] = useState('');
+  // The status filter lives in the URL query (`/runs?status=running`) so
+  // filtered views are shareable and deep-linkable: the select writes the
+  // param, the param is the single source of truth for the filter, and
+  // opening a URL carrying it restores the filtered view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const statusFilter = searchParams.get('status') ?? '';
   // Pages fetched through "Load more". Page 1 stays in the listRuns cache
   // (and is what polling refreshes); these entries hold the older pages.
   const [cursorPages, setCursorPages] = useState<CursorPage[]>([]);
@@ -89,8 +59,18 @@ export function RunListPage() {
   const visible = useDocumentVisible();
   // Guards "Load more" appends against a filter change that raced the
   // in-flight request: a response for the previous filter must not land
-  // under the new one. Kept in sync in onChange, synchronously.
+  // under the new one. Synced during render (the latest-value ref pattern)
+  // so every commit that changes statusFilter updates the guard before any
+  // in-flight response continuation can run.
   const statusRef = useRef(statusFilter);
+  statusRef.current = statusFilter;
+
+  // Cursor pages belong to the filter they were loaded under: any filter
+  // change (select, status chip, back/forward) invalidates them.
+  useEffect(() => {
+    setCursorPages([]);
+    setLoadMoreError(false);
+  }, [statusFilter]);
 
   // The polling gate needs the runs currently loaded (a poll must stop once
   // every run is terminal). Page 1 is read from the cache entry polling
@@ -233,15 +213,16 @@ export function RunListPage() {
               id="run-status-filter"
               className="rounded-md border border-line bg-surface px-2 py-1 text-body"
               value={statusFilter}
-              onChange={(e) => {
-                const next = e.target.value;
-                statusRef.current = next;
-                setStatusFilter(next);
-                setCursorPages([]);
-                setLoadMoreError(false);
-              }}
+              onChange={(e) => setSearchParams(statusSearchParams(e.target.value))}
             >
-              {STATUS_FILTERS.map((f) => (
+              {/* The filter accepts any status the server knows; when a deep
+                  link carries a status outside the fixed list (e.g. pending
+                  reached via a chip) keep it selectable instead of showing a
+                  blank select. */}
+              {(STATUS_FILTERS.some((f) => f.value === statusFilter)
+                ? STATUS_FILTERS
+                : [...STATUS_FILTERS, { value: statusFilter, label: statusFilter }]
+              ).map((f) => (
                 <option key={f.value} value={f.value}>
                   {f.label}
                 </option>
@@ -283,8 +264,18 @@ export function RunListPage() {
                 </td>
                 <td className="px-2 py-1">{run.ticket ?? '—'}</td>
                 <td className="px-2 py-1">{run.workflowName}</td>
-                <td className={`px-2 py-1 ${RUN_STATUS_TEXT_COLORS[run.status] ?? ''}`}>
-                  {run.status}
+                <td className="px-2 py-1">
+                  {/* Status chip links into the run list filtered by this
+                      status, so a scan of mixed rows is one click from the
+                      matching filtered view. */}
+                  <Link
+                    to={`/runs?status=${encodeURIComponent(run.status)}`}
+                    className={`inline-flex items-center rounded-full border border-line px-2 py-0.5 text-xs font-semibold hover:bg-surface-raised ${
+                      RUN_STATUS_TEXT_COLORS[run.status] ?? 'text-slate-300'
+                    }`}
+                  >
+                    {run.status}
+                  </Link>
                 </td>
                 <td className="px-2 py-1">
                   <StartedCell run={run} now={now} />

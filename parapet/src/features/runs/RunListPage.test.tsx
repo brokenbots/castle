@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { RunListPage } from './RunListPage';
@@ -381,6 +381,141 @@ describe('RunListPage', () => {
     // No started_at means the duration is unknown.
     expect(screen.getByText('—')).toBeInTheDocument();
   });
+
+// URL query param sync: the status filter lives in the URL so filtered views
+// are shareable and deep-linkable (CRI-191).
+describe('RunListPage URL param sync', () => {
+  // Renders the page at an arbitrary entry URL and exposes the live router
+  // location so interactions can assert on the resulting URL.
+  function renderAt(initialEntry: string) {
+    let location: { pathname: string; search: string } | undefined;
+    function Probe() {
+      const current = useLocation();
+      location = { pathname: current.pathname, search: current.search };
+      return null;
+    }
+
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={[initialEntry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <RunListPage />
+          <Probe />
+        </MemoryRouter>
+      </Provider>,
+    );
+    return { getLocation: () => location! };
+  }
+
+  test('a deep link with a status param opens the corresponding filtered view', async () => {
+    const bodies = installListRuns((_pageToken, status) => ({
+      runs: status === 'running' ? [run('run-1', 'running')] : [run('run-2', 'succeeded')],
+      nextPageToken: '',
+    }));
+
+    renderAt('/runs?status=running');
+
+    // The restored view queried the filtered page and shows its rows.
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodyStatus(bodies[0])).toBe('running');
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
+    expect(screen.queryByText('run-2')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Status')).toHaveValue('running');
+  });
+
+  test('changing the filter updates the URL query params', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns(() => ({ runs: [run('run-1', 'running')], nextPageToken: '' }));
+
+    const { getLocation } = renderAt('/runs');
+    await screen.findByText('run-1');
+
+    await user.selectOptions(screen.getByLabelText('Status'), 'failed');
+
+    await waitFor(() => expect(bodyStatus(bodies[1])).toBe('failed'));
+    expect(getLocation().pathname).toBe('/runs');
+    expect(getLocation().search).toBe('?status=failed');
+  });
+
+  test('clearing the filter removes the status param from the URL', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns(() => ({ runs: [run('run-1', 'running')], nextPageToken: '' }));
+
+    const { getLocation } = renderAt('/runs?status=failed');
+    await waitFor(() => expect(bodies.length).toBeGreaterThanOrEqual(1));
+
+    await user.selectOptions(screen.getByLabelText('Status'), 'all');
+
+    await waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodyStatus(bodies[1])).toBe('');
+    expect(getLocation().pathname).toBe('/runs');
+    expect(getLocation().search).toBe('');
+  });
+
+  test('clicking a status chip navigates to the run list filtered by that status', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns((_pageToken, status) => ({
+      runs:
+        status === 'succeeded'
+          ? [run('run-2', 'succeeded')]
+          : [run('run-1', 'running'), run('run-2', 'succeeded')],
+      nextPageToken: '',
+    }));
+
+    const { getLocation } = renderAt('/runs');
+    await screen.findByText('run-1');
+
+    // The status chip in the row is a link into the filtered view.
+    const row = screen.getByText('run-2').closest('tr')!;
+    await user.click(within(row).getByRole('link', { name: 'succeeded' }));
+
+    await waitFor(() => expect(bodyStatus(bodies[1])).toBe('succeeded'));
+    expect(getLocation().search).toBe('?status=succeeded');
+    // The view shows only the matching status afterwards.
+    await waitFor(() => {
+      expect(screen.queryByText('run-1')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('run-2')).toBeInTheDocument();
+  });
+
+  test('a deep link carrying a status outside the fixed list keeps the filter selectable', async () => {
+    const bodies = installListRuns(() => ({ runs: [], nextPageToken: '' }));
+
+    renderAt('/runs?status=pending');
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodyStatus(bodies[0])).toBe('pending');
+    const select = screen.getByLabelText('Status') as HTMLSelectElement;
+    expect(select.value).toBe('pending');
+    // The unknown value stays selectable so the filter can be cleared again.
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toContain('pending');
+    expect(values).toContain('');
+  });
+
+  test('changing the filter drops rows loaded through Load more under the previous filter', async () => {
+    const user = userEvent.setup();
+    installListRuns((pageToken, status) => {
+      if (status !== '') return { runs: [run('run-9', 'succeeded')], nextPageToken: '' };
+      return pageToken === ''
+        ? { runs: [run('run-1', 'running')], nextPageToken: 'all-cursor-2' }
+        : { runs: [run('run-2', 'cancelled')], nextPageToken: '' };
+    });
+
+    renderAt('/runs');
+    await screen.findByText('run-1');
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('run-2')).toBeInTheDocument();
+
+    // Switching the filter invalidates the appended page: the view resets to
+    // page 1 of the new filter.
+    await user.selectOptions(screen.getByLabelText('Status'), 'succeeded');
+    await waitFor(() => {
+      expect(screen.queryByText('run-2')).not.toBeInTheDocument();
+      expect(screen.queryByText('run-1')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('run-9')).toBeInTheDocument();
+  });
+});
 
   test('duration column shows a live elapsed time for running runs', async () => {
     const started = new Date('2026-02-05T08:31:00.000Z').getTime();

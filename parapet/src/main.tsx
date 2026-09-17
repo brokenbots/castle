@@ -8,6 +8,7 @@ import { App } from './App';
 import { RunListPage } from './features/runs/RunListPage';
 import { RunDetailPage } from './features/runs/RunDetailPage';
 import { AgentListPage } from './features/agents/AgentListPage';
+import { AgentDetailPage } from './features/agents/AgentDetailPage';
 
 import './index.css';
 
@@ -21,6 +22,7 @@ createRoot(document.getElementById('root')!).render(
             <Route path="runs" element={<RunListPage />} />
             <Route path="runs/:id" element={<RunDetailPage />} />
             <Route path="agents" element={<AgentListPage />} />
+            <Route path="agents/:criteriaId" element={<AgentDetailPage />} />
           </Route>
         </Routes>
       </BrowserRouter>
