@@ -50,9 +50,17 @@ type ExpandablePanel = 'events' | 'graph' | 'inspection';
 // log anchoring and scroll positions survive expand/collapse. The per-panel
 // variants size the panel's own scroller to fill the overlay via arbitrary
 // variants targeting the panel's inner testids.
+//
+// The events variants make the whole ancestor chain down to the log scroller
+// definite-height (flex column at each level); percentage `h-full` computes
+// to `auto` against any auto-height ancestor, which would leave the log
+// content-sized and hand scrolling to the overlay instead of the log. This
+// couples the variants to EventLog's internal DOM (root div → last-child
+// relative wrapper → scroller); if EventLog's structure changes, the chain
+// must be revisited.
 const FULLSCREEN_PANEL_CLASSES =
   'fixed inset-0 z-50 flex flex-col overflow-y-auto bg-canvas p-4 sm:p-6';
-const EVENTS_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=events-panel-body]]:flex-1 [&_[data-testid=events-panel-body]]:min-h-0 [&_[data-testid=event-log-scroll]]:h-full`;
+const EVENTS_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=events-panel-body]]:flex [&_[data-testid=events-panel-body]]:flex-col [&_[data-testid=events-panel-body]]:flex-1 [&_[data-testid=events-panel-body]]:min-h-0 [&_[data-testid=events-panel-body]>div]:flex [&_[data-testid=events-panel-body]>div]:flex-col [&_[data-testid=events-panel-body]>div]:flex-1 [&_[data-testid=events-panel-body]>div]:min-h-0 [&_[data-testid=events-panel-body]>div>div:last-child]:flex-1 [&_[data-testid=events-panel-body]>div>div:last-child]:min-h-0 [&_[data-testid=event-log-scroll]]:h-full`;
 const GRAPH_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&>[data-testid=workflow-dag]]:flex-1 [&>[data-testid=workflow-dag]]:min-h-0`;
 const INSPECTION_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=run-inspection]]:flex-1 [&_[data-testid=run-inspection]]:min-h-0 [&_[data-testid=run-inspection]]:overflow-y-auto`;
 const PANEL_ICON_BUTTON_CLASSES =
@@ -73,11 +81,12 @@ interface PanelExpandButtonProps {
   onToggle: () => void;
   buttonRef: RefObject<HTMLButtonElement>;
   className: string;
+  controlsId: string;
 }
 
 // Single expand/collapse affordance per panel: a corner icon button toggling
-// the panel's fullscreen overlay. aria-expanded plus the swap between the
-// outward/inward arrow icons convey the state.
+// the panel's fullscreen overlay. aria-expanded/aria-controls plus the swap
+// between the outward/inward arrow icons convey the state.
 function PanelExpandButton({
   title,
   testId,
@@ -85,6 +94,7 @@ function PanelExpandButton({
   onToggle,
   buttonRef,
   className,
+  controlsId,
 }: PanelExpandButtonProps) {
   return (
     <button
@@ -93,6 +103,7 @@ function PanelExpandButton({
       data-testid={testId}
       aria-expanded={expanded}
       aria-label={`${expanded ? 'Collapse' : 'Expand'} ${title} panel`}
+      aria-controls={controlsId}
       title={expanded ? `${title} panel — collapse (Escape)` : `${title} panel — expand`}
       onClick={onToggle}
       className={className}
@@ -338,6 +349,7 @@ export function RunDetailPage() {
         )}
 
         <section
+          id="inspection-panel"
           data-testid="inspection-panel"
           data-expanded={expandedPanel === 'inspection'}
           className={expandedPanel === 'inspection' ? INSPECTION_FULLSCREEN_CLASSES : 'relative'}
@@ -350,6 +362,7 @@ export function RunDetailPage() {
             onToggle={() => togglePanel('inspection')}
             buttonRef={inspectionExpandRef}
             className={panelButtonClass(expandedPanel === 'inspection')}
+            controlsId="inspection-panel"
           />
         </section>
 
@@ -391,6 +404,7 @@ export function RunDetailPage() {
         )}
 
         <section
+          id="events-panel"
           data-testid="events-panel"
           data-expanded={expandedPanel === 'events'}
           className={expandedPanel === 'events' ? EVENTS_FULLSCREEN_CLASSES : 'relative'}
@@ -412,6 +426,7 @@ export function RunDetailPage() {
             onToggle={() => togglePanel('events')}
             buttonRef={eventsExpandRef}
             className={panelButtonClass(expandedPanel === 'events')}
+            controlsId="events-panel"
           />
         </section>
         <section>
@@ -421,6 +436,7 @@ export function RunDetailPage() {
           </pre>
         </section>
         <section
+          id="graph-panel"
           data-testid="graph-panel"
           data-expanded={expandedPanel === 'graph'}
           className={expandedPanel === 'graph' ? GRAPH_FULLSCREEN_CLASSES : 'relative'}
@@ -456,6 +472,7 @@ export function RunDetailPage() {
             onToggle={() => togglePanel('graph')}
             buttonRef={graphExpandRef}
             className={panelButtonClass(expandedPanel === 'graph')}
+            controlsId="graph-panel"
           />
         </section>
       </div>
