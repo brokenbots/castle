@@ -202,35 +202,23 @@ func TestConsoleWire_ViewAllObservationSurface(t *testing.T) {
 }
 
 // TestConsoleWire_WritesDenied pins that the console identity cannot mutate
-// anything: ServerService writes, CriteriaService writes, OrchestratorService
-// writes, and Register.
+// anything outside the run-control surface (CRI-196): assignment/prompt
+// writes, CriteriaService writes, OrchestratorService writes, and Register.
 func TestConsoleWire_WritesDenied(t *testing.T) {
 	h := newConsoleWireHarness(t, false)
 	ctx := context.Background()
 
 	denials := map[string]func() error{
-		"StopRun": func() error {
-			req := connect.NewRequest(&pb.StopRunRequest{RunId: h.runID})
-			h.authHeader(req)
-			_, err := h.cClient.StopRun(ctx, req)
-			return err
-		},
-		"PauseRun": func() error {
-			req := connect.NewRequest(&pb.PauseRunRequest{RunId: h.runID})
-			h.authHeader(req)
-			_, err := h.cClient.PauseRun(ctx, req)
-			return err
-		},
-		"ResumeRun": func() error {
-			req := connect.NewRequest(&pb.ResumeRunRequest{RunId: h.runID})
-			h.authHeader(req)
-			_, err := h.cClient.ResumeRun(ctx, req)
-			return err
-		},
 		"SendPrompt": func() error {
 			req := connect.NewRequest(&pb.SendPromptRequest{RunId: h.runID, Prompt: "nope"})
 			h.authHeader(req)
 			_, err := h.cClient.SendPrompt(ctx, req)
+			return err
+		},
+		"SubmitWorkflowAssignment": func() error {
+			req := connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{WorkflowName: "wf", WorkflowSource: "nope"})
+			h.authHeader(req)
+			_, err := h.cClient.SubmitWorkflowAssignment(ctx, req)
 			return err
 		},
 		"CreateRun (CriteriaService write)": func() error {
@@ -269,6 +257,86 @@ func TestConsoleWire_WritesDenied(t *testing.T) {
 	}
 }
 
+// TestConsoleWire_RunControlWritesAccepted is the CRI-196 case: a console
+// identity may stop, pause, and resume a run owned by another agent, and the
+// issued control messages reach the owning agent. ResumeRun carries the
+// payload contract (signal + payload map).
+func TestConsoleWire_RunControlWritesAccepted(t *testing.T) {
+	h := newConsoleWireHarness(t, false)
+	ctx := context.Background()
+
+	// The owning agent subscribes to its control stream with its own token.
+	ctrlReq := connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: h.agentID})
+	ctrlReq.Header().Set("Authorization", "Bearer "+h.agentToken)
+	ctrl, err := h.oClient.Control(ctx, ctrlReq)
+	if err != nil {
+		t.Fatalf("agent control subscribe: %v", err)
+	}
+	defer ctrl.Close()
+	if !ctrl.Receive() {
+		t.Fatalf("expected ControlReady, err=%v", ctrl.Err())
+	}
+
+	// Console pause on another agent's run is accepted and reaches the agent.
+	pauseReq := connect.NewRequest(&pb.PauseRunRequest{RunId: h.runID})
+	h.authHeader(pauseReq)
+	if _, err := h.cClient.PauseRun(ctx, pauseReq); err != nil {
+		t.Fatalf("console PauseRun: %v", err)
+	}
+	if !ctrl.Receive() {
+		t.Fatalf("expected PauseRun control message, err=%v", ctrl.Err())
+	}
+	if _, ok := ctrl.Msg().Command.(*pb.ControlMessage_PauseRun); !ok {
+		t.Fatalf("unexpected control command: %T", ctrl.Msg().Command)
+	}
+
+	// Drive the agent-side pause lifecycle: run becomes paused with a pending
+	// signal the console can then resume.
+	if err := h.ts.store.SetRunPaused(ctx, h.runID, "continue", time.Now().UTC()); err != nil {
+		t.Fatalf("set run paused: %v", err)
+	}
+
+	// Console resume carries the payload contract (signal + payload map).
+	resumeReq := connect.NewRequest(&pb.ResumeRunRequest{
+		RunId:   h.runID,
+		Signal:  "continue",
+		Payload: map[string]string{"decision": "approve"},
+	})
+	h.authHeader(resumeReq)
+	if _, err := h.cClient.ResumeRun(ctx, resumeReq); err != nil {
+		t.Fatalf("console ResumeRun: %v", err)
+	}
+	if !ctrl.Receive() {
+		t.Fatalf("expected ResumeRun control message, err=%v", ctrl.Err())
+	}
+	msg := ctrl.Msg()
+	cmd, ok := msg.Command.(*pb.ControlMessage_ResumeRun)
+	if !ok {
+		t.Fatalf("unexpected control command: %T", msg.Command)
+	}
+	if cmd.ResumeRun.Signal != "continue" {
+		t.Fatalf("signal=%s want continue", cmd.ResumeRun.Signal)
+	}
+	if cmd.ResumeRun.Payload["decision"] != "approve" {
+		t.Fatalf("payload not forwarded to agent: %v", cmd.ResumeRun.Payload)
+	}
+
+	// Console stop on another agent's run is accepted and reaches the agent.
+	stopReq := connect.NewRequest(&pb.StopRunRequest{RunId: h.runID})
+	h.authHeader(stopReq)
+	if _, err := h.cClient.StopRun(ctx, stopReq); err != nil {
+		t.Fatalf("console StopRun: %v", err)
+	}
+	if !ctrl.Receive() {
+		t.Fatalf("expected RunCancel control message, err=%v", ctrl.Err())
+	}
+	if cancel, ok := ctrl.Msg().Command.(*pb.ControlMessage_RunCancel); !ok {
+		t.Fatalf("unexpected control command: %T", ctrl.Msg().Command)
+	} else if cancel.RunCancel.RunId != h.runID {
+		t.Fatalf("run id=%s want %s", cancel.RunCancel.RunId, h.runID)
+	}
+}
+
 // TestConsoleWire_AgentTokenPathUnchanged pins that agent login (token) and
 // agent authorization are unaffected by the console feature.
 func TestConsoleWire_AgentTokenPathUnchanged(t *testing.T) {
@@ -304,7 +372,8 @@ func TestConsoleWire_AgentTokenPathUnchanged(t *testing.T) {
 
 // TestConsoleWire_UnderAnonReads covers the deployed dev-mode configuration:
 // anonymous reads stay anonymous, and a presented console token keeps its
-// deterministic read-only boundary even on the anon-readable surface.
+// deterministic boundary — reads plus run-control writes (CRI-196) — even on
+// the anon-readable surface.
 func TestConsoleWire_UnderAnonReads(t *testing.T) {
 	h := newConsoleWireHarness(t, true)
 	ctx := context.Background()
@@ -319,11 +388,22 @@ func TestConsoleWire_UnderAnonReads(t *testing.T) {
 	if _, err := h.cClient.ListRuns(ctx, readReq); err != nil {
 		t.Fatalf("console ListRuns under anon-reads: %v", err)
 	}
-	// ...and the console token still cannot write.
+	// The owning agent connects so a run-control write can deliver.
+	ctrlReq := connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: h.agentID})
+	ctrlReq.Header().Set("Authorization", "Bearer "+h.agentToken)
+	ctrl, err := h.oClient.Control(ctx, ctrlReq)
+	if err != nil {
+		t.Fatalf("agent control subscribe: %v", err)
+	}
+	defer ctrl.Close()
+	if !ctrl.Receive() {
+		t.Fatalf("expected ControlReady, err=%v", ctrl.Err())
+	}
+	// ...and the console token can perform run-control writes (CRI-196).
 	stopReq := connect.NewRequest(&pb.StopRunRequest{RunId: h.runID})
 	h.authHeader(stopReq)
-	if _, err := h.cClient.StopRun(ctx, stopReq); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("console StopRun under anon-reads must be permission_denied, got %v", err)
+	if _, err := h.cClient.StopRun(ctx, stopReq); err != nil {
+		t.Fatalf("console StopRun under anon-reads must be accepted, got %v", err)
 	}
 	// ...nor reach the orchestrator observation surface.
 	orchReq := connect.NewRequest(&pb.ListActiveRunsRequest{})

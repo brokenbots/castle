@@ -970,9 +970,14 @@ func (x *PauseRunResponse) GetIssuedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// Request to resume a run from the console/operator side. `signal` and
+// `payload` are optional: when set they must match the run's pending signal
+// and are forwarded to the agent's ResumeRun control message.
 type ResumeRunRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	Signal        string                 `protobuf:"bytes,2,opt,name=signal,proto3" json:"signal,omitempty"`                                                                             // optional; validated against the run's pending signal
+	Payload       map[string]string      `protobuf:"bytes,3,rep,name=payload,proto3" json:"payload,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // optional; forwarded to the agent
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1012,6 +1017,20 @@ func (x *ResumeRunRequest) GetRunId() string {
 		return x.RunId
 	}
 	return ""
+}
+
+func (x *ResumeRunRequest) GetSignal() string {
+	if x != nil {
+		return x.Signal
+	}
+	return ""
+}
+
+func (x *ResumeRunRequest) GetPayload() map[string]string {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
 }
 
 type ResumeRunResponse struct {
@@ -1681,9 +1700,14 @@ const file_criteria_v1_server_proto_rawDesc = "" +
 	"\x0fPauseRunRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\"K\n" +
 	"\x10PauseRunResponse\x127\n" +
-	"\tissued_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\")\n" +
+	"\tissued_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\"\xc3\x01\n" +
 	"\x10ResumeRunRequest\x12\x15\n" +
-	"\x06run_id\x18\x01 \x01(\tR\x05runId\"L\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x16\n" +
+	"\x06signal\x18\x02 \x01(\tR\x06signal\x12D\n" +
+	"\apayload\x18\x03 \x03(\v2*.criteria.v1.ResumeRunRequest.PayloadEntryR\apayload\x1a:\n" +
+	"\fPayloadEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"L\n" +
 	"\x11ResumeRunResponse\x127\n" +
 	"\tissued_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\"I\n" +
 	"\x11InspectRunRequest\x12\x15\n" +
@@ -1771,7 +1795,7 @@ func file_criteria_v1_server_proto_rawDescGZIP() []byte {
 }
 
 var file_criteria_v1_server_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_criteria_v1_server_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_criteria_v1_server_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_criteria_v1_server_proto_goTypes = []any{
 	(WorkflowAssignmentState)(0),             // 0: criteria.v1.WorkflowAssignmentState
 	(*LoginRequest)(nil),                     // 1: criteria.v1.LoginRequest
@@ -1801,62 +1825,64 @@ var file_criteria_v1_server_proto_goTypes = []any{
 	(*GetAssignmentDispositionRequest)(nil),  // 25: criteria.v1.GetAssignmentDispositionRequest
 	(*GetAssignmentDispositionResponse)(nil), // 26: criteria.v1.GetAssignmentDispositionResponse
 	nil,                                      // 27: criteria.v1.Agent.LabelsEntry
-	nil,                                      // 28: criteria.v1.SubmitWorkflowAssignmentRequest.LabelsEntry
-	(*timestamppb.Timestamp)(nil),            // 29: google.protobuf.Timestamp
-	(*Run)(nil),                              // 30: criteria.v1.Run
-	(*Envelope)(nil),                         // 31: criteria.v1.Envelope
+	nil,                                      // 28: criteria.v1.ResumeRunRequest.PayloadEntry
+	nil,                                      // 29: criteria.v1.SubmitWorkflowAssignmentRequest.LabelsEntry
+	(*timestamppb.Timestamp)(nil),            // 30: google.protobuf.Timestamp
+	(*Run)(nil),                              // 31: criteria.v1.Run
+	(*Envelope)(nil),                         // 32: criteria.v1.Envelope
 }
 var file_criteria_v1_server_proto_depIdxs = []int32{
 	27, // 0: criteria.v1.Agent.labels:type_name -> criteria.v1.Agent.LabelsEntry
-	29, // 1: criteria.v1.Agent.registered_at:type_name -> google.protobuf.Timestamp
-	29, // 2: criteria.v1.Agent.last_seen_at:type_name -> google.protobuf.Timestamp
+	30, // 1: criteria.v1.Agent.registered_at:type_name -> google.protobuf.Timestamp
+	30, // 2: criteria.v1.Agent.last_seen_at:type_name -> google.protobuf.Timestamp
 	3,  // 3: criteria.v1.ListAgentsResponse.agents:type_name -> criteria.v1.Agent
-	30, // 4: criteria.v1.ListRunsResponse.runs:type_name -> criteria.v1.Run
-	31, // 5: criteria.v1.ListRunEventsResponse.events:type_name -> criteria.v1.Envelope
-	29, // 6: criteria.v1.StopRunResponse.issued_at:type_name -> google.protobuf.Timestamp
-	29, // 7: criteria.v1.PauseRunResponse.issued_at:type_name -> google.protobuf.Timestamp
-	29, // 8: criteria.v1.ResumeRunResponse.issued_at:type_name -> google.protobuf.Timestamp
-	29, // 9: criteria.v1.InspectRunResponse.last_activity_at:type_name -> google.protobuf.Timestamp
-	29, // 10: criteria.v1.SendPromptResponse.issued_at:type_name -> google.protobuf.Timestamp
-	28, // 11: criteria.v1.SubmitWorkflowAssignmentRequest.labels:type_name -> criteria.v1.SubmitWorkflowAssignmentRequest.LabelsEntry
-	0,  // 12: criteria.v1.SubmitWorkflowAssignmentResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
-	29, // 13: criteria.v1.SubmitWorkflowAssignmentResponse.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 14: criteria.v1.GetAssignmentDispositionResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
-	29, // 15: criteria.v1.GetAssignmentDispositionResponse.created_at:type_name -> google.protobuf.Timestamp
-	29, // 16: criteria.v1.GetAssignmentDispositionResponse.updated_at:type_name -> google.protobuf.Timestamp
-	4,  // 17: criteria.v1.ServerService.ListAgents:input_type -> criteria.v1.ListAgentsRequest
-	6,  // 18: criteria.v1.ServerService.GetAgent:input_type -> criteria.v1.GetAgentRequest
-	7,  // 19: criteria.v1.ServerService.ListRuns:input_type -> criteria.v1.ListRunsRequest
-	9,  // 20: criteria.v1.ServerService.GetRun:input_type -> criteria.v1.GetRunRequest
-	10, // 21: criteria.v1.ServerService.ListRunEvents:input_type -> criteria.v1.ListRunEventsRequest
-	12, // 22: criteria.v1.ServerService.WatchRun:input_type -> criteria.v1.WatchRunRequest
-	13, // 23: criteria.v1.ServerService.StopRun:input_type -> criteria.v1.StopRunRequest
-	15, // 24: criteria.v1.ServerService.PauseRun:input_type -> criteria.v1.PauseRunRequest
-	17, // 25: criteria.v1.ServerService.ResumeRun:input_type -> criteria.v1.ResumeRunRequest
-	19, // 26: criteria.v1.ServerService.InspectRun:input_type -> criteria.v1.InspectRunRequest
-	23, // 27: criteria.v1.ServerService.SubmitWorkflowAssignment:input_type -> criteria.v1.SubmitWorkflowAssignmentRequest
-	25, // 28: criteria.v1.ServerService.GetAssignmentDisposition:input_type -> criteria.v1.GetAssignmentDispositionRequest
-	21, // 29: criteria.v1.ServerService.SendPrompt:input_type -> criteria.v1.SendPromptRequest
-	1,  // 30: criteria.v1.ServerService.Login:input_type -> criteria.v1.LoginRequest
-	5,  // 31: criteria.v1.ServerService.ListAgents:output_type -> criteria.v1.ListAgentsResponse
-	3,  // 32: criteria.v1.ServerService.GetAgent:output_type -> criteria.v1.Agent
-	8,  // 33: criteria.v1.ServerService.ListRuns:output_type -> criteria.v1.ListRunsResponse
-	30, // 34: criteria.v1.ServerService.GetRun:output_type -> criteria.v1.Run
-	11, // 35: criteria.v1.ServerService.ListRunEvents:output_type -> criteria.v1.ListRunEventsResponse
-	31, // 36: criteria.v1.ServerService.WatchRun:output_type -> criteria.v1.Envelope
-	14, // 37: criteria.v1.ServerService.StopRun:output_type -> criteria.v1.StopRunResponse
-	16, // 38: criteria.v1.ServerService.PauseRun:output_type -> criteria.v1.PauseRunResponse
-	18, // 39: criteria.v1.ServerService.ResumeRun:output_type -> criteria.v1.ResumeRunResponse
-	20, // 40: criteria.v1.ServerService.InspectRun:output_type -> criteria.v1.InspectRunResponse
-	24, // 41: criteria.v1.ServerService.SubmitWorkflowAssignment:output_type -> criteria.v1.SubmitWorkflowAssignmentResponse
-	26, // 42: criteria.v1.ServerService.GetAssignmentDisposition:output_type -> criteria.v1.GetAssignmentDispositionResponse
-	22, // 43: criteria.v1.ServerService.SendPrompt:output_type -> criteria.v1.SendPromptResponse
-	2,  // 44: criteria.v1.ServerService.Login:output_type -> criteria.v1.LoginResponse
-	31, // [31:45] is the sub-list for method output_type
-	17, // [17:31] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	31, // 4: criteria.v1.ListRunsResponse.runs:type_name -> criteria.v1.Run
+	32, // 5: criteria.v1.ListRunEventsResponse.events:type_name -> criteria.v1.Envelope
+	30, // 6: criteria.v1.StopRunResponse.issued_at:type_name -> google.protobuf.Timestamp
+	30, // 7: criteria.v1.PauseRunResponse.issued_at:type_name -> google.protobuf.Timestamp
+	28, // 8: criteria.v1.ResumeRunRequest.payload:type_name -> criteria.v1.ResumeRunRequest.PayloadEntry
+	30, // 9: criteria.v1.ResumeRunResponse.issued_at:type_name -> google.protobuf.Timestamp
+	30, // 10: criteria.v1.InspectRunResponse.last_activity_at:type_name -> google.protobuf.Timestamp
+	30, // 11: criteria.v1.SendPromptResponse.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 12: criteria.v1.SubmitWorkflowAssignmentRequest.labels:type_name -> criteria.v1.SubmitWorkflowAssignmentRequest.LabelsEntry
+	0,  // 13: criteria.v1.SubmitWorkflowAssignmentResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
+	30, // 14: criteria.v1.SubmitWorkflowAssignmentResponse.created_at:type_name -> google.protobuf.Timestamp
+	0,  // 15: criteria.v1.GetAssignmentDispositionResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
+	30, // 16: criteria.v1.GetAssignmentDispositionResponse.created_at:type_name -> google.protobuf.Timestamp
+	30, // 17: criteria.v1.GetAssignmentDispositionResponse.updated_at:type_name -> google.protobuf.Timestamp
+	4,  // 18: criteria.v1.ServerService.ListAgents:input_type -> criteria.v1.ListAgentsRequest
+	6,  // 19: criteria.v1.ServerService.GetAgent:input_type -> criteria.v1.GetAgentRequest
+	7,  // 20: criteria.v1.ServerService.ListRuns:input_type -> criteria.v1.ListRunsRequest
+	9,  // 21: criteria.v1.ServerService.GetRun:input_type -> criteria.v1.GetRunRequest
+	10, // 22: criteria.v1.ServerService.ListRunEvents:input_type -> criteria.v1.ListRunEventsRequest
+	12, // 23: criteria.v1.ServerService.WatchRun:input_type -> criteria.v1.WatchRunRequest
+	13, // 24: criteria.v1.ServerService.StopRun:input_type -> criteria.v1.StopRunRequest
+	15, // 25: criteria.v1.ServerService.PauseRun:input_type -> criteria.v1.PauseRunRequest
+	17, // 26: criteria.v1.ServerService.ResumeRun:input_type -> criteria.v1.ResumeRunRequest
+	19, // 27: criteria.v1.ServerService.InspectRun:input_type -> criteria.v1.InspectRunRequest
+	23, // 28: criteria.v1.ServerService.SubmitWorkflowAssignment:input_type -> criteria.v1.SubmitWorkflowAssignmentRequest
+	25, // 29: criteria.v1.ServerService.GetAssignmentDisposition:input_type -> criteria.v1.GetAssignmentDispositionRequest
+	21, // 30: criteria.v1.ServerService.SendPrompt:input_type -> criteria.v1.SendPromptRequest
+	1,  // 31: criteria.v1.ServerService.Login:input_type -> criteria.v1.LoginRequest
+	5,  // 32: criteria.v1.ServerService.ListAgents:output_type -> criteria.v1.ListAgentsResponse
+	3,  // 33: criteria.v1.ServerService.GetAgent:output_type -> criteria.v1.Agent
+	8,  // 34: criteria.v1.ServerService.ListRuns:output_type -> criteria.v1.ListRunsResponse
+	31, // 35: criteria.v1.ServerService.GetRun:output_type -> criteria.v1.Run
+	11, // 36: criteria.v1.ServerService.ListRunEvents:output_type -> criteria.v1.ListRunEventsResponse
+	32, // 37: criteria.v1.ServerService.WatchRun:output_type -> criteria.v1.Envelope
+	14, // 38: criteria.v1.ServerService.StopRun:output_type -> criteria.v1.StopRunResponse
+	16, // 39: criteria.v1.ServerService.PauseRun:output_type -> criteria.v1.PauseRunResponse
+	18, // 40: criteria.v1.ServerService.ResumeRun:output_type -> criteria.v1.ResumeRunResponse
+	20, // 41: criteria.v1.ServerService.InspectRun:output_type -> criteria.v1.InspectRunResponse
+	24, // 42: criteria.v1.ServerService.SubmitWorkflowAssignment:output_type -> criteria.v1.SubmitWorkflowAssignmentResponse
+	26, // 43: criteria.v1.ServerService.GetAssignmentDisposition:output_type -> criteria.v1.GetAssignmentDispositionResponse
+	22, // 44: criteria.v1.ServerService.SendPrompt:output_type -> criteria.v1.SendPromptResponse
+	2,  // 45: criteria.v1.ServerService.Login:output_type -> criteria.v1.LoginResponse
+	32, // [32:46] is the sub-list for method output_type
+	18, // [18:32] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_criteria_v1_server_proto_init() }
@@ -1872,7 +1898,7 @@ func file_criteria_v1_server_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_criteria_v1_server_proto_rawDesc), len(file_criteria_v1_server_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   28,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

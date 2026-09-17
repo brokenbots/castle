@@ -811,6 +811,10 @@ export class PauseRunResponse extends Message<PauseRunResponse> {
 }
 
 /**
+ * Request to resume a run from the console/operator side. `signal` and
+ * `payload` are optional: when set they must match the run's pending signal
+ * and are forwarded to the agent's ResumeRun control message.
+ *
  * @generated from message criteria.v1.ResumeRunRequest
  */
 export class ResumeRunRequest extends Message<ResumeRunRequest> {
@@ -818,6 +822,20 @@ export class ResumeRunRequest extends Message<ResumeRunRequest> {
    * @generated from field: string run_id = 1;
    */
   runId = "";
+
+  /**
+   * optional; validated against the run's pending signal
+   *
+   * @generated from field: string signal = 2;
+   */
+  signal = "";
+
+  /**
+   * optional; forwarded to the agent
+   *
+   * @generated from field: map<string, string> payload = 3;
+   */
+  payload: { [key: string]: string } = {};
 
   constructor(data?: PartialMessage<ResumeRunRequest>) {
     super();
@@ -828,6 +846,8 @@ export class ResumeRunRequest extends Message<ResumeRunRequest> {
   static readonly typeName = "criteria.v1.ResumeRunRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "payload", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResumeRunRequest {

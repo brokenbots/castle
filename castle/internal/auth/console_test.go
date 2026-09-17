@@ -125,9 +125,10 @@ func TestConsoleTokenResolvesAsConsoleIdentity(t *testing.T) {
 	}
 }
 
-// TestConsoleDeniedOnWrites pins the deterministic console allowlist (CRI-195):
-// every write — CriteriaService, ServerService writes, OrchestratorService
-// writes — is permission_denied for a console identity.
+// TestConsoleDeniedOnWrites pins the deterministic console allowlist (CRI-195,
+// CRI-196): every write outside the run-control surface — CriteriaService,
+// ServerService assignment/prompt writes, OrchestratorService writes — is
+// permission_denied for a console identity.
 func TestConsoleDeniedOnWrites(t *testing.T) {
 	db := newAuthTestStore(t)
 	token := seedConsoleUser(t, db)
@@ -138,9 +139,6 @@ func TestConsoleDeniedOnWrites(t *testing.T) {
 		criteriav1connect.CriteriaServiceReattachRunProcedure,
 		criteriav1connect.CriteriaServiceHeartbeatProcedure,
 		criteriav1connect.CriteriaServiceResumeProcedure,
-		criteriav1connect.ServerServiceStopRunProcedure,
-		criteriav1connect.ServerServicePauseRunProcedure,
-		criteriav1connect.ServerServiceResumeRunProcedure,
 		criteriav1connect.ServerServiceSendPromptProcedure,
 		criteriav1connect.ServerServiceSubmitWorkflowAssignmentProcedure,
 		criteriav1connect.ServerServiceGetAssignmentDispositionProcedure,
@@ -154,8 +152,37 @@ func TestConsoleDeniedOnWrites(t *testing.T) {
 	}
 }
 
-// TestConsoleAllowedOnReadOnlySurface pins that the console allowlist is
-// exactly the read-only ServerService observation surface.
+// TestConsoleAllowedOnRunControlWrites pins the CRI-196 extension: a console
+// identity may invoke the ServerService run-control writes — Stop/Pause/
+// Resume — so a human operator can manage runs from the console, and the
+// injected identity stays console-only (never agent or orchestrator).
+func TestConsoleAllowedOnRunControlWrites(t *testing.T) {
+	db := newAuthTestStore(t)
+	token := seedConsoleUser(t, db)
+	var consoleID, criteriaID, orchID string
+	for _, procedure := range []string{
+		criteriav1connect.ServerServiceStopRunProcedure,
+		criteriav1connect.ServerServicePauseRunProcedure,
+		criteriav1connect.ServerServiceResumeRunProcedure,
+	} {
+		call := newUnaryProbe(t, db, procedure, false, func(ctx context.Context) {
+			consoleID, criteriaID, orchID = CallerConsoleUserID(ctx), CallerCriteriaID(ctx), CallerOrchestratorID(ctx)
+		})
+		if err := call(token); err != nil {
+			t.Errorf("%s: expected console run-control write to be allowed, got %v", procedure, err)
+		}
+		if consoleID != "console-default" {
+			t.Errorf("%s: expected CallerConsoleUserID=console-default, got %q", procedure, consoleID)
+		}
+		if criteriaID != "" || orchID != "" {
+			t.Errorf("%s: console caller must not be treated as agent/orchestrator (criteria=%q orch=%q)", procedure, criteriaID, orchID)
+		}
+	}
+}
+
+// TestConsoleAllowedOnReadOnlySurface pins that the console read allowlist
+// is exactly the read-only ServerService observation surface (run-control
+// writes are pinned separately by TestConsoleAllowedOnRunControlWrites).
 func TestConsoleAllowedOnReadOnlySurface(t *testing.T) {
 	db := newAuthTestStore(t)
 	token := seedConsoleUser(t, db)

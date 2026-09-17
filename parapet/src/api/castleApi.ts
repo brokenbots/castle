@@ -258,9 +258,9 @@ export const castleApi = createApi({
       { issuedAt?: string },
       { runId: string; signal?: string; payload?: Record<string, string> }
     >({
-      queryFn: async ({ runId }) => {
+      queryFn: async ({ runId, signal, payload }) => {
         try {
-          const resp = await server.resumeRun({ runId });
+          const resp = await server.resumeRun({ runId, signal: signal ?? '', payload: payload ?? {} });
           return { data: { issuedAt: tsToIso(resp.issuedAt) } };
         } catch (err) {
           return { error: toError(err) };

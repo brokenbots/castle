@@ -503,7 +503,13 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 	if signal == "" {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run has no pending signal"))
 	}
-	msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Signal: signal}}}
+	// A console operator may pin the signal they intend to resume; if they
+	// send one it must match the run's pending signal (CRI-196 payload
+	// contract), so a stale console view cannot resume the wrong wait.
+	if req.Msg.Signal != "" && req.Msg.Signal != signal {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("signal does not match the run's pending signal"))
+	}
+	msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Signal: signal, Payload: req.Msg.Payload}}}
 	issuedAt, err := s.issueControlCommand(ctx, run, msg)
 	if err != nil {
 		return nil, err
