@@ -80,6 +80,7 @@ beforeAll(() => {
 // Mutable fixture so tests can vary run metadata (CRI-131) without a second
 // module mock. UseGetRunQuery returns this object verbatim.
 const fixture = vi.hoisted(() => ({
+  error: undefined as unknown,
   data: {
     runId: 'run-1',
     criteriaId: 'ov-1',
@@ -107,8 +108,10 @@ vi.mock('../../api/castleApi', async () => {
     ...actual,
     useGetRunQuery: () => ({
       isLoading: false,
-      error: undefined,
-      data: fixture.data,
+      error: fixture.error,
+      // A real failure leaves the query without data, exactly as the page's
+      // error branch (`run.error || !run.data`) expects.
+      data: fixture.error ? undefined : fixture.data,
     }),
   };
 });
@@ -128,6 +131,7 @@ function wireEvents(count: number) {
 
 describe('RunDetailPage', () => {
   beforeEach(() => {
+    fixture.error = undefined;
     fixture.data.ticket = '';
     fixture.data.repoUrl = '';
     fixture.data.prUrl = '';
@@ -937,5 +941,53 @@ describe('RunDetailPage stream status', () => {
     expect(screen.getByTestId('stream-status')).toHaveAttribute('data-state', 'unauthenticated');
     expect(screen.getByTestId('stream-status')).toHaveTextContent('sign in again to resume');
     expect(screen.queryByTestId('stream-reconnect')).not.toBeInTheDocument();
+  });
+});
+
+describe('RunDetailPage getRun error handling', () => {
+  afterEach(() => {
+    fixture.error = undefined;
+  });
+
+  function renderDetail() {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+  }
+
+  test('prompts re-authentication when GetRun rejects with 401', async () => {
+    fixture.error = { status: 'unauthenticated', data: 'token rejected' };
+
+    renderDetail();
+
+    // The auth failure must never fall through to "Run not found.".
+    expect(await screen.findByText('Session expired')).toBeInTheDocument();
+    expect(
+      screen.getByText('Your token was rejected by Castle. Sign in again to continue.'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('page-state-reauth')).toBeInTheDocument();
+    expect(screen.queryByText('Run not found.')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('page-state-retry')).not.toBeInTheDocument();
+    expect(screen.queryByText('Workflow source')).not.toBeInTheDocument();
+  });
+
+  test('renders Run not found without retry when GetRun rejects with 404', async () => {
+    fixture.error = { status: 'not_found', data: 'no such run' };
+
+    renderDetail();
+
+    expect(await screen.findByText('Run not found.')).toBeInTheDocument();
+    expect(screen.getByText("This run doesn't exist or was removed.")).toBeInTheDocument();
+    // Retrying a nonexistent run is useless: retry is reserved for
+    // recoverable (server/auth) failures — only back navigation is offered.
+    expect(screen.queryByTestId('page-state-retry')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('page-state-reauth')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Back to runs' })).toBeInTheDocument();
   });
 });

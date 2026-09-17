@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { AgentDetailPage } from './AgentDetailPage';
 import { castleApi } from '../../api/castleApi';
 import { store } from '../../store';
+import { selectAuthExpired, sessionRecovered } from '../../features/auth/sessionSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
 
@@ -77,6 +78,9 @@ function renderPage(criteriaId = 'agent-1') {
 // cache with a late fulfillment.
 afterEach(() => {
   cleanup();
+  // Module-level session state is shared across tests; clear any expired
+  // flag a previous test left behind so the gate starts neutral.
+  store.dispatch(sessionRecovered());
   store.dispatch(castleApi.util.resetApiState());
   document.title = 'Parapet — Castle';
 });
@@ -231,5 +235,61 @@ describe('AgentDetailPage', () => {
 
     await screen.findByTestId('agent-detail');
     await waitFor(() => expect(document.title).toBe('build-runner — Parapet — Castle'));
+  });
+});
+
+
+describe('AgentDetailPage load-error states', () => {
+  test('prompts re-authentication when GetAgent rejects with 401', async () => {
+    server.use(
+      http.post(
+        serverPath('GetAgent'),
+        () => HttpResponse.json({ code: 'unauthenticated', message: 'token rejected' }, { status: 401 }),
+      ),
+    );
+
+    renderPage('agent-1');
+
+    // The auth failure must never fall through to "Agent not found.".
+    expect(await screen.findByText('Session expired')).toBeInTheDocument();
+    expect(
+      screen.getByText('Your token was rejected by Castle. Sign in again to continue.'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('page-state-reauth')).toBeInTheDocument();
+    expect(screen.queryByText('Agent not found.')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('page-state-retry')).not.toBeInTheDocument();
+    expect(selectAuthExpired(store.getState())).toBe(true);
+  });
+
+  test('retries the load from the server-error state', async () => {
+    let failing = true;
+    server.use(
+      http.post(serverPath('GetAgent'), () => {
+        if (failing) {
+          return new HttpResponse(JSON.stringify({ code: 'unavailable', message: 'offline' }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return HttpResponse.json({
+          criteria_id: 'agent-1',
+          name: 'build-runner',
+          labels: { hostname: 'runner-7' },
+          status: 'online',
+          registered_at: new Date(Date.now() - 48 * HOUR_MS).toISOString(),
+          last_seen_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+        });
+      }),
+    );
+    installListRuns(() => ({ runs: [], next_page_token: '' }));
+
+    renderPage('agent-1');
+
+    const retry = await screen.findByTestId('page-state-retry', {}, { timeout: 3000 });
+    expect(await screen.findByText('Failed to load this agent.')).toBeInTheDocument();
+    failing = false;
+    await userEvent.click(retry);
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'build-runner' })).toBeInTheDocument();
   });
 });
