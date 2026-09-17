@@ -6,7 +6,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { Agent, GetAgentRequest, GetAssignmentDispositionRequest, GetAssignmentDispositionResponse, GetRunRequest, InspectRunRequest, InspectRunResponse, ListAgentsRequest, ListAgentsResponse, ListRunEventsRequest, ListRunEventsResponse, ListRunsRequest, ListRunsResponse, PauseRunRequest, PauseRunResponse, ResumeRunRequest, ResumeRunResponse, SendPromptRequest, SendPromptResponse, StopRunRequest, StopRunResponse, SubmitWorkflowAssignmentRequest, SubmitWorkflowAssignmentResponse, WatchRunRequest } from "./server_pb.js";
+import { Agent, GetAgentRequest, GetAssignmentDispositionRequest, GetAssignmentDispositionResponse, GetRunRequest, InspectRunRequest, InspectRunResponse, ListAgentsRequest, ListAgentsResponse, ListRunEventsRequest, ListRunEventsResponse, ListRunsRequest, ListRunsResponse, LoginRequest, LoginResponse, PauseRunRequest, PauseRunResponse, ResumeRunRequest, ResumeRunResponse, SendPromptRequest, SendPromptResponse, StopRunRequest, StopRunResponse, SubmitWorkflowAssignmentRequest, SubmitWorkflowAssignmentResponse, WatchRunRequest } from "./server_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 import { Run } from "./criteria_pb.js";
 import { Envelope } from "./events_pb.js";
@@ -182,6 +182,31 @@ export const ServerService = {
       name: "SendPrompt",
       I: SendPromptRequest,
       O: SendPromptResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Login exchanges human console credentials (username + password) for a
+     * short-lived console session token (CRI-195). It is the interim human
+     * login for the Parapet console: agents keep using agent tokens via the
+     * normal auth headers.
+     *
+     * Login is a public bootstrap RPC: it never requires an Authorization
+     * header. Implementations MUST return UNIMPLEMENTED (or
+     * FAILED_PRECONDITION) when console login is not configured on the
+     * server, and UNAUTHENTICATED for unknown usernames or wrong passwords.
+     * Passwords are verified against a stored hash (never plaintext) and are
+     * never logged.
+     *
+     * The issued session token authenticates a CONSOLE identity, which is
+     * authorized for the read-only ServerService observation surface across
+     * all runs and agents, and denied every write procedure.
+     *
+     * @generated from rpc criteria.v1.ServerService.Login
+     */
+    login: {
+      name: "Login",
+      I: LoginRequest,
+      O: LoginResponse,
       kind: MethodKind.Unary,
     },
   }

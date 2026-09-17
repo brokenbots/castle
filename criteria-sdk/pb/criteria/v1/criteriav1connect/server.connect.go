@@ -68,6 +68,8 @@ const (
 	// ServerServiceSendPromptProcedure is the fully-qualified name of the ServerService's SendPrompt
 	// RPC.
 	ServerServiceSendPromptProcedure = "/criteria.v1.ServerService/SendPrompt"
+	// ServerServiceLoginProcedure is the fully-qualified name of the ServerService's Login RPC.
+	ServerServiceLoginProcedure = "/criteria.v1.ServerService/Login"
 )
 
 // ServerServiceClient is a client for the criteria.v1.ServerService service.
@@ -126,6 +128,22 @@ type ServerServiceClient interface {
 	// SendPrompt delivers a prompt to the agent executing a specific run step.
 	// The prompt is sent over the Criteria Control stream; callers must own the run.
 	SendPrompt(context.Context, *connect.Request[v1.SendPromptRequest]) (*connect.Response[v1.SendPromptResponse], error)
+	// Login exchanges human console credentials (username + password) for a
+	// short-lived console session token (CRI-195). It is the interim human
+	// login for the Parapet console: agents keep using agent tokens via the
+	// normal auth headers.
+	//
+	// Login is a public bootstrap RPC: it never requires an Authorization
+	// header. Implementations MUST return UNIMPLEMENTED (or
+	// FAILED_PRECONDITION) when console login is not configured on the
+	// server, and UNAUTHENTICATED for unknown usernames or wrong passwords.
+	// Passwords are verified against a stored hash (never plaintext) and are
+	// never logged.
+	//
+	// The issued session token authenticates a CONSOLE identity, which is
+	// authorized for the read-only ServerService observation surface across
+	// all runs and agents, and denied every write procedure.
+	Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error)
 }
 
 // NewServerServiceClient constructs a client for the criteria.v1.ServerService service. By default,
@@ -217,6 +235,12 @@ func NewServerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(serverServiceMethods.ByName("SendPrompt")),
 			connect.WithClientOptions(opts...),
 		),
+		login: connect.NewClient[v1.LoginRequest, v1.LoginResponse](
+			httpClient,
+			baseURL+ServerServiceLoginProcedure,
+			connect.WithSchema(serverServiceMethods.ByName("Login")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -235,6 +259,7 @@ type serverServiceClient struct {
 	submitWorkflowAssignment *connect.Client[v1.SubmitWorkflowAssignmentRequest, v1.SubmitWorkflowAssignmentResponse]
 	getAssignmentDisposition *connect.Client[v1.GetAssignmentDispositionRequest, v1.GetAssignmentDispositionResponse]
 	sendPrompt               *connect.Client[v1.SendPromptRequest, v1.SendPromptResponse]
+	login                    *connect.Client[v1.LoginRequest, v1.LoginResponse]
 }
 
 // ListAgents calls criteria.v1.ServerService.ListAgents.
@@ -302,6 +327,11 @@ func (c *serverServiceClient) SendPrompt(ctx context.Context, req *connect.Reque
 	return c.sendPrompt.CallUnary(ctx, req)
 }
 
+// Login calls criteria.v1.ServerService.Login.
+func (c *serverServiceClient) Login(ctx context.Context, req *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error) {
+	return c.login.CallUnary(ctx, req)
+}
+
 // ServerServiceHandler is an implementation of the criteria.v1.ServerService service.
 type ServerServiceHandler interface {
 	ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error)
@@ -358,6 +388,22 @@ type ServerServiceHandler interface {
 	// SendPrompt delivers a prompt to the agent executing a specific run step.
 	// The prompt is sent over the Criteria Control stream; callers must own the run.
 	SendPrompt(context.Context, *connect.Request[v1.SendPromptRequest]) (*connect.Response[v1.SendPromptResponse], error)
+	// Login exchanges human console credentials (username + password) for a
+	// short-lived console session token (CRI-195). It is the interim human
+	// login for the Parapet console: agents keep using agent tokens via the
+	// normal auth headers.
+	//
+	// Login is a public bootstrap RPC: it never requires an Authorization
+	// header. Implementations MUST return UNIMPLEMENTED (or
+	// FAILED_PRECONDITION) when console login is not configured on the
+	// server, and UNAUTHENTICATED for unknown usernames or wrong passwords.
+	// Passwords are verified against a stored hash (never plaintext) and are
+	// never logged.
+	//
+	// The issued session token authenticates a CONSOLE identity, which is
+	// authorized for the read-only ServerService observation surface across
+	// all runs and agents, and denied every write procedure.
+	Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error)
 }
 
 // NewServerServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -445,6 +491,12 @@ func NewServerServiceHandler(svc ServerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(serverServiceMethods.ByName("SendPrompt")),
 		connect.WithHandlerOptions(opts...),
 	)
+	serverServiceLoginHandler := connect.NewUnaryHandler(
+		ServerServiceLoginProcedure,
+		svc.Login,
+		connect.WithSchema(serverServiceMethods.ByName("Login")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/criteria.v1.ServerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ServerServiceListAgentsProcedure:
@@ -473,6 +525,8 @@ func NewServerServiceHandler(svc ServerServiceHandler, opts ...connect.HandlerOp
 			serverServiceGetAssignmentDispositionHandler.ServeHTTP(w, r)
 		case ServerServiceSendPromptProcedure:
 			serverServiceSendPromptHandler.ServeHTTP(w, r)
+		case ServerServiceLoginProcedure:
+			serverServiceLoginHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -532,4 +586,8 @@ func (UnimplementedServerServiceHandler) GetAssignmentDisposition(context.Contex
 
 func (UnimplementedServerServiceHandler) SendPrompt(context.Context, *connect.Request[v1.SendPromptRequest]) (*connect.Response[v1.SendPromptResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("criteria.v1.ServerService.SendPrompt is not implemented"))
+}
+
+func (UnimplementedServerServiceHandler) Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("criteria.v1.ServerService.Login is not implemented"))
 }

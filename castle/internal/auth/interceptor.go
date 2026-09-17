@@ -84,6 +84,34 @@ func isOrchestratorAllowed(procedure string) bool {
 	return false
 }
 
+// isConsoleAllowed reports whether a console identity may invoke the
+// procedure (CRI-195). Console identities are human operators viewing the
+// Parapet console: they get exactly the read-only ServerService observation
+// surface across ALL runs and agents (a human viewing the console is not
+// subject to caller-owns-run — that boundary is for agent identities), and
+// nothing else. Every write — CriteriaService, ServerService writes
+// (Resume/Pause/Stop), OrchestratorService writes (CancelRun), Register — is
+// denied.
+func isConsoleAllowed(procedure string) bool {
+	_, ok := readOnlyServerProcedures[procedure]
+	return ok
+}
+
+// authorizeConsoleProcedure enforces the console auth boundary (CRI-195): a
+// console identity may invoke only the read-only ServerService observation
+// procedures. Agent-owned writes must be rejected so a console login can
+// never mutate run state. Agent and orchestrator callers pass through
+// (CallerConsoleUserID is empty for them).
+func authorizeConsoleProcedure(ctx context.Context, procedure string) error {
+	if CallerConsoleUserID(ctx) == "" {
+		return nil
+	}
+	if isConsoleAllowed(procedure) {
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied, errors.New("console identities are read-only and cannot invoke this procedure"))
+}
+
 // InterceptorOption configures an AuthInterceptor.
 type InterceptorOption func(*AuthInterceptor)
 
@@ -127,6 +155,12 @@ func NewInterceptor(st store.Store, allowAnonReads bool, opts ...InterceptorOpti
 
 func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		// Login is the credential bootstrap: it must reach its handler
+		// unauthenticated so the handler can own the feature gate (console
+		// login disabled → Unimplemented) and verify credentials (CRI-195).
+		if req.Spec().Procedure == criteriav1connect.ServerServiceLoginProcedure {
+			return next(ctx, req)
+		}
 		if req.Spec().Procedure == criteria.RegisterProcedure {
 			return i.handleRegister(ctx, req, next)
 		}
@@ -142,6 +176,9 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return nil, err
 		}
 		if err := authorizeOrchestratorProcedure(newCtx, req.Spec().Procedure); err != nil {
+			return nil, err
+		}
+		if err := authorizeConsoleProcedure(newCtx, req.Spec().Procedure); err != nil {
 			return nil, err
 		}
 		return next(newCtx, req)
@@ -166,6 +203,9 @@ func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 			return err
 		}
 		if err := authorizeOrchestratorProcedure(newCtx, conn.Spec().Procedure); err != nil {
+			return err
+		}
+		if err := authorizeConsoleProcedure(newCtx, conn.Spec().Procedure); err != nil {
 			return err
 		}
 		return next(newCtx, conn)
@@ -211,6 +251,10 @@ func anonReadableProcedure(procedure string) bool {
 // rather than accept anything and trap the UI in a login loop on a
 // deep-linked route. Health and reflection exemptions are not anon-readable
 // surfaces and stay fully unauthenticated.
+//
+// The surface includes OrchestratorService subscription APIs, which a console
+// identity must never reach (CRI-195), so the console boundary is re-checked
+// after identity injection.
 func (i *AuthInterceptor) authenticateAnonReadToken(ctx context.Context, h http.Header, procedure string) (context.Context, error) {
 	if !i.allowAnonReads || !anonReadableProcedure(procedure) {
 		return ctx, nil
@@ -218,16 +262,26 @@ func (i *AuthInterceptor) authenticateAnonReadToken(ctx context.Context, h http.
 	if _, ok := TokenFromHeaders(h); !ok {
 		return ctx, nil
 	}
-	return i.authenticateHeaders(ctx, h)
+	newCtx, err := i.authenticateHeaders(ctx, h)
+	if err != nil {
+		return nil, err
+	}
+	if err := authorizeConsoleProcedure(newCtx, procedure); err != nil {
+		return nil, err
+	}
+	return newCtx, nil
 }
 
 // authenticateHeaders validates the token and returns a context with the
 // caller's identity injected: criteria agent ID for agent tokens,
-// orchestrator ID for orchestrator tokens (CRI-133). Agent tokens take
-// precedence when both match: the per-table token-hash UNIQUE indexes cannot
-// detect identical token material across tables, so in that (operator
-// misconfiguration) case the token acts as an agent and the orchestrator
-// identity it shadows is unreachable.
+// orchestrator ID for orchestrator tokens (CRI-133), console user ID for
+// console session tokens (CRI-195). Agent tokens take precedence when both
+// match: the per-table token-hash UNIQUE indexes cannot detect identical
+// token material across tables, so in that (operator misconfiguration) case
+// the token acts as an agent and the identity it shadows is unreachable. The
+// same applies to orchestrator over console: these token spaces are
+// independently generated (distinct random material), so precedence only
+// matters for pathological collisions.
 func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header) (context.Context, error) {
 	tok, ok := TokenFromHeaders(h)
 	if !ok {
@@ -244,18 +298,39 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 	if err != nil {
 		return ctx, connect.NewError(connect.CodeInternal, err)
 	}
-	if orch == nil {
+	if orch != nil {
+		return context.WithValue(ctx, callerOrchestratorIDKey{}, orch.ID), nil
+	}
+	sess, err := ResolveConsoleSession(ctx, i.store, tok)
+	if err != nil {
+		return ctx, connect.NewError(connect.CodeInternal, err)
+	}
+	if sess == nil {
 		return ctx, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token"))
 	}
-	return context.WithValue(ctx, callerOrchestratorIDKey{}, orch.ID), nil
+	return context.WithValue(ctx, callerConsoleUserIDKey{}, sess.UserID), nil
 }
 
-// handleRegister enforces the bootstrap-token gate for the Register RPC.
+// handleRegister enforces the bootstrap-token gate for the Register RPC, and
+// denies console identities outright (CRI-195): a console token can never
+// register an agent, even under --dev-allow-anon-register, so the read-only
+// human console cannot bootstrap agent credentials.
 //
+//   - Console session token presented: PermissionDenied, checked first so the
+//     denial is deterministic regardless of the bootstrap configuration.
 //   - allowAnonRegister=true (--dev-allow-anon-register): pass through.
 //   - bootstrapTokenHash set: require a matching X-Server-Bootstrap header.
 //   - Neither: Register is disabled; Unimplemented is returned.
 func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyRequest, next connect.UnaryFunc) (connect.AnyResponse, error) {
+	if tok, present := TokenFromHeaders(req.Header()); present {
+		sess, err := ResolveConsoleSession(ctx, i.store, tok)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if sess != nil {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("console identities are read-only and cannot register agents"))
+		}
+	}
 	if i.allowAnonRegister {
 		return next(ctx, req)
 	}

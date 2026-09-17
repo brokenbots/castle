@@ -95,6 +95,118 @@ func (WorkflowAssignmentState) EnumDescriptor() ([]byte, []int) {
 	return file_criteria_v1_server_proto_rawDescGZIP(), []int{0}
 }
 
+type LoginRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// username is the console user's login name.
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// password is the console user's plaintext password, supplied only on the
+	// wire and never persisted or logged by the server.
+	Password      string `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoginRequest) Reset() {
+	*x = LoginRequest{}
+	mi := &file_criteria_v1_server_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoginRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoginRequest) ProtoMessage() {}
+
+func (x *LoginRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_criteria_v1_server_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoginRequest.ProtoReflect.Descriptor instead.
+func (*LoginRequest) Descriptor() ([]byte, []int) {
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *LoginRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *LoginRequest) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+type LoginResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// session_token is the console session bearer token. It authenticates the
+	// read-only console identity via the standard Authorization header. The
+	// server persists only its SHA-256 digest; the plaintext token is returned
+	// exactly once.
+	SessionToken string `protobuf:"bytes,1,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	// username echoes the authenticated console user's login name.
+	Username      string `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoginResponse) Reset() {
+	*x = LoginResponse{}
+	mi := &file_criteria_v1_server_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoginResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoginResponse) ProtoMessage() {}
+
+func (x *LoginResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_criteria_v1_server_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoginResponse.ProtoReflect.Descriptor instead.
+func (*LoginResponse) Descriptor() ([]byte, []int) {
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *LoginResponse) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *LoginResponse) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
 type Agent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CriteriaId    string                 `protobuf:"bytes,1,opt,name=criteria_id,json=criteriaId,proto3" json:"criteria_id,omitempty"`
@@ -109,7 +221,7 @@ type Agent struct {
 
 func (x *Agent) Reset() {
 	*x = Agent{}
-	mi := &file_criteria_v1_server_proto_msgTypes[0]
+	mi := &file_criteria_v1_server_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -121,7 +233,7 @@ func (x *Agent) String() string {
 func (*Agent) ProtoMessage() {}
 
 func (x *Agent) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[0]
+	mi := &file_criteria_v1_server_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -134,7 +246,7 @@ func (x *Agent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Agent.ProtoReflect.Descriptor instead.
 func (*Agent) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{0}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Agent) GetCriteriaId() string {
@@ -189,7 +301,7 @@ type ListAgentsRequest struct {
 
 func (x *ListAgentsRequest) Reset() {
 	*x = ListAgentsRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[1]
+	mi := &file_criteria_v1_server_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -201,7 +313,7 @@ func (x *ListAgentsRequest) String() string {
 func (*ListAgentsRequest) ProtoMessage() {}
 
 func (x *ListAgentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[1]
+	mi := &file_criteria_v1_server_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -214,7 +326,7 @@ func (x *ListAgentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentsRequest.ProtoReflect.Descriptor instead.
 func (*ListAgentsRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{1}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ListAgentsRequest) GetLimit() int32 {
@@ -241,7 +353,7 @@ type ListAgentsResponse struct {
 
 func (x *ListAgentsResponse) Reset() {
 	*x = ListAgentsResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[2]
+	mi := &file_criteria_v1_server_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -253,7 +365,7 @@ func (x *ListAgentsResponse) String() string {
 func (*ListAgentsResponse) ProtoMessage() {}
 
 func (x *ListAgentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[2]
+	mi := &file_criteria_v1_server_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -266,7 +378,7 @@ func (x *ListAgentsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentsResponse.ProtoReflect.Descriptor instead.
 func (*ListAgentsResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{2}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListAgentsResponse) GetAgents() []*Agent {
@@ -292,7 +404,7 @@ type GetAgentRequest struct {
 
 func (x *GetAgentRequest) Reset() {
 	*x = GetAgentRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[3]
+	mi := &file_criteria_v1_server_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -304,7 +416,7 @@ func (x *GetAgentRequest) String() string {
 func (*GetAgentRequest) ProtoMessage() {}
 
 func (x *GetAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[3]
+	mi := &file_criteria_v1_server_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -317,7 +429,7 @@ func (x *GetAgentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentRequest.ProtoReflect.Descriptor instead.
 func (*GetAgentRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{3}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GetAgentRequest) GetCriteriaId() string {
@@ -339,7 +451,7 @@ type ListRunsRequest struct {
 
 func (x *ListRunsRequest) Reset() {
 	*x = ListRunsRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[4]
+	mi := &file_criteria_v1_server_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -351,7 +463,7 @@ func (x *ListRunsRequest) String() string {
 func (*ListRunsRequest) ProtoMessage() {}
 
 func (x *ListRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[4]
+	mi := &file_criteria_v1_server_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -364,7 +476,7 @@ func (x *ListRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunsRequest.ProtoReflect.Descriptor instead.
 func (*ListRunsRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{4}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListRunsRequest) GetCriteriaId() string {
@@ -405,7 +517,7 @@ type ListRunsResponse struct {
 
 func (x *ListRunsResponse) Reset() {
 	*x = ListRunsResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[5]
+	mi := &file_criteria_v1_server_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -417,7 +529,7 @@ func (x *ListRunsResponse) String() string {
 func (*ListRunsResponse) ProtoMessage() {}
 
 func (x *ListRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[5]
+	mi := &file_criteria_v1_server_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -430,7 +542,7 @@ func (x *ListRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunsResponse.ProtoReflect.Descriptor instead.
 func (*ListRunsResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{5}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListRunsResponse) GetRuns() []*Run {
@@ -456,7 +568,7 @@ type GetRunRequest struct {
 
 func (x *GetRunRequest) Reset() {
 	*x = GetRunRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[6]
+	mi := &file_criteria_v1_server_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -468,7 +580,7 @@ func (x *GetRunRequest) String() string {
 func (*GetRunRequest) ProtoMessage() {}
 
 func (x *GetRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[6]
+	mi := &file_criteria_v1_server_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -481,7 +593,7 @@ func (x *GetRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunRequest.ProtoReflect.Descriptor instead.
 func (*GetRunRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{6}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetRunRequest) GetRunId() string {
@@ -502,7 +614,7 @@ type ListRunEventsRequest struct {
 
 func (x *ListRunEventsRequest) Reset() {
 	*x = ListRunEventsRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[7]
+	mi := &file_criteria_v1_server_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -514,7 +626,7 @@ func (x *ListRunEventsRequest) String() string {
 func (*ListRunEventsRequest) ProtoMessage() {}
 
 func (x *ListRunEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[7]
+	mi := &file_criteria_v1_server_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -527,7 +639,7 @@ func (x *ListRunEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListRunEventsRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{7}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListRunEventsRequest) GetRunId() string {
@@ -563,7 +675,7 @@ type ListRunEventsResponse struct {
 
 func (x *ListRunEventsResponse) Reset() {
 	*x = ListRunEventsResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[8]
+	mi := &file_criteria_v1_server_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -575,7 +687,7 @@ func (x *ListRunEventsResponse) String() string {
 func (*ListRunEventsResponse) ProtoMessage() {}
 
 func (x *ListRunEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[8]
+	mi := &file_criteria_v1_server_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -588,7 +700,7 @@ func (x *ListRunEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListRunEventsResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{8}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListRunEventsResponse) GetEvents() []*Envelope {
@@ -623,7 +735,7 @@ type WatchRunRequest struct {
 
 func (x *WatchRunRequest) Reset() {
 	*x = WatchRunRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[9]
+	mi := &file_criteria_v1_server_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -635,7 +747,7 @@ func (x *WatchRunRequest) String() string {
 func (*WatchRunRequest) ProtoMessage() {}
 
 func (x *WatchRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[9]
+	mi := &file_criteria_v1_server_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -648,7 +760,7 @@ func (x *WatchRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRunRequest.ProtoReflect.Descriptor instead.
 func (*WatchRunRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{9}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *WatchRunRequest) GetRunId() string {
@@ -682,7 +794,7 @@ type StopRunRequest struct {
 
 func (x *StopRunRequest) Reset() {
 	*x = StopRunRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[10]
+	mi := &file_criteria_v1_server_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -694,7 +806,7 @@ func (x *StopRunRequest) String() string {
 func (*StopRunRequest) ProtoMessage() {}
 
 func (x *StopRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[10]
+	mi := &file_criteria_v1_server_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -707,7 +819,7 @@ func (x *StopRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopRunRequest.ProtoReflect.Descriptor instead.
 func (*StopRunRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{10}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *StopRunRequest) GetRunId() string {
@@ -735,7 +847,7 @@ type StopRunResponse struct {
 
 func (x *StopRunResponse) Reset() {
 	*x = StopRunResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[11]
+	mi := &file_criteria_v1_server_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -747,7 +859,7 @@ func (x *StopRunResponse) String() string {
 func (*StopRunResponse) ProtoMessage() {}
 
 func (x *StopRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[11]
+	mi := &file_criteria_v1_server_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -760,7 +872,7 @@ func (x *StopRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopRunResponse.ProtoReflect.Descriptor instead.
 func (*StopRunResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{11}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *StopRunResponse) GetIssuedAt() *timestamppb.Timestamp {
@@ -779,7 +891,7 @@ type PauseRunRequest struct {
 
 func (x *PauseRunRequest) Reset() {
 	*x = PauseRunRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[12]
+	mi := &file_criteria_v1_server_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -791,7 +903,7 @@ func (x *PauseRunRequest) String() string {
 func (*PauseRunRequest) ProtoMessage() {}
 
 func (x *PauseRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[12]
+	mi := &file_criteria_v1_server_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -804,7 +916,7 @@ func (x *PauseRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseRunRequest.ProtoReflect.Descriptor instead.
 func (*PauseRunRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{12}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PauseRunRequest) GetRunId() string {
@@ -823,7 +935,7 @@ type PauseRunResponse struct {
 
 func (x *PauseRunResponse) Reset() {
 	*x = PauseRunResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[13]
+	mi := &file_criteria_v1_server_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -835,7 +947,7 @@ func (x *PauseRunResponse) String() string {
 func (*PauseRunResponse) ProtoMessage() {}
 
 func (x *PauseRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[13]
+	mi := &file_criteria_v1_server_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -848,7 +960,7 @@ func (x *PauseRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseRunResponse.ProtoReflect.Descriptor instead.
 func (*PauseRunResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{13}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PauseRunResponse) GetIssuedAt() *timestamppb.Timestamp {
@@ -867,7 +979,7 @@ type ResumeRunRequest struct {
 
 func (x *ResumeRunRequest) Reset() {
 	*x = ResumeRunRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[14]
+	mi := &file_criteria_v1_server_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -879,7 +991,7 @@ func (x *ResumeRunRequest) String() string {
 func (*ResumeRunRequest) ProtoMessage() {}
 
 func (x *ResumeRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[14]
+	mi := &file_criteria_v1_server_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -892,7 +1004,7 @@ func (x *ResumeRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeRunRequest.ProtoReflect.Descriptor instead.
 func (*ResumeRunRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{14}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ResumeRunRequest) GetRunId() string {
@@ -911,7 +1023,7 @@ type ResumeRunResponse struct {
 
 func (x *ResumeRunResponse) Reset() {
 	*x = ResumeRunResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[15]
+	mi := &file_criteria_v1_server_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -923,7 +1035,7 @@ func (x *ResumeRunResponse) String() string {
 func (*ResumeRunResponse) ProtoMessage() {}
 
 func (x *ResumeRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[15]
+	mi := &file_criteria_v1_server_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -936,7 +1048,7 @@ func (x *ResumeRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeRunResponse.ProtoReflect.Descriptor instead.
 func (*ResumeRunResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{15}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ResumeRunResponse) GetIssuedAt() *timestamppb.Timestamp {
@@ -956,7 +1068,7 @@ type InspectRunRequest struct {
 
 func (x *InspectRunRequest) Reset() {
 	*x = InspectRunRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[16]
+	mi := &file_criteria_v1_server_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -968,7 +1080,7 @@ func (x *InspectRunRequest) String() string {
 func (*InspectRunRequest) ProtoMessage() {}
 
 func (x *InspectRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[16]
+	mi := &file_criteria_v1_server_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -981,7 +1093,7 @@ func (x *InspectRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectRunRequest.ProtoReflect.Descriptor instead.
 func (*InspectRunRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{16}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *InspectRunRequest) GetRunId() string {
@@ -1014,7 +1126,7 @@ type InspectRunResponse struct {
 
 func (x *InspectRunResponse) Reset() {
 	*x = InspectRunResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[17]
+	mi := &file_criteria_v1_server_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1026,7 +1138,7 @@ func (x *InspectRunResponse) String() string {
 func (*InspectRunResponse) ProtoMessage() {}
 
 func (x *InspectRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[17]
+	mi := &file_criteria_v1_server_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1039,7 +1151,7 @@ func (x *InspectRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectRunResponse.ProtoReflect.Descriptor instead.
 func (*InspectRunResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{17}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *InspectRunResponse) GetRunId() string {
@@ -1102,7 +1214,7 @@ type SendPromptRequest struct {
 
 func (x *SendPromptRequest) Reset() {
 	*x = SendPromptRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[18]
+	mi := &file_criteria_v1_server_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1114,7 +1226,7 @@ func (x *SendPromptRequest) String() string {
 func (*SendPromptRequest) ProtoMessage() {}
 
 func (x *SendPromptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[18]
+	mi := &file_criteria_v1_server_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1127,7 +1239,7 @@ func (x *SendPromptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendPromptRequest.ProtoReflect.Descriptor instead.
 func (*SendPromptRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{18}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SendPromptRequest) GetRunId() string {
@@ -1160,7 +1272,7 @@ type SendPromptResponse struct {
 
 func (x *SendPromptResponse) Reset() {
 	*x = SendPromptResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[19]
+	mi := &file_criteria_v1_server_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1172,7 +1284,7 @@ func (x *SendPromptResponse) String() string {
 func (*SendPromptResponse) ProtoMessage() {}
 
 func (x *SendPromptResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[19]
+	mi := &file_criteria_v1_server_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1185,7 +1297,7 @@ func (x *SendPromptResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendPromptResponse.ProtoReflect.Descriptor instead.
 func (*SendPromptResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{19}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SendPromptResponse) GetIssuedAt() *timestamppb.Timestamp {
@@ -1221,7 +1333,7 @@ type SubmitWorkflowAssignmentRequest struct {
 
 func (x *SubmitWorkflowAssignmentRequest) Reset() {
 	*x = SubmitWorkflowAssignmentRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[20]
+	mi := &file_criteria_v1_server_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1233,7 +1345,7 @@ func (x *SubmitWorkflowAssignmentRequest) String() string {
 func (*SubmitWorkflowAssignmentRequest) ProtoMessage() {}
 
 func (x *SubmitWorkflowAssignmentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[20]
+	mi := &file_criteria_v1_server_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1246,7 +1358,7 @@ func (x *SubmitWorkflowAssignmentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitWorkflowAssignmentRequest.ProtoReflect.Descriptor instead.
 func (*SubmitWorkflowAssignmentRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{20}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SubmitWorkflowAssignmentRequest) GetWorkflowName() string {
@@ -1304,7 +1416,7 @@ type SubmitWorkflowAssignmentResponse struct {
 
 func (x *SubmitWorkflowAssignmentResponse) Reset() {
 	*x = SubmitWorkflowAssignmentResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[21]
+	mi := &file_criteria_v1_server_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1316,7 +1428,7 @@ func (x *SubmitWorkflowAssignmentResponse) String() string {
 func (*SubmitWorkflowAssignmentResponse) ProtoMessage() {}
 
 func (x *SubmitWorkflowAssignmentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[21]
+	mi := &file_criteria_v1_server_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1329,7 +1441,7 @@ func (x *SubmitWorkflowAssignmentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitWorkflowAssignmentResponse.ProtoReflect.Descriptor instead.
 func (*SubmitWorkflowAssignmentResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{21}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SubmitWorkflowAssignmentResponse) GetRunId() string {
@@ -1378,7 +1490,7 @@ type GetAssignmentDispositionRequest struct {
 
 func (x *GetAssignmentDispositionRequest) Reset() {
 	*x = GetAssignmentDispositionRequest{}
-	mi := &file_criteria_v1_server_proto_msgTypes[22]
+	mi := &file_criteria_v1_server_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1390,7 +1502,7 @@ func (x *GetAssignmentDispositionRequest) String() string {
 func (*GetAssignmentDispositionRequest) ProtoMessage() {}
 
 func (x *GetAssignmentDispositionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[22]
+	mi := &file_criteria_v1_server_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1403,7 +1515,7 @@ func (x *GetAssignmentDispositionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAssignmentDispositionRequest.ProtoReflect.Descriptor instead.
 func (*GetAssignmentDispositionRequest) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{22}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetAssignmentDispositionRequest) GetRunId() string {
@@ -1434,7 +1546,7 @@ type GetAssignmentDispositionResponse struct {
 
 func (x *GetAssignmentDispositionResponse) Reset() {
 	*x = GetAssignmentDispositionResponse{}
-	mi := &file_criteria_v1_server_proto_msgTypes[23]
+	mi := &file_criteria_v1_server_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1446,7 +1558,7 @@ func (x *GetAssignmentDispositionResponse) String() string {
 func (*GetAssignmentDispositionResponse) ProtoMessage() {}
 
 func (x *GetAssignmentDispositionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_server_proto_msgTypes[23]
+	mi := &file_criteria_v1_server_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1459,7 +1571,7 @@ func (x *GetAssignmentDispositionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAssignmentDispositionResponse.ProtoReflect.Descriptor instead.
 func (*GetAssignmentDispositionResponse) Descriptor() ([]byte, []int) {
-	return file_criteria_v1_server_proto_rawDescGZIP(), []int{23}
+	return file_criteria_v1_server_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetAssignmentDispositionResponse) GetRunId() string {
@@ -1508,7 +1620,13 @@ var File_criteria_v1_server_proto protoreflect.FileDescriptor
 
 const file_criteria_v1_server_proto_rawDesc = "" +
 	"\n" +
-	"\x18criteria/v1/server.proto\x12\vcriteria.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x18criteria/v1/events.proto\x1a\x1acriteria/v1/criteria.proto\"\xc6\x02\n" +
+	"\x18criteria/v1/server.proto\x12\vcriteria.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x18criteria/v1/events.proto\x1a\x1acriteria/v1/criteria.proto\"F\n" +
+	"\fLoginRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\"P\n" +
+	"\rLoginResponse\x12#\n" +
+	"\rsession_token\x18\x01 \x01(\tR\fsessionToken\x12\x1a\n" +
+	"\busername\x18\x02 \x01(\tR\busername\"\xc6\x02\n" +
 	"\x05Agent\x12\x1f\n" +
 	"\vcriteria_id\x18\x01 \x01(\tR\n" +
 	"criteriaId\x12\x12\n" +
@@ -1620,7 +1738,7 @@ const file_criteria_v1_server_proto_rawDesc = "" +
 	" WORKFLOW_ASSIGNMENT_STATE_QUEUED\x10\x01\x12$\n" +
 	" WORKFLOW_ASSIGNMENT_STATE_LEASED\x10\x02\x12&\n" +
 	"\"WORKFLOW_ASSIGNMENT_STATE_TERMINAL\x10\x03\x12&\n" +
-	"\"WORKFLOW_ASSIGNMENT_STATE_REJECTED\x10\x042\xa3\b\n" +
+	"\"WORKFLOW_ASSIGNMENT_STATE_REJECTED\x10\x042\xe3\b\n" +
 	"\rServerService\x12M\n" +
 	"\n" +
 	"ListAgents\x12\x1e.criteria.v1.ListAgentsRequest\x1a\x1f.criteria.v1.ListAgentsResponse\x12<\n" +
@@ -1637,7 +1755,8 @@ const file_criteria_v1_server_proto_rawDesc = "" +
 	"\x18SubmitWorkflowAssignment\x12,.criteria.v1.SubmitWorkflowAssignmentRequest\x1a-.criteria.v1.SubmitWorkflowAssignmentResponse\x12w\n" +
 	"\x18GetAssignmentDisposition\x12,.criteria.v1.GetAssignmentDispositionRequest\x1a-.criteria.v1.GetAssignmentDispositionResponse\x12M\n" +
 	"\n" +
-	"SendPrompt\x12\x1e.criteria.v1.SendPromptRequest\x1a\x1f.criteria.v1.SendPromptResponseB>Z<github.com/brokenbots/criteria/sdk/pb/criteria/v1;criteriav1b\x06proto3"
+	"SendPrompt\x12\x1e.criteria.v1.SendPromptRequest\x1a\x1f.criteria.v1.SendPromptResponse\x12>\n" +
+	"\x05Login\x12\x19.criteria.v1.LoginRequest\x1a\x1a.criteria.v1.LoginResponseB>Z<github.com/brokenbots/criteria/sdk/pb/criteria/v1;criteriav1b\x06proto3"
 
 var (
 	file_criteria_v1_server_proto_rawDescOnce sync.Once
@@ -1652,85 +1771,89 @@ func file_criteria_v1_server_proto_rawDescGZIP() []byte {
 }
 
 var file_criteria_v1_server_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_criteria_v1_server_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_criteria_v1_server_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_criteria_v1_server_proto_goTypes = []any{
 	(WorkflowAssignmentState)(0),             // 0: criteria.v1.WorkflowAssignmentState
-	(*Agent)(nil),                            // 1: criteria.v1.Agent
-	(*ListAgentsRequest)(nil),                // 2: criteria.v1.ListAgentsRequest
-	(*ListAgentsResponse)(nil),               // 3: criteria.v1.ListAgentsResponse
-	(*GetAgentRequest)(nil),                  // 4: criteria.v1.GetAgentRequest
-	(*ListRunsRequest)(nil),                  // 5: criteria.v1.ListRunsRequest
-	(*ListRunsResponse)(nil),                 // 6: criteria.v1.ListRunsResponse
-	(*GetRunRequest)(nil),                    // 7: criteria.v1.GetRunRequest
-	(*ListRunEventsRequest)(nil),             // 8: criteria.v1.ListRunEventsRequest
-	(*ListRunEventsResponse)(nil),            // 9: criteria.v1.ListRunEventsResponse
-	(*WatchRunRequest)(nil),                  // 10: criteria.v1.WatchRunRequest
-	(*StopRunRequest)(nil),                   // 11: criteria.v1.StopRunRequest
-	(*StopRunResponse)(nil),                  // 12: criteria.v1.StopRunResponse
-	(*PauseRunRequest)(nil),                  // 13: criteria.v1.PauseRunRequest
-	(*PauseRunResponse)(nil),                 // 14: criteria.v1.PauseRunResponse
-	(*ResumeRunRequest)(nil),                 // 15: criteria.v1.ResumeRunRequest
-	(*ResumeRunResponse)(nil),                // 16: criteria.v1.ResumeRunResponse
-	(*InspectRunRequest)(nil),                // 17: criteria.v1.InspectRunRequest
-	(*InspectRunResponse)(nil),               // 18: criteria.v1.InspectRunResponse
-	(*SendPromptRequest)(nil),                // 19: criteria.v1.SendPromptRequest
-	(*SendPromptResponse)(nil),               // 20: criteria.v1.SendPromptResponse
-	(*SubmitWorkflowAssignmentRequest)(nil),  // 21: criteria.v1.SubmitWorkflowAssignmentRequest
-	(*SubmitWorkflowAssignmentResponse)(nil), // 22: criteria.v1.SubmitWorkflowAssignmentResponse
-	(*GetAssignmentDispositionRequest)(nil),  // 23: criteria.v1.GetAssignmentDispositionRequest
-	(*GetAssignmentDispositionResponse)(nil), // 24: criteria.v1.GetAssignmentDispositionResponse
-	nil,                                      // 25: criteria.v1.Agent.LabelsEntry
-	nil,                                      // 26: criteria.v1.SubmitWorkflowAssignmentRequest.LabelsEntry
-	(*timestamppb.Timestamp)(nil),            // 27: google.protobuf.Timestamp
-	(*Run)(nil),                              // 28: criteria.v1.Run
-	(*Envelope)(nil),                         // 29: criteria.v1.Envelope
+	(*LoginRequest)(nil),                     // 1: criteria.v1.LoginRequest
+	(*LoginResponse)(nil),                    // 2: criteria.v1.LoginResponse
+	(*Agent)(nil),                            // 3: criteria.v1.Agent
+	(*ListAgentsRequest)(nil),                // 4: criteria.v1.ListAgentsRequest
+	(*ListAgentsResponse)(nil),               // 5: criteria.v1.ListAgentsResponse
+	(*GetAgentRequest)(nil),                  // 6: criteria.v1.GetAgentRequest
+	(*ListRunsRequest)(nil),                  // 7: criteria.v1.ListRunsRequest
+	(*ListRunsResponse)(nil),                 // 8: criteria.v1.ListRunsResponse
+	(*GetRunRequest)(nil),                    // 9: criteria.v1.GetRunRequest
+	(*ListRunEventsRequest)(nil),             // 10: criteria.v1.ListRunEventsRequest
+	(*ListRunEventsResponse)(nil),            // 11: criteria.v1.ListRunEventsResponse
+	(*WatchRunRequest)(nil),                  // 12: criteria.v1.WatchRunRequest
+	(*StopRunRequest)(nil),                   // 13: criteria.v1.StopRunRequest
+	(*StopRunResponse)(nil),                  // 14: criteria.v1.StopRunResponse
+	(*PauseRunRequest)(nil),                  // 15: criteria.v1.PauseRunRequest
+	(*PauseRunResponse)(nil),                 // 16: criteria.v1.PauseRunResponse
+	(*ResumeRunRequest)(nil),                 // 17: criteria.v1.ResumeRunRequest
+	(*ResumeRunResponse)(nil),                // 18: criteria.v1.ResumeRunResponse
+	(*InspectRunRequest)(nil),                // 19: criteria.v1.InspectRunRequest
+	(*InspectRunResponse)(nil),               // 20: criteria.v1.InspectRunResponse
+	(*SendPromptRequest)(nil),                // 21: criteria.v1.SendPromptRequest
+	(*SendPromptResponse)(nil),               // 22: criteria.v1.SendPromptResponse
+	(*SubmitWorkflowAssignmentRequest)(nil),  // 23: criteria.v1.SubmitWorkflowAssignmentRequest
+	(*SubmitWorkflowAssignmentResponse)(nil), // 24: criteria.v1.SubmitWorkflowAssignmentResponse
+	(*GetAssignmentDispositionRequest)(nil),  // 25: criteria.v1.GetAssignmentDispositionRequest
+	(*GetAssignmentDispositionResponse)(nil), // 26: criteria.v1.GetAssignmentDispositionResponse
+	nil,                                      // 27: criteria.v1.Agent.LabelsEntry
+	nil,                                      // 28: criteria.v1.SubmitWorkflowAssignmentRequest.LabelsEntry
+	(*timestamppb.Timestamp)(nil),            // 29: google.protobuf.Timestamp
+	(*Run)(nil),                              // 30: criteria.v1.Run
+	(*Envelope)(nil),                         // 31: criteria.v1.Envelope
 }
 var file_criteria_v1_server_proto_depIdxs = []int32{
-	25, // 0: criteria.v1.Agent.labels:type_name -> criteria.v1.Agent.LabelsEntry
-	27, // 1: criteria.v1.Agent.registered_at:type_name -> google.protobuf.Timestamp
-	27, // 2: criteria.v1.Agent.last_seen_at:type_name -> google.protobuf.Timestamp
-	1,  // 3: criteria.v1.ListAgentsResponse.agents:type_name -> criteria.v1.Agent
-	28, // 4: criteria.v1.ListRunsResponse.runs:type_name -> criteria.v1.Run
-	29, // 5: criteria.v1.ListRunEventsResponse.events:type_name -> criteria.v1.Envelope
-	27, // 6: criteria.v1.StopRunResponse.issued_at:type_name -> google.protobuf.Timestamp
-	27, // 7: criteria.v1.PauseRunResponse.issued_at:type_name -> google.protobuf.Timestamp
-	27, // 8: criteria.v1.ResumeRunResponse.issued_at:type_name -> google.protobuf.Timestamp
-	27, // 9: criteria.v1.InspectRunResponse.last_activity_at:type_name -> google.protobuf.Timestamp
-	27, // 10: criteria.v1.SendPromptResponse.issued_at:type_name -> google.protobuf.Timestamp
-	26, // 11: criteria.v1.SubmitWorkflowAssignmentRequest.labels:type_name -> criteria.v1.SubmitWorkflowAssignmentRequest.LabelsEntry
+	27, // 0: criteria.v1.Agent.labels:type_name -> criteria.v1.Agent.LabelsEntry
+	29, // 1: criteria.v1.Agent.registered_at:type_name -> google.protobuf.Timestamp
+	29, // 2: criteria.v1.Agent.last_seen_at:type_name -> google.protobuf.Timestamp
+	3,  // 3: criteria.v1.ListAgentsResponse.agents:type_name -> criteria.v1.Agent
+	30, // 4: criteria.v1.ListRunsResponse.runs:type_name -> criteria.v1.Run
+	31, // 5: criteria.v1.ListRunEventsResponse.events:type_name -> criteria.v1.Envelope
+	29, // 6: criteria.v1.StopRunResponse.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 7: criteria.v1.PauseRunResponse.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 8: criteria.v1.ResumeRunResponse.issued_at:type_name -> google.protobuf.Timestamp
+	29, // 9: criteria.v1.InspectRunResponse.last_activity_at:type_name -> google.protobuf.Timestamp
+	29, // 10: criteria.v1.SendPromptResponse.issued_at:type_name -> google.protobuf.Timestamp
+	28, // 11: criteria.v1.SubmitWorkflowAssignmentRequest.labels:type_name -> criteria.v1.SubmitWorkflowAssignmentRequest.LabelsEntry
 	0,  // 12: criteria.v1.SubmitWorkflowAssignmentResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
-	27, // 13: criteria.v1.SubmitWorkflowAssignmentResponse.created_at:type_name -> google.protobuf.Timestamp
+	29, // 13: criteria.v1.SubmitWorkflowAssignmentResponse.created_at:type_name -> google.protobuf.Timestamp
 	0,  // 14: criteria.v1.GetAssignmentDispositionResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
-	27, // 15: criteria.v1.GetAssignmentDispositionResponse.created_at:type_name -> google.protobuf.Timestamp
-	27, // 16: criteria.v1.GetAssignmentDispositionResponse.updated_at:type_name -> google.protobuf.Timestamp
-	2,  // 17: criteria.v1.ServerService.ListAgents:input_type -> criteria.v1.ListAgentsRequest
-	4,  // 18: criteria.v1.ServerService.GetAgent:input_type -> criteria.v1.GetAgentRequest
-	5,  // 19: criteria.v1.ServerService.ListRuns:input_type -> criteria.v1.ListRunsRequest
-	7,  // 20: criteria.v1.ServerService.GetRun:input_type -> criteria.v1.GetRunRequest
-	8,  // 21: criteria.v1.ServerService.ListRunEvents:input_type -> criteria.v1.ListRunEventsRequest
-	10, // 22: criteria.v1.ServerService.WatchRun:input_type -> criteria.v1.WatchRunRequest
-	11, // 23: criteria.v1.ServerService.StopRun:input_type -> criteria.v1.StopRunRequest
-	13, // 24: criteria.v1.ServerService.PauseRun:input_type -> criteria.v1.PauseRunRequest
-	15, // 25: criteria.v1.ServerService.ResumeRun:input_type -> criteria.v1.ResumeRunRequest
-	17, // 26: criteria.v1.ServerService.InspectRun:input_type -> criteria.v1.InspectRunRequest
-	21, // 27: criteria.v1.ServerService.SubmitWorkflowAssignment:input_type -> criteria.v1.SubmitWorkflowAssignmentRequest
-	23, // 28: criteria.v1.ServerService.GetAssignmentDisposition:input_type -> criteria.v1.GetAssignmentDispositionRequest
-	19, // 29: criteria.v1.ServerService.SendPrompt:input_type -> criteria.v1.SendPromptRequest
-	3,  // 30: criteria.v1.ServerService.ListAgents:output_type -> criteria.v1.ListAgentsResponse
-	1,  // 31: criteria.v1.ServerService.GetAgent:output_type -> criteria.v1.Agent
-	6,  // 32: criteria.v1.ServerService.ListRuns:output_type -> criteria.v1.ListRunsResponse
-	28, // 33: criteria.v1.ServerService.GetRun:output_type -> criteria.v1.Run
-	9,  // 34: criteria.v1.ServerService.ListRunEvents:output_type -> criteria.v1.ListRunEventsResponse
-	29, // 35: criteria.v1.ServerService.WatchRun:output_type -> criteria.v1.Envelope
-	12, // 36: criteria.v1.ServerService.StopRun:output_type -> criteria.v1.StopRunResponse
-	14, // 37: criteria.v1.ServerService.PauseRun:output_type -> criteria.v1.PauseRunResponse
-	16, // 38: criteria.v1.ServerService.ResumeRun:output_type -> criteria.v1.ResumeRunResponse
-	18, // 39: criteria.v1.ServerService.InspectRun:output_type -> criteria.v1.InspectRunResponse
-	22, // 40: criteria.v1.ServerService.SubmitWorkflowAssignment:output_type -> criteria.v1.SubmitWorkflowAssignmentResponse
-	24, // 41: criteria.v1.ServerService.GetAssignmentDisposition:output_type -> criteria.v1.GetAssignmentDispositionResponse
-	20, // 42: criteria.v1.ServerService.SendPrompt:output_type -> criteria.v1.SendPromptResponse
-	30, // [30:43] is the sub-list for method output_type
-	17, // [17:30] is the sub-list for method input_type
+	29, // 15: criteria.v1.GetAssignmentDispositionResponse.created_at:type_name -> google.protobuf.Timestamp
+	29, // 16: criteria.v1.GetAssignmentDispositionResponse.updated_at:type_name -> google.protobuf.Timestamp
+	4,  // 17: criteria.v1.ServerService.ListAgents:input_type -> criteria.v1.ListAgentsRequest
+	6,  // 18: criteria.v1.ServerService.GetAgent:input_type -> criteria.v1.GetAgentRequest
+	7,  // 19: criteria.v1.ServerService.ListRuns:input_type -> criteria.v1.ListRunsRequest
+	9,  // 20: criteria.v1.ServerService.GetRun:input_type -> criteria.v1.GetRunRequest
+	10, // 21: criteria.v1.ServerService.ListRunEvents:input_type -> criteria.v1.ListRunEventsRequest
+	12, // 22: criteria.v1.ServerService.WatchRun:input_type -> criteria.v1.WatchRunRequest
+	13, // 23: criteria.v1.ServerService.StopRun:input_type -> criteria.v1.StopRunRequest
+	15, // 24: criteria.v1.ServerService.PauseRun:input_type -> criteria.v1.PauseRunRequest
+	17, // 25: criteria.v1.ServerService.ResumeRun:input_type -> criteria.v1.ResumeRunRequest
+	19, // 26: criteria.v1.ServerService.InspectRun:input_type -> criteria.v1.InspectRunRequest
+	23, // 27: criteria.v1.ServerService.SubmitWorkflowAssignment:input_type -> criteria.v1.SubmitWorkflowAssignmentRequest
+	25, // 28: criteria.v1.ServerService.GetAssignmentDisposition:input_type -> criteria.v1.GetAssignmentDispositionRequest
+	21, // 29: criteria.v1.ServerService.SendPrompt:input_type -> criteria.v1.SendPromptRequest
+	1,  // 30: criteria.v1.ServerService.Login:input_type -> criteria.v1.LoginRequest
+	5,  // 31: criteria.v1.ServerService.ListAgents:output_type -> criteria.v1.ListAgentsResponse
+	3,  // 32: criteria.v1.ServerService.GetAgent:output_type -> criteria.v1.Agent
+	8,  // 33: criteria.v1.ServerService.ListRuns:output_type -> criteria.v1.ListRunsResponse
+	30, // 34: criteria.v1.ServerService.GetRun:output_type -> criteria.v1.Run
+	11, // 35: criteria.v1.ServerService.ListRunEvents:output_type -> criteria.v1.ListRunEventsResponse
+	31, // 36: criteria.v1.ServerService.WatchRun:output_type -> criteria.v1.Envelope
+	14, // 37: criteria.v1.ServerService.StopRun:output_type -> criteria.v1.StopRunResponse
+	16, // 38: criteria.v1.ServerService.PauseRun:output_type -> criteria.v1.PauseRunResponse
+	18, // 39: criteria.v1.ServerService.ResumeRun:output_type -> criteria.v1.ResumeRunResponse
+	20, // 40: criteria.v1.ServerService.InspectRun:output_type -> criteria.v1.InspectRunResponse
+	24, // 41: criteria.v1.ServerService.SubmitWorkflowAssignment:output_type -> criteria.v1.SubmitWorkflowAssignmentResponse
+	26, // 42: criteria.v1.ServerService.GetAssignmentDisposition:output_type -> criteria.v1.GetAssignmentDispositionResponse
+	22, // 43: criteria.v1.ServerService.SendPrompt:output_type -> criteria.v1.SendPromptResponse
+	2,  // 44: criteria.v1.ServerService.Login:output_type -> criteria.v1.LoginResponse
+	31, // [31:45] is the sub-list for method output_type
+	17, // [17:31] is the sub-list for method input_type
 	17, // [17:17] is the sub-list for extension type_name
 	17, // [17:17] is the sub-list for extension extendee
 	0,  // [0:17] is the sub-list for field type_name
@@ -1749,7 +1872,7 @@ func file_criteria_v1_server_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_criteria_v1_server_proto_rawDesc), len(file_criteria_v1_server_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   26,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

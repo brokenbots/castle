@@ -75,6 +75,41 @@ service ServerService {
   // SendPrompt delivers a prompt to the agent executing a specific run step.
   // The prompt is sent over the Criteria Control stream; callers must own the run.
   rpc SendPrompt(SendPromptRequest) returns (SendPromptResponse);
+
+  // Login exchanges human console credentials (username + password) for a
+  // short-lived console session token (CRI-195). It is the interim human
+  // login for the Parapet console: agents keep using agent tokens via the
+  // normal auth headers.
+  //
+  // Login is a public bootstrap RPC: it never requires an Authorization
+  // header. Implementations MUST return UNIMPLEMENTED (or
+  // FAILED_PRECONDITION) when console login is not configured on the
+  // server, and UNAUTHENTICATED for unknown usernames or wrong passwords.
+  // Passwords are verified against a stored hash (never plaintext) and are
+  // never logged.
+  //
+  // The issued session token authenticates a CONSOLE identity, which is
+  // authorized for the read-only ServerService observation surface across
+  // all runs and agents, and denied every write procedure.
+  rpc Login(LoginRequest) returns (LoginResponse);
+}
+
+message LoginRequest {
+  // username is the console user's login name.
+  string username = 1;
+  // password is the console user's plaintext password, supplied only on the
+  // wire and never persisted or logged by the server.
+  string password = 2;
+}
+
+message LoginResponse {
+  // session_token is the console session bearer token. It authenticates the
+  // read-only console identity via the standard Authorization header. The
+  // server persists only its SHA-256 digest; the plaintext token is returned
+  // exactly once.
+  string session_token = 1;
+  // username echoes the authenticated console user's login name.
+  string username = 2;
 }
 
 // --- Agent read types ---
