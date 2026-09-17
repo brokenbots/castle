@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { useInspectRunQuery } from '../../api/castleApi';
+import { classifyError } from '../../api/errors';
 import { formatAbsoluteTime, formatRelativeTime } from './time';
 
 // Poll cadence for the inspection query while the run is active
@@ -66,6 +67,12 @@ export function RunInspection({ runId, status }: { runId: string; status: string
     [inspection.data?.stateJson],
   );
 
+  // Castle rejects an inspection when the caller is not the run's owner
+  // (CRI-194): that is an access boundary, not a session failure, so it gets
+  // an explicit access state instead of the generic "unavailable" notice —
+  // and the global auth middleware must never treat it as session expiry.
+  const errorKind = inspection.error ? classifyError(inspection.error) : undefined;
+
   // Relative label computed against the render clock; each poll tick (active
   // runs) re-renders it, and a terminal run's label freezing at its last
   // fetch is the correct final answer.
@@ -76,7 +83,13 @@ export function RunInspection({ runId, status }: { runId: string; status: string
     <section data-testid="run-inspection">
       <h3 className="text-lg font-semibold mb-2">Inspection</h3>
       {inspection.error ? (
-        <p className="text-sm text-rose-400">Inspection unavailable.</p>
+        errorKind === 'forbidden' ? (
+          <p className="text-sm text-rose-400" data-testid="inspection-access-denied">
+            Access denied — your token is not allowed to inspect this run.
+          </p>
+        ) : (
+          <p className="text-sm text-rose-400">Inspection unavailable.</p>
+        )
       ) : inspection.isLoading ? (
         <p className="text-sm text-slate-400">Loading inspection…</p>
       ) : (

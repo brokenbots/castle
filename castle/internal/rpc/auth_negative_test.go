@@ -32,9 +32,18 @@ type ownershipHarness struct {
 // two overseers, and creates a run owned by the first overseer.
 func newOwnershipHarness(t *testing.T) *ownershipHarness {
 	t.Helper()
+	return newOwnershipHarnessAllowingAnonReads(t, false)
+}
+
+// newOwnershipHarnessAllowingAnonReads is newOwnershipHarness with the auth
+// interceptor's --allow-anon-reads flag set, so tests can exercise the same
+// ownership surface under the deployed dev-mode configuration (CRI-194: the
+// deployed castle runs --allow-anon-reads=true).
+func newOwnershipHarnessAllowingAnonReads(t *testing.T, allowAnonReads bool) *ownershipHarness {
+	t.Helper()
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t, connect.WithInterceptors(
-		auth.NewInterceptor(ts.store, false, auth.WithAnonRegister()),
+		auth.NewInterceptor(ts.store, allowAnonReads, auth.WithAnonRegister()),
 	))
 
 	ctx := context.Background()
@@ -380,6 +389,49 @@ func TestOwnership_InspectRun_OtherOverseer_PermissionDenied(t *testing.T) {
 	_, err := h.cClient.InspectRun(ctx, req)
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("expected CodePermissionDenied, got code=%v err=%v", connect.CodeOf(err), err)
+	}
+}
+
+// --- Dev-mode anonymous reads (CRI-194) ---
+// The deployed castle runs with --allow-anon-reads=true. InspectRun is part
+// of the anonymous-read surface: anonymous callers get the inspection (dev
+// parity with every other read the Parapet run page makes), a presented
+// token is validated — an invalid one is rejected as unauthenticated (the
+// Parapet login-probe contract that prevents the deep-link login loop), and
+// a valid non-owner token is still denied by caller-owns-run so the UI can
+// render an explicit access state instead of a session-expiry loop.
+
+func TestAnonReads_InspectRun_AnonymousAllowed(t *testing.T) {
+	h := newOwnershipHarnessAllowingAnonReads(t, true)
+
+	resp, err := h.cClient.InspectRun(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: h.runID}))
+	if err != nil {
+		t.Fatalf("anonymous InspectRun under --allow-anon-reads: %v", err)
+	}
+	if resp.Msg.RunId != h.runID {
+		t.Errorf("expected run %q, got %q", h.runID, resp.Msg.RunId)
+	}
+}
+
+func TestAnonReads_InspectRun_InvalidToken_Unauthenticated(t *testing.T) {
+	h := newOwnershipHarnessAllowingAnonReads(t, true)
+
+	req := connect.NewRequest(&pb.InspectRunRequest{RunId: h.runID})
+	req.Header().Set("Authorization", "Bearer not-a-registered-token")
+	_, err := h.cClient.InspectRun(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("expected CodeUnauthenticated for invalid token, got code=%v err=%v", connect.CodeOf(err), err)
+	}
+}
+
+func TestAnonReads_InspectRun_NonOwnerToken_PermissionDenied(t *testing.T) {
+	h := newOwnershipHarnessAllowingAnonReads(t, true)
+
+	req := connect.NewRequest(&pb.InspectRunRequest{RunId: h.runID})
+	req.Header().Set("Authorization", "Bearer "+h.attackerTok)
+	_, err := h.cClient.InspectRun(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("expected CodePermissionDenied for non-owner token, got code=%v err=%v", connect.CodeOf(err), err)
 	}
 }
 

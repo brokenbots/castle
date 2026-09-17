@@ -50,4 +50,16 @@ describe('classifyError', () => {
     expect(isUnauthenticatedError({ status: 'unavailable', data: '' })).toBe(false);
     expect(isUnauthenticatedError(undefined)).toBe(false);
   });
+
+  // CRI-194 regression: Castle rejects InspectRun with permission_denied
+  // when the caller is not the run's owner. That denial must land in the
+  // forbidden bucket — never unauthenticated — or the auth-expiry middleware
+  // treats a boundary as session expiry and the run page traps the user in
+  // the login gate.
+  test('a permission denial is forbidden and never unauthenticated', () => {
+    expect(classifyError({ status: 'permission_denied', data: 'caller does not own this run' })).toBe('forbidden');
+    expect(classifyError(new ConnectError('caller does not own this run', Code.PermissionDenied))).toBe('forbidden');
+    expect(isUnauthenticatedError({ status: 'permission_denied', data: '' })).toBe(false);
+    expect(isUnauthenticatedError(new ConnectError('denied', Code.PermissionDenied))).toBe(false);
+  });
 });

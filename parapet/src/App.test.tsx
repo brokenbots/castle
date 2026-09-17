@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { delay, http, HttpResponse } from 'msw';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App';
 import { store } from './store';
 import { castleApi } from './api/castleApi';
@@ -18,6 +18,12 @@ import { serverPath } from './test/mocks/handlers';
 // Vite's ?raw import inlines the shipped index.html so the document title
 // can be asserted against the real markup.
 import indexHtml from '../index.html?raw';
+
+// The run detail page starts a live watch stream; jsdom+msw have no real
+// stream transport, so stub it the same way RunDetailPage tests do.
+vi.mock('./features/runs/watchRun', () => ({
+  startWatch: vi.fn().mockResolvedValue(undefined),
+}));
 
 // App mounts as a routed layout: login when no token is stored, otherwise
 // the application shell wrapping the routed pages.
@@ -249,5 +255,72 @@ describe('App auth expiry', () => {
     expect(getAuthToken()).toBe('fresh-token-123456');
     expect(selectAuthExpired(store.getState())).toBe(false);
     expect(screen.queryByTestId('login-notice')).not.toBeInTheDocument();
+  });
+});
+
+// CRI-194: deep-linking to a run page used to trap users in a login loop —
+// Castle rejected InspectRun for UI agent tokens and Parapet classified any
+// unauthenticated rejection as session expiry, so the run detail route
+// bounced straight back into the login gate with the same failing token.
+describe('App run deep links', () => {
+  beforeEach(() => {
+    setAuthToken('test-token-12345678');
+  });
+
+  test('deep-linked run page renders an access state instead of the login gate when the inspection is denied', async () => {
+    server.use(
+      http.post(serverPath('InspectRun'), () =>
+        HttpResponse.json(
+          { code: 'permission_denied', message: 'caller does not own this run' },
+          { status: 403 },
+        ),
+      ),
+    );
+    renderApp('/runs/run-1');
+
+    // The run page itself renders normally...
+    const outlet = screen.getByTestId('shell-outlet');
+    expect(await within(outlet).findByRole('heading', { name: 'hello' })).toBeInTheDocument();
+    // ...the inspection panel shows an explicit access state rather than a
+    // generic failure...
+    expect(await within(outlet).findByTestId('inspection-access-denied')).toBeInTheDocument();
+    expect(within(outlet).queryByText('Inspection unavailable.')).not.toBeInTheDocument();
+    // ...and a permission denial never flips the session gate: no login gate,
+    // no cleared token, no expiry.
+    expect(screen.queryByTestId('login-brand')).not.toBeInTheDocument();
+    expect(selectAuthExpired(store.getState())).toBe(false);
+    expect(getAuthToken()).toBe('test-token-12345678');
+  });
+
+  test('an unauthenticated rejection on a deep-linked route gates the user and a rejected token cannot re-enter the app', async () => {
+    server.use(
+      http.post(serverPath('GetRun'), () =>
+        HttpResponse.json({ code: 'unauthenticated', message: 'invalid token' }, { status: 401 }),
+      ),
+      http.post(serverPath('InspectRun'), () =>
+        HttpResponse.json({ code: 'unauthenticated', message: 'invalid token' }, { status: 401 }),
+      ),
+    );
+    renderApp('/runs/run-1');
+
+    // The unauthenticated rejection flips the session gate on the
+    // deep-linked route and drops the stale token.
+    expect(await screen.findByTestId('login-brand')).toBeInTheDocument();
+    expect(screen.getByTestId('login-notice')).toHaveTextContent('Your session expired.');
+    expect(getAuthToken()).toBe('');
+
+    // Signing back in with a token Castle rejects stays at the gate with the
+    // error — the token probe validates, so a bad token can never silently
+    // re-enter the failing route.
+    server.use(
+      http.post(serverPath('ListAgents'), () =>
+        HttpResponse.json({ code: 'unauthenticated', message: 'invalid token' }, { status: 401 }),
+      ),
+    );
+    await signIn('stale-token-123456');
+
+    expect(await screen.findByTestId('login-error')).toHaveTextContent('Castle rejected that token.');
+    expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();
+    expect(getAuthToken()).toBe('');
   });
 });
