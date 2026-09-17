@@ -44,7 +44,7 @@ function parseGraph(source: string): WorkflowGraph | null {
 export function RunDetailPage() {
   const { id = '' } = useParams();
   const run = useGetRunQuery(id);
-  const { events, log, loadEarlier, watch, reconnect } = useRunEventLog(id);
+  const { events, log, loadEarlier, watch, reconnect, refresh } = useRunEventLog(id);
   const pauseState = useSelector(selectPauseState(id));
   const [selectedStep, setSelectedStep] = useState<{ runId: string; step: string } | null>(null);
   // The scope view lives in a docked right-side panel (part of the page
@@ -238,7 +238,14 @@ export function RunDetailPage() {
 
         {pauseState.isPaused && pauseState.pauseEvent && (
           <section>
-            <PauseAffordance runId={id} pauseEvent={pauseState.pauseEvent} />
+            <PauseAffordance
+              runId={id}
+              pauseEvent={pauseState.pauseEvent}
+              onRefresh={() => {
+                void run.refetch();
+                refresh();
+              }}
+            />
           </section>
         )}
 

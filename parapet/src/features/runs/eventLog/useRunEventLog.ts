@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { server } from '../../../api/client';
 import { mapEnvelope, type EventEnvelope } from '../../../api/castleApi';
@@ -23,6 +23,8 @@ export interface RunEventLogView {
   watch: WatchStatus | undefined;
   /** Manually restart the watch stream (after it was reported lost). */
   reconnect: () => void;
+  /** Full re-anchor: re-walks pagination from the newest page and restarts the watch. */
+  refresh: () => void;
 }
 
 export function useRunEventLog(runId: string): RunEventLogView {
@@ -31,6 +33,9 @@ export function useRunEventLog(runId: string): RunEventLogView {
   const events = useSelector(selectRunEvents(runId));
   const watch = useSelector(selectWatchStatus(runId));
   const subscriberId = useMemo(() => subscriberIdForSession(), []);
+  // Bumped by refresh(): re-running the anchor effect re-walks pagination from
+  // the newest page and re-anchors the watch; the cleanup discards the old one.
+  const [refreshSeq, setRefreshSeq] = useState(0);
 
   // Refs so stable callbacks can read the latest state / liveness without
   // being re-created on every render.
@@ -94,7 +99,7 @@ export function useRunEventLog(runId: string): RunEventLogView {
       ctrl.abort();
       dispatch(runsSlice.actions.runCleared(runId));
     };
-  }, [runId, dispatch, subscriberId]);
+  }, [runId, dispatch, subscriberId, refreshSeq]);
 
   // Manual reconnect (exposed for the "lost" state's reconnect affordance):
   // resume from the newest delivered seq on the still-current effect signal.
@@ -126,5 +131,7 @@ export function useRunEventLog(runId: string): RunEventLogView {
       });
   }, [runId, dispatch]);
 
-  return { events, log, loadEarlier, watch, reconnect };
+  const refresh = useCallback(() => setRefreshSeq((n) => n + 1), []);
+
+  return { events, log, loadEarlier, watch, reconnect, refresh };
 }
