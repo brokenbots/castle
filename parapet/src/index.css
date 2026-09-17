@@ -3,3 +3,55 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; }
+
+/*
+ * Parapet design tokens — dark theme first.
+ *
+ * Single source of truth for palette, typography and spacing. The Tailwind
+ * theme (tailwind.config.js) exposes these variables through `theme.extend`,
+ * so utilities like `bg-canvas`, `text-ink` or `p-4` resolve through the
+ * tokens. Values intentionally mirror the slate/sky ramp the UI already
+ * uses, so pages can migrate from raw `slate-*` utilities to the semantic
+ * tokens without visual drift.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Palette */
+  --parapet-canvas: #020617;          /* app background (slate-950) */
+  --parapet-surface: #0f172a;         /* panels and cards (slate-900) */
+  --parapet-surface-raised: #1e293b;  /* raised surfaces, hovers (slate-800) */
+  --parapet-border: #1e293b;          /* hairline borders (slate-800) */
+  --parapet-border-strong: #334155;   /* emphasized borders (slate-700) */
+  --parapet-ink: #f1f5f9;             /* primary text (slate-100) */
+  --parapet-ink-muted: #94a3b8;       /* secondary text (slate-400) */
+  --parapet-ink-faint: #64748b;       /* tertiary text, placeholders (slate-500) */
+  --parapet-accent: #0284c7;          /* primary interactive (sky-600) */
+  --parapet-accent-strong: #0ea5e9;   /* hover state (sky-500) */
+  --parapet-accent-soft: #082f49;     /* tinted accent background (sky-950) */
+  --parapet-accent-border: #075985;   /* accent borders (sky-800) */
+  --parapet-success: #34d399;         /* healthy/online (emerald-400) */
+  --parapet-warning: #fbbf24;         /* transitional states (amber-400) */
+  --parapet-danger: #fb7185;          /* errors/offline (rose-400) */
+
+  /* Typography */
+  --parapet-font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+  --parapet-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
+    'Liberation Mono', monospace;
+  --parapet-text-display: 1.875rem;   /* hero/login titles (text-3xl) */
+  --parapet-text-title: 1.5rem;       /* page titles (text-2xl) */
+  --parapet-text-body: 0.875rem;      /* body and table text (text-sm) */
+  --parapet-text-meta: 0.75rem;       /* metadata and labels (text-xs) */
+
+  /* Spacing scale */
+  --parapet-space-1: 0.25rem;
+  --parapet-space-2: 0.5rem;
+  --parapet-space-3: 0.75rem;
+  --parapet-space-4: 1rem;
+  --parapet-space-5: 1.25rem;
+  --parapet-space-6: 1.5rem;
+  --parapet-space-8: 2rem;
+  --parapet-space-10: 2.5rem;
+  --parapet-space-12: 3rem;
+}

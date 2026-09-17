@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -766,5 +766,56 @@ describe('RunDetailPage', () => {
     expect(screen.getByText('local')).toBeInTheDocument();
     expect(screen.getByText('sess-1')).toBeInTheDocument();
     expect(screen.getByTestId('adapter-state-empty')).toBeInTheDocument();
+  });
+
+  test('docks the scope panel inside the page layout without overlapping the log', async () => {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+
+    const layout = screen.getByTestId('run-detail-layout');
+    const dock = screen.getByTestId('scope-dock');
+    // The dock is part of the page layout, not a floating overlay.
+    expect(layout).toContainElement(dock);
+    expect(dock.className).not.toContain('fixed');
+    // The scope content and the event log live in sibling columns, so the
+    // panel cannot cover the log.
+    expect(within(screen.getByTestId('scope-dock-body')).getByTestId('run-scope-panel')).toBeInTheDocument();
+    expect(within(dock).queryByTestId('event-log-scroll')).not.toBeInTheDocument();
+    expect(within(layout).getByTestId('event-log-scroll')).toBeInTheDocument();
+  });
+
+  test('toggles the scope dock closed and reopens it from the header', async () => {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    expect(await screen.findByTestId('scope-dock')).toBeInTheDocument();
+    const toggle = screen.getByTestId('scope-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByTestId('scope-dock')).not.toBeInTheDocument();
+    // Scope content leaves the DOM with the dock.
+    expect(screen.queryByTestId('run-scope-panel')).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('scope-dock')).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
   });
 });

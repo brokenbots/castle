@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { castleApi, useListRunsQuery, type Run } from '../../api/castleApi';
 import type { AppDispatch, RootState } from '../../store';
+import { PageHeader } from '../../components/PageHeader';
 import { RUN_STATUS_TEXT_COLORS, RUN_TERMINAL_STATUSES } from './runStatus';
 import {
   durationBetweenMs,
@@ -223,32 +224,34 @@ export function RunListPage() {
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-2xl font-semibold">Runs</h2>
-        <label htmlFor="run-status-filter" className="flex items-center gap-2 text-sm">
-          Status
-          <select
-            id="run-status-filter"
-            className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm"
-            value={statusFilter}
-            onChange={(e) => {
-              const next = e.target.value;
-              statusRef.current = next;
-              setStatusFilter(next);
-              setCursorPages([]);
-              setLoadMoreError(false);
-            }}
-          >
-            {STATUS_FILTERS.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <PageHeader
+        title="Runs"
+        actions={
+          <label htmlFor="run-status-filter" className="flex items-center gap-2 text-body">
+            Status
+            <select
+              id="run-status-filter"
+              className="rounded-md border border-line bg-surface px-2 py-1 text-body"
+              value={statusFilter}
+              onChange={(e) => {
+                const next = e.target.value;
+                statusRef.current = next;
+                setStatusFilter(next);
+                setCursorPages([]);
+                setLoadMoreError(false);
+              }}
+            >
+              {STATUS_FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        }
+      />
       {!isLoading && error && data && (
-        <p className="mb-2 text-rose-400">
+        <p className="mb-2 text-danger">
           Refresh failed.{runs.length > 0 ? ' Showing the last loaded runs.' : ''}
         </p>
       )}

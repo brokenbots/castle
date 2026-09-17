@@ -26,9 +26,13 @@ export function getRuntimeCodec(): Codec {
 }
 
 const authTokenInterceptor: Interceptor = (next) => async (req) => {
-  const token = getAuthToken();
-  if (token) {
-    req.header.set('Authorization', `Bearer ${token}`);
+  // Explicitly set Authorization headers (e.g. the login validation probe)
+  // win; every other request is authenticated from the stored token.
+  if (!req.header.has('Authorization')) {
+    const token = getAuthToken();
+    if (token) {
+      req.header.set('Authorization', `Bearer ${token}`);
+    }
   }
   return next(req);
 };

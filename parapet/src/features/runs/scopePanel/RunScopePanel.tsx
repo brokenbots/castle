@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo } from 'react';
 import { EventEnvelope } from '../../../api/castleApi';
 
 interface RunScopePanelProps {
@@ -10,101 +10,80 @@ interface ScopeState {
   stepOutputs: Map<string, Map<string, string>>;
 }
 
+// Scope view rendered inside the run page's docked panel. Derives the
+// current scope from the event stream: VariableSet events fold into the
+// variable map, StepOutputCaptured events into the per-step output map.
 export function RunScopePanel({ events }: RunScopePanelProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const scope = useMemo<ScopeState>(() => {
+    const derived: ScopeState = { variables: new Map(), stepOutputs: new Map() };
 
-  // Derive current scope from events
-  const scope: ScopeState = { variables: new Map(), stepOutputs: new Map() };
+    for (const event of events) {
+      const payload = event.payload as Record<string, unknown> | undefined;
 
-  for (const event of events) {
-    const payload = event.payload as Record<string, unknown> | undefined;
+      if (event.type === 'variableSet') {
+        const name = (payload?.name as string) ?? '';
+        const value = (payload?.value as string) ?? '';
+        const source = (payload?.source as string) ?? '';
+        if (name) {
+          derived.variables.set(name, { value, source });
+        }
+      }
 
-    if (event.type === 'variableSet') {
-      const name = (payload?.name as string) ?? '';
-      const value = (payload?.value as string) ?? '';
-      const source = (payload?.source as string) ?? '';
-      if (name) {
-        scope.variables.set(name, { value, source });
+      if (event.type === 'stepOutputCaptured') {
+        const step = (payload?.step as string) ?? '';
+        const outputs = (payload?.outputs as Record<string, string>) ?? {};
+        if (step) {
+          derived.stepOutputs.set(step, new Map(Object.entries(outputs)));
+        }
       }
     }
 
-    if (event.type === 'stepOutputCaptured') {
-      const step = (payload?.step as string) ?? '';
-      const outputs = (payload?.outputs as Record<string, string>) ?? {};
-      if (step) {
-        scope.stepOutputs.set(step, new Map(Object.entries(outputs)));
-      }
-    }
-  }
-
-  if (!isOpen) {
-    return (
-      <button
-        onClick={() => setIsOpen(true)}
-        className="fixed top-20 right-4 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm font-semibold text-slate-300 shadow-lg"
-      >
-        📊 Scope
-      </button>
-    );
-  }
+    return derived;
+  }, [events]);
 
   return (
-    <div className="fixed top-20 right-4 w-80 bg-slate-900 border border-slate-700 rounded shadow-xl max-h-[70vh] overflow-hidden flex flex-col">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
-        <h3 className="text-sm font-semibold text-white">Run Scope</h3>
-        <button
-          onClick={() => setIsOpen(false)}
-          className="text-slate-400 hover:text-white text-lg leading-none"
-        >
-          ×
-        </button>
-      </div>
-
-      <div className="overflow-y-auto flex-1 p-4 space-y-4">
-        {/* Variables */}
-        <section>
-          <h4 className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wide">Variables</h4>
-          {scope.variables.size === 0 ? (
-            <p className="text-xs text-slate-500 italic">No variables set</p>
-          ) : (
-            <div className="space-y-2">
-              {Array.from(scope.variables.entries()).map(([name, { value, source }]) => (
-                <div key={name} className="bg-slate-800/50 rounded p-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="font-mono text-xs text-sky-400">var.{name}</span>
-                    <span className="text-xs text-slate-500">{source}</span>
-                  </div>
-                  <div className="font-mono text-xs text-slate-300 mt-1 break-all">{value}</div>
+    <div data-testid="run-scope-panel" className="flex flex-col gap-4">
+      <section>
+        <h4 className="mb-2 text-meta font-semibold uppercase tracking-wide text-ink-muted">Variables</h4>
+        {scope.variables.size === 0 ? (
+          <p className="text-meta italic text-ink-faint">No variables set</p>
+        ) : (
+          <div className="space-y-2">
+            {Array.from(scope.variables.entries()).map(([name, { value, source }]) => (
+              <div key={name} className="rounded-md bg-surface-raised p-2">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="font-mono text-meta text-accent-strong">var.{name}</span>
+                  <span className="text-meta text-ink-faint">{source}</span>
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
+                <div className="mt-1 break-all font-mono text-meta text-ink-muted">{value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
-        {/* Step Outputs */}
-        <section>
-          <h4 className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wide">Step Outputs</h4>
-          {scope.stepOutputs.size === 0 ? (
-            <p className="text-xs text-slate-500 italic">No step outputs captured</p>
-          ) : (
-            <div className="space-y-3">
-              {Array.from(scope.stepOutputs.entries()).map(([step, outputs]) => (
-                <div key={step} className="bg-slate-800/50 rounded p-2">
-                  <div className="font-mono text-xs text-purple-400 mb-1">steps.{step}</div>
-                  <div className="space-y-1 ml-2">
-                    {Array.from(outputs.entries()).map(([key, val]) => (
-                      <div key={key} className="flex items-start gap-2">
-                        <span className="font-mono text-xs text-slate-500">{key}:</span>
-                        <span className="font-mono text-xs text-slate-300 break-all flex-1">{val}</span>
-                      </div>
-                    ))}
-                  </div>
+      <section>
+        <h4 className="mb-2 text-meta font-semibold uppercase tracking-wide text-ink-muted">Step Outputs</h4>
+        {scope.stepOutputs.size === 0 ? (
+          <p className="text-meta italic text-ink-faint">No step outputs captured</p>
+        ) : (
+          <div className="space-y-3">
+            {Array.from(scope.stepOutputs.entries()).map(([step, outputs]) => (
+              <div key={step} className="rounded-md bg-surface-raised p-2">
+                <div className="mb-1 font-mono text-meta text-purple-400">steps.{step}</div>
+                <div className="ml-2 space-y-1">
+                  {Array.from(outputs.entries()).map(([key, val]) => (
+                    <div key={key} className="flex items-start gap-2">
+                      <span className="font-mono text-meta text-ink-faint">{key}:</span>
+                      <span className="flex-1 break-all font-mono text-meta text-ink-muted">{val}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

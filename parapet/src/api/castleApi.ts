@@ -231,6 +231,22 @@ export const castleApi = createApi({
       },
       providesTags: ['Agent'],
     }),
+    // Lightweight probe for the shell's connection indicator: a minimal
+    // authenticated RPC (one agent) that answers "is Castle reachable and is
+    // the token still accepted". Deliberately untagged so it never
+    // participates in Agent cache invalidations.
+    getConnectionStatus: b.query<void, void>({
+      queryFn: async () => {
+        try {
+          await server.listAgents({ limit: 1 });
+          // Deliberately no payload: consumers derive the indicator state
+          // from the request lifecycle (fulfilled vs errored).
+          return { data: undefined };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+    }),
     resume: b.mutation<
       { issuedAt?: string },
       { runId: string; signal?: string; payload?: Record<string, string> }
@@ -278,6 +294,7 @@ export const {
   useGetRunQuery,
   useInspectRunQuery,
   useListAgentsQuery,
+  useGetConnectionStatusQuery,
   useResumeMutation,
   usePauseRunMutation,
   useStopRunMutation,
