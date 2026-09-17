@@ -8,10 +8,25 @@ interface LoginPageProps {
   notice?: string;
 }
 
-function describeError(err: unknown): string {
+type LoginMode = 'password' | 'agent-token';
+
+// CRI-195: the console's user is a human, so username + password is the
+// primary path (castle's Login RPC with CASTLE_CONSOLE_USER/PASSWORD); the
+// agent token stays available as the secondary option for machine-adjacent
+// operators. Both modes end the same way: onAuthenticated stores the session
+// token under the same key and the app boots identically.
+function describeError(err: unknown, mode: LoginMode): string {
   if (err instanceof ConnectError) {
-    if (err.code === Code.Unauthenticated) {
+    if (mode === 'agent-token' && err.code === Code.Unauthenticated) {
       return 'Castle rejected that token. Check the token and try again.';
+    }
+    if (mode === 'password') {
+      if (err.code === Code.Unauthenticated) {
+        return 'Incorrect username or password.';
+      }
+      if (err.code === Code.Unimplemented || err.code === Code.FailedPrecondition) {
+        return 'Console login is disabled on this Castle. Ask your operator to set CASTLE_CONSOLE_USER and CASTLE_CONSOLE_PASSWORD, or sign in with an agent token instead.';
+      }
     }
     const codeName = Code[err.code] ?? String(err.code);
     return `Castle is unreachable (${err.rawMessage || codeName}).`;
@@ -19,29 +34,44 @@ function describeError(err: unknown): string {
   return 'Castle is unreachable. Check your connection and try again.';
 }
 
-// Branded login gate. Validates the agent token against the Castle API
-// before letting the user in, with an explicit loading state while the
-// token is being checked and an error state when Castle rejects it.
+// Branded login gate. The password form validates credentials against
+// castle's Login RPC before the issued session token is persisted; the agent
+// token form validates the candidate token against the Castle API the same
+// way. An unvalidated credential is never written to storage.
 export function LoginPage({ onAuthenticated, notice }: LoginPageProps) {
-  const [value, setValue] = useState('');
+  const [mode, setMode] = useState<LoginMode>('password');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [token, setToken] = useState('');
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const credentialsReady = mode === 'password' ? username.trim() !== '' && password !== '' : token.trim() !== '';
+
+  const switchMode = (next: LoginMode) => {
+    setMode(next);
+    setError(null);
+  };
+
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const token = value.trim();
-    if (!token || validating) return;
+    if (!credentialsReady || validating) return;
     setValidating(true);
     setError(null);
-    // The probe carries the candidate token in an explicit header, so the
-    // token is persisted (via onAuthenticated) only after Castle accepts
-    // it — an unvalidated token is never written to storage.
     try {
-      await server.listAgents({ limit: 1 }, { headers: { Authorization: `Bearer ${token}` } });
-      onAuthenticated(token);
+      if (mode === 'password') {
+        const resp = await server.login({ username: username.trim(), password });
+        onAuthenticated(resp.sessionToken);
+        return;
+      }
+      // The probe carries the candidate token in an explicit header, so the
+      // token is persisted (via onAuthenticated) only after Castle accepts
+      // it — an unvalidated token is never written to storage.
+      await server.listAgents({ limit: 1 }, { headers: { Authorization: `Bearer ${token.trim()}` } });
+      onAuthenticated(token.trim());
     } catch (err) {
       setValidating(false);
-      setError(describeError(err));
+      setError(describeError(err, mode));
     }
   };
 
@@ -62,21 +92,57 @@ export function LoginPage({ onAuthenticated, notice }: LoginPageProps) {
           </p>
         )}
         <form onSubmit={onSubmit} aria-busy={validating}>
-          <label htmlFor="agent-token" className="mb-1 block text-body text-ink-muted">
-            Agent token
-          </label>
-          <input
-            id="agent-token"
-            data-testid="login-token"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            disabled={validating}
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? 'login-error' : undefined}
-            autoComplete="off"
-            placeholder="Paste an agent token"
-            className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-body text-ink placeholder:text-ink-faint disabled:opacity-50"
-          />
+          {mode === 'password' ? (
+            <>
+              <label htmlFor="login-username" className="mb-1 block text-body text-ink-muted">
+                Username
+              </label>
+              <input
+                id="login-username"
+                data-testid="login-username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                disabled={validating}
+                autoComplete="username"
+                placeholder="Console username"
+                className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 text-body text-ink placeholder:text-ink-faint disabled:opacity-50"
+              />
+              <label htmlFor="login-password" className="mb-1 mt-3 block text-body text-ink-muted">
+                Password
+              </label>
+              <input
+                id="login-password"
+                data-testid="login-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={validating}
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? 'login-error' : undefined}
+                autoComplete="current-password"
+                placeholder="Console password"
+                className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 text-body text-ink placeholder:text-ink-faint disabled:opacity-50"
+              />
+            </>
+          ) : (
+            <>
+              <label htmlFor="agent-token" className="mb-1 block text-body text-ink-muted">
+                Agent token
+              </label>
+              <input
+                id="agent-token"
+                data-testid="login-token"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                disabled={validating}
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? 'login-error' : undefined}
+                autoComplete="off"
+                placeholder="Paste an agent token"
+                className="w-full rounded-md border border-line-strong bg-canvas px-3 py-2 font-mono text-body text-ink placeholder:text-ink-faint disabled:opacity-50"
+              />
+            </>
+          )}
           {error && (
             <p id="login-error" role="alert" data-testid="login-error" className="mt-2 text-body text-danger">
               {error}
@@ -85,7 +151,7 @@ export function LoginPage({ onAuthenticated, notice }: LoginPageProps) {
           <button
             type="submit"
             data-testid="login-submit"
-            disabled={validating || value.trim() === ''}
+            disabled={validating || !credentialsReady}
             className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-body font-medium text-white hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
           >
             {validating && (
@@ -94,9 +160,17 @@ export function LoginPage({ onAuthenticated, notice }: LoginPageProps) {
                 className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white"
               />
             )}
-            {validating ? 'Validating…' : 'Sign in'}
+            {validating ? (mode === 'password' ? 'Signing in…' : 'Validating…') : 'Sign in'}
           </button>
         </form>
+        <button
+          type="button"
+          data-testid="login-mode-toggle"
+          onClick={() => switchMode(mode === 'password' ? 'agent-token' : 'password')}
+          className="mt-4 w-full text-center text-body text-ink-muted underline-offset-2 hover:text-ink hover:underline"
+        >
+          {mode === 'password' ? 'Use an agent token instead' : 'Use username and password instead'}
+        </button>
       </div>
     </div>
   );

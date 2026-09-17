@@ -12,6 +12,22 @@ export function serverPath(method: string): string {
 }
 
 export const handlers = [
+  // CRI-195: default console login. Successful credentials return a session
+  // token; wrong credentials are unauthenticated — mirroring castle's Login
+  // handler for tests that exercise the password login path.
+  http.post(serverPath('Login'), async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { username?: string; password?: string };
+    if (body.username === 'operator' && body.password === 'op-password') {
+      return HttpResponse.json({
+        session_token: 'console-session-token-123456',
+        username: body.username,
+      });
+    }
+    return HttpResponse.json(
+      { code: 'unauthenticated', message: 'invalid username or password' },
+      { status: 401 },
+    );
+  }),
   http.post(serverPath('ListRuns'), () =>
     HttpResponse.json({
       runs: [

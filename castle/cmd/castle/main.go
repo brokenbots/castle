@@ -182,6 +182,38 @@ func main() {
 		}
 	}
 
+	// Provision or revoke the default console user (CRI-195). Seeding is
+	// idempotent and rotates the stored bcrypt hash when the configured
+	// password changes; existing console sessions are revoked on rotation.
+	// The username is safe to log; the password is never logged. Both env
+	// vars must be set: with any part missing, login stays disabled and any
+	// previously provisioned console state is revoked (fail-closed — never an
+	// open default).
+	consoleUser := os.Getenv("CASTLE_CONSOLE_USER")
+	consolePassword := os.Getenv("CASTLE_CONSOLE_PASSWORD")
+	switch {
+	case consoleUser != "" && consolePassword != "":
+		if err := rpc.ProvisionConsoleUser(context.Background(), st, consoleUser, consolePassword, log); err != nil {
+			log.Error("provision console user", "err", err)
+			os.Exit(1)
+		}
+		serverRPC.EnableConsoleLogin()
+		log.Info("console login enabled", "username", consoleUser)
+	case consoleUser == "" && consolePassword == "":
+		if err := rpc.RevokeConsoleAuth(context.Background(), st); err != nil {
+			log.Error("revoke console auth", "err", err)
+			os.Exit(1)
+		}
+	default:
+		log.Warn("console login disabled: both CASTLE_CONSOLE_USER and CASTLE_CONSOLE_PASSWORD must be set",
+			"castle_console_user_set", consoleUser != "",
+			"castle_console_password_set", consolePassword != "")
+		if err := rpc.RevokeConsoleAuth(context.Background(), st); err != nil {
+			log.Error("revoke console auth", "err", err)
+			os.Exit(1)
+		}
+	}
+
 	interceptors := []connect.Interceptor{
 		auth.NewLoggingInterceptor(log),
 		auth.NewInterceptor(st, *allowAnonReads, buildInterceptorOpts(*bootstrapToken, *devAllowAnonRegister)...),

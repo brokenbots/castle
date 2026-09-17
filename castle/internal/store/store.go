@@ -80,6 +80,28 @@ type Orchestrator struct {
 	CreatedAt time.Time
 }
 
+// ConsoleUser is a human console login identity (CRI-195). The password is
+// stored only as a bcrypt hash; plaintext never reaches the store. The
+// seeded default user has the fixed ID ConsoleDefaultUserID so a changed
+// CASTLE_CONSOLE_USER rotates the same row instead of leaving the old
+// username able to log in.
+type ConsoleUser struct {
+	ID           string
+	Username     string
+	PasswordHash string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// ConsoleSession is a login session issued to a console user (CRI-195).
+// TokenHash is the SHA-256 hex digest of the issued bearer token.
+type ConsoleSession struct {
+	ID        string
+	UserID    string
+	TokenHash string
+	CreatedAt time.Time
+}
+
 // WorkflowAssignment is a durable, idempotent queued workflow submission.
 type WorkflowAssignment struct {
 	ID               string
@@ -176,6 +198,27 @@ type Store interface {
 	// DeleteOrchestrator removes the orchestrator identity, revoking its
 	// accept token (CRI-133). Deleting an unknown ID is a no-op.
 	DeleteOrchestrator(ctx context.Context, id string) error
+
+	// Console users and sessions (CRI-195)
+	// UpsertConsoleUser inserts or replaces the console user record by ID.
+	// Updating an existing identity rotates its username and password hash
+	// and preserves CreatedAt.
+	UpsertConsoleUser(ctx context.Context, u *ConsoleUser) error
+	// GetConsoleUser returns the console user with the given username.
+	// Returns ErrNotFound when no user matches.
+	GetConsoleUser(ctx context.Context, username string) (*ConsoleUser, error)
+	// DeleteConsoleUsers removes every console user and, via cascade, all
+	// of their sessions. Used when the console login feature is off.
+	DeleteConsoleUsers(ctx context.Context) error
+	// CreateConsoleSession persists a login session for a console user.
+	CreateConsoleSession(ctx context.Context, s *ConsoleSession) error
+	// ListConsoleSessions returns all console login sessions.
+	ListConsoleSessions(ctx context.Context) ([]*ConsoleSession, error)
+	// DeleteConsoleSessions revokes every console login session.
+	DeleteConsoleSessions(ctx context.Context) error
+	// DeleteConsoleSessionsByUser revokes all sessions of one console user,
+	// e.g. when the operator rotates the seeded password.
+	DeleteConsoleSessionsByUser(ctx context.Context, userID string) error
 
 	// Runs
 	CreateRun(ctx context.Context, r *Run) error

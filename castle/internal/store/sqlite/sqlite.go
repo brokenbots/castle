@@ -189,6 +189,78 @@ func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
 	return err
 }
 
+// UpsertConsoleUser inserts or replaces a console user (CRI-195). On
+// conflict, username and password_hash are replaced — rotating the seeded
+// credentials — and created_at is preserved.
+func (s *Store) UpsertConsoleUser(ctx context.Context, u *store.ConsoleUser) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO console_users(id,username,password_hash,created_at,updated_at) VALUES(?,?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET username=excluded.username, password_hash=excluded.password_hash, updated_at=excluded.updated_at`,
+		u.ID, u.Username, u.PasswordHash, u.CreatedAt.Format(tsLayout), u.UpdatedAt.Format(tsLayout))
+	return err
+}
+
+func (s *Store) GetConsoleUser(ctx context.Context, username string) (*store.ConsoleUser, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id,username,password_hash,created_at,updated_at FROM console_users WHERE username=?`, username)
+	var u store.ConsoleUser
+	var created, updated string
+	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	u.CreatedAt, _ = time.Parse(tsLayout, created)
+	u.UpdatedAt, _ = time.Parse(tsLayout, updated)
+	return &u, nil
+}
+
+// DeleteConsoleUsers removes every console user; the ON DELETE CASCADE on
+// console_sessions revokes their sessions with them (CRI-195).
+func (s *Store) DeleteConsoleUsers(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM console_users`)
+	return err
+}
+
+func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSession) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO console_sessions(id,user_id,token_hash,created_at) VALUES(?,?,?,?)`,
+		sess.ID, sess.UserID, sess.TokenHash, sess.CreatedAt.Format(tsLayout))
+	return err
+}
+
+func (s *Store) ListConsoleSessions(ctx context.Context) ([]*store.ConsoleSession, error) {
+	rows, err := s.reader.QueryContext(ctx, `SELECT id,user_id,token_hash,created_at FROM console_sessions ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*store.ConsoleSession
+	for rows.Next() {
+		var sess store.ConsoleSession
+		var created string
+		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &created); err != nil {
+			return nil, err
+		}
+		sess.CreatedAt, _ = time.Parse(tsLayout, created)
+		out = append(out, &sess)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteConsoleSessions(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM console_sessions`)
+	return err
+}
+
+// DeleteConsoleSessionsByUser revokes every session of one console user,
+// e.g. when the seeded password is rotated (CRI-195).
+func (s *Store) DeleteConsoleSessionsByUser(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM console_sessions WHERE user_id = ?`, userID)
+	return err
+}
+
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
 const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"

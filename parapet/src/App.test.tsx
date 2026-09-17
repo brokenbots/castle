@@ -47,7 +47,10 @@ function renderApp(initialPath = '/') {
   );
 }
 
-async function signIn(token: string) {
+// Password login is the default mode; the agent-token probe tests must
+// switch to the secondary agent-token mode first.
+async function signInWithToken(token: string) {
+  await userEvent.click(screen.getByTestId('login-mode-toggle'));
   await userEvent.type(screen.getByTestId('login-token'), token);
   await userEvent.click(screen.getByTestId('login-submit'));
 }
@@ -65,12 +68,16 @@ beforeEach(() => {
 });
 
 describe('App login gate', () => {
-  test('renders the branded login page when no token is stored', () => {
+  test('renders the branded login page with the password form when no token is stored', () => {
     renderApp();
 
     expect(screen.getByTestId('login-brand')).toHaveTextContent('Parapet');
-    const input = screen.getByTestId('login-token');
-    expect(input).not.toBeInvalid();
+    // Password mode is the primary login; the agent-token field is one
+    // toggle away.
+    expect(screen.getByTestId('login-username')).toBeInTheDocument();
+    expect(screen.getByTestId('login-password')).toBeInTheDocument();
+    expect(screen.queryByTestId('login-token')).not.toBeInTheDocument();
+    expect(screen.getByTestId('login-mode-toggle')).toBeInTheDocument();
     expect(screen.getByTestId('login-submit')).toHaveTextContent('Sign in');
   });
 
@@ -85,7 +92,7 @@ describe('App login gate', () => {
     );
 
     renderApp();
-    await signIn('bad-token');
+    await signInWithToken('bad-token');
 
     const error = await screen.findByTestId('login-error');
     expect(error).toHaveTextContent('Castle rejected that token.');
@@ -100,29 +107,72 @@ describe('App login gate', () => {
   test('shows a loading state while the token is validated', async () => {
     server.use(
       http.post(serverPath('ListAgents'), async () => {
-        await delay(1000);
+        await delay(300);
         return HttpResponse.json({ agents: [], next_page_token: '' });
       }),
     );
 
     renderApp();
-    await signIn('valid-token');
+    await signInWithToken('valid-token');
 
     const submit = screen.getByTestId('login-submit');
     expect(submit).toHaveTextContent('Validating…');
     expect(submit).toBeDisabled();
     expect(screen.getByTestId('login-token')).toBeDisabled();
     expect(screen.queryByTestId('login-error')).not.toBeInTheDocument();
+    // Let the probe complete within this test: an in-flight response that
+    // resolves after the test ends would fire this gate's onAuthenticated
+    // during the next test and pollute its storage assertions.
+    expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
   });
 
   test('validates the token and renders the shell on success', async () => {
     renderApp();
-    await signIn('valid-token-123456');
+    await signInWithToken('valid-token-123456');
 
     expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
     // The accepted token was persisted for the API transport.
     expect(getAuthToken()).toBe('valid-token-123456');
     expect(screen.queryByTestId('login-brand')).not.toBeInTheDocument();
+  });
+
+  // CRI-195: the human console path — username + password is the primary
+  // login mode and lands on the same shell with the issued session token.
+  test('signs in with username and password into the console shell', async () => {
+    renderApp();
+    const user = userEvent.setup();
+
+    // Password mode is the default; no mode switch needed.
+    await user.type(screen.getByTestId('login-username'), 'operator');
+    await user.type(screen.getByTestId('login-password'), 'op-password');
+    await user.click(screen.getByTestId('login-submit'));
+
+    expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
+    // The session token issued by castle's Login is what gets persisted —
+    // identical post-login behavior to the agent-token path.
+    expect(getAuthToken()).toBe('console-session-token-123456');
+    expect(screen.queryByTestId('login-brand')).not.toBeInTheDocument();
+  });
+
+  test('a rejected password keeps the user at the gate without persisting anything', async () => {
+    server.use(
+      http.post(serverPath('Login'), () =>
+        HttpResponse.json({ code: 'unauthenticated', message: 'invalid credentials' }, { status: 401 }),
+      ),
+    );
+    renderApp();
+    const user = userEvent.setup();
+
+    await user.type(screen.getByTestId('login-username'), 'operator');
+    await user.type(screen.getByTestId('login-password'), 'wrong');
+    await user.click(screen.getByTestId('login-submit'));
+
+    const error = await screen.findByTestId('login-error');
+    expect(error).toHaveTextContent('Incorrect username or password.');
+    expect(error).toHaveAttribute('role', 'alert');
+    // Still gated: the shell never renders and nothing is persisted.
+    expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();
+    expect(getAuthToken()).toBe('');
   });
 });
 
@@ -230,7 +280,7 @@ describe('document title', () => {
 describe('App auth expiry', () => {
   test('returns to the login page with an expiry notice when the session expires mid-session', async () => {
     renderApp();
-    await signIn('valid-token-123456');
+    await signInWithToken('valid-token-123456');
     expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
 
     act(() => store.dispatch(sessionExpired()));
@@ -245,11 +295,11 @@ describe('App auth expiry', () => {
 
   test('clears the expiry flag after signing back in', async () => {
     renderApp();
-    await signIn('valid-token-123456');
+    await signInWithToken('valid-token-123456');
     expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
 
     act(() => store.dispatch(sessionExpired()));
-    await signIn('fresh-token-123456');
+    await signInWithToken('fresh-token-123456');
 
     expect(await screen.findByTestId('top-bar')).toBeInTheDocument();
     expect(getAuthToken()).toBe('fresh-token-123456');
@@ -317,7 +367,7 @@ describe('App run deep links', () => {
         HttpResponse.json({ code: 'unauthenticated', message: 'invalid token' }, { status: 401 }),
       ),
     );
-    await signIn('stale-token-123456');
+    await signInWithToken('stale-token-123456');
 
     expect(await screen.findByTestId('login-error')).toHaveTextContent('Castle rejected that token.');
     expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();

@@ -147,6 +147,7 @@ type ServerServer struct {
 	Log                     *slog.Logger
 	controls                *ControlRegistry
 	assignmentLeaseDuration time.Duration
+	consoleLogin            bool // console username+password login enabled (CRI-195)
 }
 
 func NewCriteriaServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *ControlRegistry) *CriteriaServer {
