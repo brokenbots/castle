@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useRef, type RefObject } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { useGetRunQuery, type EventEnvelope } from '../../api/castleApi';
@@ -41,6 +41,82 @@ function parseGraph(source: string): WorkflowGraph | null {
   }
 }
 
+type ExpandablePanel = 'events' | 'graph' | 'inspection';
+
+// Fullscreen overlay for an expanded run-detail panel: a fixed layer filling
+// the viewport above the page chrome on the opaque canvas. Expansion is
+// state-local to this page and purely presentational — the wrapped panel
+// components keep their docked markup and stay mounted, so the watch stream,
+// log anchoring and scroll positions survive expand/collapse. The per-panel
+// variants size the panel's own scroller to fill the overlay via arbitrary
+// variants targeting the panel's inner testids.
+const FULLSCREEN_PANEL_CLASSES =
+  'fixed inset-0 z-50 flex flex-col overflow-y-auto bg-canvas p-4 sm:p-6';
+const EVENTS_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=events-panel-body]]:flex-1 [&_[data-testid=events-panel-body]]:min-h-0 [&_[data-testid=event-log-scroll]]:h-full`;
+const GRAPH_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&>[data-testid=workflow-dag]]:flex-1 [&>[data-testid=workflow-dag]]:min-h-0`;
+const INSPECTION_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=run-inspection]]:flex-1 [&_[data-testid=run-inspection]]:min-h-0 [&_[data-testid=run-inspection]]:overflow-y-auto`;
+const PANEL_ICON_BUTTON_CLASSES =
+  'shrink-0 rounded-md border border-line-strong p-1.5 text-ink-muted hover:bg-surface-raised hover:text-ink';
+
+function panelButtonClass(expanded: boolean): string {
+  return expanded
+    // Pinned to the viewport so the collapse control stays reachable even
+    // when the panel body scrolls.
+    ? `${PANEL_ICON_BUTTON_CLASSES} fixed right-4 top-4 sm:right-6 sm:top-6`
+    : `${PANEL_ICON_BUTTON_CLASSES} absolute right-0 top-0`;
+}
+
+interface PanelExpandButtonProps {
+  title: string;
+  testId: string;
+  expanded: boolean;
+  onToggle: () => void;
+  buttonRef: RefObject<HTMLButtonElement>;
+  className: string;
+}
+
+// Single expand/collapse affordance per panel: a corner icon button toggling
+// the panel's fullscreen overlay. aria-expanded plus the swap between the
+// outward/inward arrow icons convey the state.
+function PanelExpandButton({
+  title,
+  testId,
+  expanded,
+  onToggle,
+  buttonRef,
+  className,
+}: PanelExpandButtonProps) {
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      data-testid={testId}
+      aria-expanded={expanded}
+      aria-label={`${expanded ? 'Collapse' : 'Expand'} ${title} panel`}
+      title={expanded ? `${title} panel — collapse (Escape)` : `${title} panel — expand`}
+      onClick={onToggle}
+      className={className}
+    >
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        className="h-4 w-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {expanded ? (
+          <path d="M10 14H4v6M4 14l7 7M14 10h6V4M14 10l7-7" />
+        ) : (
+          <path d="M15 3h6v6M21 3l-7 7M9 21H3v-6M3 21l7-7" />
+        )}
+      </svg>
+    </button>
+  );
+}
+
 export function RunDetailPage() {
   const { id = '' } = useParams();
   const run = useGetRunQuery(id);
@@ -51,6 +127,33 @@ export function RunDetailPage() {
   // layout, never overlapping the log). The dock can be closed and reopened
   // from the header's Scope toggle.
   const [scopeOpen, setScopeOpen] = useState(true);
+  // Which panel (if any) is currently expanded to a fullscreen overlay.
+  // Null keeps every panel docked; toggling only swaps classes on the
+  // wrapper sections, so panel components and their hooks stay mounted.
+  const [expandedPanel, setExpandedPanel] = useState<ExpandablePanel | null>(null);
+  const eventsExpandRef = useRef<HTMLButtonElement>(null);
+  const graphExpandRef = useRef<HTMLButtonElement>(null);
+  const inspectionExpandRef = useRef<HTMLButtonElement>(null);
+
+  const togglePanel = (panel: ExpandablePanel) => {
+    setExpandedPanel((current) => (current === panel ? null : panel));
+  };
+
+  // Escape leaves fullscreen; focus returns to the affordance that opened
+  // the overlay so keyboard users are not dropped at an arbitrary page
+  // position.
+  useEffect(() => {
+    if (!expandedPanel) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setExpandedPanel(null);
+      if (expandedPanel === 'events') eventsExpandRef.current?.focus();
+      else if (expandedPanel === 'graph') graphExpandRef.current?.focus();
+      else inspectionExpandRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expandedPanel]);
 
   // The tab title reflects the current run's workflow name; while loading it
   // falls back to the base title.
@@ -234,7 +337,21 @@ export function RunDetailPage() {
           </div>
         )}
 
-        <RunInspection runId={id} status={run.data.status} />
+        <section
+          data-testid="inspection-panel"
+          data-expanded={expandedPanel === 'inspection'}
+          className={expandedPanel === 'inspection' ? INSPECTION_FULLSCREEN_CLASSES : 'relative'}
+        >
+          <RunInspection runId={id} status={run.data.status} />
+          <PanelExpandButton
+            title="Inspection"
+            testId="inspection-panel-expand"
+            expanded={expandedPanel === 'inspection'}
+            onToggle={() => togglePanel('inspection')}
+            buttonRef={inspectionExpandRef}
+            className={panelButtonClass(expandedPanel === 'inspection')}
+          />
+        </section>
 
         {pauseState.isPaused && pauseState.pauseEvent && (
           <section>
@@ -273,14 +390,28 @@ export function RunDetailPage() {
           </div>
         )}
 
-        <section>
+        <section
+          data-testid="events-panel"
+          data-expanded={expandedPanel === 'events'}
+          className={expandedPanel === 'events' ? EVENTS_FULLSCREEN_CLASSES : 'relative'}
+        >
           <h3 className="text-lg font-semibold mb-2">Events</h3>
-          <EventLog
-            events={visibleEvents}
-            running={running}
-            hasEarlier={log.hasEarlier}
-            loadingEarlier={log.loadingEarlier}
-            onLoadEarlier={loadEarlier}
+          <div data-testid="events-panel-body">
+            <EventLog
+              events={visibleEvents}
+              running={running}
+              hasEarlier={log.hasEarlier}
+              loadingEarlier={log.loadingEarlier}
+              onLoadEarlier={loadEarlier}
+            />
+          </div>
+          <PanelExpandButton
+            title="Events"
+            testId="events-panel-expand"
+            expanded={expandedPanel === 'events'}
+            onToggle={() => togglePanel('events')}
+            buttonRef={eventsExpandRef}
+            className={panelButtonClass(expandedPanel === 'events')}
           />
         </section>
         <section>
@@ -289,7 +420,11 @@ export function RunDetailPage() {
             {workflowSource}
           </pre>
         </section>
-        <section>
+        <section
+          data-testid="graph-panel"
+          data-expanded={expandedPanel === 'graph'}
+          className={expandedPanel === 'graph' ? GRAPH_FULLSCREEN_CLASSES : 'relative'}
+        >
           <h3 className="text-lg font-semibold mb-2">Step graph</h3>
           {graph ? (
             <WorkflowDag
@@ -314,6 +449,14 @@ export function RunDetailPage() {
               ))}
             </div>
           )}
+          <PanelExpandButton
+            title="Step graph"
+            testId="graph-panel-expand"
+            expanded={expandedPanel === 'graph'}
+            onToggle={() => togglePanel('graph')}
+            buttonRef={graphExpandRef}
+            className={panelButtonClass(expandedPanel === 'graph')}
+          />
         </section>
       </div>
       {scopeOpen && (
