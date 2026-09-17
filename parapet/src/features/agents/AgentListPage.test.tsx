@@ -54,8 +54,8 @@ describe('AgentListPage', () => {
 
     renderPage();
 
-    expect(await screen.findByRole('heading', { name: 'Agents' })).toBeInTheDocument();
-    expect(screen.getByText('dev')).toBeInTheDocument();
+    expect(await screen.findByText('dev')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Agents' })).toBeInTheDocument();
   });
 
   test('entries navigate to the agent detail view', async () => {

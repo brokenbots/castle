@@ -4,6 +4,8 @@ import { server } from '../api/client';
 
 interface LoginPageProps {
   onAuthenticated: (token: string) => void;
+  /** Shown above the form — e.g. a session-expired notice after a 401. */
+  notice?: string;
 }
 
 function describeError(err: unknown): string {
@@ -20,7 +22,7 @@ function describeError(err: unknown): string {
 // Branded login gate. Validates the agent token against the Castle API
 // before letting the user in, with an explicit loading state while the
 // token is being checked and an error state when Castle rejects it.
-export function LoginPage({ onAuthenticated }: LoginPageProps) {
+export function LoginPage({ onAuthenticated, notice }: LoginPageProps) {
   const [value, setValue] = useState('');
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +56,11 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
           <h1 className="text-display font-semibold">Parapet</h1>
           <p className="mt-1 text-body text-ink-muted">Castle control plane</p>
         </div>
+        {notice && (
+          <p data-testid="login-notice" role="status" className="mb-4 rounded-md border border-line bg-surface-raised px-3 py-2 text-body text-ink-muted">
+            {notice}
+          </p>
+        )}
         <form onSubmit={onSubmit} aria-busy={validating}>
           <label htmlFor="agent-token" className="mb-1 block text-body text-ink-muted">
             Agent token

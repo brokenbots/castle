@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 import { castleApi, useGetAgentQuery, useListRunsQuery, type Run } from '../../api/castleApi';
+import { classifyError } from '../../api/errors';
 import type { AppDispatch } from '../../store';
 import { PageHeader } from '../../components/PageHeader';
+import { PageState } from '../../components/PageState';
 import { Breadcrumbs } from '../../components/Breadcrumbs';
 import { useDocumentTitle } from '../../shell/useDocumentTitle';
 import { RUN_STATUS_TEXT_COLORS } from '../runs/runStatus';
@@ -91,8 +93,36 @@ export function AgentDetailPage() {
     }
   };
 
-  if (agent.isLoading) return <p>Loading…</p>;
-  if (agent.error || !agent.data) return <p className="text-danger">Agent not found.</p>;
+  if (agent.isLoading) {
+    return <PageState loading title="Loading agent…" testId="agent-detail-loading" />;
+  }
+  if (agent.error || !agent.data) {
+    const kind = agent.error ? classifyError(agent.error) : 'unknown';
+    if (kind === 'unauthenticated') {
+      return <PageState error kind="unauthenticated" />;
+    }
+    return (
+      <PageState
+        error
+        kind={kind}
+        title={kind === 'not_found' ? 'Agent not found.' : 'Failed to load this agent.'}
+        detail={
+          kind === 'not_found'
+            ? "This agent doesn't exist or was removed."
+            : 'Castle is unreachable or failed to answer. Try again.'
+        }
+        onRetry={kind === 'not_found' ? undefined : () => void agent.refetch()}
+        action={
+          <Link
+            to="/agents"
+            className="text-body text-ink-muted hover:text-ink hover:underline"
+          >
+            Back to agents
+          </Link>
+        }
+      />
+    );
+  }
   const agentData = agent.data;
   const labels = Object.entries(agentData.labels);
 
@@ -162,11 +192,25 @@ export function AgentDetailPage() {
       <section className="mt-6">
         <h3 className="text-lg font-semibold mb-2">Runs</h3>
         {runsPage.isLoading ? (
-          <p>Loading runs…</p>
+          <PageState loading title="Loading runs…" testId="agent-runs-loading" />
         ) : runsPage.error && !runsPage.data ? (
-          <p className="text-rose-400">Failed to load runs.</p>
+          classifyError(runsPage.error) === 'unauthenticated' ? (
+            <PageState error kind="unauthenticated" />
+          ) : (
+            <PageState
+              error
+              kind={classifyError(runsPage.error)}
+              title="Failed to load runs."
+              detail="Castle is unreachable or failed to answer. Try again."
+              onRetry={() => void runsPage.refetch()}
+            />
+          )
         ) : runs.length === 0 ? (
-          <p className="text-slate-400">No runs for this agent.</p>
+          <PageState
+            empty
+            title="No runs for this agent yet."
+            detail="Runs appear here once this agent starts executing workflows."
+          />
         ) : (
           <table className="w-full text-left text-sm">
             <thead className="text-slate-400">

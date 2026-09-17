@@ -148,7 +148,7 @@ describe('AgentDetailPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('No runs for this agent.')).toBeInTheDocument();
+    expect(await screen.findByText('No runs for this agent yet.')).toBeInTheDocument();
   });
 
   test("Load more appends the next page through the pagination cursor", async () => {
@@ -197,7 +197,7 @@ describe('AgentDetailPage', () => {
 
     renderPage();
 
-    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    expect(screen.getByText('Loading agent…')).toBeInTheDocument();
   });
 
   test('links back to the agents list through the breadcrumb', async () => {

@@ -4,6 +4,7 @@ import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import {
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -857,5 +858,84 @@ describe('RunDetailPage navigation chrome', () => {
     await vi.waitFor(() =>
       expect(document.title).toBe('hello — Parapet — Castle'),
     );
+  });
+});
+
+describe('RunDetailPage stream status', () => {
+  afterEach(() => {
+    store.dispatch(runsSlice.actions.runCleared('run-1'));
+    vi.mocked(startWatch).mockClear();
+  });
+
+  async function renderDetail() {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+    expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+  }
+
+  test('shows the reconnecting banner with bounded-backoff progress', async () => {
+    store.dispatch(
+      runsSlice.actions.watchStatusChanged({
+        runId: 'run-1',
+        status: { state: 'reconnecting', attempt: 2, maxAttempts: 5 },
+      }),
+    );
+
+    await renderDetail();
+
+    const banner = screen.getByTestId('stream-status');
+    expect(banner).toHaveAttribute('data-state', 'reconnecting');
+    expect(screen.getByTestId('stream-reconnecting')).toHaveTextContent('attempt 2/5');
+    expect(screen.queryByTestId('stream-reconnect')).not.toBeInTheDocument();
+  });
+
+  test('offers a manual reconnect that resumes from the newest delivered seq', async () => {
+    store.dispatch(
+      runsSlice.actions.eventReceived({
+        schemaVersion: 1,
+        runId: 'run-1',
+        seq: 7,
+        type: 'stepEntered',
+        correlationId: '',
+        payload: { step: 'build' },
+      }),
+    );
+    store.dispatch(
+      runsSlice.actions.watchStatusChanged({
+        runId: 'run-1',
+        status: { state: 'lost', attempt: 5, maxAttempts: 5 },
+      }),
+    );
+
+    await renderDetail();
+
+    expect(screen.getByTestId('stream-status')).toHaveAttribute('data-state', 'lost');
+    fireEvent.click(screen.getByTestId('stream-reconnect'));
+
+    const lastCall = vi.mocked(startWatch).mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe('run-1');
+    expect(lastCall?.[1]).toBe(7);
+  });
+
+  test('marks the stream as stopped on an auth rejection', async () => {
+    store.dispatch(
+      runsSlice.actions.watchStatusChanged({
+        runId: 'run-1',
+        status: { state: 'unauthenticated', attempt: 1, maxAttempts: 5 },
+      }),
+    );
+
+    await renderDetail();
+
+    expect(screen.getByTestId('stream-status')).toHaveAttribute('data-state', 'unauthenticated');
+    expect(screen.getByTestId('stream-status')).toHaveTextContent('sign in again to resume');
+    expect(screen.queryByTestId('stream-reconnect')).not.toBeInTheDocument();
   });
 });

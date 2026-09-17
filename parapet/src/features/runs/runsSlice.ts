@@ -3,9 +3,26 @@ import type { EventEnvelope } from '../../api/castleApi';
 
 export interface RunsState {
   events: Record<string, EventEnvelope[]>;
+  watch: Record<string, WatchStatus>;
 }
 
-const initialState: RunsState = { events: {} };
+// Liveness of the watchRun stream for a run, as rendered by the detail page:
+// 'connecting' while the first stream is being established, 'live' once the
+// server confirmed the watch, 'reconnecting' during bounded-backoff retries,
+// 'lost' when retries are exhausted, and 'unauthenticated' when the stream
+// ended on an auth rejection.
+export type WatchStreamState = 'connecting' | 'live' | 'reconnecting' | 'lost' | 'unauthenticated';
+
+export interface WatchStatus {
+  state: WatchStreamState;
+  /** 1-based reconnect attempt; meaningful in 'reconnecting' and 'lost'. */
+  attempt: number;
+  maxAttempts: number;
+  /** Safe, human-readable reason for a loss (connect code name or message). */
+  message?: string;
+}
+
+const initialState: RunsState = { events: {}, watch: {} };
 
 export const runsSlice = createSlice({
   name: 'runs',
@@ -24,14 +41,27 @@ export const runsSlice = createSlice({
       list.splice(i, 0, env);
       state.events[env.runId] = list;
     },
+    watchStatusChanged(state, action: PayloadAction<{ runId: string; status: WatchStatus }>) {
+      const { runId, status } = action.payload;
+      state.watch[runId] = status;
+    },
+    watchEnded(state, action: PayloadAction<string>) {
+      // The stream ended normally (terminal event delivered); drop the
+      // status so the detail page stops showing liveness UI.
+      delete state.watch[action.payload];
+    },
     runCleared(state, action: PayloadAction<string>) {
       delete state.events[action.payload];
+      delete state.watch[action.payload];
     },
   },
 });
 
 export const selectRunEvents = (runId: string) => (state: { runs: RunsState }) =>
   state.runs.events[runId] ?? EMPTY;
+
+export const selectWatchStatus = (runId: string) => (state: { runs: RunsState }) =>
+  state.runs.watch[runId];
 
 export const selectPauseState = (runId: string) =>
   createSelector(
