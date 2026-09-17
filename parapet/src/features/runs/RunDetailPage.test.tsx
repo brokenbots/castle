@@ -991,3 +991,205 @@ describe('RunDetailPage getRun error handling', () => {
     expect(screen.getByRole('link', { name: 'Back to runs' })).toBeInTheDocument();
   });
 });
+
+describe('RunDetailPage panel fullscreen', () => {
+  beforeEach(() => {
+    fixture.error = undefined;
+    // Live-tail behaviors (bottom-pinned log) assume a running run.
+    fixture.data.status = 'running';
+    vi.mocked(startWatch).mockClear();
+  });
+
+  function renderDetail() {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+  }
+
+  test('expands the events panel fullscreen with live-tail continuity and collapses back', async () => {
+    // Pre-seeded history gives the log a scrollable, bottom-pinned tail like
+    // a live run; the event delivered below must still land in the expanded
+    // panel.
+    server.use(
+      http.post(serverPath('ListRunEvents'), () =>
+        HttpResponse.json({ events: wireEvents(30), last_seq: '30' }),
+      ),
+    );
+
+    renderDetail();
+
+    const scroller = await screen.findByTestId('event-log-scroll');
+    await vi.waitFor(() => expect(selectRunEvents('run-1')(store.getState())).toHaveLength(30));
+    await vi.waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(0));
+
+    const expand = screen.getByTestId('events-panel-expand');
+    expect(expand).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(expand);
+
+    const panel = screen.getByTestId('events-panel');
+    // Fullscreen overlay above the page chrome.
+    expect(panel.className).toContain('fixed');
+    expect(panel).toHaveAttribute('data-expanded', 'true');
+    expect(expand).toHaveAttribute('aria-expanded', 'true');
+    // Same DOM node: expansion must not remount the log, so its scroll
+    // anchoring and hooks survive.
+    expect(screen.getByTestId('event-log-scroll')).toBe(scroller);
+    // The fullscreen markup must give the log a definite height at every
+    // level of its ancestor chain, so the log itself stays the scroll
+    // container (percentage heights collapse to `auto` otherwise and the
+    // overlay would scroll instead — jsdom has no layout, so this class
+    // invariant is the meaningful guard, not a scrollTop assertion).
+    for (const cls of [
+      '[&_[data-testid=events-panel-body]]:flex-col',
+      '[&_[data-testid=events-panel-body]]:flex-1',
+      '[&_[data-testid=events-panel-body]>div]:flex-col',
+      '[&_[data-testid=events-panel-body]>div]:flex-1',
+      '[&_[data-testid=events-panel-body]>div>div:last-child]:flex-1',
+      '[&_[data-testid=event-log-scroll]]:h-full',
+    ]) {
+      expect(panel.className).toContain(cls);
+    }
+
+    // A live event delivered while expanded flows through the still-mounted
+    // hook and renders in the panel's tail.
+    act(() => {
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 31,
+          type: 'stepOutcome',
+          correlationId: '',
+          payload: { step: 'build', outcome: 'success' },
+        }),
+      );
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    expect(selectRunEvents('run-1')(store.getState())).toHaveLength(31);
+    expect(await within(panel).findByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
+
+    await userEvent.click(expand);
+    expect(screen.getByTestId('events-panel').className).not.toContain('fixed');
+    // Docked again: none of the fullscreen sizing variants remain.
+    expect(screen.getByTestId('events-panel').className).not.toContain('events-panel-body');
+    expect(screen.getByTestId('events-panel').className).not.toContain('event-log-scroll');
+    expect(screen.getByTestId('events-panel')).toHaveAttribute('data-expanded', 'false');
+    expect(screen.getByTestId('event-log-scroll')).toBe(scroller);
+    // The watch hook started once for the page mount; expanding and
+    // collapsing must not restart it.
+    expect(startWatch).toHaveBeenCalledTimes(1);
+  });
+
+  test('Escape collapses the expanded events panel and returns focus to its expand control', async () => {
+    renderDetail();
+
+    const expand = screen.getByTestId('events-panel-expand');
+    await userEvent.click(expand);
+    expect(screen.getByTestId('events-panel').className).toContain('fixed');
+    // Move focus away from the toggle to prove Escape restores it.
+    expand.blur();
+    expect(expand).not.toHaveFocus();
+
+    await userEvent.keyboard('{Escape}');
+
+    expect(screen.getByTestId('events-panel').className).not.toContain('fixed');
+    expect(expand).toHaveAttribute('aria-expanded', 'false');
+    expect(expand).toHaveFocus();
+  });
+
+  test('expands the graph panel fullscreen and collapses back with the DAG intact', async () => {
+    renderDetail();
+
+    const dag = await screen.findByTestId('workflow-dag');
+    const expand = screen.getByTestId('graph-panel-expand');
+    await userEvent.click(expand);
+
+    const panel = screen.getByTestId('graph-panel');
+    expect(panel.className).toContain('fixed');
+    expect(panel).toHaveAttribute('data-expanded', 'true');
+    expect(expand).toHaveAttribute('aria-expanded', 'true');
+    // Same component instance with all nodes still rendered while expanded.
+    expect(screen.getByTestId('workflow-dag')).toBe(dag);
+    expect(within(dag).getAllByTestId('dag-node')).toHaveLength(3);
+
+    await userEvent.click(expand);
+    expect(screen.getByTestId('graph-panel').className).not.toContain('fixed');
+    expect(screen.getByTestId('workflow-dag')).toBe(dag);
+    expect(within(dag).getAllByTestId('dag-node')).toHaveLength(3);
+  });
+
+  test('expands the inspection panel fullscreen and collapses back with data intact', async () => {
+    renderDetail();
+
+    const inspection = await screen.findByTestId('run-inspection');
+    expect(await within(inspection).findByTestId('inspection-current-step')).toHaveTextContent('build');
+
+    const expand = screen.getByTestId('inspection-panel-expand');
+    await userEvent.click(expand);
+
+    const panel = screen.getByTestId('inspection-panel');
+    expect(panel.className).toContain('fixed');
+    expect(panel).toHaveAttribute('data-expanded', 'true');
+    expect(expand).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('run-inspection')).toBe(inspection);
+    expect(within(inspection).getByTestId('inspection-current-step')).toHaveTextContent('build');
+
+    await userEvent.click(expand);
+    expect(screen.getByTestId('inspection-panel').className).not.toContain('fixed');
+    expect(screen.getByTestId('run-inspection')).toBe(inspection);
+  });
+
+  test('expanding one panel collapses the previously expanded one and keeps both mounted', async () => {
+    renderDetail();
+
+    const eventsExpand = screen.getByTestId('events-panel-expand');
+    await userEvent.click(eventsExpand);
+    expect(screen.getByTestId('events-panel').className).toContain('fixed');
+    const scroller = screen.getByTestId('event-log-scroll');
+
+    const graphExpand = screen.getByTestId('graph-panel-expand');
+    await userEvent.click(graphExpand);
+
+    // Single-panel swap: events returns to the docked layout while the
+    // graph takes fullscreen, and the log node survives the swap.
+    expect(screen.getByTestId('events-panel').className).not.toContain('fixed');
+    expect(screen.getByTestId('events-panel')).toHaveAttribute('data-expanded', 'false');
+    expect(screen.getByTestId('graph-panel').className).toContain('fixed');
+    expect(screen.getByTestId('graph-panel')).toHaveAttribute('data-expanded', 'true');
+    expect(screen.getByTestId('event-log-scroll')).toBe(scroller);
+
+    // Escape now targets the graph overlay and returns focus to its control.
+    await userEvent.keyboard('{Escape}');
+    expect(screen.getByTestId('graph-panel').className).not.toContain('fixed');
+    expect(screen.getByTestId('graph-panel')).toHaveAttribute('data-expanded', 'false');
+    expect(graphExpand).toHaveFocus();
+  });
+
+  test('panels stay docked by default with expand controls available', async () => {
+    renderDetail();
+
+    await screen.findByTestId('events-panel');
+
+    for (const testId of ['events-panel', 'graph-panel', 'inspection-panel']) {
+      const panel = screen.getByTestId(testId);
+      expect(panel.className).not.toContain('fixed');
+      expect(panel).toHaveAttribute('data-expanded', 'false');
+    }
+    for (const [panelId, expandId] of [
+      ['events-panel', 'events-panel-expand'],
+      ['graph-panel', 'graph-panel-expand'],
+      ['inspection-panel', 'inspection-panel-expand'],
+    ] as const) {
+      const expand = screen.getByTestId(expandId);
+      expect(expand).toHaveAttribute('aria-expanded', 'false');
+      expect(expand).toHaveAttribute('aria-controls', panelId);
+      expect(screen.getByTestId(panelId)).toHaveAttribute('id', panelId);
+    }
+  });
+});
