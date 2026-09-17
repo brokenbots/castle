@@ -169,6 +169,12 @@ export interface RunsPage {
 // Page size requested for every ListRuns call (page_token cursor paging).
 export const RUNS_PAGE_LIMIT = 50;
 
+// Data carried by the shell's connection indicator. `reachable` is true when
+// the lightweight probe RPC answered.
+export interface ConnectionStatus {
+  reachable: boolean;
+}
+
 export const castleApi = createApi({
   reducerPath: 'castleApi',
   baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
@@ -231,6 +237,20 @@ export const castleApi = createApi({
       },
       providesTags: ['Agent'],
     }),
+    // Lightweight probe for the shell's connection indicator: a minimal
+    // authenticated RPC (one agent) that answers "is Castle reachable and is
+    // the token still accepted". Deliberately untagged so it never
+    // participates in Agent cache invalidations.
+    getConnectionStatus: b.query<ConnectionStatus, void>({
+      queryFn: async () => {
+        try {
+          await server.listAgents({ limit: 1 });
+          return { data: { reachable: true } };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+    }),
     resume: b.mutation<
       { issuedAt?: string },
       { runId: string; signal?: string; payload?: Record<string, string> }
@@ -278,6 +298,7 @@ export const {
   useGetRunQuery,
   useInspectRunQuery,
   useListAgentsQuery,
+  useGetConnectionStatusQuery,
   useResumeMutation,
   usePauseRunMutation,
   useStopRunMutation,

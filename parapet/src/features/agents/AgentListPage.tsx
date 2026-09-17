@@ -1,12 +1,13 @@
 import { useListAgentsQuery } from '../../api/castleApi';
+import { PageHeader } from '../../components/PageHeader';
 
 export function AgentListPage() {
   const { data, isLoading, error } = useListAgentsQuery();
   if (isLoading) return <p>Loading…</p>;
-  if (error) return <p className="text-rose-400">Failed to load.</p>;
+  if (error) return <p className="text-danger">Failed to load.</p>;
   return (
     <div>
-      <h2 className="text-2xl font-semibold mb-4">Agents</h2>
+      <PageHeader title="Agents" />
       <table className="w-full text-sm">
         <thead className="text-left text-slate-400 border-b border-slate-800">
           <tr>
