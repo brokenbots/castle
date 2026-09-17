@@ -6,11 +6,15 @@ import { delay, http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { App } from './App';
 import { store } from './store';
-import { getAuthToken, setAuthToken } from './authToken';
+import { castleApi } from './api/castleApi';
+import { clearAuthToken, getAuthToken, setAuthToken } from './authToken';
 import { RunListPage } from './features/runs/RunListPage';
 import { AgentListPage } from './features/agents/AgentListPage';
 import { server } from './test/mocks/server';
 import { serverPath } from './test/mocks/handlers';
+// Vite's ?raw import inlines the shipped index.html so the document title
+// can be asserted against the real markup.
+import indexHtml from '../index.html?raw';
 
 // App mounts as a routed layout: login when no token is stored, otherwise
 // the application shell wrapping the routed pages.
@@ -36,6 +40,15 @@ async function signIn(token: string) {
   await userEvent.type(screen.getByTestId('login-token'), token);
   await userEvent.click(screen.getByTestId('login-submit'));
 }
+
+// The module-level store is shared across tests: clear the RTK Query cache
+// and stored token before every test so each assertion observes a real
+// request lifecycle regardless of test order, and so every test runs the
+// same when executed in isolation.
+beforeEach(() => {
+  clearAuthToken();
+  store.dispatch(castleApi.util.resetApiState());
+});
 
 describe('App login gate', () => {
   test('renders the branded login page when no token is stored', () => {
@@ -66,6 +79,8 @@ describe('App login gate', () => {
     expect(screen.getByTestId('login-token')).toHaveAttribute('aria-invalid', 'true');
     // Still gated: the shell never renders.
     expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();
+    // A rejected token is never persisted.
+    expect(getAuthToken()).toBe('');
   });
 
   test('shows a loading state while the token is validated', async () => {
@@ -102,7 +117,7 @@ describe('App shell', () => {
     setAuthToken('test-token-12345678');
   });
 
-  test('renders the top bar with product name, search, connection status and token menu', () => {
+  test('renders the top bar with product name, search, connection status and token menu', async () => {
     renderApp();
 
     const topBar = screen.getByTestId('top-bar');
@@ -110,9 +125,13 @@ describe('App shell', () => {
     expect(
       within(topBar).getByPlaceholderText(/search runs, agents/i),
     ).toBeInTheDocument();
-    const status = within(topBar).getByTestId('connection-status');
-    expect(status).toHaveAccessibleName(/online/i);
     expect(within(topBar).getByTestId('token-menu-button')).toBeInTheDocument();
+    // With the cache reset per test this observes the real connecting →
+    // online transition once the connection probe answers.
+    const status = within(topBar).getByTestId('connection-status');
+    expect(within(status).getByText('connecting')).toBeInTheDocument();
+    expect(await within(status).findByText('online')).toBeInTheDocument();
+    expect(status).toHaveAccessibleName('Castle connection: online');
   });
 
   test('renders grouped nav sections and routes pages inside the outlet', async () => {
@@ -169,5 +188,19 @@ describe('App shell', () => {
     expect(getAuthToken()).toBe('');
     expect(await screen.findByTestId('login-brand')).toBeInTheDocument();
     expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();
+  });
+
+  test('does not offer log out in the sidebar nav', () => {
+    renderApp();
+
+    const nav = screen.getByTestId('side-nav');
+    expect(within(nav).queryByTestId('logout')).not.toBeInTheDocument();
+    expect(within(nav).queryByText(/log out/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('document title', () => {
+  test('the tab is branded Parapet — Castle', () => {
+    expect(indexHtml).toContain('<title>Parapet — Castle</title>');
   });
 });

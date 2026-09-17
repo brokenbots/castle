@@ -85,4 +85,27 @@ describe('DockedPanel', () => {
       `${DOCKED_PANEL_MIN_WIDTH}px`,
     );
   });
+
+  test('keeps the ARIA width range consistent on narrow viewports', () => {
+    const original = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { value: 300, configurable: true });
+    try {
+      render(
+        <DockedPanel title="Run Scope" testId="scope-dock">
+          <p>content</p>
+        </DockedPanel>,
+      );
+
+      const handle = screen.getByTestId('scope-dock-resize');
+      // At 300px the 60% cap (180px) is below the minimum; the minimum
+      // wins so aria-valuemax never undercuts aria-valuemin.
+      expect(handle.getAttribute('aria-valuemax')).toBe(String(DOCKED_PANEL_MIN_WIDTH));
+      expect(Number(handle.getAttribute('aria-valuenow'))).toBe(DOCKED_PANEL_MIN_WIDTH);
+      expect(screen.getByTestId('scope-dock').style.width).toBe(
+        `${DOCKED_PANEL_MIN_WIDTH}px`,
+      );
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { value: original, configurable: true });
+    }
+  });
 });

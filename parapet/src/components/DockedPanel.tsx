@@ -13,9 +13,17 @@ interface DockedPanelProps {
   children: ReactNode;
 }
 
+function maxWidth(): number {
+  // On very narrow viewports the ratio cap can fall below the minimum
+  // width; the minimum wins so the ARIA range stays min <= now <= max.
+  return Math.max(
+    DOCKED_PANEL_MIN_WIDTH,
+    Math.round(window.innerWidth * DOCKED_PANEL_MAX_VIEWPORT_RATIO),
+  );
+}
+
 function clampWidth(width: number): number {
-  const max = Math.round(window.innerWidth * DOCKED_PANEL_MAX_VIEWPORT_RATIO);
-  return Math.min(Math.max(width, DOCKED_PANEL_MIN_WIDTH), max);
+  return Math.min(Math.max(width, DOCKED_PANEL_MIN_WIDTH), maxWidth());
 }
 
 interface DragState {
@@ -66,7 +74,7 @@ export function DockedPanel({ title, onClose, defaultWidth = 320, testId = 'dock
     }
   };
 
-  const max = Math.round(window.innerWidth * DOCKED_PANEL_MAX_VIEWPORT_RATIO);
+  const max = maxWidth();
 
   return (
     <aside

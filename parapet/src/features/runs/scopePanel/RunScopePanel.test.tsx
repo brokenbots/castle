@@ -18,6 +18,15 @@ describe('RunScopePanel', () => {
         correlationId: '',
         payload: { name: 'env', value: 'prod', source: 'default' },
       },
+      {
+        schemaVersion: 1,
+        runId: 'run-1',
+        seq: 2,
+        type: 'variableSet',
+        ts: new Date().toISOString(),
+        correlationId: '',
+        payload: { name: 'region', value: 'us-west-2', source: 'step_output:configure' },
+      },
     ];
 
     render(<RunScopePanel events={events} />);
@@ -25,9 +34,14 @@ describe('RunScopePanel', () => {
     const panel = screen.getByTestId('run-scope-panel');
     expect(panel).toBeInTheDocument();
     expect(panel).not.toHaveClass('fixed');
+    // Each VariableSet folds into the variable map, so every variable
+    // renders with its own value and source.
     expect(screen.getByText('var.env')).toBeInTheDocument();
     expect(screen.getByText('prod')).toBeInTheDocument();
     expect(screen.getByText('default')).toBeInTheDocument();
+    expect(screen.getByText('var.region')).toBeInTheDocument();
+    expect(screen.getByText('us-west-2')).toBeInTheDocument();
+    expect(screen.getByText('step_output:configure')).toBeInTheDocument();
   });
 
   test('reflects StepOutputCaptured events', () => {

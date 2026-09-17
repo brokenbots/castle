@@ -1,7 +1,6 @@
 import { FormEvent, useState } from 'react';
 import { Code, ConnectError } from '@connectrpc/connect';
 import { server } from '../api/client';
-import { clearAuthToken, getAuthToken, setAuthToken } from '../authToken';
 
 interface LoginPageProps {
   onAuthenticated: (token: string) => void;
@@ -32,18 +31,13 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
     if (!token || validating) return;
     setValidating(true);
     setError(null);
-    // The transport interceptor authenticates every request from stored
-    // state, so the candidate token is persisted for the probe and restored
-    // if Castle rejects it. While the login page is mounted nothing else is
-    // issuing requests, so the probe is the only consumer.
-    const previous = getAuthToken();
-    setAuthToken(token);
+    // The probe carries the candidate token in an explicit header, so the
+    // token is persisted (via onAuthenticated) only after Castle accepts
+    // it — an unvalidated token is never written to storage.
     try {
-      await server.listAgents({ limit: 1 });
+      await server.listAgents({ limit: 1 }, { headers: { Authorization: `Bearer ${token}` } });
       onAuthenticated(token);
     } catch (err) {
-      if (previous) setAuthToken(previous);
-      else clearAuthToken();
       setValidating(false);
       setError(describeError(err));
     }
