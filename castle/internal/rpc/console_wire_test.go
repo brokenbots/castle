@@ -233,6 +233,14 @@ func TestConsoleWire_WritesDenied(t *testing.T) {
 			_, err := h.orchClient.CancelRun(ctx, req)
 			return err
 		},
+		"Resume (CriteriaService agent-owned write)": func() error {
+			// The agent-owned resume stays out of the console surface: the
+			// console delivers pending signals through ServerService.ResumeRun.
+			req := connect.NewRequest(&pb.ResumeRequest{RunId: h.runID, Signal: "continue"})
+			h.authHeader(req)
+			_, err := h.oClient.Resume(ctx, req)
+			return err
+		},
 		"Register (bootstrap write)": func() error {
 			req := connect.NewRequest(&pb.RegisterRequest{Name: "sneaky"})
 			h.authHeader(req)
@@ -334,6 +342,82 @@ func TestConsoleWire_RunControlWritesAccepted(t *testing.T) {
 		t.Fatalf("unexpected control command: %T", ctrl.Msg().Command)
 	} else if cancel.RunCancel.RunId != h.runID {
 		t.Fatalf("run id=%s want %s", cancel.RunCancel.RunId, h.runID)
+	}
+}
+
+// TestConsoleWire_ApprovalResumeEndToEnd is the CRI-197 console human-input
+// case: the operator answers a run paused for approval (ApprovalCard payload
+// contract), the ResumeRun control message reaches the owning agent with the
+// signal and decision payload, and the run's paused state is cleared so the
+// run no longer reads as paused and a stale console retry is failed_precondition.
+func TestConsoleWire_ApprovalResumeEndToEnd(t *testing.T) {
+	h := newConsoleWireHarness(t, false)
+	ctx := context.Background()
+
+	// The owning agent subscribes to its control stream with its own token.
+	ctrlReq := connect.NewRequest(&pb.ControlSubscribeRequest{CriteriaId: h.agentID})
+	ctrlReq.Header().Set("Authorization", "Bearer "+h.agentToken)
+	ctrl, err := h.oClient.Control(ctx, ctrlReq)
+	if err != nil {
+		t.Fatalf("agent control subscribe: %v", err)
+	}
+	defer ctrl.Close()
+	if !ctrl.Receive() {
+		t.Fatalf("expected ControlReady, err=%v", ctrl.Err())
+	}
+
+	// Drive the agent-side approval lifecycle the way the overseer records it:
+	// the run pauses with the approval node name as the pending signal.
+	const node = "deploy-approval"
+	if err := h.ts.store.SetRunPaused(ctx, h.runID, node, time.Now().UTC()); err != nil {
+		t.Fatalf("set run paused: %v", err)
+	}
+
+	// Console operator approves through ServerService.ResumeRun.
+	resumeReq := connect.NewRequest(&pb.ResumeRunRequest{
+		RunId:   h.runID,
+		Signal:  node,
+		Payload: map[string]string{"decision": "approved"},
+	})
+	h.authHeader(resumeReq)
+	if _, err := h.cClient.ResumeRun(ctx, resumeReq); err != nil {
+		t.Fatalf("console ResumeRun: %v", err)
+	}
+
+	// The control message reaches the owning agent with signal + payload.
+	if !ctrl.Receive() {
+		t.Fatalf("expected ResumeRun control message, err=%v", ctrl.Err())
+	}
+	cmd, ok := ctrl.Msg().Command.(*pb.ControlMessage_ResumeRun)
+	if !ok {
+		t.Fatalf("unexpected control command: %T", ctrl.Msg().Command)
+	}
+	if cmd.ResumeRun.Signal != node {
+		t.Fatalf("signal=%s want %s", cmd.ResumeRun.Signal, node)
+	}
+	if cmd.ResumeRun.Payload["decision"] != "approved" {
+		t.Fatalf("approval decision payload not forwarded to agent: %v", cmd.ResumeRun.Payload)
+	}
+
+	// The paused state must be cleared at resume acceptance: status is running
+	// and the pending signal is gone.
+	run, err := h.ts.store.GetRun(ctx, h.runID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != "running" {
+		t.Fatalf("status=%q want running", run.Status)
+	}
+	if run.PendingSignal != "" {
+		t.Fatalf("pending_signal=%q want cleared", run.PendingSignal)
+	}
+
+	// A stale console view retrying the same signal gets failed_precondition,
+	// which the console renders as an informational "signal already satisfied".
+	staleReq := connect.NewRequest(&pb.ResumeRunRequest{RunId: h.runID, Signal: node})
+	h.authHeader(staleReq)
+	if _, err := h.cClient.ResumeRun(ctx, staleReq); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("stale console resume must be failed_precondition, got %v", err)
 	}
 }
 

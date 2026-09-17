@@ -496,9 +496,11 @@ func (s *Store) SetRunPaused(ctx context.Context, runID, pendingSignal string, p
 }
 
 // ClearRunPaused clears the pause state and sets status back to running (W05).
+// Guarded to paused runs only (CRI-197): a terminal run's pause state is stale
+// history, and a late resume must not resurrect it.
 func (s *Store) ClearRunPaused(ctx context.Context, runID string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status='running', pending_signal=NULL, paused_at=NULL WHERE id=?`, runID)
+		`UPDATE runs SET status='running', pending_signal=NULL, paused_at=NULL WHERE id=? AND status='paused'`, runID)
 	return err
 }
 

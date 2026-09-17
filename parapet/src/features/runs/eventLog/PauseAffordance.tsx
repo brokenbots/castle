@@ -6,9 +6,11 @@ import { ApprovalCard } from './ApprovalCard';
 interface PauseAffordanceProps {
   runId: string;
   pauseEvent: EventEnvelope;
+  /** Re-fetches the run and re-anchors the event log; used by the pending signal card. */
+  onRefresh: () => void;
 }
 
-export function PauseAffordance({ runId, pauseEvent }: PauseAffordanceProps) {
+export function PauseAffordance({ runId, pauseEvent, onRefresh }: PauseAffordanceProps) {
   const payload = pauseEvent.payload as Record<string, unknown> | undefined;
 
   if (pauseEvent.type === 'waitEntered') {
@@ -21,7 +23,7 @@ export function PauseAffordance({ runId, pauseEvent }: PauseAffordanceProps) {
     }
 
     if (mode === 'signal') {
-      return <PendingSignalCard signal={signal} runId={runId} />;
+      return <PendingSignalCard signal={signal} runId={runId} onRefresh={onRefresh} />;
     }
   }
 

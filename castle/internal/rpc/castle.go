@@ -514,6 +514,14 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 	if err != nil {
 		return nil, err
 	}
+	// The control message is queued for the owning agent, which will emit its
+	// resume event and continue the run. Clear the pause state now, mirroring
+	// CriteriaService.Resume's agent-initiated path, so the run no longer reads
+	// as paused and the same signal cannot be delivered twice. Clearing after
+	// the enqueue keeps a failed delivery (e.g. agent offline) resumable.
+	if err := s.Store.ClearRunPaused(ctx, run.ID); err != nil {
+		s.Log.Error("resume accepted but clearing run pause state failed", "run_id", run.ID, "err", err)
+	}
 	return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
 }
 

@@ -395,10 +395,12 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		now := time.Now().UTC()
 		_ = s.Store.SetRunPaused(ctx, env.RunId, p.WaitEntered.Signal, now)
 	case *criteria.Envelope_WaitResumed:
-		// Informational: the resume.go handler already called ClearRunPaused before
-		// enqueuing the ResumeRun control message. A second ClearRunPaused here
-		// would race against RunCompleted and could set status="running" after the
-		// run has already succeeded. No-op. (W05/F-04)
+		// Informational: the handler that accepted the resume (resume.go for
+		// agent-initiated resumes, ServerService.ResumeRun for console ones)
+		// already called ClearRunPaused before enqueuing the ResumeRun control
+		// message. A second ClearRunPaused here would race against RunCompleted
+		// and could set status="running" after the run has already succeeded.
+		// No-op. (W05/F-04)
 		if p.WaitResumed == nil {
 			return
 		}
@@ -410,7 +412,8 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		now := time.Now().UTC()
 		_ = s.Store.SetRunPaused(ctx, env.RunId, p.ApprovalRequested.Node, now)
 	case *criteria.Envelope_ApprovalDecision:
-		// Informational: same as WaitResumed — resume.go already cleared the pause.
+		// Informational: same as WaitResumed — the accepting resume handler
+		// (resume.go or ServerService.ResumeRun) already cleared the pause.
 		// No-op here to avoid the double-clear race with RunCompleted. (W05/F-04)
 		if p.ApprovalDecision == nil {
 			return

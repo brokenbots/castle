@@ -293,6 +293,7 @@ type Store interface {
 	// SetRunPaused marks the run as paused with the given pending signal and timestamp.
 	SetRunPaused(ctx context.Context, runID, pendingSignal string, pausedAt time.Time) error
 	// ClearRunPaused clears the pending_signal and paused_at and sets status back to running.
+	// Only runs currently in status paused are affected; terminal runs are left untouched.
 	ClearRunPaused(ctx context.Context, runID string) error
 
 	// Workflow assignments
