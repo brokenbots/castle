@@ -199,8 +199,13 @@ message PauseRunResponse {
   google.protobuf.Timestamp issued_at = 1;
 }
 
+// Request to resume a run from the console/operator side. `signal` and
+// `payload` are optional: when set they must match the run's pending signal
+// and are forwarded to the agent's ResumeRun control message.
 message ResumeRunRequest {
   string run_id = 1;
+  string signal = 2; // optional; validated against the run's pending signal
+  map<string, string> payload = 3; // optional; forwarded to the agent
 }
 
 message ResumeRunResponse {

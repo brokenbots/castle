@@ -84,24 +84,43 @@ func isOrchestratorAllowed(procedure string) bool {
 	return false
 }
 
+// consoleRunControlProcedures are the ServerService run-control writes a
+// console identity may invoke (CRI-196). A human operator manages runs from
+// the Parapet console — Stop/Pause/Resume, including runs owned by other
+// agents — without being able to act like a workflow: ResumeRun carries the
+// operator-supplied signal + payload contract (approval decisions), CancelRun
+// (OrchestratorService, CRI-142), SubmitWorkflowAssignment, SendPrompt, and
+// every agent-owned CriteriaService procedure stay denied. Like every console
+// surface this is deterministic map membership, not judgment.
+var consoleRunControlProcedures = map[string]struct{}{
+	criteriav1connect.ServerServiceStopRunProcedure:   {},
+	criteriav1connect.ServerServicePauseRunProcedure:  {},
+	criteriav1connect.ServerServiceResumeRunProcedure: {},
+}
+
 // isConsoleAllowed reports whether a console identity may invoke the
-// procedure (CRI-195). Console identities are human operators viewing the
-// Parapet console: they get exactly the read-only ServerService observation
-// surface across ALL runs and agents (a human viewing the console is not
-// subject to caller-owns-run — that boundary is for agent identities), and
-// nothing else. Every write — CriteriaService, ServerService writes
-// (Resume/Pause/Stop), OrchestratorService writes (CancelRun), Register — is
-// denied.
+// procedure (CRI-195, extended by CRI-196). Console identities are human
+// operators viewing the Parapet console: they get the read-only
+// ServerService observation surface across ALL runs and agents (a human
+// viewing the console is not subject to caller-owns-run — that boundary is
+// for agent identities) plus the run-control writes a human operator needs
+// (CRI-196). Everything else — CriteriaService, ServerService
+// SubmitWorkflowAssignment/SendPrompt, OrchestratorService writes
+// (CancelRun), Register — is denied.
 func isConsoleAllowed(procedure string) bool {
-	_, ok := readOnlyServerProcedures[procedure]
+	if _, ok := readOnlyServerProcedures[procedure]; ok {
+		return true
+	}
+	_, ok := consoleRunControlProcedures[procedure]
 	return ok
 }
 
-// authorizeConsoleProcedure enforces the console auth boundary (CRI-195): a
-// console identity may invoke only the read-only ServerService observation
-// procedures. Agent-owned writes must be rejected so a console login can
-// never mutate run state. Agent and orchestrator callers pass through
-// (CallerConsoleUserID is empty for them).
+// authorizeConsoleProcedure enforces the console auth boundary (CRI-195,
+// CRI-196): a console identity may invoke only the read-only ServerService
+// observation procedures and the run-control writes (Stop/Pause/Resume).
+// Remaining agent-owned writes must be rejected so a console login can never
+// submit or drive workflows like an agent. Agent and orchestrator callers
+// pass through (CallerConsoleUserID is empty for them).
 func authorizeConsoleProcedure(ctx context.Context, procedure string) error {
 	if CallerConsoleUserID(ctx) == "" {
 		return nil
@@ -109,7 +128,7 @@ func authorizeConsoleProcedure(ctx context.Context, procedure string) error {
 	if isConsoleAllowed(procedure) {
 		return nil
 	}
-	return connect.NewError(connect.CodePermissionDenied, errors.New("console identities are read-only and cannot invoke this procedure"))
+	return connect.NewError(connect.CodePermissionDenied, errors.New("console identities cannot invoke this procedure"))
 }
 
 // InterceptorOption configures an AuthInterceptor.
@@ -313,8 +332,8 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 
 // handleRegister enforces the bootstrap-token gate for the Register RPC, and
 // denies console identities outright (CRI-195): a console token can never
-// register an agent, even under --dev-allow-anon-register, so the read-only
-// human console cannot bootstrap agent credentials.
+// register an agent, even under --dev-allow-anon-register, so the human
+// console cannot bootstrap agent credentials.
 //
 //   - Console session token presented: PermissionDenied, checked first so the
 //     denial is deterministic regardless of the bootstrap configuration.
@@ -328,7 +347,7 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		if sess != nil {
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("console identities are read-only and cannot register agents"))
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("console identities cannot register agents"))
 		}
 	}
 	if i.allowAnonRegister {

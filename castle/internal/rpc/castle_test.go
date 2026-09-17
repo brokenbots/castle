@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -1164,6 +1165,61 @@ func TestResumeRunTerminalRun(t *testing.T) {
 	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition for terminal run, got %v", err)
+	}
+}
+
+func TestResumeRunSignalMismatch(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.store.SetRunPaused(context.Background(), run.Msg.RunId, "continue", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId, Signal: "approve"}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition for mismatched signal, got %v", err)
+	}
+}
+
+func TestResumeRunForwardsPayload(t *testing.T) {
+	ts := newTestStack(t)
+	_, oClient, cClient := ts.startServer(t)
+	overseerID, _ := mustRegister(t, oClient)
+	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.store.SetRunPaused(context.Background(), run.Msg.RunId, "continue", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctrl := drainControlReady(t, oClient, overseerID)
+	defer ctrl.Close()
+
+	payload := map[string]string{"decision": "approve", "note": "looks good"}
+	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId, Signal: "continue", Payload: payload}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !ctrl.Receive() {
+		t.Fatalf("expected control message, err=%v", ctrl.Err())
+	}
+	msg := ctrl.Msg()
+	cmd, ok := msg.Command.(*pb.ControlMessage_ResumeRun)
+	if !ok {
+		t.Fatalf("unexpected control command: %T", msg.Command)
+	}
+	if cmd.ResumeRun.Signal != "continue" {
+		t.Fatalf("signal=%s want continue", cmd.ResumeRun.Signal)
+	}
+	if !maps.Equal(payload, cmd.ResumeRun.Payload) {
+		t.Fatalf("payload=%v want %v", cmd.ResumeRun.Payload, payload)
 	}
 }
 
