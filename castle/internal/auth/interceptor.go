@@ -32,6 +32,14 @@ func WithCallerCriteriaID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, callerCriteriaIDKey{}, id)
 }
 
+// readOnlyServerProcedures are the read-only ServerService observation
+// surfaces: the calls exempted by dev-mode anonymous reads
+// (--allow-anon-reads). InspectRun is included (CRI-194): it is a read-only
+// inspection of run state, and omitting it made the Parapet run detail page
+// the only page whose data call rejected a token every other page accepted.
+// Per-caller authorization on InspectRun (caller-owns-run) stays enforceable
+// because presented tokens are validated even on this surface — see
+// authenticateAnonReadToken.
 var readOnlyServerProcedures = map[string]struct{}{
 	criteriav1connect.ServerServiceListAgentsProcedure:    {},
 	criteriav1connect.ServerServiceGetAgentProcedure:      {},
@@ -39,6 +47,7 @@ var readOnlyServerProcedures = map[string]struct{}{
 	criteriav1connect.ServerServiceGetRunProcedure:        {},
 	criteriav1connect.ServerServiceListRunEventsProcedure: {},
 	criteriav1connect.ServerServiceWatchRunProcedure:      {},
+	criteriav1connect.ServerServiceInspectRunProcedure:    {},
 }
 
 // orchestratorProcedures are the OrchestratorService RPCs (CRI-133). They are
@@ -122,7 +131,11 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return i.handleRegister(ctx, req, next)
 		}
 		if i.isExempt(req.Spec().Procedure) {
-			return next(ctx, req)
+			newCtx, err := i.authenticateAnonReadToken(ctx, req.Header(), req.Spec().Procedure)
+			if err != nil {
+				return nil, err
+			}
+			return next(newCtx, req)
 		}
 		newCtx, err := i.authenticateHeaders(ctx, req.Header())
 		if err != nil {
@@ -142,7 +155,11 @@ func (i *AuthInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		if i.isExempt(conn.Spec().Procedure) {
-			return next(ctx, conn)
+			newCtx, err := i.authenticateAnonReadToken(ctx, conn.RequestHeader(), conn.Spec().Procedure)
+			if err != nil {
+				return err
+			}
+			return next(newCtx, conn)
 		}
 		newCtx, err := i.authenticateHeaders(ctx, conn.RequestHeader())
 		if err != nil {
@@ -168,6 +185,40 @@ func authorizeOrchestratorProcedure(ctx context.Context, procedure string) error
 		return nil
 	}
 	return connect.NewError(connect.CodePermissionDenied, errors.New("orchestrator identities cannot invoke agent-owned procedures"))
+}
+
+// anonReadableProcedure reports whether the procedure belongs to the
+// dev-mode anonymous-read surface: the read-only ServerService reads and the
+// OrchestratorService subscription APIs. Every member of this set is also in
+// the orchestrator-allowed set, so identity injection here never needs the
+// orchestrator boundary re-check.
+func anonReadableProcedure(procedure string) bool {
+	if _, ok := readOnlyServerProcedures[procedure]; ok {
+		return true
+	}
+	_, ok := orchestratorProcedures[procedure]
+	return ok
+}
+
+// authenticateAnonReadToken optionally authenticates a presented token on
+// the dev-mode anonymous-read surface (CRI-194). A caller without a token
+// keeps the anonymous pass-through --allow-anon-reads promises. A presented
+// token must be valid: its identity is injected so per-caller authorization
+// stays enforceable (InspectRun requires run ownership), and an invalid
+// token is rejected as unauthenticated instead of silently succeeding. That
+// last property is what lets the Parapet login gate's token probe (a
+// ListAgents call carrying the candidate token) actually detect a bad token
+// rather than accept anything and trap the UI in a login loop on a
+// deep-linked route. Health and reflection exemptions are not anon-readable
+// surfaces and stay fully unauthenticated.
+func (i *AuthInterceptor) authenticateAnonReadToken(ctx context.Context, h http.Header, procedure string) (context.Context, error) {
+	if !i.allowAnonReads || !anonReadableProcedure(procedure) {
+		return ctx, nil
+	}
+	if _, ok := TokenFromHeaders(h); !ok {
+		return ctx, nil
+	}
+	return i.authenticateHeaders(ctx, h)
 }
 
 // authenticateHeaders validates the token and returns a context with the

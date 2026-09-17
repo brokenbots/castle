@@ -9,6 +9,7 @@ import {
 } from './RunInspection';
 import { castleApi } from '../../api/castleApi';
 import { store } from '../../store';
+import { selectAuthExpired, sessionRecovered } from '../../features/auth/sessionSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
 
@@ -55,6 +56,9 @@ function renderPanel(status: string) {
 afterEach(() => {
   vi.useRealTimers();
   store.dispatch(castleApi.util.resetApiState());
+  // The auth-expiry middleware lives in the shared store; reset any expired
+  // flag an error-path test flipped so tests stay order-independent.
+  store.dispatch(sessionRecovered());
 });
 
 describe('adapterStateView', () => {
@@ -164,6 +168,42 @@ describe('RunInspection', () => {
     renderPanel('running');
 
     expect(await screen.findByText('Inspection unavailable.')).toBeInTheDocument();
+  });
+
+  // CRI-194: Castle denies InspectRun when the caller is not the run's
+  // owner. That denial is an access boundary — the panel renders an explicit
+  // access state, and the auth-expiry middleware must NOT flip the session
+  // gate, which used to trap deep-linked run pages in a login loop.
+  test('renders an explicit access state and keeps the session when the inspection is denied', async () => {
+    server.use(
+      http.post(serverPath('InspectRun'), () =>
+        HttpResponse.json(
+          { code: 'permission_denied', message: 'caller does not own this run' },
+          { status: 403 },
+        ),
+      ),
+    );
+    renderPanel('running');
+
+    expect(await screen.findByTestId('inspection-access-denied')).toHaveTextContent('Access denied');
+    expect(screen.queryByText('Inspection unavailable.')).not.toBeInTheDocument();
+    // A permission denial is not a session expiry: the store-level gate must
+    // stay closed.
+    expect(selectAuthExpired(store.getState())).toBe(false);
+  });
+
+  // The other half of the CRI-194 contract: a genuine unauthenticated
+  // rejection must still flip the session gate so the app can react.
+  test('marks the session expired when the inspection is rejected as unauthenticated', async () => {
+    server.use(
+      http.post(serverPath('InspectRun'), () =>
+        HttpResponse.json({ code: 'unauthenticated', message: 'invalid token' }, { status: 401 }),
+      ),
+    );
+    renderPanel('running');
+
+    expect(await screen.findByText('Inspection unavailable.')).toBeInTheDocument();
+    expect(selectAuthExpired(store.getState())).toBe(true);
   });
 
   test('polls on an interval while the run is active', async () => {
