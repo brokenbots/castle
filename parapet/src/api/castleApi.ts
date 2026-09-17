@@ -154,6 +154,8 @@ function toError(err: unknown) {
 }
 
 export interface ListRunsArgs {
+  // Optional agent filter ('' means no filter, i.e. runs of any agent).
+  criteriaId?: string;
   // Optional status filter ('' means no filter, i.e. all runs).
   status?: string;
   // Pagination cursor from a previous ListRunsResponse.next_page_token.
@@ -175,25 +177,24 @@ export const castleApi = createApi({
   tagTypes: ['Run', 'Agent'],
   endpoints: (b) => ({
     listRuns: b.query<RunsPage, ListRunsArgs>({
-      queryFn: async ({ status = '', pageToken = '' }) => {
+      queryFn: async ({ criteriaId = '', status = '', pageToken = '' }) => {
         try {
-          const resp = await server.listRuns({ status, limit: RUNS_PAGE_LIMIT, pageToken });
+          const resp = await server.listRuns({ criteriaId, status, limit: RUNS_PAGE_LIMIT, pageToken });
           return { data: { runs: resp.runs.map(mapRun), nextPageToken: resp.nextPageToken } };
         } catch (err) {
           return { error: toError(err) };
         }
       },
-      // One cache entry per (status, pageToken) so "Load more" pages are
-      // separate entries the component accumulates itself. RTK Query
+      // One cache entry per (criteriaId, status, pageToken) so "Load more"
+      // pages are separate entries the component accumulates itself. RTK Query
       // refetches (polling, tag invalidation) re-initiate a cache entry with
       // its stored originalArgs, so a shared key would let the cursor args
       // from "Load more" hijack page 1's poll and make every poll refetch
       // the last cursor page. Keeping pageToken in the key pins page 1's
       // entry to pageToken '' so polls always refresh page 1; the cursor
-      // entries are unsubscribed one-shot fetches that no poll targets. Any
-      // caller adding criteriaId must include it here too.
+      // entries are unsubscribed one-shot fetches that no poll targets.
       serializeQueryArgs: ({ endpointName, queryArgs }) =>
-        `${endpointName}(${queryArgs.status ?? ''}|${queryArgs.pageToken ?? ''})`,
+        `${endpointName}(${queryArgs.criteriaId ?? ''}|${queryArgs.status ?? ''}|${queryArgs.pageToken ?? ''})`,
       providesTags: ['Run'],
     }),
     getRun: b.query<Run, string>({
@@ -230,6 +231,20 @@ export const castleApi = createApi({
         }
       },
       providesTags: ['Agent'],
+    }),
+    // Single-agent lookup backing the agent detail route
+    // (/agents/:criteriaId). Keyed by the Agent id tag so cache
+    // invalidations for an agent refresh its detail view.
+    getAgent: b.query<Agent, string>({
+      queryFn: async (criteriaId) => {
+        try {
+          const resp = await server.getAgent({ criteriaId });
+          return { data: mapAgent(resp) };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      providesTags: (_r, _e, criteriaId) => [{ type: 'Agent', id: criteriaId }],
     }),
     // Lightweight probe for the shell's connection indicator: a minimal
     // authenticated RPC (one agent) that answers "is Castle reachable and is
@@ -294,6 +309,7 @@ export const {
   useGetRunQuery,
   useInspectRunQuery,
   useListAgentsQuery,
+  useGetAgentQuery,
   useGetConnectionStatusQuery,
   useResumeMutation,
   usePauseRunMutation,

@@ -9,7 +9,9 @@ import { store } from './store';
 import { castleApi } from './api/castleApi';
 import { clearAuthToken, getAuthToken, setAuthToken } from './authToken';
 import { RunListPage } from './features/runs/RunListPage';
+import { RunDetailPage } from './features/runs/RunDetailPage';
 import { AgentListPage } from './features/agents/AgentListPage';
+import { AgentDetailPage } from './features/agents/AgentDetailPage';
 import { server } from './test/mocks/server';
 import { serverPath } from './test/mocks/handlers';
 // Vite's ?raw import inlines the shipped index.html so the document title
@@ -28,7 +30,9 @@ function renderApp(initialPath = '/') {
         <Routes>
           <Route path="/" element={<App />}>
             <Route path="runs" element={<RunListPage />} />
+            <Route path="runs/:id" element={<RunDetailPage />} />
             <Route path="agents" element={<AgentListPage />} />
+            <Route path="agents/:criteriaId" element={<AgentDetailPage />} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -159,6 +163,14 @@ describe('App shell', () => {
     const outlet = screen.getByTestId('shell-outlet');
     expect(await within(outlet).findByRole('heading', { name: 'Agents' })).toBeInTheDocument();
     expect(await within(outlet).findByText('local')).toBeInTheDocument();
+  });
+
+  test('routes the agent detail page inside the shell outlet', async () => {
+    renderApp('/agents/agent-1');
+
+    const outlet = screen.getByTestId('shell-outlet');
+    expect(await within(outlet).findByTestId('agent-detail')).toBeInTheDocument();
+    expect(within(outlet).getByTestId('agent-criteria-id')).toHaveTextContent('agent-1');
   });
 
   test('collapses and expands the nav rail', async () => {

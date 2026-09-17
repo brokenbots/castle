@@ -67,6 +67,18 @@ export const handlers = [
       next_page_token: '',
     }),
   ),
+  http.post(serverPath('GetAgent'), async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { criteriaId?: string; criteria_id?: string };
+    const criteriaId = body.criteriaId ?? body.criteria_id ?? 'ov-1';
+    return HttpResponse.json({
+      criteria_id: criteriaId,
+      name: 'local',
+      labels: { hostname: 'dev' },
+      status: 'online',
+      registered_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
+    });
+  }),
   http.post(serverPath('ResumeRun'), async () => {
     return HttpResponse.json({
       issued_at: new Date().toISOString(),

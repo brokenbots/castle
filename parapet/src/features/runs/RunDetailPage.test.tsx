@@ -819,3 +819,43 @@ describe('RunDetailPage', () => {
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
   });
 });
+
+describe('RunDetailPage navigation chrome', () => {
+  function renderDetail() {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+  }
+
+  test('shows breadcrumbs with a Runs link and the workflow name as the current page', async () => {
+    renderDetail();
+
+    expect(await screen.findByTestId('breadcrumbs')).toBeInTheDocument();
+    const breadcrumbs = screen.getByTestId('breadcrumbs');
+    const runsCrumb = within(breadcrumbs).getByRole('link', { name: 'Runs' });
+    expect(runsCrumb.getAttribute('href')).toBe('/runs');
+    const current = within(breadcrumbs).getByText('hello');
+    expect(current.getAttribute('aria-current')).toBe('page');
+  });
+
+  test('offers a back affordance to the run list', async () => {
+    renderDetail();
+
+    const back = await screen.findByTestId('run-back');
+    expect(back.getAttribute('href')).toBe('/runs');
+  });
+
+  test('the document title reflects the current workflow name', async () => {
+    renderDetail();
+
+    await vi.waitFor(() =>
+      expect(document.title).toBe('hello — Parapet — Castle'),
+    );
+  });
+});

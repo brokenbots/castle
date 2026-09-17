@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useListAgentsQuery } from '../../api/castleApi';
 import { PageHeader } from '../../components/PageHeader';
 
@@ -20,7 +21,15 @@ export function AgentListPage() {
         <tbody>
           {(data ?? []).map((a) => (
             <tr key={a.criteriaId} className="border-b border-slate-900">
-              <td className="py-2 pr-4">{a.name}</td>
+              <td className="py-2 pr-4">
+                {/* Entries link into the agent detail view (/agents/:criteriaId). */}
+                <Link
+                  to={`/agents/${encodeURIComponent(a.criteriaId)}`}
+                  className="text-sky-400 hover:underline"
+                >
+                  {a.name}
+                </Link>
+              </td>
               <td className="py-2 pr-4 text-slate-400">{a.labels.hostname ?? ''}</td>
               <td className={`py-2 pr-4 ${a.status === 'online' ? 'text-emerald-400' : 'text-slate-500'}`}>{a.status}</td>
               <td className="py-2 pr-4 text-slate-400">
