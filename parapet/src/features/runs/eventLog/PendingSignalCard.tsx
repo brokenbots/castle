@@ -10,11 +10,20 @@ interface PendingSignalCardProps {
 }
 
 // ResumeRun failures surface as RTK errors shaped { status: connectCodeName, data: message }.
-// failed_precondition from a stale view means the signal is no longer pending —
-// informational, not an error dead-end.
+// failed_precondition covers several causes. Only the stale-view ones — the signal is
+// no longer pending because the run already moved past this wait — are informational.
+// Delivery failures (agent offline, control backlog full) and other mismatches
+// (e.g. a terminal run) must surface as errors consistent with ApprovalCard.
+const STALE_SIGNAL_CAUSES = new Set([
+  'run is not paused',
+  'run has no pending signal',
+  "signal does not match the run's pending signal",
+]);
+
 function isStaleSignalError(error: unknown): boolean {
   if (error === null || typeof error !== 'object') return false;
-  return (error as { status?: unknown }).status === 'failed_precondition';
+  const { status, data } = error as { status?: unknown; data?: unknown };
+  return status === 'failed_precondition' && typeof data === 'string' && STALE_SIGNAL_CAUSES.has(data);
 }
 
 export function PendingSignalCard({ signal, runId, onRefresh }: PendingSignalCardProps) {

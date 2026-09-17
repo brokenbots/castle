@@ -26,12 +26,12 @@ function renderCard(overrides: Partial<{ signal: string; runId: string; onRefres
     onRefresh: vi.fn(),
     ...overrides,
   };
-  render(
+  const result = render(
     <Provider store={store}>
       <PendingSignalCard signal={props.signal} runId={props.runId} onRefresh={props.onRefresh} />
     </Provider>,
   );
-  return props;
+  return { ...result, ...props };
 }
 
 describe('PendingSignalCard', () => {
@@ -126,6 +126,50 @@ describe('PendingSignalCard', () => {
 
     fireEvent.click(screen.getByTestId('pending-signal-refresh'));
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  test('treats the other stale-view failed_precondition causes as informational too', () => {
+    // ServerService/ResumeRun's stale-view messages: the run moved past this
+    // wait (pause gone, or the pending signal changed), so the operator's view
+    // is outdated and the card offers the informational state, not an error.
+    const staleCauses = [
+      'run has no pending signal',
+      "signal does not match the run's pending signal",
+    ];
+    for (const data of staleCauses) {
+      vi.mocked(useResumeMutation).mockReturnValue([
+        vi.fn(),
+        { isLoading: false, error: { status: 'failed_precondition', data }, isSuccess: false },
+      ] as any);
+      const { unmount } = renderCard();
+
+      expect(screen.getByText(/Signal already satisfied/i)).toBeInTheDocument();
+      expect(screen.queryByTestId('pending-signal-error')).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  test('renders failed_precondition delivery failures as errors, not as a satisfied signal', () => {
+    // failed_precondition also covers causes where the signal was NOT delivered:
+    // the agent is offline or its control backlog is full (the run stays paused
+    // awaiting input), and a terminal run can never resume. These must stay
+    // error states so the operator knows their input is still needed.
+    const nonStaleCauses = [
+      'criteria agent not connected',
+      'control backlog full',
+      'run is terminal',
+    ];
+    for (const data of nonStaleCauses) {
+      vi.mocked(useResumeMutation).mockReturnValue([
+        vi.fn(),
+        { isLoading: false, error: { status: 'failed_precondition', data }, isSuccess: false },
+      ] as any);
+      const { unmount } = renderCard();
+
+      expect(screen.getByTestId('pending-signal-error')).toHaveTextContent(`✗ Error: ${data}`);
+      expect(screen.queryByTestId('pending-signal-stale')).not.toBeInTheDocument();
+      unmount();
+    }
   });
 
   test('renders other errors as an error message', () => {
