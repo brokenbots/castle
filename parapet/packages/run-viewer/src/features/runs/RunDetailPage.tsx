@@ -9,6 +9,7 @@ import { EventLog } from './eventLog/EventLog';
 import { StatusPill } from './StatusPill';
 import { RunInspection } from './RunInspection';
 import { ScopeAndControlsPanel } from './ScopeAndControlsPanel';
+import { CASTLE_RUN_CAPABILITIES, type RunCapabilities } from './capabilities';
 import { ForEachStrip } from './eventLog/ForEachStrip';
 import { PageHeader } from '../../components/PageHeader';
 import { PageState } from '../../components/PageState';
@@ -130,7 +131,16 @@ function PanelExpandButton({
   );
 }
 
-export function RunDetailPage() {
+export function RunDetailPage({
+  capabilities = CASTLE_RUN_CAPABILITIES,
+}: {
+  /**
+   * Capability probe result (CRI-186 guards matrix extension). The castle
+   * host keeps the default; the standalone viewer passes a host without
+   * control RPCs so the control row renders grayed-out with the tooltip.
+   */
+  capabilities?: RunCapabilities;
+} = {}) {
   const { id = '' } = useParams();
   const run = useGetRunQuery(id);
   const { events, log, loadEarlier, watch, reconnect, refresh } = useRunEventLog(id);
@@ -646,6 +656,7 @@ export function RunDetailPage() {
           status={run.data.status}
           pauseState={pauseState}
           events={events}
+          capabilities={capabilities}
           onRefresh={() => {
             void run.refetch();
             refresh();

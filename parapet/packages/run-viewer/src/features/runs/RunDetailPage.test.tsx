@@ -13,6 +13,7 @@ import {
   vi,
 } from 'vitest';
 import { RunDetailPage } from './RunDetailPage';
+import { NO_CONTROLS_TOOLTIP, NO_CONTROL_CAPABILITIES, type RunCapabilities } from './capabilities';
 import { createRunViewerStore } from '../../store';
 import { selectRunEvents, runsSlice } from './runsSlice';
 import { server } from '../../test/mocks/server';
@@ -1537,5 +1538,43 @@ describe('RunDetailPage panel fullscreen', () => {
       // source (the parent body has no such step).
       expect(sourceBody.textContent).not.toContain('initial_state = "build"');
     });
+  });
+});
+
+// The capabilities prop (CRI-257) lets a host hand the page its capability
+// probe result; castle mode stays the default.
+describe('RunDetailPage capabilities', () => {
+  function renderDetail(capabilities?: RunCapabilities) {
+    render(
+      <Provider store={createRunViewerStore()}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage capabilities={capabilities} />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+  }
+
+  test('castle capabilities are the default, so the control row stays wired', async () => {
+    renderDetail();
+
+    await screen.findByText('Workflow source');
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Stop' }).getAttribute('title')).not.toBe(NO_CONTROLS_TOOLTIP);
+  });
+
+  test('renders the control row grayed-out when the host has no control RPC', async () => {
+    renderDetail(NO_CONTROL_CAPABILITIES);
+
+    await screen.findByText('Workflow source');
+    for (const name of ['Pause', 'Resume', 'Stop']) {
+      const button = screen.getByRole('button', { name });
+      // Grayed-out is the contract, not hidden: the row stays visible with
+      // the shared tooltip while every control is disabled.
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+    }
   });
 });
