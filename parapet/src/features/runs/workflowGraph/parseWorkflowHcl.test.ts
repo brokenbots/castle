@@ -410,4 +410,42 @@ describe('parseWorkflowHcl', () => {
     expect(extractTextEdges(linearIntakeSource)).toEqual([]);
     expect(extractTextEdges(tourSource)).toEqual([]);
   });
+
+  test('records exact source ranges for declared nodes', () => {
+    const graph = parseWorkflowHcl(linearIntakeSource);
+
+    // Every declared node's range slices back to its own block; placeholder
+    // targets carry no range because they have no declaration.
+    const targets = graph.nodes.filter((n) => n.kind === 'target');
+    expect(targets).toEqual([]);
+    for (const node of graph.nodes) {
+      const { sourceRange } = node;
+      if (!sourceRange) continue;
+      const block = linearIntakeSource.slice(sourceRange.start, sourceRange.end);
+      expect(block.startsWith(`${node.kind} "${node.id}"`)).toBe(true);
+      expect(block.endsWith('}')).toBe(true);
+      // The range must not bleed into a following declaration.
+      expect(block.includes(`\n${node.kind} "`)).toBe(false);
+    }
+    // Spotted check: the run_qa_triage step targets a subworkflow and its
+    // highlighted declaration must contain its target attribute.
+    const runQaTriage = graph.nodes.find((n) => n.id === 'run_qa_triage')!;
+    const block = linearIntakeSource.slice(runQaTriage.sourceRange!.start, runQaTriage.sourceRange!.end);
+    expect(block).toContain('subworkflow.qa_triage');
+  });
+
+  test('subworkflow-targeting steps are discoverable from the graph model', () => {
+    // Drill-down (CRI-257) keys off steps whose `target = subworkflow.<name>`
+    // traversal crosses into a subworkflow layer; the graph must expose the
+    // layer name so the UI can match it against the workflow.graphs payload.
+    const graph = parseWorkflowHcl(linearIntakeSource);
+    const layers = graph.nodes.filter((n) => n.subworkflow !== undefined).map((n) => n.subworkflow);
+    expect(layers).toEqual(expect.arrayContaining(['qa_triage', 'handler']));
+    // Every subworkflow reference resolves to a `subworkflow "<name>"`
+    // declaration in the parent module (the fixture declares qa_triage but
+    // leaves handler undeclared, exactly like real sources can).
+    expect(linearIntakeSource).toMatch(/subworkflow "qa_triage"/);
+    // Adapter/data targets are not subworkflow layers.
+    expect(graph.nodes.find((n) => n.id === 'set_confirmed_bug_label')?.subworkflow).toBeUndefined();
+  });
 });

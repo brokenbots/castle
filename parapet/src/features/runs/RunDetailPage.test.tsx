@@ -753,6 +753,50 @@ describe('RunDetailPage', () => {
     expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
   });
 
+  test('clicking a node highlights its exact declaration in the workflow source', async () => {
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll('[data-testid="dag-node"]')).toHaveLength(3),
+    );
+
+    const sourceView = screen.getByTestId('workflow-source-view');
+    expect(sourceView.textContent).toContain('step "build"');
+
+    // No highlight before a node is clicked.
+    expect(screen.queryByTestId('workflow-source-highlight')).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(document.querySelector('[data-node-id="test"]')!);
+    });
+
+    // The highlight slices back to exactly the `step "test" { … }` block of
+    // the fixture source — ranges recorded at parse time, not re-scanned.
+    const highlight = screen.getByTestId('workflow-source-highlight');
+    expect(highlight.textContent).toContain('step "test"');
+    expect(highlight.textContent?.startsWith('step "test"')).toBe(true);
+    expect(highlight.textContent?.endsWith('}')).toBe(true);
+    expect(highlight.textContent).not.toContain('step "build"');
+    expect(highlight.textContent).not.toContain('state "done"');
+    // The highlighted block is nested inside the full source view.
+    expect(sourceView).toContainElement(highlight);
+
+    // Deselecting the node removes the highlight again.
+    act(() => {
+      fireEvent.click(document.querySelector('[data-node-id="test"]')!);
+    });
+    expect(screen.queryByTestId('workflow-source-highlight')).not.toBeInTheDocument();
+  });
+
   test('renders the Inspection section from the InspectRun response', async () => {
     render(
       <Provider store={store}>

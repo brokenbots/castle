@@ -34,15 +34,27 @@ export interface HclBlock {
   /** Attribute declaration order (map keys are unordered). */
   attrOrder: string[];
   blocks: HclBlock[];
+  /**
+   * Exact source range of the block, from the first character of its header
+   * to just past its closing brace. Recorded during parse so consumers can
+   * highlight declarations without re-scanning (CRI-257).
+   */
+  range: HclRange;
+}
+
+/** Half-open [start, end) character offsets into the parsed source. */
+export interface HclRange {
+  start: number;
+  end: number;
 }
 
 type Tok =
-  | { t: 'ident'; s: string }
-  | { t: 'string'; s: string; v: string }
-  | { t: 'heredoc'; s: string; v: string }
-  | { t: 'num'; s: string }
-  | { t: 'punct'; s: string }
-  | { t: 'nl' };
+  | { t: 'ident'; s: string; start: number; end: number }
+  | { t: 'string'; s: string; v: string; start: number; end: number }
+  | { t: 'heredoc'; s: string; v: string; start: number; end: number }
+  | { t: 'num'; s: string; start: number; end: number }
+  | { t: 'punct'; s: string; start: number; end: number }
+  | { t: 'nl'; start: number; end: number };
 
 const MULTI_CHAR_PUNCT = ['==', '!=', '<=', '>=', '&&', '||'];
 
@@ -53,7 +65,7 @@ function scan(src: string): Tok[] {
   while (i < n) {
     const c = src[i];
     if (c === '\n') {
-      toks.push({ t: 'nl' });
+      toks.push({ t: 'nl', start: i, end: i + 1 });
       i++;
       continue;
     }
@@ -72,40 +84,40 @@ function scan(src: string): Tok[] {
     }
     if (c === '"') {
       const lit = scanString(src, i);
-      toks.push({ t: 'string', s: lit.text, v: lit.value });
+      toks.push({ t: 'string', s: lit.text, v: lit.value, start: i, end: lit.next });
       i = lit.next;
       continue;
     }
     if (/[A-Za-z_]/.test(c)) {
       let j = i + 1;
       while (j < n && /[A-Za-z0-9_\-.]/.test(src[j])) j++;
-      toks.push({ t: 'ident', s: src.slice(i, j) });
+      toks.push({ t: 'ident', s: src.slice(i, j), start: i, end: j });
       i = j;
       continue;
     }
     if (/[0-9]/.test(c)) {
       let j = i + 1;
       while (j < n && /[0-9.]/.test(src[j])) j++;
-      toks.push({ t: 'num', s: src.slice(i, j) });
+      toks.push({ t: 'num', s: src.slice(i, j), start: i, end: j });
       i = j;
       continue;
     }
     const two = src.slice(i, i + 2);
     if (MULTI_CHAR_PUNCT.includes(two)) {
-      toks.push({ t: 'punct', s: two });
+      toks.push({ t: 'punct', s: two, start: i, end: i + 2 });
       i += 2;
       continue;
     }
     if (c === '<' && src[i + 1] === '<' && inValuePosition(toks)) {
       const heredoc = scanHeredoc(src, i);
       if (heredoc) {
-        toks.push({ t: 'heredoc', s: heredoc.text, v: heredoc.value });
+        toks.push({ t: 'heredoc', s: heredoc.text, v: heredoc.value, start: i, end: heredoc.next });
         i = heredoc.next;
         continue;
       }
       // Not a heredoc intro after all — fall through to generic punctuation.
     }
-    toks.push({ t: 'punct', s: c });
+    toks.push({ t: 'punct', s: c, start: i, end: i + 1 });
     i++;
   }
   return toks;
@@ -248,6 +260,8 @@ function unescapeChar(c: string): string {
 interface Cursor {
   toks: Tok[];
   pos: number;
+  /** Source the tokens came from; needed for block range end offsets. */
+  src: string;
 }
 
 function peek(cursor: Cursor): Tok | undefined {
@@ -279,13 +293,13 @@ function describe(tok: Tok | undefined): string {
   return tok.t === 'string' ? `string ${tok.s}` : `"${tok.s}"`;
 }
 
-function makeCursor(toks: Tok[]): Cursor {
-  return { toks, pos: 0 };
+function makeCursor(toks: Tok[], src: string): Cursor {
+  return { toks, pos: 0, src };
 }
 
 /** Parses the top-level blocks of a document. */
 export function parseHclDocument(src: string): HclBlock[] {
-  const cursor = makeCursor(scan(src));
+  const cursor = makeCursor(scan(src), src);
   const { blocks } = parseBlockBodies(cursor, /* untilClosingBrace */ false);
   skipNewlines(cursor);
   if (cursor.pos < cursor.toks.length) {
@@ -296,9 +310,11 @@ export function parseHclDocument(src: string): HclBlock[] {
 
 /**
  * Parses a sequence of attributes and nested blocks until `}` (when
- * `untilClosingBrace`) or end of input.
+ * `untilClosingBrace`) or end of input. `end` is the offset just past the
+ * closing brace (or past the last parsed element at end of input), used to
+ * derive block source ranges.
  */
-function parseBlockBodies(cursor: Cursor, untilClosingBrace: boolean): { attrs: HclAttr[]; blocks: HclBlock[] } {
+function parseBlockBodies(cursor: Cursor, untilClosingBrace: boolean): { attrs: HclAttr[]; blocks: HclBlock[]; end: number } {
   const attrs: HclAttr[] = [];
   const blocks: HclBlock[] = [];
   for (;;) {
@@ -308,14 +324,14 @@ function parseBlockBodies(cursor: Cursor, untilClosingBrace: boolean): { attrs: 
       if (untilClosingBrace) {
         throw new WorkflowParseError('unexpected end of input, expected "}"');
       }
-      return { attrs, blocks };
+      return { attrs, blocks, end: cursor.src.length };
     }
     if (tok.t === 'punct' && tok.s === '}') {
       if (!untilClosingBrace) {
         throw new WorkflowParseError('unexpected "}"');
       }
       cursor.pos++;
-      return { attrs, blocks };
+      return { attrs, blocks, end: tok.end };
     }
     if (tok.t !== 'ident') {
       throw new WorkflowParseError(`expected attribute or block name, got ${describe(tok)}`);
@@ -328,12 +344,12 @@ function parseBlockBodies(cursor: Cursor, untilClosingBrace: boolean): { attrs: 
       attrs.push({ name, value });
       continue;
     }
-    blocks.push(parseBlock(cursor, name));
+    blocks.push(parseBlock(cursor, name, tok.start));
   }
 }
 
-function parseBlock(cursor: Cursor, type: string): HclBlock {
-  cursor.pos++; // consume the type ident
+function parseBlock(cursor: Cursor, type: string, start: number): HclBlock {
+  cursor.pos++; // consume the type ident (already peeked by the caller)
   const labels: string[] = [];
   for (;;) {
     skipNewlines(cursor);
@@ -348,13 +364,14 @@ function parseBlock(cursor: Cursor, type: string): HclBlock {
     throw new WorkflowParseError(`malformed block header for "${type}" at ${describe(tok)}`);
   }
   cursor.pos++; // consume "{"
-  const { attrs, blocks } = parseBlockBodies(cursor, true);
+  const { attrs, blocks, end } = parseBlockBodies(cursor, true);
   return {
     type,
     labels,
     attrs: new Map(attrs.map((a) => [a.name, a.value])),
     attrOrder: attrs.map((a) => a.name),
     blocks,
+    range: { start, end },
   };
 }
 

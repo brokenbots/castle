@@ -19,6 +19,7 @@ import { Breadcrumbs } from '../../components/Breadcrumbs';
 import { useDocumentTitle } from '../../shell/useDocumentTitle';
 import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph } from './workflowGraph/parseWorkflowHcl';
 import { WorkflowDag } from './workflowGraph/WorkflowDag';
+import { WorkflowSourceView } from './workflowGraph/WorkflowSourceView';
 import { eventBelongsToStep, selectNodeOverlay } from './workflowGraph/nodeStatus';
 
 /**
@@ -188,6 +189,14 @@ export function RunDetailPage() {
     () => (selected ? events.filter((e) => eventBelongsToStep(e, selected)) : events),
     [events, selected],
   );
+  // Node click drives source highlighting: the graph parser records each
+  // node's exact declaration range, so the source pane highlights the block
+  // (and scrolls to it) without re-scanning (CRI-257).
+  const selectedNode = useMemo(
+    () => (graph ? graph.nodes.find((n) => n.id === selected) ?? null : null),
+    [graph, selected],
+  );
+  const highlightRange = selectedNode?.sourceRange ?? null;
 
   // Only render the PR link for http(s) URLs; the publisher controls the
   // value and must not be able to inject javascript: hrefs.
@@ -431,9 +440,7 @@ export function RunDetailPage() {
         </section>
         <section>
           <h3 className="text-lg font-semibold mb-2">Workflow source</h3>
-          <pre className="text-xs font-mono bg-slate-900 rounded p-3 overflow-auto max-h-[32vh]">
-            {workflowSource}
-          </pre>
+          <WorkflowSourceView source={workflowSource} highlight={highlightRange} />
         </section>
         <section
           id="graph-panel"

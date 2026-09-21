@@ -1,5 +1,5 @@
 import { parseHclDocument, WorkflowParseError } from './hcl';
-import type { HclBlock, HclValue } from './hcl';
+import type { HclBlock, HclRange, HclValue } from './hcl';
 
 export { WorkflowParseError } from './hcl';
 
@@ -23,10 +23,22 @@ export interface WorkflowGraphNode {
    * event stream keys per-iteration events on the step name.
    */
   iteration?: { control: 'for_each' | 'count' | 'parallel' | 'while'; items?: string };
+  /**
+   * step nodes only: name of the subworkflow layer the step runs, when its
+   * `target = subworkflow.<name>` traversal crosses into a subworkflow
+   * declaration; the UI matches it against workflow.graphs event layers
+   * (CRI-257 drill-down).
+   */
+  subworkflow?: string;
   /** state nodes only. */
   terminal?: boolean;
   /** state nodes only. */
   success?: boolean;
+  /**
+   * Exact source range of the node's declaration block, from its header to
+   * just past its closing brace; absent for placeholder targets (CRI-257).
+   */
+  sourceRange?: HclRange;
 }
 
 /** A transition edge: `from` moved to `to` via the named outcome. */
@@ -101,8 +113,8 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
   const edges: WorkflowGraphEdge[] = [];
   const seenEdges = new Set<string>();
 
-  const addNode = (id: string, kind: WorkflowNodeKind): void => {
-    if (!nodes.has(id)) nodes.set(id, { id, kind });
+  const addNode = (id: string, kind: WorkflowNodeKind, sourceRange?: HclRange): void => {
+    if (!nodes.has(id)) nodes.set(id, { id, kind, sourceRange });
   };
   const addEdge = (from: string, via: string, to: string): void => {
     if (!from || !to) return;
@@ -127,18 +139,24 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
     switch (block.type) {
       case 'step': {
         if (!id) break;
-        addNode(id, 'step');
+        addNode(id, 'step', block.range);
         const node = nodes.get(id)!;
         const control = ITERATION_CONTROLS.find((name) => block.attrs.has(name));
         if (control) {
           node.iteration = { control, items: valueRaw(block.attrs.get(control)) };
         }
+        // `target = subworkflow.<name>` marks the step as running a
+        // subworkflow layer; other target namespaces (adapter.*,
+        // data.*, …) are ignored here.
+        const target = traversalValue(block.attrs.get('target'));
+        const sub = /^subworkflow\.([A-Za-z0-9_.-]+)$/.exec(target);
+        if (sub) node.subworkflow = sub[1];
         collectOutcomes(block, id);
         break;
       }
       case 'switch': {
         if (!id) break;
-        addNode(id, 'switch');
+        addNode(id, 'switch', block.range);
         const node = nodes.get(id)!;
         node.arms = [];
         let armIndex = 0;
@@ -164,13 +182,13 @@ export function parseWorkflowHcl(source: string): WorkflowGraph {
       case 'wait':
       case 'approval': {
         if (!id) break;
-        addNode(id, block.type);
+        addNode(id, block.type, block.range);
         collectOutcomes(block, id);
         break;
       }
       case 'state': {
         if (!id) break;
-        addNode(id, 'state');
+        addNode(id, 'state', block.range);
         const node = nodes.get(id)!;
         node.terminal = valueBool(block.attrs.get('terminal'));
         node.success = valueBool(block.attrs.get('success'));
