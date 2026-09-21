@@ -37,6 +37,20 @@ export interface WorkflowDagProps {
    * node is clicked again (toggling the selection off).
    */
   onSelect?: (nodeId: string | null) => void;
+  /**
+   * Called when a node's subworkflow explore affordance is activated
+   * (CRI-257 drill-down). Only fires for layers that actually resolved to
+   * a parsed graph.
+   */
+  onExploreLayer?: (name: string) => void;
+  /**
+   * Names of subworkflow layers that resolved to a parsed graph (from the
+   * workflow.graphs event). A node whose subworkflow is not in the set
+   * renders its affordance disabled — the layer graph is not available
+   * (no event yet, or an unparsable body). Absent means nothing is
+   * available yet.
+   */
+  exploreableLayers?: Set<string>;
 }
 
 interface WorkflowNodeData extends Record<string, unknown> {
@@ -48,6 +62,13 @@ interface WorkflowNodeData extends Record<string, unknown> {
   selected: boolean;
   /** Graph reading direction; drives handle sides. */
   orientation: GraphOrientation;
+  /** The subworkflow layer this step runs, when its target crosses one. */
+  explore?: {
+    name: string;
+    /** True when the layer resolved to a parsed graph. */
+    available: boolean;
+    onExplore?: (name: string) => void;
+  };
 }
 
 type WorkflowFlowNode = Node<WorkflowNodeData, 'workflow'>;
@@ -92,7 +113,7 @@ const HANDLE_POSITION: Record<GraphOrientation, { target: Position; source: Posi
 };
 
 function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
-  const { node, status, badge, selected, orientation } = data;
+  const { node, status, badge, selected, orientation, explore } = data;
   const handle = HANDLE_POSITION[orientation];
   const selectedClass = selected ? ' ring-2 ring-sky-400' : '';
   return (
@@ -107,6 +128,27 @@ function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
         {KIND_LABEL[node.kind]}
       </p>
       {badge && <p className="text-[10px] font-mono text-slate-400">{badge}</p>}
+      {explore && (
+        <button
+          type="button"
+          data-testid="dag-node-explore"
+          title={
+            explore.available
+              ? `Open subworkflow ${explore.name}`
+              : `Subworkflow ${explore.name} graph not available yet`
+          }
+          disabled={!explore.available}
+          onClick={(event) => {
+            // The affordance opens the layer; it must not toggle the
+            // node selection underneath (ReactFlow's node click).
+            event.stopPropagation();
+            if (explore.available) explore.onExplore?.(explore.name);
+          }}
+          className="mt-1 w-full rounded border border-sky-500/40 px-1 py-0.5 text-[10px] font-medium text-sky-300 hover:bg-sky-400/10 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-600"
+        >
+          ⤷ {explore.name}
+        </button>
+      )}
       <p className="text-xs" aria-label={`status ${status}`}>
         <span
           className={
@@ -161,10 +203,10 @@ function DagBehavior({ followStepId }: { followStepId: string | null }) {
   );
 }
 
-export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', followStepId, onSelect }: WorkflowDagProps) {
+export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', followStepId, onSelect, onExploreLayer, exploreableLayers }: WorkflowDagProps) {
   const { nodes, edges } = useMemo(
-    () => buildFlow(graph, statuses, forEachProgress, selectedId ?? null, orientation),
-    [graph, statuses, forEachProgress, selectedId, orientation],
+    () => buildFlow(graph, statuses, forEachProgress, selectedId ?? null, orientation, onExploreLayer, exploreableLayers),
+    [graph, statuses, forEachProgress, selectedId, orientation, onExploreLayer, exploreableLayers],
   );
 
   const handleNodeClick = onSelect
@@ -206,6 +248,8 @@ function buildFlow(
   forEachProgress: Record<string, ForEachProgress>,
   selectedId: string | null,
   orientation: GraphOrientation,
+  onExploreLayer?: (name: string) => void,
+  exploreableLayers?: Set<string>,
 ): { nodes: WorkflowFlowNode[]; edges: Edge[] } {
   const positions = layoutWorkflow(graph, { orientation });
   const nodes: WorkflowFlowNode[] = graph.nodes.map((node) => {
@@ -221,7 +265,20 @@ function buildFlow(
       id: node.id,
       type: 'workflow' as const,
       position: positions.get(node.id) ?? { x: 0, y: 0 },
-      data: { node, status: statuses[node.id] ?? 'idle', badge, selected: node.id === selectedId, orientation },
+      data: {
+        node,
+        status: statuses[node.id] ?? 'idle',
+        badge,
+        selected: node.id === selectedId,
+        orientation,
+        explore: node.subworkflow
+          ? {
+              name: node.subworkflow,
+              available: exploreableLayers?.has(node.subworkflow) ?? false,
+              onExplore: onExploreLayer,
+            }
+          : undefined,
+      },
     };
   });
   const edges: Edge[] = graph.edges.map((edge, index) => ({

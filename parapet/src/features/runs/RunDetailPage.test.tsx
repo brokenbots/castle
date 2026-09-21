@@ -77,6 +77,12 @@ beforeAll(() => {
   });
 });
 
+// The drill-down tests vary the run's workflow source (a subworkflow
+// declaration + a step targeting it); every test resets to this default
+// chain so mutations never leak (CRI-257).
+const DEFAULT_WORKFLOW_SOURCE =
+  'workflow {\n  name = "hello"\n  initial_state = "build"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
+
 // Mutable fixture so tests can vary run metadata (CRI-131) without a second
 // module mock. UseGetRunQuery returns this object verbatim.
 const fixture = vi.hoisted(() => ({
@@ -87,9 +93,9 @@ const fixture = vi.hoisted(() => ({
     workflowName: 'hello',
     // Real criteria dialect: executable nodes are top-level blocks and
     // outcomes route via `next = <traversal>` (the workflowHash field
-    // carries the full workflow source).
-    workflowHash:
-      'workflow {\n  name = "hello"\n  initial_state = "build"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}',
+    // carries the full workflow source). beforeEach resets this to
+    // DEFAULT_WORKFLOW_SOURCE, the single source of truth below.
+    workflowHash: '',
     status: 'running',
     createdAt: new Date().toISOString(),
     finalState: '',
@@ -138,6 +144,7 @@ describe('RunDetailPage', () => {
     // Live-tail affordances key off run status; make the shared fixture's
     // status explicit so tests that change it don't leak.
     fixture.data.status = 'running';
+    fixture.data.workflowHash = DEFAULT_WORKFLOW_SOURCE;
   });
 
   test('starts WatchRun with sinceSeq=0 and subscriberId', async () => {
@@ -1373,5 +1380,150 @@ describe('RunDetailPage panel fullscreen', () => {
       expect(expand).toHaveAttribute('aria-controls', panelId);
       expect(screen.getByTestId(panelId)).toHaveAttribute('id', panelId);
     }
+  });
+
+  describe('subworkflow drill-down (CRI-257)', () => {
+    // Parent module: a subworkflow declaration + a step whose target
+    // crosses into it.
+    const SUBWORKFLOW_SOURCE =
+      'workflow {\n  name = "hello"\n  initial_state = "build"\n}\nsubworkflow "qa_triage" {\n  source = "../qa_triage_v1"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  target = subworkflow.qa_triage\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
+    // Compiled layer body as the workflow.graphs event carries it.
+    const LAYER_BODY =
+      'workflow {\n  name = "qa_triage"\n  initial_state = "triage"\n}\nstep "triage" {\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
+
+    function renderSubworkflowPage() {
+      fixture.data.workflowHash = SUBWORKFLOW_SOURCE;
+      return renderDetail();
+    }
+
+    function dispatchGraphsEvent(seq: number) {
+      act(() => {
+        store.dispatch(
+          runsSlice.actions.eventReceived({
+            schemaVersion: 1,
+            runId: 'run-1',
+            seq,
+            type: 'workflowGraphs',
+            ts: new Date(0).toISOString(),
+            correlationId: '',
+            payload: {
+              subworkflows: [{ name: 'qa_triage', sourcePath: '../qa_triage_v1', body: LAYER_BODY }],
+            },
+          }),
+        );
+      });
+    }
+
+    function nodeById(id: string): HTMLElement {
+      const node = document.querySelector(`[data-testid="workflow-dag"] [data-node-id="${id}"]`);
+      if (!node) throw new Error(`graph node "${id}" is not rendered`);
+      return node as HTMLElement;
+    }
+
+    function visibleNodeIds(): string[] {
+      return Array.from(
+        document.querySelectorAll('[data-testid="workflow-dag"] [data-node-id]'),
+      )      .map((n) => n.getAttribute('data-node-id'))
+      .filter((id): id is string => id !== null);
+    }
+
+    test('steps targeting a subworkflow show a disabled explore affordance until the layer event arrives', async () => {
+      renderSubworkflowPage();
+
+      await screen.findByText('Workflow source');
+      const affordance = within(nodeById('test')).getByTestId('dag-node-explore');
+      // Grayed-out is the contract, not hidden: no workflow.graphs event
+      // yet means no layer graph, so the affordance stays but disabled.
+      expect(affordance).toBeDisabled();
+      expect(affordance).toHaveAttribute(
+        'title',
+        'Subworkflow qa_triage graph not available yet',
+      );
+      expect(screen.queryByTestId('layer-breadcrumb')).not.toBeInTheDocument();
+    });
+
+    test('activating the affordance opens the layer graph with breadcrumb and thumbnail', async () => {
+      renderSubworkflowPage();
+      await screen.findByText('Workflow source');
+      dispatchGraphsEvent(1);
+
+      const affordance = within(nodeById('test')).getByTestId('dag-node-explore');
+      expect(affordance).toBeEnabled();
+
+      fireEvent.click(affordance);
+
+      // The drill-down chrome appears: breadcrumb over the opened layer
+      // and its thumbnail.
+      expect(screen.getByTestId('layer-breadcrumb')).toBeInTheDocument();
+      const crumbs = screen.getAllByTestId('layer-crumb');
+      expect(crumbs).toHaveLength(1);
+      expect(crumbs[0]).toHaveTextContent('qa_triage');
+      expect(screen.getByTestId('layer-crumb-root')).toBeInTheDocument();
+      const thumbs = screen.getAllByTestId('layer-thumb');
+      expect(thumbs).toHaveLength(1);
+      expect(within(thumbs[0]).getByRole('img', { name: 'qa_triage thumbnail' })).toBeInTheDocument();
+
+      // The graph switches to the layer: its own nodes replace the
+      // parent's (waiting for React Flow's measurement-driven passes).
+      await vi.waitFor(
+        () => {
+          const ids = visibleNodeIds();
+          expect(ids).toContain('triage');
+          expect(ids).not.toContain('build');
+        },
+        { timeout: 1500 },
+      );
+
+      // The source pane now shows the layer's own module body.
+      const sourceBody = screen.getByTestId('source-pane-body');
+      expect(sourceBody.textContent).toContain('initial_state = "triage"');
+      expect(sourceBody.textContent).not.toContain('initial_state = "build"');
+    });
+
+    test('the breadcrumb returns to the parent workflow (and closes the drill-down)', async () => {
+      renderSubworkflowPage();
+      await screen.findByText('Workflow source');
+      dispatchGraphsEvent(1);
+
+      fireEvent.click(within(nodeById('test')).getByTestId('dag-node-explore'));
+      await screen.findByTestId('layer-breadcrumb');
+
+      fireEvent.click(screen.getByTestId('layer-crumb-root'));
+
+      // Back at the top-level workflow: root nodes are back, the
+      // drill-down chrome is gone.
+      expect(screen.queryByTestId('layer-breadcrumb')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('layer-thumbs')).not.toBeInTheDocument();
+      await vi.waitFor(
+        () => {
+          const ids = visibleNodeIds();
+          expect(ids).toContain('build');
+          expect(ids).not.toContain('triage');
+        },
+        { timeout: 1500 },
+      );
+    });
+
+    test('the layer source participates in node-click highlighting', async () => {
+      renderSubworkflowPage();
+      await screen.findByText('Workflow source');
+      dispatchGraphsEvent(1);
+
+      fireEvent.click(within(nodeById('test')).getByTestId('dag-node-explore'));
+      await vi.waitFor(
+        () => {
+          expect(visibleNodeIds()).toContain('triage');
+        },
+        { timeout: 1500 },
+      );
+
+      // Selecting a layer node highlights its block inside the layer body.
+      fireEvent.click(nodeById('triage'));
+      const sourceBody = screen.getByTestId('source-pane-body');
+      expect(sourceBody.textContent).toContain('step "triage"');
+      // The highlight target is the layer's block, found inside the layer
+      // source (the parent body has no such step).
+      expect(sourceBody.textContent).not.toContain('initial_state = "build"');
+    });
   });
 });

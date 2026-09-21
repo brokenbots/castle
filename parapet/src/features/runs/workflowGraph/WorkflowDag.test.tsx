@@ -217,4 +217,77 @@ describe('WorkflowDag', () => {
     // Unvisited nodes stay dimmed/idle.
     expect(screen.getAllByLabelText('status idle')).toHaveLength(4);
   });
+
+  describe('subworkflow explore affordance (CRI-257)', () => {
+    function subworkflowGraph(): WorkflowGraph {
+      return graph({
+        nodes: [
+          { id: 'build', kind: 'step' },
+          { id: 'test', kind: 'step', subworkflow: 'qa_triage' },
+          { id: 'done', kind: 'state', terminal: true, success: true },
+        ],
+        edges: [
+          { from: 'build', via: 'success', to: 'test' },
+          { from: 'test', via: 'success', to: 'done' },
+        ],
+      });
+    }
+
+    test('steps targeting a subworkflow render an explore affordance that opens the layer', async () => {
+      const onSelect = vi.fn();
+      const onExploreLayer = vi.fn();
+      await renderDag(
+        <WorkflowDag
+          graph={subworkflowGraph()}
+          onSelect={onSelect}
+          onExploreLayer={onExploreLayer}
+          exploreableLayers={new Set(['qa_triage'])}
+        />,
+      );
+
+      const affordance = screen.getByTestId('dag-node-explore');
+      expect(affordance).toBeEnabled();
+      expect(affordance).toHaveAttribute('title', 'Open subworkflow qa_triage');
+
+      fireEvent.click(affordance);
+      expect(onExploreLayer).toHaveBeenCalledWith('qa_triage');
+      // The affordance opens the layer; it must not toggle the node
+      // selection underneath.
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    test('without an exploreable layer the affordance renders disabled (grayed, not hidden)', async () => {
+      // A callback alone does not enable the affordance: the layer must
+      // also have resolved to a parsed graph.
+      await renderDag(
+        <WorkflowDag
+          graph={subworkflowGraph()}
+          onExploreLayer={() => {}}
+          exploreableLayers={new Set(['other_layer'])}
+        />,
+      );
+
+      const affordance = screen.getByTestId('dag-node-explore');
+      expect(affordance).toBeDisabled();
+      expect(affordance).toHaveAttribute(
+        'title',
+        'Subworkflow qa_triage graph not available yet',
+      );
+    });
+
+    test('clicking a disabled affordance does not navigate and keeps selection intact', async () => {
+      const onExploreLayer = vi.fn();
+      await renderDag(
+        <WorkflowDag graph={subworkflowGraph()} onExploreLayer={onExploreLayer} />,
+      );
+
+      fireEvent.click(screen.getByTestId('dag-node-explore'));
+      expect(onExploreLayer).not.toHaveBeenCalled();
+    });
+
+    test('nodes without a subworkflow target render no affordance', async () => {
+      await renderDag(<WorkflowDag graph={graph()} onExploreLayer={() => {}} />);
+      expect(screen.queryByTestId('dag-node-explore')).not.toBeInTheDocument();
+    });
+  });
 });

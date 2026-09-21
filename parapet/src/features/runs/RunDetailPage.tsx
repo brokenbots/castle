@@ -16,6 +16,8 @@ import { DockedPanel } from '../../components/DockedPanel';
 import { Breadcrumbs } from '../../components/Breadcrumbs';
 import { useDocumentTitle } from '../../shell/useDocumentTitle';
 import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph } from './workflowGraph/parseWorkflowHcl';
+import { buildSubworkflowLayers, selectWorkflowGraphs, type SubworkflowLayer } from './workflowGraph/layers';
+import { WorkflowLayerNav } from './workflowGraph/WorkflowLayerNav';
 import { WorkflowDag } from './workflowGraph/WorkflowDag';
 import { WorkflowSourceView } from './workflowGraph/WorkflowSourceView';
 import type { GraphOrientation } from './workflowGraph/layout';
@@ -188,6 +190,65 @@ export function RunDetailPage() {
     () => (graph ? [] : workflowSource ? extractTextEdges(workflowSource) : []),
     [graph, workflowSource],
   );
+  // Subworkflow drill-down (CRI-257): workflow.graphs events carry the
+  // compiled subworkflow layers of the run's workflow; steps whose target
+  // crosses a subworkflow open their layer graph here. The stack is
+  // guarded by the run id (same pattern as selectedStep), so switching
+  // runs starts at the top-level workflow again.
+  const [layerStack, setLayerStack] = useState<{ runId: string; names: string[] }>({
+    runId: '',
+    names: [],
+  });
+  const graphsPayload = useMemo(() => selectWorkflowGraphs(events), [events]);
+  const layersByName = useMemo(() => {
+    const map = new Map<string, SubworkflowLayer>();
+    if (graphsPayload) {
+      for (const layer of buildSubworkflowLayers(graphsPayload)) map.set(layer.name, layer);
+    }
+    return map;
+  }, [graphsPayload]);
+  const layerStackLayers = useMemo(() => {
+    const names = layerStack.runId === (run.data?.runId ?? '') ? layerStack.names : [];
+    // A stack entry whose layer graph is missing or unparsable drops out;
+    // the breadcrumb shows only layers that can actually be rendered.
+    return names
+      .map((name) => layersByName.get(name))
+      .filter((layer): layer is SubworkflowLayer => Boolean(layer?.graph));
+  }, [layerStack, layersByName, run.data]);
+  const topLayer = layerStackLayers[layerStackLayers.length - 1] ?? null;
+  const currentGraph = topLayer?.graph ?? graph;
+  // Subworkflow names whose graphs resolved — nodes carrying one of these
+  // render an enabled explore affordance; the rest stay grayed out.
+  const exploreableLayers = useMemo(() => {
+    const names = new Set<string>();
+    for (const layer of layersByName.values()) if (layer.graph) names.add(layer.name);
+    return names;
+  }, [layersByName]);
+  // A subworkflow layer's source pane shows the layer's own module body
+  // (carried by the workflow.graphs event), not the parent's source.
+  const currentSource = topLayer?.body ?? workflowSource;
+  const openLayer = (name: string) => {
+    const layer = layersByName.get(name);
+    if (!layer?.graph || !run.data) return;
+    setLayerStack((state) => {
+      const names = state.runId === run.data!.runId ? state.names : [];
+      if (names[names.length - 1] === name) return state;
+      return { runId: run.data!.runId, names: [...names, name] };
+    });
+    // Node ids can repeat across layers; drop the parent selection.
+    setSelectedStep(null);
+  };
+  const navigateLayers = (depth: number) => {
+    if (!run.data) return;
+    setLayerStack({ runId: run.data.runId, names: stackNames(depth) });
+    setSelectedStep(null);
+  };
+  // Names behind the navigation target: the current stack (run-guarded)
+  // truncated to the requested depth.
+  function stackNames(depth: number): string[] {
+    const names = layerStack.runId === run.data!.runId ? layerStack.names : [];
+    return names.slice(0, depth);
+  }
   // The overlay maps the event stream onto graph nodes: running (pulsing)
   // for the active step, succeeded/failed for finished ones, per-iteration
   // for_each progress from ForEachStrip data, and unvisited nodes dimmed.
@@ -208,10 +269,11 @@ export function RunDetailPage() {
   );
   // Node click drives source highlighting: the graph parser records each
   // node's exact declaration range, so the source pane highlights the block
-  // (and scrolls to it) without re-scanning (CRI-257).
+  // (and scrolls to it) without re-scanning (CRI-257). Ranges index into
+  // the source of the graph being viewed (root workflow or open layer).
   const selectedNode = useMemo(
-    () => (graph ? graph.nodes.find((n) => n.id === selected) ?? null : null),
-    [graph, selected],
+    () => (currentGraph ? currentGraph.nodes.find((n) => n.id === selected) ?? null : null),
+    [currentGraph, selected],
   );
   const highlightRange = selectedNode?.sourceRange ?? null;
 
@@ -485,7 +547,7 @@ export function RunDetailPage() {
             </p>
           ) : (
             <div id="source-pane-body" data-testid="source-pane-body">
-              <WorkflowSourceView source={workflowSource} highlight={highlightRange} />
+              <WorkflowSourceView source={currentSource} highlight={highlightRange} />
             </div>
           )}
         </section>
@@ -533,9 +595,18 @@ export function RunDetailPage() {
               </div>
             </div>
           </div>
-          {graph ? (
+          {layerStackLayers.length > 0 && (
+            <div className="mb-2">
+              <WorkflowLayerNav
+                rootName={run.data?.workflowName || 'Workflow'}
+                stack={layerStackLayers}
+                onNavigate={navigateLayers}
+              />
+            </div>
+          )}
+          {currentGraph ? (
             <WorkflowDag
-              graph={graph}
+              graph={currentGraph}
               statuses={overlay.statuses}
               forEachProgress={overlay.forEach}
               orientation={graphOrientation}
@@ -544,6 +615,8 @@ export function RunDetailPage() {
               onSelect={(nodeId) =>
                 setSelectedStep(nodeId === null ? null : { runId: run.data!.runId, step: nodeId })
               }
+              onExploreLayer={openLayer}
+              exploreableLayers={exploreableLayers}
             />
           ) : fallbackEdges.length === 0 ? (
             <p className="text-sm text-slate-400">No step transitions found.</p>
@@ -585,7 +658,7 @@ export function RunDetailPage() {
           testId="source-dock"
           onClose={() => setSourceCollapsed((state) => ({ ...state, side: true }))}
         >
-          <WorkflowSourceView source={workflowSource} highlight={highlightRange} />
+          <WorkflowSourceView source={currentSource} highlight={highlightRange} />
         </DockedPanel>
       )}
     </div>
