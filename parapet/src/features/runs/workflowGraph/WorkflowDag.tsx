@@ -1,10 +1,12 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { MouseEvent } from 'react';
 import {
   Background,
   Handle,
+  Panel,
   Position,
   ReactFlow,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeProps,
@@ -24,6 +26,12 @@ export interface WorkflowDagProps {
   selectedId?: string | null;
   /** Graph reading direction; top-bottom is the default. */
   orientation?: GraphOrientation;
+  /**
+   * When set (follow mode), the viewport centers on this node whenever it
+   * changes — the running step in practice. Keyed on the step id, so a
+   * loop re-entering the same node does not re-trigger the pan.
+   */
+  followStepId?: string | null;
   /**
    * Called with the clicked node id, or with null when the already-selected
    * node is clicked again (toggling the selection off).
@@ -121,7 +129,39 @@ function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
 
 const nodeTypes = { workflow: WorkflowNodeView };
 
-export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', onSelect }: WorkflowDagProps) {
+/**
+ * In-graph behavior mounted inside <ReactFlow> so it can reach the store:
+ * pans/zooms to the followed node when follow mode is live, and offers the
+ * reset control that restores the full-graph framing.
+ */
+function DagBehavior({ followStepId }: { followStepId: string | null }) {
+  const { fitView } = useReactFlow();
+  const followedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!followStepId || followedRef.current === followStepId) return;
+    followedRef.current = followStepId;
+    void fitView({ nodes: [{ id: followStepId }], duration: 400, padding: 2 });
+  }, [followStepId, fitView]);
+  return (
+    <Panel position="top-right">
+      <button
+        type="button"
+        data-testid="dag-reset-view"
+        title="Reset graph view"
+        onClick={() => {
+          // Clear the follow memo so a re-entered node can re-center.
+          followedRef.current = null;
+          void fitView({ duration: 200, padding: 0.15 });
+        }}
+        className="rounded border border-slate-600 bg-slate-900/90 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+      >
+        Reset view
+      </button>
+    </Panel>
+  );
+}
+
+export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', followStepId, onSelect }: WorkflowDagProps) {
   const { nodes, edges } = useMemo(
     () => buildFlow(graph, statuses, forEachProgress, selectedId ?? null, orientation),
     [graph, statuses, forEachProgress, selectedId, orientation],
@@ -143,13 +183,14 @@ export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, select
         nodeTypes={nodeTypes}
         onNodeClick={handleNodeClick}
         nodesConnectable={false}
-        zoomOnScroll={false}
+        zoomOnScroll
         fitView
         fitViewOptions={{ padding: 0.15 }}
         minZoom={0.2}
         proOptions={{ hideAttribution: true }}
       >
         <Background color="#1e293b" gap={16} />
+        <DagBehavior followStepId={followStepId ?? null} />
       </ReactFlow>
     </div>
   );

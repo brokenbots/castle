@@ -1199,6 +1199,68 @@ describe('RunDetailPage panel fullscreen', () => {
     });
   });
 
+  test('follow mode centers the viewport on the running step', async () => {
+    renderDetail();
+
+    await screen.findByTestId('workflow-dag');
+    const follow = screen.getByTestId('graph-follow-toggle');
+    expect(follow).toHaveAttribute('aria-pressed', 'false');
+    // No step is running yet in the fixture, so enabling follow with no
+    // current step must not crash and stays off-target (no transform churn).
+    await userEvent.click(follow);
+    expect(follow).toHaveAttribute('aria-pressed', 'true');
+
+    // The engine enters a step; with follow on, the viewport recenters on it.
+    act(() => {
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 110,
+          type: 'stepEntered',
+          ts: '',
+          correlationId: '',
+          payload: { step: 'test' },
+        }),
+      );
+    });
+    const dag = screen.getByTestId('workflow-dag');
+    const viewport = () => dag.querySelector('.react-flow__viewport') as HTMLElement;
+    const before = viewport().style.transform;
+    await vi.waitFor(
+      () => {
+        expect(viewport().style.transform).not.toBe(before);
+      },
+      { timeout: 1500 },
+    );
+    // Let the follow transition (400ms) complete so the paused comparison
+    // below is not racing a still-animating transform.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+
+    // Toggling follow off stops tracking: a later entry does not re-center.
+    await userEvent.click(follow);
+    const paused = viewport().style.transform;
+    act(() => {
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 111,
+          type: 'stepEntered',
+          ts: '',
+          correlationId: '',
+          payload: { step: 'build' },
+        }),
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    expect(viewport().style.transform).toBe(paused);
+  });
+
   test('expands the inspection panel fullscreen and collapses back with data intact', async () => {
     renderDetail();
 

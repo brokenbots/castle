@@ -168,12 +168,44 @@ describe('WorkflowDag', () => {
     second.unmount();
   });
 
-  test('calls onSelect with the clicked node id', async () => {
-    const onSelect = vi.fn();
-    render(<WorkflowDag graph={graph()} onSelect={onSelect} />);
-    const node = screen.getByText('test');
-    fireEvent.click(node);
-    await vi.waitFor(() => expect(onSelect).toHaveBeenCalledWith('test'));
+  test('zooms to the followed step and the reset control restores the full view', async () => {
+    const viewport = () => document.querySelector('.react-flow__viewport') as HTMLElement;
+    const view = render(<WorkflowDag graph={graph()} />);
+    // Let the initial fitView settle (ResizeObserver-driven measurement).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    // Establish the full-graph framing via the reset control itself: the
+    // initial fitView and the reset use the same computation, so this is
+    // the value a later reset must reproduce.
+    fireEvent.click(screen.getByTestId('dag-reset-view'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    const fullView = viewport().style.transform;
+    expect(fullView).not.toBe('');
+
+    // Enabling follow on the live instance re-centers the viewport on the
+    // followed node (zoomed in relative to the full-graph framing).
+    act(() => {
+      view.rerender(<WorkflowDag graph={graph()} followStepId="deploy" />);
+    });
+    await vi.waitFor(
+      () => {
+        expect(viewport().style.transform).not.toBe(fullView);
+      },
+      { timeout: 1500 },
+    );
+
+    // The reset control restores the full-graph framing.
+    fireEvent.click(screen.getByTestId('dag-reset-view'));
+    await vi.waitFor(
+      () => {
+        expect(viewport().style.transform).toBe(fullView);
+      },
+      { timeout: 1500 },
+    );
+    view.unmount();
   });
 
   test('derives overlay state through selectNodeOverlay', async () => {

@@ -147,6 +147,9 @@ export function RunDetailPage() {
   // Graph reading direction (CRI-257); top-bottom preserves the original
   // rendering, left-right transposes the layered layout.
   const [graphOrientation, setGraphOrientation] = useState<GraphOrientation>('top-bottom');
+  // Follow mode: keep the viewport centered on the running step as the
+  // event stream advances (CRI-257). Drag-pan and wheel-zoom stay live.
+  const [followMode, setFollowMode] = useState(false);
   const eventsExpandRef = useRef<HTMLButtonElement>(null);
   const graphExpandRef = useRef<HTMLButtonElement>(null);
   const inspectionExpandRef = useRef<HTMLButtonElement>(null);
@@ -188,6 +191,12 @@ export function RunDetailPage() {
     () => (graph ? selectNodeOverlay(events) : { statuses: {}, forEach: {} }),
     [graph, events],
   );
+  // The node the engine is currently inside (last stepEntered wins per
+  // selectNodeOverlay) — the follow target when follow mode is on.
+  const currentStepId = useMemo(() => {
+    const running = Object.entries(overlay.statuses).find(([, status]) => status === 'running');
+    return running?.[0] ?? null;
+  }, [overlay]);
   const selected = selectedStep && selectedStep.runId === (run.data?.runId ?? '') ? selectedStep.step : null;
   const visibleEvents = useMemo(
     () => (selected ? events.filter((e) => eventBelongsToStep(e, selected)) : events),
@@ -454,28 +463,40 @@ export function RunDetailPage() {
         >
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-lg font-semibold">Step graph</h3>
-            <div
-              role="group"
-              aria-label="Graph orientation"
-              data-testid="graph-orientation-toggle"
-              className="flex overflow-hidden rounded-md border border-line-strong"
-            >
-              {(['top-bottom', 'left-right'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  data-testid={`orientation-${value}`}
-                  aria-pressed={graphOrientation === value}
-                  title={`Flow ${value === 'top-bottom' ? 'top to bottom' : 'left to right'}`}
-                  onClick={() => setGraphOrientation(value)}
-                  className={`px-2 py-1 text-xs ${graphOrientation === value ? 'bg-surface-raised text-ink' : 'text-ink-muted hover:bg-surface-raised'}`}
-                >
-                  <svg aria-hidden="true" viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    {value === 'top-bottom' ? <path d="M12 3v18M12 21l4-4M12 21l-4-4" /> : <path d="M3 12h18M21 12l-4-4M21 12l-4 4" />}
-                  </svg>
-                  <span className="sr-only">{value === 'top-bottom' ? 'Top to bottom' : 'Left to right'}</span>
-                </button>
-              ))}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-testid="graph-follow-toggle"
+                aria-pressed={followMode}
+                title="Follow the running step"
+                onClick={() => setFollowMode((v) => !v)}
+                className={`px-2 py-1 text-xs rounded-md border ${followMode ? 'border-sky-400 bg-sky-400/10 text-sky-300' : 'border-line-strong text-ink-muted hover:bg-surface-raised'}`}
+              >
+                Follow
+              </button>
+              <div
+                role="group"
+                aria-label="Graph orientation"
+                data-testid="graph-orientation-toggle"
+                className="flex overflow-hidden rounded-md border border-line-strong"
+              >
+                {(['top-bottom', 'left-right'] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    data-testid={`orientation-${value}`}
+                    aria-pressed={graphOrientation === value}
+                    title={`Flow ${value === 'top-bottom' ? 'top to bottom' : 'left to right'}`}
+                    onClick={() => setGraphOrientation(value)}
+                    className={`px-2 py-1 text-xs ${graphOrientation === value ? 'bg-surface-raised text-ink' : 'text-ink-muted hover:bg-surface-raised'}`}
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      {value === 'top-bottom' ? <path d="M12 3v18M12 21l4-4M12 21l-4-4" /> : <path d="M3 12h18M21 12l-4-4M21 12l-4 4" />}
+                    </svg>
+                    <span className="sr-only">{value === 'top-bottom' ? 'Top to bottom' : 'Left to right'}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
           {graph ? (
@@ -484,6 +505,7 @@ export function RunDetailPage() {
               statuses={overlay.statuses}
               forEachProgress={overlay.forEach}
               orientation={graphOrientation}
+              followStepId={followMode ? currentStepId : null}
               selectedId={selected}
               onSelect={(nodeId) =>
                 setSelectedStep(nodeId === null ? null : { runId: run.data!.runId, step: nodeId })
