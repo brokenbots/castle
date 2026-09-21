@@ -6,11 +6,18 @@ import {
   type EventEnvelope,
 } from '../../api/castleApi';
 import { RUN_TERMINAL_STATUSES } from './runStatus';
+import { NO_CONTROLS_TOOLTIP, hasControls, type RunCapabilities } from './capabilities';
 
 interface RunControlsProps {
   runId: string;
   status: string;
   pauseState: { isPaused: boolean; pauseEvent: EventEnvelope | null };
+  /**
+   * Capability probe result (CRI-186 guards matrix extension). When the
+   * host has no control RPC, every button renders disabled with the
+   * capability tooltip — grayed-out, not hidden — regardless of status.
+   */
+  capabilities?: RunCapabilities;
 }
 
 type ControlError = { status: string; data: string } | undefined;
@@ -24,7 +31,7 @@ function describeError(action: string, err: ControlError): string {
   return `${action}: ${detail}`;
 }
 
-export function RunControls({ runId, status, pauseState }: RunControlsProps) {
+export function RunControls({ runId, status, pauseState, capabilities }: RunControlsProps) {
   const [pause, pauseMeta] = usePauseRunMutation();
   const [resume, resumeMeta] = useResumeMutation();
   const [stop, stopMeta] = useStopRunMutation();
@@ -44,14 +51,20 @@ export function RunControls({ runId, status, pauseState }: RunControlsProps) {
   const isPaused = pauseState.isPaused || status === 'paused';
   const terminal = RUN_TERMINAL_STATUSES.has(status);
   const busy = pauseMeta.isLoading || resumeMeta.isLoading || stopMeta.isLoading;
+  // Capability axis dominates the status matrix: without a control RPC the
+  // buttons stay visible but always disabled with the capability tooltip.
+  const controlsAvailable = hasControls(capabilities);
+  const noControls = !controlsAvailable;
 
-  const canPause = status === 'running' && !isPaused;
-  const canResume = isPaused;
+  const canPause = controlsAvailable && status === 'running' && !isPaused;
+  const canResume = controlsAvailable && isPaused;
   const canStop =
+    controlsAvailable &&
     (status === 'running' || status === 'pending' || isPaused) &&
     !stopRequestedAt;
 
   const terminalTitle = `Run is ${status} — controls unavailable`;
+  const noControlsTitle = NO_CONTROLS_TOOLTIP;
 
   const closeConfirm = () => setConfirmOpen(false);
 
@@ -81,15 +94,17 @@ export function RunControls({ runId, status, pauseState }: RunControlsProps) {
           onClick={() => void pause({ runId })}
           disabled={!canPause || busy}
           title={
-            terminal
-              ? terminalTitle
-              : busy
-                ? 'A control action is in flight'
-                : isPaused
-                  ? 'Run is paused'
-                  : status !== 'running'
-                    ? 'Run has not started yet'
-                    : 'Pause the run'
+            noControls
+              ? noControlsTitle
+              : terminal
+                ? terminalTitle
+                : busy
+                  ? 'A control action is in flight'
+                  : isPaused
+                    ? 'Run is paused'
+                    : status !== 'running'
+                      ? 'Run has not started yet'
+                      : 'Pause the run'
           }
           className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
         >
@@ -100,13 +115,15 @@ export function RunControls({ runId, status, pauseState }: RunControlsProps) {
           onClick={() => void resume({ runId })}
           disabled={!canResume || busy}
           title={
-            terminal
-              ? terminalTitle
-              : busy
-                ? 'A control action is in flight'
-                : canResume
-                  ? 'Resume the run'
-                  : 'Run is not paused'
+            noControls
+              ? noControlsTitle
+              : terminal
+                ? terminalTitle
+                : busy
+                  ? 'A control action is in flight'
+                  : canResume
+                    ? 'Resume the run'
+                    : 'Run is not paused'
           }
           className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
         >
@@ -117,15 +134,17 @@ export function RunControls({ runId, status, pauseState }: RunControlsProps) {
           onClick={() => setConfirmOpen(true)}
           disabled={!canStop || busy}
           title={
-            terminal
-              ? terminalTitle
-              : busy
-                ? 'A control action is in flight'
-                : stopRequestedAt
-                  ? 'Stop already requested'
-                  : canStop
-                    ? 'Stop the run'
-                    : 'Run has not started yet'
+            noControls
+              ? noControlsTitle
+              : terminal
+                ? terminalTitle
+                : busy
+                  ? 'A control action is in flight'
+                  : stopRequestedAt
+                    ? 'Stop already requested'
+                    : canStop
+                      ? 'Stop the run'
+                      : 'Run has not started yet'
           }
           className="px-3 py-1.5 bg-rose-700 hover:bg-rose-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
         >

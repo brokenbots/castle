@@ -817,7 +817,7 @@ describe('RunDetailPage', () => {
     expect(screen.getByTestId('adapter-state-empty')).toBeInTheDocument();
   });
 
-  test('docks the scope panel inside the page layout without overlapping the log', async () => {
+  test('shows the gathered scope & controls panel inside the page layout', async () => {
     render(
       <Provider store={store}>
         <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -828,21 +828,24 @@ describe('RunDetailPage', () => {
       </Provider>,
     );
 
-    expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+    expect(await screen.findByTestId('scope-controls-panel')).toBeInTheDocument();
 
     const layout = screen.getByTestId('run-detail-layout');
-    const dock = screen.getByTestId('scope-dock');
-    // The dock is part of the page layout, not a floating overlay.
-    expect(layout).toContainElement(dock);
-    expect(dock.className).not.toContain('fixed');
-    // The scope content and the event log live in sibling columns, so the
-    // panel cannot cover the log.
-    expect(within(screen.getByTestId('scope-dock-body')).getByTestId('run-scope-panel')).toBeInTheDocument();
-    expect(within(dock).queryByTestId('event-log-scroll')).not.toBeInTheDocument();
+    const panel = screen.getByTestId('scope-controls-panel');
+    // The panel is part of the main column layout, not a floating overlay.
+    expect(layout).toContainElement(panel);
+    // The gathered content: control button row, the run scope view, and
+    // no duplicated scope content elsewhere.
+    expect(within(panel).getByTestId('scope-controls-row')).toBeInTheDocument();
+    expect(within(panel).getByTestId('run-scope-panel')).toBeInTheDocument();
+    expect(within(panel).queryByTestId('event-log-scroll')).not.toBeInTheDocument();
     expect(within(layout).getByTestId('event-log-scroll')).toBeInTheDocument();
+
+    // The control buttons moved out of the page header into the panel.
+    expect(within(panel).getByRole('button', { name: 'Pause' })).toBeInTheDocument();
   });
 
-  test('toggles the scope dock closed and reopens it from the header', async () => {
+  test('collapses the scope & controls panel and restores its content on expand', async () => {
     render(
       <Provider store={store}>
         <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -853,19 +856,21 @@ describe('RunDetailPage', () => {
       </Provider>,
     );
 
-    expect(await screen.findByTestId('scope-dock')).toBeInTheDocument();
-    const toggle = screen.getByTestId('scope-toggle');
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    const toggle = await screen.findByTestId('scope-controls-collapse');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('run-scope-panel')).toBeInTheDocument();
 
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.queryByTestId('scope-dock')).not.toBeInTheDocument();
-    // Scope content leaves the DOM with the dock.
-    expect(screen.queryByTestId('run-scope-panel')).not.toBeInTheDocument();
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // Collapsed hides the body but keeps the bar with its affordance.
+    expect(screen.queryByTestId('scope-controls-body')).not.toBeInTheDocument();
+    expect(screen.getByTestId('scope-controls-collapsed')).toBeInTheDocument();
+    // The control buttons leave the DOM with the collapsed body.
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
 
-    fireEvent.click(toggle);
-    expect(screen.getByTestId('scope-dock')).toBeInTheDocument();
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(toggle);
+    expect(screen.getByTestId('scope-controls-body')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
   });
 });
 

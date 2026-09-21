@@ -7,11 +7,9 @@ import { selectPauseState } from './runsSlice';
 import { useRunEventLog } from './eventLog/useRunEventLog';
 import { EventLog } from './eventLog/EventLog';
 import { StatusPill } from './StatusPill';
-import { RunControls } from './RunControls';
 import { RunInspection } from './RunInspection';
-import { PauseAffordance } from './eventLog/PauseAffordance';
+import { ScopeAndControlsPanel } from './ScopeAndControlsPanel';
 import { ForEachStrip } from './eventLog/ForEachStrip';
-import { RunScopePanel } from './scopePanel/RunScopePanel';
 import { PageHeader } from '../../components/PageHeader';
 import { PageState } from '../../components/PageState';
 import { DockedPanel } from '../../components/DockedPanel';
@@ -136,10 +134,6 @@ export function RunDetailPage() {
   const { events, log, loadEarlier, watch, reconnect, refresh } = useRunEventLog(id);
   const pauseState = useSelector(selectPauseState(id));
   const [selectedStep, setSelectedStep] = useState<{ runId: string; step: string } | null>(null);
-  // The scope view lives in a docked right-side panel (part of the page
-  // layout, never overlapping the log). The dock can be closed and reopened
-  // from the header's Scope toggle.
-  const [scopeOpen, setScopeOpen] = useState(true);
   // Which panel (if any) is currently expanded to a fullscreen overlay.
   // Null keeps every panel docked; toggling only swaps classes on the
   // wrapper sections, so panel components and their hooks stay mounted.
@@ -309,16 +303,6 @@ export function RunDetailPage() {
           actions={
             <>
               <StatusPill status={run.data.status} pauseEvent={pauseState.pauseEvent} />
-              <RunControls runId={run.data.runId} status={run.data.status} pauseState={pauseState} />
-              <button
-                type="button"
-                data-testid="scope-toggle"
-                aria-pressed={scopeOpen}
-                onClick={() => setScopeOpen((open) => !open)}
-                className="rounded-md border border-line-strong px-3 py-1.5 text-body text-ink-muted hover:bg-surface-raised hover:text-ink"
-              >
-                Scope
-              </button>
             </>
           }
         >
@@ -397,19 +381,6 @@ export function RunDetailPage() {
             controlsId="inspection-panel"
           />
         </section>
-
-        {pauseState.isPaused && pauseState.pauseEvent && (
-          <section>
-            <PauseAffordance
-              runId={id}
-              pauseEvent={pauseState.pauseEvent}
-              onRefresh={() => {
-                void run.refetch();
-                refresh();
-              }}
-            />
-          </section>
-        )}
 
         {forEachNodes.size > 0 && (
           <section>
@@ -597,6 +568,16 @@ export function RunDetailPage() {
             controlsId="graph-panel"
           />
         </section>
+        <ScopeAndControlsPanel
+          runId={run.data.runId}
+          status={run.data.status}
+          pauseState={pauseState}
+          events={events}
+          onRefresh={() => {
+            void run.refetch();
+            refresh();
+          }}
+        />
       </div>
       {sourcePlacement === 'side' && !sourceCollapsed.side && (
         <DockedPanel
@@ -605,11 +586,6 @@ export function RunDetailPage() {
           onClose={() => setSourceCollapsed((state) => ({ ...state, side: true }))}
         >
           <WorkflowSourceView source={workflowSource} highlight={highlightRange} />
-        </DockedPanel>
-      )}
-      {scopeOpen && (
-        <DockedPanel title="Run Scope" testId="scope-dock" onClose={() => setScopeOpen(false)}>
-          <RunScopePanel events={events} />
         </DockedPanel>
       )}
     </div>

@@ -7,6 +7,8 @@ import {
   useStopRunMutation,
 } from '../../api/castleApi';
 import { RunControls } from './RunControls';
+import { NO_CONTROLS_TOOLTIP } from './capabilities';
+import type { RunCapabilities } from './capabilities';
 
 vi.mock('../../api/castleApi', async () => {
   const actual = await vi.importActual<typeof import('../../api/castleApi')>(
@@ -59,12 +61,13 @@ function setMocks(opts: {
   );
 }
 
-function renderControls(status: string, isPaused = false) {
+function renderControls(status: string, isPaused = false, capabilities?: RunCapabilities) {
   return render(
     <RunControls
       runId="run-1"
       status={status}
       pauseState={{ isPaused, pauseEvent: null }}
+      capabilities={capabilities}
     />,
   );
 }
@@ -188,5 +191,39 @@ describe('RunControls', () => {
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(triggers.stop).not.toHaveBeenCalled();
+  });
+
+  describe('capability gating (controls axis)', () => {
+    test('no control RPC → all buttons render disabled with the controls tooltip even when running', async () => {
+      renderControls('running', false, { controls: false });
+
+      const pause = screen.getByRole('button', { name: /Paus/ });
+      const resume = screen.getByRole('button', { name: 'Resume' });
+      const stop = screen.getByRole('button', { name: 'Stop' });
+      for (const button of [pause, resume, stop]) {
+        expect(button).toBeDisabled();
+        expect(button).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+      }
+      // Grayed out is the contract, not hidden: the buttons stay in the DOM.
+      expect(triggers.pause).not.toHaveBeenCalled();
+    });
+
+    test('capabilities default to the castle host so the status matrix stays authoritative', () => {
+      renderControls('running');
+      expect(screen.getByRole('button', { name: /Paus/ })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /Paus/ }).getAttribute('title')).not.toBe(
+        NO_CONTROLS_TOOLTIP,
+      );
+    });
+
+    test('the capability axis dominates the status matrix (succeeded run, no controls)', () => {
+      renderControls('succeeded', false, { controls: false });
+      for (const name of [/Paus/, 'Resume', 'Stop']) {
+        const button = screen.getByRole('button', { name });
+        expect(button).toBeDisabled();
+        expect(button).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+      }
+    });
   });
 });
