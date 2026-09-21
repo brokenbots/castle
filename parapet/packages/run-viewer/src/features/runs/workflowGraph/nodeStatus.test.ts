@@ -56,13 +56,41 @@ describe('selectNodeOverlay', () => {
     expect(ok.statuses.build).toBe('succeeded');
   });
 
-  test('re-entry of a completed step flips it back to running', () => {
+  test('re-entry of a completed step by a cycle flips it back to running', () => {
+    // Overlay semantics (documented): selectNodeOverlay is last-event-wins
+    // per node. Cycles are the designed norm in workflows (review loops,
+    // retry loops), so a node is NOT sticky-completed: when the graph
+    // re-enters a step whose previous visit succeeded, the newer
+    // stepEntered supersedes the older stepOutcome and the node renders
+    // running again — the previous success stays superseded until the new
+    // visit emits its own outcome. A review loop re-entering `build` is
+    // exactly this shape:
     const { statuses } = selectNodeOverlay([
       event(1, 'stepEntered', { step: 'build' }),
       event(2, 'stepOutcome', { step: 'build', outcome: 'success' }),
-      event(3, 'stepEntered', { step: 'build' }),
+      event(3, 'stepEntered', { step: 'review' }),
+      event(4, 'stepOutcome', { step: 'review', outcome: 'error' }), // revise
+      event(5, 'stepEntered', { step: 'build' }), // loop closes on build
     ]);
     expect(statuses.build).toBe('running');
+    expect(statuses.review).toBe('failed');
+
+    // A failed prior visit is superseded the same way.
+    const failedThenReentered = selectNodeOverlay([
+      event(1, 'stepEntered', { step: 'build' }),
+      event(2, 'stepOutcome', { step: 'build', outcome: 'error', error: 'boom' }),
+      event(3, 'stepEntered', { step: 'build' }),
+    ]);
+    expect(failedThenReentered.statuses.build).toBe('running');
+
+    // The newest outcome wins once the re-entered visit completes.
+    const secondVisitCompleted = selectNodeOverlay([
+      event(1, 'stepEntered', { step: 'build' }),
+      event(2, 'stepOutcome', { step: 'build', outcome: 'success' }),
+      event(3, 'stepEntered', { step: 'build' }),
+      event(4, 'stepOutcome', { step: 'build', outcome: 'error', error: 'boom' }),
+    ]);
+    expect(secondVisitCompleted.statuses.build).toBe('failed');
   });
 
   test('falls back to transitions when no outcome event arrives', () => {
