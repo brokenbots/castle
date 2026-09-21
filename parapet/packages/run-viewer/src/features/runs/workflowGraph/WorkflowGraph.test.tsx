@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import tourSource from './fixtures/tour.chcl?raw';
-import { parseWorkflowHcl, type WorkflowGraph, type WorkflowGraphEdge, type WorkflowGraphNode } from './parseWorkflowHcl';
+import { parseWorkflowHcl, type WorkflowGraph as WorkflowGraphSpec, type WorkflowGraphEdge, type WorkflowGraphNode } from './parseWorkflowHcl';
 import { WorkflowGraph } from './WorkflowGraph';
 import { selectNodeOverlay } from './nodeStatus';
 
@@ -19,7 +19,7 @@ beforeAll(() => {
   );
 });
 
-function graph(partial?: Partial<WorkflowGraph>): WorkflowGraph {
+function graph(partial?: Partial<WorkflowGraphSpec>): WorkflowGraphSpec {
   const nodes: WorkflowGraphNode[] = [
     { id: 'build', kind: 'step' },
     { id: 'test', kind: 'step' },
@@ -221,7 +221,7 @@ describe('WorkflowGraph', () => {
   describe('cyclic graph rendering', () => {
     // A review-shaped loop: build -> review -> build, plus an acyclic
     // tail.
-    function loopGraph(): WorkflowGraph {
+    function loopGraph(): WorkflowGraphSpec {
       return graph({
         nodes: [
           { id: 'build', kind: 'step' },
@@ -303,7 +303,7 @@ describe('WorkflowGraph', () => {
   });
 
   describe('subworkflow explore affordance (CRI-257)', () => {
-    function subworkflowGraph(): WorkflowGraph {
+    function subworkflowGraph(): WorkflowGraphSpec {
       return graph({
         nodes: [
           { id: 'build', kind: 'step' },

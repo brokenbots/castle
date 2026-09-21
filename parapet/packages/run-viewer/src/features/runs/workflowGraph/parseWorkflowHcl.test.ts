@@ -283,7 +283,7 @@ describe('parseWorkflowHcl', () => {
   test('parses the real credential_isolation heredoc workflow into a step graph', () => {
     // Real .chcl workflows carry `command = <<-EOT … EOT` bodies; the
     // heredoc must parse (not fall back to the text-edge regex) so the run
-    // DAG renders for these runs.
+    // Graphs render for these runs.
     const graph = parseWorkflowHcl(credentialIsolationSource);
 
     expect(graph.name).toBe('credential_isolation');
@@ -382,7 +382,7 @@ describe('parseWorkflowHcl', () => {
 
   test('throws WorkflowParseError for malformed or non-workflow sources', () => {
     // A stray token in a real-shaped source makes the parser reject it —
-    // the run detail page must fall back rather than render a partial DAG.
+    // the run detail page must fall back rather than render a partial graph.
     expect(() =>
       parseWorkflowHcl('workflow { name = "w" }\nstep "a" {\n  outcome "success" { next = step.b oops\n}'),
     ).toThrow(WorkflowParseError);

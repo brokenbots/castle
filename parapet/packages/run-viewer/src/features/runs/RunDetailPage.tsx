@@ -16,7 +16,7 @@ import { PageState } from '../../components/PageState';
 import { DockedPanel } from '../../components/DockedPanel';
 import { Breadcrumbs } from '../../components/Breadcrumbs';
 import { useDocumentTitle } from '../../shell/useDocumentTitle';
-import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph } from './workflowGraph/parseWorkflowHcl';
+import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph as WorkflowGraphSpec } from './workflowGraph/parseWorkflowHcl';
 import { buildSubworkflowLayers, selectWorkflowGraphs, type SubworkflowLayer } from './workflowGraph/layers';
 import { WorkflowLayerNav } from './workflowGraph/WorkflowLayerNav';
 import { WorkflowGraph } from './workflowGraph/WorkflowGraph';
@@ -31,7 +31,7 @@ import { eventBelongsToStep, selectNodeOverlay } from './workflowGraph/nodeStatu
  * parseable nodes — yields null and the page keeps the text-edge fallback,
  * so the panel never blanks.
  */
-function parseGraph(source: string): WorkflowGraph | null {
+function parseGraph(source: string): WorkflowGraphSpec | null {
   if (!source) return null;
   try {
     const graph = parseWorkflowHcl(source);
