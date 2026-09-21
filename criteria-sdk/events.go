@@ -38,4 +38,5 @@ type (
 	Envelope_RunMetadata                     = pb.Envelope_RunMetadata
 	Envelope_AdapterLifecycleProvisionWanted = pb.Envelope_AdapterLifecycleProvisionWanted
 	Envelope_AdapterLifecycleReleased        = pb.Envelope_AdapterLifecycleReleased
+	Envelope_WorkflowGraphs                  = pb.Envelope_WorkflowGraphs
 )

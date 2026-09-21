@@ -6,22 +6,22 @@ import { delay, http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App';
 import { store } from './store';
-import { castleApi } from './api/castleApi';
-import { selectAuthExpired, sessionRecovered, sessionExpired } from './features/auth/sessionSlice';
+import { castleApi } from '@castle/run-viewer';
+import { selectAuthExpired, sessionRecovered, sessionExpired } from '@castle/run-viewer';
 import { clearAuthToken, getAuthToken, setAuthToken } from './authToken';
-import { RunListPage } from './features/runs/RunListPage';
-import { RunDetailPage } from './features/runs/RunDetailPage';
+import { RunListPage } from '@castle/run-viewer';
+import { RunDetailPage } from '@castle/run-viewer';
 import { AgentListPage } from './features/agents/AgentListPage';
 import { AgentDetailPage } from './features/agents/AgentDetailPage';
-import { server } from './test/mocks/server';
-import { serverPath } from './test/mocks/handlers';
+import { server } from '@castle/run-viewer/src/test/mocks/server';
+import { serverPath } from '@castle/run-viewer/src/test/mocks/handlers';
 // Vite's ?raw import inlines the shipped index.html so the document title
 // can be asserted against the real markup.
 import indexHtml from '../index.html?raw';
 
 // The run detail page starts a live watch stream; jsdom+msw have no real
 // stream transport, so stub it the same way RunDetailPage tests do.
-vi.mock('./features/runs/watchRun', () => ({
+vi.mock('@castle/run-viewer/src/features/runs/watchRun', () => ({
   startWatch: vi.fn().mockResolvedValue(undefined),
 }));
 

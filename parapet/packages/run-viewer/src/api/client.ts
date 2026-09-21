@@ -1,0 +1,69 @@
+import { createPromiseClient, Interceptor, PromiseClient } from '@connectrpc/connect';
+import { createConnectTransport } from '@connectrpc/connect-web';
+import { ServerService } from '../gen/criteria/v1/server_connect';
+import { CriteriaService } from '../gen/criteria/v1/criteria_connect';
+// Auth is host-owned (CRI-257): parapet wires its console token store;
+
+// the standalone viewer registers nothing, so requests stay anonymous.
+let runAuthTokenProvider: () => string | undefined = () => undefined;
+
+/** Register the host's auth-token source; called once by the host at boot. */
+export function setRunAuthTokenProvider(provider: () => string | undefined): void {
+  runAuthTokenProvider = provider;
+}
+
+
+declare global {
+  interface Window {
+    __CRITERIA__?: { codec?: 'json' | 'proto' };
+  }
+}
+
+export type Codec = 'json' | 'proto';
+
+export function getRuntimeCodec(): Codec {
+  const runtime = (typeof window !== 'undefined' ? window.__CRITERIA__?.codec : undefined) as
+    | Codec
+    | undefined;
+  if (runtime === 'proto' || runtime === 'json') return runtime;
+  if (typeof document !== 'undefined') {
+    const meta = document.querySelector('meta[name="criteria-codec"]');
+    const value = meta?.getAttribute('content');
+    if (value === 'proto' || value === 'json') return value;
+  }
+  return 'json';
+}
+
+const authTokenInterceptor: Interceptor = (next) => async (req) => {
+  // Explicitly set Authorization headers (e.g. the login validation probe)
+  // win; every other request is authenticated from the stored token.
+  if (!req.header.has('Authorization')) {
+    const token = runAuthTokenProvider();
+    if (token) {
+      req.header.set('Authorization', `Bearer ${token}`);
+    }
+  }
+  return next(req);
+};
+
+function baseUrl(): string {
+  const fromEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+    ?.VITE_CASTLE_URL;
+  if (fromEnv) return fromEnv;
+  if (typeof window !== 'undefined' && window.location) return window.location.origin;
+  return 'http://localhost:8080';
+}
+
+export function createCastleTransport(codec: Codec = getRuntimeCodec()) {
+  return createConnectTransport({
+    baseUrl: baseUrl(),
+    useBinaryFormat: codec === 'proto',
+    interceptors: [authTokenInterceptor],
+  });
+}
+
+export type ServerClient = PromiseClient<typeof ServerService>;
+export type CriteriaClient = PromiseClient<typeof CriteriaService>;
+
+export const server: ServerClient = createPromiseClient(ServerService, createCastleTransport());
+export const criteria: CriteriaClient = createPromiseClient(CriteriaService, createCastleTransport());

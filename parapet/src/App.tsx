@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { clearAuthToken, getAuthToken, setAuthToken } from './authToken';
-import { selectAuthExpired, sessionRecovered } from './features/auth/sessionSlice';
+import { selectAuthExpired, sessionRecovered } from '@castle/run-viewer';
 import { store } from './store';
 import { AppShell } from './shell/AppShell';
 import { LoginPage } from './shell/LoginPage';

@@ -1,4 +1,4 @@
-import { useGetConnectionStatusQuery } from '../api/castleApi';
+import { useGetConnectionStatusQuery } from '@castle/run-viewer';
 
 // Poll cadence for the shell's connection indicator.
 export const CONNECTION_POLL_INTERVAL_MS = 30_000;

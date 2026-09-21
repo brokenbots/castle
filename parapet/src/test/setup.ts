@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { clearAuthToken } from '../authToken';
-import { server } from './mocks/server';
+import { server } from '@castle/run-viewer/src/test/mocks/server';
 
 vi.stubGlobal('AbortController', window.AbortController);
 vi.stubGlobal('AbortSignal', window.AbortSignal);

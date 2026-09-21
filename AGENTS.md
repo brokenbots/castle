@@ -19,7 +19,7 @@ This repository owns the Castle control-plane server and the Parapet web UI. Cri
 - Treat `github.com/brokenbots/criteria/sdk` as the Criteria wire-contract source of truth.
 - Do not add Overseer executor, workflow-engine, or adapter implementations to this repository.
 - Update protobuf sources before generated Go or TypeScript bindings.
-- Do not hand-edit generated files under `shared/pb` or `parapet/src/gen`.
+- Do not hand-edit generated files under `criteria-sdk/pb` or `parapet/packages/run-viewer/src/gen`.
 - Keep Castle compatible with a single-replica SQLite deployment until an external-store project explicitly changes that constraint.
 
 ## Migration Baseline

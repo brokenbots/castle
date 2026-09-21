@@ -16,5 +16,5 @@
     "allowSyntheticDefaultImports": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src", "packages/run-viewer/src", "packages/run-viewer/standalone"]
 }

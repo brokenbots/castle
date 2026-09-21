@@ -92,6 +92,8 @@ func setPayload(env *pb.Envelope, payload any) { //nolint:funlen,gocyclo // one 
 		env.Payload = &pb.Envelope_AdapterLifecycleProvisionWanted{AdapterLifecycleProvisionWanted: p}
 	case *pb.AdapterLifecycleReleased:
 		env.Payload = &pb.Envelope_AdapterLifecycleReleased{AdapterLifecycleReleased: p}
+	case *pb.WorkflowGraphs:
+		env.Payload = &pb.Envelope_WorkflowGraphs{WorkflowGraphs: p}
 	default:
 		panic(fmt.Sprintf("criteria.NewEnvelope: unsupported payload type %T", payload))
 	}
@@ -162,6 +164,8 @@ func TypeString(env *Envelope) string { //nolint:funlen,gocyclo // one case per 
 		return "adapter.lifecycle.provision_wanted"
 	case *pb.Envelope_AdapterLifecycleReleased:
 		return "adapter.lifecycle.released"
+	case *pb.Envelope_WorkflowGraphs:
+		return "workflow.graphs"
 	default:
 		return ""
 	}

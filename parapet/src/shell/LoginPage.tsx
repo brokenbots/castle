@@ -1,6 +1,6 @@
 import { FormEvent, useState } from 'react';
 import { Code, ConnectError } from '@connectrpc/connect';
-import { server } from '../api/client';
+import { server } from '@castle/run-viewer';
 
 interface LoginPageProps {
   onAuthenticated: (token: string) => void;

@@ -1,0 +1,876 @@
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { Provider } from 'react-redux';
+import { MemoryRouter, useLocation } from 'react-router-dom';
+import { http, HttpResponse } from 'msw';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { RunListPage } from './RunListPage';
+import { castleApi } from '../../api/castleApi';
+import { createRunViewerStore } from '../../store';
+import { selectAuthExpired, sessionRecovered } from '../../features/auth/sessionSlice';
+import { server } from '../../test/mocks/server';
+import { serverPath } from '../../test/mocks/handlers';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
+
+
+// Runs fixture shape mirrors the ListRuns MSW handler (snake_case protojson).
+// started_at is part of the default shape because Castle stamps it on the
+// first transition to running (CRI-187), so every run that has started —
+// running or finished — carries it on the real wire; pass
+// `started_at: undefined` for the never-started shape (e.g. a pending run,
+// or a run reaped while still pending).
+function run(id: string, status: string, extra: Record<string, unknown> = {}) {
+  return {
+    run_id: id,
+    criteria_id: 'crn:v1:criteria:workflow/demo',
+    workflow_name: 'demo',
+    workflow_hash: 'deadbeef',
+    status,
+    created_at: '2026-02-05T08:30:00.000Z',
+    started_at: '2026-02-05T08:30:05.000Z',
+    final_state: '',
+    failure_reason: '',
+    ...extra,
+  };
+}
+
+interface ListRunsPage {
+  runs: unknown[];
+  nextPageToken: string;
+}
+
+// Installs a ListRuns override that records request bodies (camelCase or
+// snake_case keys) and answers with pages produced by `responder`.
+function installListRuns(responder: (pageToken: string, status: string) => ListRunsPage) {
+  const bodies: Array<Record<string, unknown>> = [];
+  server.use(
+    http.post(serverPath('ListRuns'), async ({ request }) => {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      bodies.push(body);
+      const pageToken = String(body.pageToken ?? body.page_token ?? '');
+      const status = String(body.status ?? '');
+      try {
+        const page = responder(pageToken, status);
+        return HttpResponse.json({ runs: page.runs, next_page_token: page.nextPageToken });
+      } catch {
+        // Responders throw to simulate a failing request; surface it as a
+        // connect-style HTTP error instead of a raw handler exception
+        // (which MSW would log as an unhandled failure).
+        return HttpResponse.json(
+          { code: 'unavailable', message: 'simulated ListRuns failure' },
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        );
+      }
+    }),
+  );
+  return bodies;
+}
+
+function bodyPageToken(body: Record<string, unknown>): string {
+  return String(body.pageToken ?? body.page_token ?? '');
+}
+
+function bodyStatus(body: Record<string, unknown>): string {
+  return String(body.status ?? '');
+}
+
+function renderPage() {
+  return render(
+    <Provider store={store}>
+      <MemoryRouter initialEntries={['/runs']}>
+        <RunListPage />
+      </MemoryRouter>
+    </Provider>,
+  );
+}
+
+// Yields one REAL macrotask turn: undici delivers mocked socket I/O only when
+// the event loop polls, and faked-timer advances interleave merely microtasks.
+// MessageChannel is not faked, so its callback runs on the host event loop.
+function yieldRealTask(): Promise<void> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      resolve();
+    };
+    channel.port2.postMessage(0);
+  });
+}
+
+// Redux ignores unknown actions, but notifying subscribers makes React-Redux
+// re-check every selector inside unstable_batchedUpdates, which flushes any
+// pending render synchronously. Store updates that complete inside a faked
+// timer callback or between two act scopes are otherwise only applied at the
+// next act exit, which the steps below cannot wait for.
+const FLUSH_TEST_RENDER = { type: '__test/flush' };
+
+// One bounded retry step under fake timers. Each step is its own act so
+// React's passive effects (where RTK Query dispatches subscription updates,
+// e.g. starting or stopping the poll timer) flush at the step boundary;
+// the flush dispatches recover renders whose store update landed outside
+// the previous act. A fixed fake-time budget cannot bound the real
+// event-loop turns the mocked chain (MSW -> undici -> connect -> RTK Query)
+// needs, hence the observable-condition loop and the single final assertion.
+async function waitUntil(cond: () => boolean, what: string, advanceMs = 500): Promise<void> {
+  for (let i = 0; i < 80 && !cond(); i += 1) {
+    await act(async () => {
+      store.dispatch(FLUSH_TEST_RENDER);
+      if (advanceMs > 0) {
+        await vi.advanceTimersByTimeAsync(advanceMs);
+      }
+      await yieldRealTask();
+      store.dispatch(FLUSH_TEST_RENDER);
+    });
+  }
+  expect(cond(), what).toBe(true);
+}
+
+// Proves a negative over a window longer than two poll intervals, advancing
+// in per-step acts so a terminal poll response can land and its render plus
+// polling teardown complete between steps before the next interval tick.
+async function advanceQuietly(expectNoChange: () => number): Promise<number> {
+  const before = expectNoChange();
+  for (let i = 0; i < 6 && before === expectNoChange(); i += 1) {
+    await act(async () => {
+      store.dispatch(FLUSH_TEST_RENDER);
+      await vi.advanceTimersByTimeAsync(7_000);
+      await yieldRealTask();
+      store.dispatch(FLUSH_TEST_RENDER);
+    });
+  }
+  return expectNoChange();
+}
+
+// Whether the run row whose ID cell contains `id` shows `status`. Scoped to
+// the row so the <option> labels of the status filter (which share their
+// text with run statuses) cannot satisfy a queryByText assertion.
+function rowHasStatus(id: string, status: string): boolean {
+  const row = screen.queryByText(id)?.closest('tr');
+  return row != null && within(row).queryByText(status) !== null;
+}
+
+function hideTab() {
+  Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+  document.dispatchEvent(new Event('visibilitychange'));
+}
+
+function showTab() {
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+  document.dispatchEvent(new Event('visibilitychange'));
+}
+
+afterEach(() => {
+  // Unmount before resetting the API state: while a component is still
+  // mounted, clearing its cache makes RTK Query immediately re-initiate the
+  // query, and that late fulfillment can pollute the next test's cache.
+  cleanup();
+  // Restore the jsdom prototype getter patched by hideTab().
+  delete (document as { visibilityState?: unknown }).visibilityState;
+  vi.useRealTimers();
+  store.dispatch(castleApi.util.resetApiState());
+});
+
+describe('RunListPage', () => {
+  test('renders runs from the live endpoint with a detail link', async () => {
+    server.use(
+      http.post(serverPath('ListRuns'), () =>
+        HttpResponse.json({
+          runs: [run('run-1', 'running', { ticket: 'CRI-187' })],
+          next_page_token: '',
+        }),
+      ),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText('CRI-187')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'run-1' });
+    expect(link.getAttribute('href')).toBe('/runs/run-1');
+  });
+
+  test('shows the loading state while the request is in flight', async () => {
+    // A request that never resolves on its own; abort (e.g. resetApiState in
+    // afterEach) must settle it so no pending query outlives the test.
+    server.use(
+      http.post(serverPath('ListRuns'), ({ request }) =>
+        new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener('abort', () => reject(request.signal.reason));
+        }),
+      ),
+    );
+
+    renderPage();
+
+    expect(screen.getByText('Loading runs…')).toBeInTheDocument();
+  });
+
+  test('shows the empty state when the server has no runs', async () => {
+    server.use(
+      http.post(serverPath('ListRuns'), () => HttpResponse.json({ runs: [], next_page_token: '' })),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText('No runs yet.')).toBeInTheDocument();
+  });
+
+  test('shows the error state when the request fails', async () => {
+    server.use(
+      http.post(
+        serverPath('ListRuns'),
+        () =>
+          new HttpResponse(JSON.stringify({ code: 'unavailable', message: 'offline' }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText('Failed to load runs.')).toBeInTheDocument();
+  });
+
+  test('passes the status filter and page limit to ListRuns', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns(() => ({
+      runs: [run('run-1', 'running')],
+      nextPageToken: '',
+    }));
+
+    renderPage();
+    await screen.findByText('run-1');
+
+    await user.selectOptions(screen.getByLabelText('Status'), 'running');
+    await waitFor(() => expect(bodies).toHaveLength(2));
+
+    expect(bodyStatus(bodies[0])).toBe('');
+    expect(bodies[0].limit).toBe(50);
+    expect(bodyStatus(bodies[1])).toBe('running');
+    expect(bodies[1].limit).toBe(50);
+  });
+
+  test('filtering shows only runs matching the selected status', async () => {
+    const user = userEvent.setup();
+    installListRuns((_pageToken, status) =>
+      status === 'running'
+        ? { runs: [run('run-2', 'running')], nextPageToken: '' }
+        : {
+            runs: [run('run-1', 'succeeded'), run('run-2', 'running')],
+            nextPageToken: '',
+          },
+    );
+
+    renderPage();
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Status'), 'running');
+    await waitFor(() => {
+      expect(screen.queryByText('run-1')).not.toBeInTheDocument();
+      expect(screen.getByText('run-2')).toBeInTheDocument();
+    });
+  });
+
+  test('Load more fetches the next page through the pagination cursor and appends rows', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns((pageToken) =>
+      pageToken === ''
+        ? { runs: [run('run-1', 'succeeded')], nextPageToken: 'tok-2' }
+        : { runs: [run('run-2', 'running')], nextPageToken: '' },
+    );
+
+    renderPage();
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
+    expect(screen.queryByText('run-2')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText('run-2')).toBeInTheDocument();
+    expect(screen.getByText('run-1')).toBeInTheDocument();
+    expect(bodies).toHaveLength(2);
+    expect(bodyPageToken(bodies[0])).toBe('');
+    expect(bodyPageToken(bodies[1])).toBe('tok-2');
+  });
+
+  // Regression: loadMore used to consume page 1's nextPageToken on every
+  // click, so the second "Load more" re-requested the same cursor page and
+  // runs past the second page were unreachable.
+  test('Load more walks a three-page cursor chain and hides the button at the end', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns((pageToken) => {
+      switch (pageToken) {
+        case '':
+          return { runs: [run('run-1', 'succeeded')], nextPageToken: 'tok-2' };
+        case 'tok-2':
+          return { runs: [run('run-2', 'succeeded')], nextPageToken: 'tok-3' };
+        case 'tok-3':
+          return { runs: [run('run-3', 'succeeded')], nextPageToken: '' };
+        default:
+          throw new Error(`unexpected page token ${pageToken}`);
+      }
+    });
+
+    renderPage();
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
+
+    // Click 1: page 1's token ('tok-2') requests page 2 and appends its rows.
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('run-2')).toBeInTheDocument();
+    expect(bodies).toHaveLength(2);
+    expect(bodyPageToken(bodies[1])).toBe('tok-2');
+
+    // Click 2: page 2's own continuation token ('tok-3') requests page 3 —
+    // re-using 'tok-2' would be rejected by the responder above.
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('run-3')).toBeInTheDocument();
+    expect(bodies).toHaveLength(3);
+    expect(bodyPageToken(bodies[2])).toBe('tok-3');
+
+    // Every page is still listed, oldest page last.
+    expect(screen.getByText('run-1')).toBeInTheDocument();
+    expect(screen.getByText('run-2')).toBeInTheDocument();
+    expect(screen.getByText('run-3')).toBeInTheDocument();
+
+    // The final page has no continuation: the button is gone.
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  test('Load more failure keeps the loaded rows and shows an inline error', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns((pageToken) => {
+      if (pageToken === '') return { runs: [run('run-1', 'succeeded')], nextPageToken: 'tok-2' };
+      throw new Error('boom');
+    });
+
+    renderPage();
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText('Failed to load more runs.')).toBeInTheDocument();
+    expect(screen.getByText('run-1')).toBeInTheDocument();
+    expect(bodies).toHaveLength(2);
+  });
+
+  test('hides Load more when the server reports no further page', async () => {
+    installListRuns(() => ({ runs: [run('run-1', 'succeeded')], nextPageToken: '' }));
+
+    renderPage();
+
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  test('duration column shows endedAt - startedAt for finished runs', async () => {
+    installListRuns(() => ({
+      runs: [
+        run('run-1', 'succeeded', {
+          ticket: 'CRI-187',
+          started_at: '2026-02-05T08:30:00.000Z',
+          ended_at: '2026-02-05T08:31:30.000Z',
+        }),
+        // The never-started wire shape (no started_at — a run reaped while
+        // still pending): the duration column shows an em dash, so give the
+        // row a ticket to keep the em dash unique.
+        run('run-2', 'failed', { ticket: 'CRI-188', started_at: undefined }),
+      ],
+      nextPageToken: '',
+    }));
+
+    renderPage();
+
+    expect(await screen.findByText('1m 30s')).toBeInTheDocument();
+    // No started_at means the duration is unknown.
+    expect(screen.getByText('—')).toBeInTheDocument();
+  });
+
+// URL query param sync: the status filter lives in the URL so filtered views
+// are shareable and deep-linkable (CRI-191).
+describe('RunListPage auth expiry and retry', () => {
+  afterEach(() => {
+    store.dispatch(sessionRecovered());
+  });
+
+  test('prompts re-authentication instead of a generic failure when the session expires', async () => {
+    server.use(
+      http.post(
+        serverPath('ListRuns'),
+        () =>
+          HttpResponse.json(
+            { code: 'unauthenticated', message: 'token rejected' },
+            { status: 401 },
+          ),
+      ),
+    );
+
+    renderPage();
+
+    // Auth failures get their own state — not the plain-text "Failed to load
+    // runs." dead end.
+    expect(await screen.findByText('Session expired')).toBeInTheDocument();
+    expect(
+      screen.getByText('Your token was rejected by Castle. Sign in again to continue.'),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('page-state-reauth'));
+    expect(selectAuthExpired(store.getState())).toBe(true);
+  });
+
+  test('retries the initial load from the error state', async () => {
+    let failing = true;
+    server.use(
+      http.post(serverPath('ListRuns'), () => {
+        if (failing) {
+          return new HttpResponse(JSON.stringify({ code: 'unavailable', message: 'offline' }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return HttpResponse.json({
+          runs: [run('run-1', 'running', { ticket: 'CRI-192' })],
+          next_page_token: '',
+        });
+      }),
+    );
+
+    renderPage();
+
+    const retry = await screen.findByTestId('page-state-retry', {}, { timeout: 3000 });
+    failing = false;
+    await userEvent.click(retry);
+
+    expect(await screen.findByText('CRI-192')).toBeInTheDocument();
+  });
+});
+
+describe('RunListPage URL param sync', () => {
+  // Renders the page at an arbitrary entry URL and exposes the live router
+  // location so interactions can assert on the resulting URL.
+  function renderAt(initialEntry: string) {
+    let location: { pathname: string; search: string } | undefined;
+    function Probe() {
+      const current = useLocation();
+      location = { pathname: current.pathname, search: current.search };
+      return null;
+    }
+
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={[initialEntry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <RunListPage />
+          <Probe />
+        </MemoryRouter>
+      </Provider>,
+    );
+    return { getLocation: () => location! };
+  }
+
+  test('a deep link with a status param opens the corresponding filtered view', async () => {
+    const bodies = installListRuns((_pageToken, status) => ({
+      runs: status === 'running' ? [run('run-1', 'running')] : [run('run-2', 'succeeded')],
+      nextPageToken: '',
+    }));
+
+    renderAt('/runs?status=running');
+
+    // The restored view queried the filtered page and shows its rows.
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodyStatus(bodies[0])).toBe('running');
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
+    expect(screen.queryByText('run-2')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Status')).toHaveValue('running');
+  });
+
+  test('changing the filter updates the URL query params', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns(() => ({ runs: [run('run-1', 'running')], nextPageToken: '' }));
+
+    const { getLocation } = renderAt('/runs');
+    await screen.findByText('run-1');
+
+    await user.selectOptions(screen.getByLabelText('Status'), 'failed');
+
+    await waitFor(() => expect(bodyStatus(bodies[1])).toBe('failed'));
+    expect(getLocation().pathname).toBe('/runs');
+    expect(getLocation().search).toBe('?status=failed');
+  });
+
+  test('clearing the filter removes the status param from the URL', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns(() => ({ runs: [run('run-1', 'running')], nextPageToken: '' }));
+
+    const { getLocation } = renderAt('/runs?status=failed');
+    await waitFor(() => expect(bodies.length).toBeGreaterThanOrEqual(1));
+
+    await user.selectOptions(screen.getByLabelText('Status'), 'all');
+
+    await waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodyStatus(bodies[1])).toBe('');
+    expect(getLocation().pathname).toBe('/runs');
+    expect(getLocation().search).toBe('');
+  });
+
+  test('clicking a status chip navigates to the run list filtered by that status', async () => {
+    const user = userEvent.setup();
+    const bodies = installListRuns((_pageToken, status) => ({
+      runs:
+        status === 'succeeded'
+          ? [run('run-2', 'succeeded')]
+          : [run('run-1', 'running'), run('run-2', 'succeeded')],
+      nextPageToken: '',
+    }));
+
+    const { getLocation } = renderAt('/runs');
+    await screen.findByText('run-1');
+
+    // The status chip in the row is a link into the filtered view.
+    const row = screen.getByText('run-2').closest('tr')!;
+    await user.click(within(row).getByRole('link', { name: 'succeeded' }));
+
+    await waitFor(() => expect(bodyStatus(bodies[1])).toBe('succeeded'));
+    expect(getLocation().search).toBe('?status=succeeded');
+    // The view shows only the matching status afterwards.
+    await waitFor(() => {
+      expect(screen.queryByText('run-1')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('run-2')).toBeInTheDocument();
+  });
+
+  test('a deep link carrying a status outside the fixed list keeps the filter selectable', async () => {
+    const bodies = installListRuns(() => ({ runs: [], nextPageToken: '' }));
+
+    renderAt('/runs?status=pending');
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodyStatus(bodies[0])).toBe('pending');
+    const select = screen.getByLabelText('Status') as HTMLSelectElement;
+    expect(select.value).toBe('pending');
+    // The unknown value stays selectable so the filter can be cleared again.
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toContain('pending');
+    expect(values).toContain('');
+  });
+
+  test('changing the filter drops rows loaded through Load more under the previous filter', async () => {
+    const user = userEvent.setup();
+    installListRuns((pageToken, status) => {
+      if (status !== '') return { runs: [run('run-9', 'succeeded')], nextPageToken: '' };
+      return pageToken === ''
+        ? { runs: [run('run-1', 'running')], nextPageToken: 'all-cursor-2' }
+        : { runs: [run('run-2', 'cancelled')], nextPageToken: '' };
+    });
+
+    renderAt('/runs');
+    await screen.findByText('run-1');
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('run-2')).toBeInTheDocument();
+
+    // Switching the filter invalidates the appended page: the view resets to
+    // page 1 of the new filter.
+    await user.selectOptions(screen.getByLabelText('Status'), 'succeeded');
+    await waitFor(() => {
+      expect(screen.queryByText('run-2')).not.toBeInTheDocument();
+      expect(screen.queryByText('run-1')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('run-9')).toBeInTheDocument();
+  });
+});
+
+  test('duration column shows a live elapsed time for running runs', async () => {
+    const started = new Date('2026-02-05T08:31:00.000Z').getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(started + 30_000);
+    installListRuns(() => ({
+      runs: [run('run-1', 'running', { started_at: '2026-02-05T08:31:00.000Z' })],
+      nextPageToken: '',
+    }));
+
+    renderPage();
+    // Small steps keep the mocked clock near startedAt + 30s so the elapsed
+    // label stays in the "30s" bucket regardless of how many event-loop turns
+    // the mocked chain needs to land the response.
+    await waitUntil(() => screen.queryByText('30s') !== null, 'initial elapsed 30s rendered', 100);
+    expect(screen.getByText('30s')).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+      await yieldRealTask();
+      store.dispatch(FLUSH_TEST_RENDER);
+    });
+    await waitUntil(() => screen.queryByText('1m 01s') !== null, 'elapsed advanced to 1m 01s', 0);
+    expect(screen.getByText('1m 01s')).toBeInTheDocument();
+  });
+
+  test('started column shows relative time with an absolute timestamp on hover', async () => {
+    const now = new Date('2026-02-05T08:35:00.000Z').getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    installListRuns(() => ({
+      runs: [
+        run('run-1', 'succeeded', {
+          created_at: '2026-02-05T08:30:00.000Z',
+          started_at: '2026-02-05T08:30:00.000Z',
+        }),
+      ],
+      nextPageToken: '',
+    }));
+
+    renderPage();
+    // Small steps keep the mocked clock near 08:35 so the relative label
+    // stays in the "5 minutes ago" bucket while the response lands.
+    await waitUntil(
+      () => screen.queryByText('5 minutes ago') !== null,
+      'relative started label rendered',
+      100,
+    );
+
+    expect(screen.getByText('5 minutes ago')).toBeInTheDocument();
+    expect(screen.getByTitle(/2026/)).toBeInTheDocument();
+  });
+
+  test('never-started runs fall back to created_at for the started column', async () => {
+    const now = new Date('2026-02-05T08:32:00.000Z').getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    installListRuns(() => ({
+      runs: [run('run-1', 'pending', { started_at: undefined, ticket: 'CRI-189' })],
+      nextPageToken: '',
+    }));
+
+    renderPage();
+    await waitUntil(
+      () => screen.queryByText('2 minutes ago') !== null,
+      'relative fallback label rendered',
+      100,
+    );
+    expect(screen.getByText('2 minutes ago')).toBeInTheDocument();
+    // No started_at and no ended_at: the duration is unknown.
+    expect(screen.getByText('—')).toBeInTheDocument();
+  });
+
+  test('polls on an interval while a run is non-terminal', async () => {
+    vi.useFakeTimers();
+    const bodies = installListRuns(() => ({
+      runs: [run('run-1', 'running')],
+      nextPageToken: '',
+    }));
+
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    expect(bodies).toHaveLength(1);
+
+    await waitUntil(() => bodies.length >= 2, 'first poll request sent');
+    expect(bodies.length).toBeGreaterThanOrEqual(2);
+
+    await waitUntil(() => bodies.length >= 3, 'second poll request sent');
+    expect(bodies.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('stops polling once every loaded run is terminal', async () => {
+    vi.useFakeTimers();
+    let serveRunning = true;
+    const bodies = installListRuns(() => ({
+      runs: [run('run-1', serveRunning ? 'running' : 'succeeded')],
+      nextPageToken: '',
+    }));
+
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'initial run rendered');
+    expect(bodies).toHaveLength(1);
+
+    // From here on the server only reports terminal runs.
+    serveRunning = false;
+    await waitUntil(() => bodies.length >= 2, 'poll request sent while running');
+    expect(bodies.length).toBeGreaterThanOrEqual(2);
+    // Prove the terminal response landed and was applied before asserting
+    // that nothing else is requested.
+    await waitUntil(() => rowHasStatus('run-1', 'succeeded'), 'terminal run status rendered');
+
+    const settledCallCount = bodies.length;
+    const afterQuietWindow = await advanceQuietly(() => bodies.length);
+    expect(afterQuietWindow).toBe(settledCallCount);
+    expect(bodies.length).toBe(settledCallCount);
+  });
+
+  // Regression: RTK Query polls re-initiate a cache entry with its stored
+  // originalArgs, so after "Load more" overwrote those args with the cursor,
+  // polling silently refetched the cursor page and page 1 went stale.
+  test('polls refresh page 1 after Load more appends a cursor page', async () => {
+    vi.useFakeTimers();
+    let serveFresh = false;
+    const bodies = installListRuns((pageToken) => {
+      if (pageToken !== '') return { runs: [run('run-2', 'failed')], nextPageToken: '' };
+      if (!serveFresh) return { runs: [run('run-1', 'running')], nextPageToken: 'tok-2' };
+      return {
+        runs: [run('run-1', 'succeeded'), run('run-2', 'cancelled')],
+        nextPageToken: '',
+      };
+    });
+
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'page-1 run rendered');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    });
+    await waitUntil(
+      () => bodies.some((body) => bodyPageToken(body) === 'tok-2'),
+      'cursor page requested',
+    );
+    await waitUntil(() => screen.queryByText('run-2') !== null, 'cursor row rendered');
+
+    serveFresh = true;
+    // Count page-1 requests rather than inspecting the last body: lockstep
+    // cursor-page refreshes (the companion regression below) interleave
+    // tok-2 requests with poll ticks, so the last body is not reliably a
+    // page-1 request. Polls must keep requesting page 1 (pageToken '',
+    // status '') — a poll that re-initiated the stored cursor args would
+    // refresh the cursor page and leave page 1 stale.
+    await waitUntil(
+      () =>
+        bodies.filter((body) => bodyPageToken(body) === '').length >= 2 &&
+        rowHasStatus('run-1', 'succeeded'),
+      'page-1 refreshed by a poll after Load more',
+    );
+    const page1Requests = bodies.filter((body) => bodyPageToken(body) === '');
+    expect(page1Requests.length).toBeGreaterThanOrEqual(2);
+    // Every page-1 request carries the page-1 args, never the stored cursor
+    // args from "Load more".
+    expect(page1Requests.every((body) => bodyStatus(body) === '')).toBe(true);
+    // The appended cursor row is still listed once, its stale copy replaced
+    // by the fresh page-1 data.
+    expect(screen.getAllByText('run-2')).toHaveLength(1);
+    // Status-text assertions are scoped to the row: the status filter's
+    // <option> labels share their text with run statuses.
+    const run1Row = screen.getByText('run-1').closest('tr');
+    expect(run1Row).not.toBeNull();
+    expect(within(run1Row!).queryByText('running')).not.toBeInTheDocument();
+    const run2Row = screen.getByText('run-2').closest('tr');
+    expect(run2Row).not.toBeNull();
+    expect(within(run2Row!).queryByText('failed')).not.toBeInTheDocument();
+    expect(within(run2Row!).getByText('cancelled')).toBeInTheDocument();
+  });
+
+  // Regression: cursor pages used to be fetched once and never refreshed by
+  // polling, so a non-terminal run on page 2+ kept the poll gate open forever
+  // while its row stayed stale with a ticking live duration. Cursor pages
+  // must refresh in lockstep with the page-1 poll and stop once they report
+  // terminal.
+  test('polls refresh cursor pages and stop once they go terminal', async () => {
+    vi.useFakeTimers();
+    let serveTerminalCursor = false;
+    const bodies = installListRuns((pageToken) => {
+      if (pageToken === '') return { runs: [run('run-1', 'succeeded')], nextPageToken: 'tok-2' };
+      if (pageToken === 'tok-2') {
+        return serveTerminalCursor
+          ? { runs: [run('run-2', 'succeeded')], nextPageToken: '' }
+          : { runs: [run('run-2', 'running')], nextPageToken: '' };
+      }
+      throw new Error(`unexpected page token ${pageToken}`);
+    });
+
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'page-1 run rendered');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    });
+    await waitUntil(
+      () => bodies.some((body) => bodyPageToken(body) === 'tok-2'),
+      'cursor page requested',
+    );
+    await waitUntil(() => rowHasStatus('run-2', 'running'), 'cursor row rendered as running');
+
+    // From here on the cursor page reports terminal runs.
+    serveTerminalCursor = true;
+    await waitUntil(
+      () => bodies.filter((body) => bodyPageToken(body) === 'tok-2').length >= 2,
+      'cursor page refreshed by a poll',
+    );
+    await waitUntil(() => rowHasStatus('run-2', 'succeeded'), 'terminal cursor status rendered');
+
+    const settledCallCount = bodies.length;
+    const afterQuietWindow = await advanceQuietly(() => bodies.length);
+    expect(afterQuietWindow).toBeLessThanOrEqual(settledCallCount);
+    expect(bodies.length).toBeLessThanOrEqual(settledCallCount);
+  });
+
+  test('shows an indicator when a background refresh fails', async () => {
+    vi.useFakeTimers();
+    let fail = false;
+    const bodies = installListRuns(() => {
+      if (fail) throw new Error('boom');
+      return { runs: [run('run-1', 'running')], nextPageToken: '' };
+    });
+
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'initial run rendered');
+
+    fail = true;
+    await waitUntil(() => bodies.length >= 2, 'poll request sent');
+    await waitUntil(
+      () => screen.queryByText('Refresh failed. Showing the last loaded runs.') !== null,
+      'refresh-failure indicator rendered',
+    );
+    expect(screen.getByText('Refresh failed. Showing the last loaded runs.')).toBeInTheDocument();
+    expect(screen.getByText('run-1')).toBeInTheDocument();
+  });
+
+  test('shows the refresh-failure indicator even when the last result was empty', async () => {
+    vi.useFakeTimers();
+    let fail = false;
+    installListRuns(() => {
+      if (fail) throw new Error('boom');
+      return { runs: [], nextPageToken: '' };
+    });
+
+    renderPage();
+    await waitUntil(() => screen.queryByText('No runs yet.') !== null, 'empty list rendered');
+
+    // No active runs means polling has stopped, so force a refetch of the
+    // page-1 cache entry the way a focus-triggered refetch would.
+    fail = true;
+    store.dispatch(castleApi.endpoints.listRuns.initiate({ status: '' }, { forceRefetch: true }));
+    await waitUntil(
+      () => screen.queryByText('Refresh failed.') !== null,
+      'refresh-failure indicator rendered for an empty list',
+    );
+    expect(screen.getByText('No runs yet.')).toBeInTheDocument();
+  });
+
+  test('does not poll while the tab is hidden', async () => {
+    vi.useFakeTimers();
+    const bodies = installListRuns(() => ({
+      runs: [run('run-1', 'running')],
+      nextPageToken: '',
+    }));
+
+    hideTab();
+    renderPage();
+    await waitUntil(() => bodies.length >= 1, 'initial ListRuns request sent');
+    await waitUntil(() => screen.queryByText('run-1') !== null, 'initial run rendered');
+
+    const hiddenCount = bodies.length;
+    expect(hiddenCount).toBeGreaterThanOrEqual(1);
+    const afterQuietWindow = await advanceQuietly(() => bodies.length);
+    expect(afterQuietWindow).toBe(hiddenCount);
+    expect(bodies.length).toBe(hiddenCount);
+
+    await act(async () => {
+      store.dispatch(FLUSH_TEST_RENDER);
+      showTab();
+    });
+    await waitUntil(
+      () => bodies.length > hiddenCount,
+      'poll request sent after becoming visible',
+    );
+    expect(bodies.length).toBeGreaterThan(hiddenCount);
+  });
+});

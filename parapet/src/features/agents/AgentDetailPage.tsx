@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
-import { castleApi, useGetAgentQuery, useListRunsQuery, type Run } from '../../api/castleApi';
-import { classifyError } from '../../api/errors';
+import { castleApi, useGetAgentQuery, useListRunsQuery, type Run } from '@castle/run-viewer';
+import { classifyError } from '@castle/run-viewer';
 import type { AppDispatch } from '../../store';
-import { PageHeader } from '../../components/PageHeader';
-import { PageState } from '../../components/PageState';
-import { Breadcrumbs } from '../../components/Breadcrumbs';
-import { useDocumentTitle } from '../../shell/useDocumentTitle';
-import { RUN_STATUS_TEXT_COLORS } from '../runs/runStatus';
-import { StartedCell, useDocumentVisible, useNow } from '../runs/runCells';
+import { PageHeader } from '@castle/run-viewer';
+import { PageState } from '@castle/run-viewer';
+import { Breadcrumbs } from '@castle/run-viewer';
+import { useDocumentTitle } from '@castle/run-viewer';
+import { RUN_STATUS_TEXT_COLORS } from '@castle/run-viewer';
+import { StartedCell, useDocumentVisible, useNow } from '@castle/run-viewer';
 
 // A page of the agent's runs fetched through "Load more" (page 1 lives in
 // the listRuns cache; these entries hold the older pages).
