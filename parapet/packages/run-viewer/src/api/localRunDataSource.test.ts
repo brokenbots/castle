@@ -35,6 +35,38 @@ function envelope(seq: number, type: string): EventEnvelope {
   return { schemaVersion: 1, runId: 'run-1', seq, type, correlationId: '', payload: null };
 }
 
+/**
+ * Wraps a real controller's signal so abort-listener add/remove calls are
+ * observable. Only explicit removeEventListener calls count as removed —
+ * the `{ once: true }` auto-detach does not — which is exactly what
+ * distinguishes a detached listener from a leaked one.
+ */
+function spySignal(): {
+  signal: AbortSignal;
+  controller: AbortController;
+  addedCount: () => number;
+  removedCount: () => number;
+} {
+  const controller = new AbortController();
+  const real = controller.signal;
+  let added = 0;
+  let removed = 0;
+  const signal = {
+    get aborted() {
+      return real.aborted;
+    },
+    addEventListener(type: string, listener: EventListener, options?: AddEventListenerOptions) {
+      added += 1;
+      real.addEventListener(type, listener, options);
+    },
+    removeEventListener(type: string, listener: EventListener) {
+      removed += 1;
+      real.removeEventListener(type, listener);
+    },
+  } as unknown as AbortSignal;
+  return { signal, controller, addedCount: () => added, removedCount: () => removed };
+}
+
 // The seam is global state; restore the castle default after every test so
 // no other test file observes the local implementation.
 afterEach(() => {
@@ -237,5 +269,61 @@ describe('localRunDataSource', () => {
 
     expect(end).toEqual({ kind: 'terminal' });
     expect(delivered.filter((e) => e.type === 'watchReady')).toHaveLength(1);
+  });
+
+  test('openRunStream detaches the poll-sleep abort listener when the sleep timer fires', async () => {
+    vi.useFakeTimers();
+    try {
+      const delivered: EventEnvelope[] = [];
+      let poll = 0;
+      stubFetch(() => {
+        poll += 1;
+        return poll === 1
+          ? { events: [], lastSeq: 0, nextSinceSeq: null }
+          : { events: [envelope(1, 'runCompleted')], lastSeq: 1, nextSinceSeq: null };
+      });
+
+      const { signal, addedCount, removedCount } = spySignal();
+      const pending = localRunDataSource.openRunStream(
+        { runId: 'run-1', sinceSeq: 0, subscriberId: 'sub', signal },
+        (event) => delivered.push(event),
+      );
+      // Drain the first poll so the sleep (and its abort listener) registers.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(addedCount()).toBe(1);
+      // The sleep timer fires, the loop polls again and lands on the
+      // terminal event — the sleep's listener must not outlive the sleep.
+      await vi.advanceTimersByTimeAsync(RUNVIEW_POLL_MS);
+
+      expect(await pending).toEqual({ kind: 'terminal' });
+      expect(delivered.map((e) => e.type)).toEqual(['watchReady', 'runCompleted']);
+      expect(removedCount()).toBe(addedCount());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('openRunStream detaches the poll-sleep abort listener when abort lands during the sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      stubFetch(() => ({ events: [], lastSeq: 0, nextSinceSeq: null }));
+
+      const { signal, controller, addedCount, removedCount } = spySignal();
+      const pending = localRunDataSource.openRunStream(
+        { runId: 'run-1', sinceSeq: 0, subscriberId: 'sub', signal },
+        () => {},
+      );
+      await vi.advanceTimersByTimeAsync(0); // first poll done, sleep registered
+      expect(addedCount()).toBe(1);
+
+      // Aborting mid-sleep ends the watch as clean and detaches the
+      // listener as part of handling the abort.
+      controller.abort();
+      expect(await pending).toEqual({ kind: 'clean' });
+      expect(addedCount()).toBe(1);
+      expect(removedCount()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

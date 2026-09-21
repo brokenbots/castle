@@ -82,6 +82,28 @@ function query(params: Record<string, string | number | undefined>): string {
   return s ? `?${s}` : '';
 }
 
+/**
+ * Sleeps for the poll interval, returning early when the stream signal
+ * aborts. The abort listener is detached on every exit path — including
+ * when the timer fires — so a long-lived watch does not accumulate one
+ * retained closure per poll iteration on the stream signal.
+ */
+function sleepUntil(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      signal.removeEventListener('abort', done);
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
 export const localRunDataSource: RunDataSource = {
   async listRuns(args: ListRunsArgs): Promise<RunsPage> {
     return requestJson(
@@ -184,13 +206,7 @@ export const localRunDataSource: RunDataSource = {
       if (page.events.length >= RUNS_PAGE_LIMIT) continue;
       // The abort may land while a poll is in flight; bail before sleeping.
       if (signal.aborted) return { kind: 'clean' };
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, RUNVIEW_POLL_MS);
-        signal.addEventListener('abort', () => {
-          clearTimeout(timer);
-          resolve();
-        }, { once: true });
-      });
+      await sleepUntil(RUNVIEW_POLL_MS, signal);
     }
     return { kind: 'clean' };
   },
