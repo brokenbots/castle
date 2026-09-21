@@ -41,6 +41,9 @@ const INSPECTION: RunInspection = {
   stateJson: '{}',
 };
 
+// Type-only alias keeps the never-resolving openRunStream promise honest.
+type RunStreamEnd = Awaited<ReturnType<RunDataSource['openRunStream']>>;
+
 function fakeDataSource(): RunDataSource {
   return {
     listRuns: vi.fn(async () => ({ runs: [RUN], nextPageToken: '' })),
@@ -70,9 +73,6 @@ function fakeDataSource(): RunDataSource {
     ),
   };
 }
-
-// Type-only import of RunStreamEnd keeps the never-resolving promise honest.
-type RunStreamEnd = Awaited<ReturnType<RunDataSource['openRunStream']>>;
 
 describe('RunViewerShell', () => {
   let dataSource: RunDataSource;

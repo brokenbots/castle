@@ -184,9 +184,8 @@ export const localRunDataSource: RunDataSource = {
       if (page.events.length >= RUNS_PAGE_LIMIT) continue;
       // The abort may land while a poll is in flight; bail before sleeping.
       if (signal.aborted) return { kind: 'clean' };
-      const wait = RUNVIEW_POLL_MS;
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, wait);
+        const timer = setTimeout(resolve, RUNVIEW_POLL_MS);
         signal.addEventListener('abort', () => {
           clearTimeout(timer);
           resolve();
