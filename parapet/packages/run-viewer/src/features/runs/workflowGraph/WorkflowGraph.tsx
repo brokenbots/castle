@@ -16,7 +16,7 @@ import type { WorkflowGraph, WorkflowGraphNode, WorkflowNodeKind } from './parse
 import { layoutWorkflow, type GraphOrientation } from './layout';
 import type { ForEachProgress, StepNodeStatus } from './nodeStatus';
 
-export interface WorkflowDagProps {
+export interface WorkflowGraphProps {
   graph: WorkflowGraph;
   /** Live overlay state per node id (absent = unvisited). */
   statuses?: Record<string, StepNodeStatus>;
@@ -118,7 +118,7 @@ function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
   const selectedClass = selected ? ' ring-2 ring-sky-400' : '';
   return (
     <div
-      data-testid="dag-node"
+      data-testid="graph-node"
       data-node-id={node.id}
       className={`rounded-lg border bg-slate-900/90 px-3 py-2 text-center shadow min-w-[8rem] max-w-[15rem] ${STATUS_CLASS[status]}${selectedClass}`}
     >
@@ -131,7 +131,7 @@ function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
       {explore && (
         <button
           type="button"
-          data-testid="dag-node-explore"
+          data-testid="graph-node-explore"
           title={
             explore.available
               ? `Open subworkflow ${explore.name}`
@@ -176,7 +176,7 @@ const nodeTypes = { workflow: WorkflowNodeView };
  * pans/zooms to the followed node when follow mode is live, and offers the
  * reset control that restores the full-graph framing.
  */
-function DagBehavior({ followStepId }: { followStepId: string | null }) {
+function GraphBehavior({ followStepId }: { followStepId: string | null }) {
   const { fitView } = useReactFlow();
   const followedRef = useRef<string | null>(null);
   useEffect(() => {
@@ -188,7 +188,7 @@ function DagBehavior({ followStepId }: { followStepId: string | null }) {
     <Panel position="top-right">
       <button
         type="button"
-        data-testid="dag-reset-view"
+        data-testid="graph-reset-view"
         title="Reset graph view"
         onClick={() => {
           // Clear the follow memo so a re-entered node can re-center.
@@ -203,7 +203,7 @@ function DagBehavior({ followStepId }: { followStepId: string | null }) {
   );
 }
 
-export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', followStepId, onSelect, onExploreLayer, exploreableLayers }: WorkflowDagProps) {
+export function WorkflowGraph({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', followStepId, onSelect, onExploreLayer, exploreableLayers }: WorkflowGraphProps) {
   const { nodes, edges } = useMemo(
     () => buildFlow(graph, statuses, forEachProgress, selectedId ?? null, orientation, onExploreLayer, exploreableLayers),
     [graph, statuses, forEachProgress, selectedId, orientation, onExploreLayer, exploreableLayers],
@@ -215,7 +215,7 @@ export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, select
 
   return (
     <div
-      data-testid="workflow-dag"
+      data-testid="workflow-graph"
       className="h-[38vh] min-h-[280px] bg-slate-900 rounded border border-slate-800 overflow-hidden"
     >
       <ReactFlow
@@ -232,7 +232,7 @@ export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, select
         proOptions={{ hideAttribution: true }}
       >
         <Background color="#1e293b" gap={16} />
-        <DagBehavior followStepId={followStepId ?? null} />
+        <GraphBehavior followStepId={followStepId ?? null} />
       </ReactFlow>
     </div>
   );
