@@ -150,6 +150,16 @@ export function RunDetailPage() {
   // Follow mode: keep the viewport centered on the running step as the
   // event stream advances (CRI-257). Drag-pan and wheel-zoom stay live.
   const [followMode, setFollowMode] = useState(false);
+  // Source pane placement (right of the graph / under it) with collapse
+  // state remembered per placement (CRI-257): collapsing the under view
+  // does not force the side view collapsed, and vice versa.
+  const [sourcePlacement, setSourcePlacement] = useState<'side' | 'under'>('under');
+  const [sourceCollapsed, setSourceCollapsed] = useState<Record<'side' | 'under', boolean>>({
+    side: false,
+    under: false,
+  });
+  const toggleSourceCollapsed = () =>
+    setSourceCollapsed((state) => ({ ...state, [sourcePlacement]: !state[sourcePlacement] }));
   const eventsExpandRef = useRef<HTMLButtonElement>(null);
   const graphExpandRef = useRef<HTMLButtonElement>(null);
   const inspectionExpandRef = useRef<HTMLButtonElement>(null);
@@ -451,9 +461,62 @@ export function RunDetailPage() {
             controlsId="events-panel"
           />
         </section>
-        <section>
-          <h3 className="text-lg font-semibold mb-2">Workflow source</h3>
-          <WorkflowSourceView source={workflowSource} highlight={highlightRange} />
+        <section data-testid="source-pane">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-lg font-semibold">Workflow source</h3>
+            <div className="flex items-center gap-2">
+              <div
+                role="group"
+                aria-label="Source pane placement"
+                data-testid="source-placement-toggle"
+                className="flex overflow-hidden rounded-md border border-line-strong"
+              >
+                <button
+                  type="button"
+                  data-testid="source-placement-side"
+                  aria-pressed={sourcePlacement === 'side'}
+                  title="Show the source beside the step graph"
+                  onClick={() => setSourcePlacement('side')}
+                  className={`px-2 py-1 text-xs ${sourcePlacement === 'side' ? 'bg-surface-raised text-ink' : 'text-ink-muted hover:bg-surface-raised'}`}
+                >
+                  Side
+                </button>
+                <button
+                  type="button"
+                  data-testid="source-placement-under"
+                  aria-pressed={sourcePlacement === 'under'}
+                  title="Show the source under the step graph"
+                  onClick={() => setSourcePlacement('under')}
+                  className={`px-2 py-1 text-xs ${sourcePlacement === 'under' ? 'bg-surface-raised text-ink' : 'text-ink-muted hover:bg-surface-raised'}`}
+                >
+                  Under
+                </button>
+              </div>
+              <button
+                type="button"
+                data-testid="source-pane-collapse"
+                aria-expanded={!sourceCollapsed[sourcePlacement]}
+                aria-controls="source-pane-body"
+                onClick={toggleSourceCollapsed}
+                className="rounded-md border border-line-strong px-2 py-1 text-xs text-ink-muted hover:bg-surface-raised hover:text-ink"
+              >
+                {sourceCollapsed[sourcePlacement] ? 'Expand' : 'Collapse'}
+              </button>
+            </div>
+          </div>
+          {sourceCollapsed[sourcePlacement] ? (
+            <p className="text-sm text-ink-muted" data-testid="source-pane-collapsed">
+              Source pane collapsed.
+            </p>
+          ) : sourcePlacement === 'side' ? (
+            <p className="text-sm text-ink-muted" data-testid="source-pane-side-note">
+              Shown beside the step graph.
+            </p>
+          ) : (
+            <div id="source-pane-body" data-testid="source-pane-body">
+              <WorkflowSourceView source={workflowSource} highlight={highlightRange} />
+            </div>
+          )}
         </section>
         <section
           id="graph-panel"
@@ -535,6 +598,15 @@ export function RunDetailPage() {
           />
         </section>
       </div>
+      {sourcePlacement === 'side' && !sourceCollapsed.side && (
+        <DockedPanel
+          title="Workflow source"
+          testId="source-dock"
+          onClose={() => setSourceCollapsed((state) => ({ ...state, side: true }))}
+        >
+          <WorkflowSourceView source={workflowSource} highlight={highlightRange} />
+        </DockedPanel>
+      )}
       {scopeOpen && (
         <DockedPanel title="Run Scope" testId="scope-dock" onClose={() => setScopeOpen(false)}>
           <RunScopePanel events={events} />

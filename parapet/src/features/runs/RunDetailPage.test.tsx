@@ -1261,6 +1261,46 @@ describe('RunDetailPage panel fullscreen', () => {
     expect(viewport().style.transform).toBe(paused);
   });
 
+  test('moves the source pane between the graph side and below it, collapsing per placement', async () => {
+    renderDetail();
+
+    // Default: source rendered inline under the graph.
+    expect(await screen.findByTestId('source-pane-body')).toBeInTheDocument();
+    expect(screen.queryByTestId('source-dock')).toBeNull();
+
+    // Side placement swaps the inline body for the right-docked panel.
+    await userEvent.click(screen.getByTestId('source-placement-side'));
+    expect(screen.getByTestId('source-dock')).toBeInTheDocument();
+    expect(within(screen.getByTestId('source-dock')).getByTestId('workflow-source-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('source-pane-body')).toBeNull();
+
+    // The side view starts expanded, and its collapse state is its own:
+    // closing the dock leaves the under placement's expanded state alone.
+    await userEvent.click(within(screen.getByTestId('source-dock')).getByTestId('source-dock-close'));
+    expect(screen.queryByTestId('source-dock')).toBeNull();
+    expect(screen.getByTestId('source-pane-collapse')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('source-pane-collapsed')).toBeInTheDocument();
+
+    // Switching to Under keeps a separate state: it was never collapsed.
+    await userEvent.click(screen.getByTestId('source-placement-under'));
+    expect(screen.getByTestId('source-pane-body')).toBeInTheDocument();
+    expect(screen.getByTestId('source-pane-collapse')).toHaveAttribute('aria-expanded', 'true');
+
+    // Collapsing the under view keeps the bar and restores the body on expand.
+    await userEvent.click(screen.getByTestId('source-pane-collapse'));
+    expect(screen.getByTestId('source-pane-collapsed')).toBeInTheDocument();
+    expect(screen.queryByTestId('source-pane-body')).toBeNull();
+    await userEvent.click(screen.getByTestId('source-pane-collapse'));
+    expect(screen.getByTestId('source-pane-body')).toBeInTheDocument();
+
+    // Back to Side: the earlier side collapse is still remembered until
+    // the side placement is expanded again.
+    await userEvent.click(screen.getByTestId('source-placement-side'));
+    expect(screen.queryByTestId('source-dock')).toBeNull();
+    await userEvent.click(screen.getByTestId('source-pane-collapse'));
+    expect(screen.getByTestId('source-dock')).toBeInTheDocument();
+  });
+
   test('expands the inspection panel fullscreen and collapses back with data intact', async () => {
     renderDetail();
 
