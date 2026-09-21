@@ -13,10 +13,10 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { WorkflowGraph, WorkflowGraphNode, WorkflowNodeKind } from './parseWorkflowHcl';
-import { layoutWorkflow, type GraphOrientation } from './layout';
+import { classifyEdges, layoutWorkflow, type GraphOrientation } from './layout';
 import type { ForEachProgress, StepNodeStatus } from './nodeStatus';
 
-export interface WorkflowDagProps {
+export interface WorkflowGraphProps {
   graph: WorkflowGraph;
   /** Live overlay state per node id (absent = unvisited). */
   statuses?: Record<string, StepNodeStatus>;
@@ -58,6 +58,13 @@ interface WorkflowNodeData extends Record<string, unknown> {
   status: StepNodeStatus;
   /** for_each iteration badge text, e.g. "2/5". */
   badge?: string;
+  /**
+   * Targets of this node's loop legs (edges classified as back + cycle),
+   * e.g. ["build"] — rendered as the collapsed loop badge "↺ loops back
+   * to build". Cycles are the designed norm in workflows, so the badge
+   * reads as a first-class feature rather than edge noise.
+   */
+  loopsTo?: string[];
   /** Currently selected node (highlight ring). */
   selected: boolean;
   /** Graph reading direction; drives handle sides. */
@@ -113,12 +120,12 @@ const HANDLE_POSITION: Record<GraphOrientation, { target: Position; source: Posi
 };
 
 function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
-  const { node, status, badge, selected, orientation, explore } = data;
+  const { node, status, badge, selected, orientation, explore, loopsTo } = data;
   const handle = HANDLE_POSITION[orientation];
   const selectedClass = selected ? ' ring-2 ring-sky-400' : '';
   return (
     <div
-      data-testid="dag-node"
+      data-testid="graph-node"
       data-node-id={node.id}
       className={`rounded-lg border bg-slate-900/90 px-3 py-2 text-center shadow min-w-[8rem] max-w-[15rem] ${STATUS_CLASS[status]}${selectedClass}`}
     >
@@ -128,10 +135,15 @@ function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
         {KIND_LABEL[node.kind]}
       </p>
       {badge && <p className="text-[10px] font-mono text-slate-400">{badge}</p>}
+      {loopsTo && loopsTo.length > 0 && (
+        <p data-testid="graph-node-loop-badge" className="mt-0.5 text-[10px] font-mono text-violet-300">
+          ↺ loops back to {truncate(loopsTo.join(', '))}
+        </p>
+      )}
       {explore && (
         <button
           type="button"
-          data-testid="dag-node-explore"
+          data-testid="graph-node-explore"
           title={
             explore.available
               ? `Open subworkflow ${explore.name}`
@@ -176,7 +188,7 @@ const nodeTypes = { workflow: WorkflowNodeView };
  * pans/zooms to the followed node when follow mode is live, and offers the
  * reset control that restores the full-graph framing.
  */
-function DagBehavior({ followStepId }: { followStepId: string | null }) {
+function GraphBehavior({ followStepId }: { followStepId: string | null }) {
   const { fitView } = useReactFlow();
   const followedRef = useRef<string | null>(null);
   useEffect(() => {
@@ -188,7 +200,7 @@ function DagBehavior({ followStepId }: { followStepId: string | null }) {
     <Panel position="top-right">
       <button
         type="button"
-        data-testid="dag-reset-view"
+        data-testid="graph-reset-view"
         title="Reset graph view"
         onClick={() => {
           // Clear the follow memo so a re-entered node can re-center.
@@ -203,7 +215,7 @@ function DagBehavior({ followStepId }: { followStepId: string | null }) {
   );
 }
 
-export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', followStepId, onSelect, onExploreLayer, exploreableLayers }: WorkflowDagProps) {
+export function WorkflowGraph({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', followStepId, onSelect, onExploreLayer, exploreableLayers }: WorkflowGraphProps) {
   const { nodes, edges } = useMemo(
     () => buildFlow(graph, statuses, forEachProgress, selectedId ?? null, orientation, onExploreLayer, exploreableLayers),
     [graph, statuses, forEachProgress, selectedId, orientation, onExploreLayer, exploreableLayers],
@@ -215,7 +227,7 @@ export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, select
 
   return (
     <div
-      data-testid="workflow-dag"
+      data-testid="workflow-graph"
       className="h-[38vh] min-h-[280px] bg-slate-900 rounded border border-slate-800 overflow-hidden"
     >
       <ReactFlow
@@ -232,7 +244,7 @@ export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, select
         proOptions={{ hideAttribution: true }}
       >
         <Background color="#1e293b" gap={16} />
-        <DagBehavior followStepId={followStepId ?? null} />
+        <GraphBehavior followStepId={followStepId ?? null} />
       </ReactFlow>
     </div>
   );
@@ -252,6 +264,17 @@ function buildFlow(
   exploreableLayers?: Set<string>,
 ): { nodes: WorkflowFlowNode[]; edges: Edge[] } {
   const positions = layoutWorkflow(graph, { orientation });
+  const roles = classifyEdges(graph);
+  // Upward loop legs carry the collapsed loop badge on their source node
+  // ("↺ loops back to X"); badge edges from the same source are grouped
+  // so a node shows one badge listing its targets.
+  const loopsTo = new Map<string, string[]>();
+  for (const index of roles.loopBadge) {
+    const edge = graph.edges[index];
+    const targets = loopsTo.get(edge.from) ?? [];
+    if (!targets.includes(edge.to)) targets.push(edge.to);
+    loopsTo.set(edge.from, targets);
+  }
   const nodes: WorkflowFlowNode[] = graph.nodes.map((node) => {
     const progress = forEachProgress[node.id];
     // Live per-iteration progress wins; otherwise show the declared
@@ -269,6 +292,7 @@ function buildFlow(
         node,
         status: statuses[node.id] ?? 'idle',
         badge,
+        loopsTo: loopsTo.get(node.id),
         selected: node.id === selectedId,
         orientation,
         explore: node.subworkflow
@@ -281,18 +305,39 @@ function buildFlow(
       },
     };
   });
-  const edges: Edge[] = graph.edges.map((edge, index) => ({
-    id: `e${index}`,
-    source: edge.from,
-    target: edge.to,
-    label: truncate(edge.via),
-    type: 'smoothstep',
-    style: { stroke: '#475569' },
-    labelStyle: { fill: '#cbd5e1', fontSize: 10 },
-    labelBgStyle: { fill: '#0f172a' },
-    labelBgPadding: [4, 2],
-    labelBgBorderRadius: 3,
-  }));
+  const edges: Edge[] = graph.edges.map((edge, index) => {
+    const flowEdge: Edge = {
+      id: `e${index}`,
+      source: edge.from,
+      target: edge.to,
+      label: truncate(edge.via),
+      type: 'smoothstep',
+      style: { stroke: '#475569' },
+      labelStyle: { fill: '#cbd5e1', fontSize: 10 },
+      labelBgStyle: { fill: '#0f172a' },
+      labelBgPadding: [4, 2],
+      labelBgBorderRadius: 3,
+    };
+    if (roles.cycle.has(index)) {
+      // Cycle leg: violet, dashed when it sweeps upward. Forward legs
+      // stay solid so the loop reads without erasing the flow direction.
+      flowEdge.style = roles.back.has(index)
+        ? { stroke: '#a78bfa', strokeDasharray: '6 4', opacity: 0.7 }
+        : { stroke: '#a78bfa', opacity: 0.9 };
+      flowEdge.className = 'workflow-edge-loop';
+      if (roles.loopBadge.has(index)) {
+        // The badge on the source node carries the target; the edge
+        // itself is de-emphasized. The label is for screen readers.
+        flowEdge.ariaLabel = `${edge.from} loops back to ${edge.to}`;
+      }
+    } else if (roles.back.has(index)) {
+      // Layered back edge without a cycle: an upward return (failure
+      // convergence, visited-guard artifact), dimmed and dashed.
+      flowEdge.style = { stroke: '#64748b', strokeDasharray: '6 4', opacity: 0.55 };
+      flowEdge.className = 'workflow-edge-back';
+    }
+    return flowEdge;
+  });
   return { nodes, edges };
 }
 

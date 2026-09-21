@@ -616,8 +616,8 @@ describe('RunDetailPage', () => {
       );
 
       expect(await screen.findByText('Step graph')).toBeInTheDocument();
-      // No DAG is rendered; the text-edge fallback keeps the panel populated.
-      expect(document.querySelector('[data-testid="workflow-dag"]')).toBeNull();
+      // No graph is rendered; the text-edge fallback keeps the panel populated.
+      expect(document.querySelector('[data-testid="workflow-graph"]')).toBeNull();
       const graphSection = screen.getByText('Step graph').closest('section')!;
       const edgeRows = graphSection.querySelectorAll('div.bg-slate-900 > div');
       expect(edgeRows).toHaveLength(2);
@@ -650,7 +650,7 @@ describe('RunDetailPage', () => {
 
       expect(await screen.findByText('Step graph')).toBeInTheDocument();
       expect(screen.getByText('No step transitions found.')).toBeInTheDocument();
-      expect(document.querySelector('[data-testid="workflow-dag"]')).toBeNull();
+      expect(document.querySelector('[data-testid="workflow-graph"]')).toBeNull();
     } finally {
       fixture.data.workflowHash = originalSource;
     }
@@ -669,7 +669,7 @@ describe('RunDetailPage', () => {
 
     expect(await screen.findByText('Workflow source')).toBeInTheDocument();
     await vi.waitFor(() =>
-      expect(document.querySelectorAll('[data-testid="dag-node"]')).toHaveLength(3),
+      expect(document.querySelectorAll('[data-testid="graph-node"]')).toHaveLength(3),
     );
     act(() => {
       store.dispatch(
@@ -719,7 +719,7 @@ describe('RunDetailPage', () => {
 
     expect(await screen.findByText('Workflow source')).toBeInTheDocument();
     await vi.waitFor(() =>
-      expect(document.querySelectorAll('[data-testid="dag-node"]')).toHaveLength(3),
+      expect(document.querySelectorAll('[data-testid="graph-node"]')).toHaveLength(3),
     );
     act(() => {
       store.dispatch(
@@ -786,7 +786,7 @@ describe('RunDetailPage', () => {
 
     expect(await screen.findByText('Workflow source')).toBeInTheDocument();
     await vi.waitFor(() =>
-      expect(document.querySelectorAll('[data-testid="dag-node"]')).toHaveLength(3),
+      expect(document.querySelectorAll('[data-testid="graph-node"]')).toHaveLength(3),
     );
 
     const sourceView = screen.getByTestId('workflow-source-view');
@@ -1172,10 +1172,10 @@ describe('RunDetailPage panel fullscreen', () => {
     expect(expand).toHaveFocus();
   });
 
-  test('expands the graph panel fullscreen and collapses back with the DAG intact', async () => {
+  test('expands the graph panel fullscreen and collapses back with the graph intact', async () => {
     renderDetail();
 
-    const dag = await screen.findByTestId('workflow-dag');
+    const graphPanel = await screen.findByTestId('workflow-graph');
     const expand = screen.getByTestId('graph-panel-expand');
     await userEvent.click(expand);
 
@@ -1184,19 +1184,19 @@ describe('RunDetailPage panel fullscreen', () => {
     expect(panel).toHaveAttribute('data-expanded', 'true');
     expect(expand).toHaveAttribute('aria-expanded', 'true');
     // Same component instance with all nodes still rendered while expanded.
-    expect(screen.getByTestId('workflow-dag')).toBe(dag);
-    expect(within(dag).getAllByTestId('dag-node')).toHaveLength(3);
+    expect(screen.getByTestId('workflow-graph')).toBe(graphPanel);
+    expect(within(graphPanel).getAllByTestId('graph-node')).toHaveLength(3);
 
     await userEvent.click(expand);
     expect(screen.getByTestId('graph-panel').className).not.toContain('fixed');
-    expect(screen.getByTestId('workflow-dag')).toBe(dag);
-    expect(within(dag).getAllByTestId('dag-node')).toHaveLength(3);
+    expect(screen.getByTestId('workflow-graph')).toBe(graphPanel);
+    expect(within(graphPanel).getAllByTestId('graph-node')).toHaveLength(3);
   });
 
   test('toggles the graph orientation and swaps the handle sides', async () => {
     renderDetail();
 
-    await screen.findByTestId('workflow-dag');
+    await screen.findByTestId('workflow-graph');
     const tb = screen.getByTestId('orientation-top-bottom');
     const lr = screen.getByTestId('orientation-left-right');
     // Top-bottom is the default orientation.
@@ -1206,28 +1206,28 @@ describe('RunDetailPage panel fullscreen', () => {
       Array.from(container.querySelectorAll('.react-flow__handle')).map((el) =>
         el.getAttribute('data-handlepos'),
       );
-    expect(handlePositions(screen.getByTestId('workflow-dag')).filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
+    expect(handlePositions(screen.getByTestId('workflow-graph')).filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
 
     await userEvent.click(lr);
     expect(lr).toHaveAttribute('aria-pressed', 'true');
     expect(tb).toHaveAttribute('aria-pressed', 'false');
     // The orientation remounts the flow; handles move to the right side.
     await vi.waitFor(() => {
-      const positions = handlePositions(screen.getByTestId('workflow-dag'));
+      const positions = handlePositions(screen.getByTestId('workflow-graph'));
       expect(positions.filter((pos) => pos === 'right').length).toBeGreaterThan(0);
       expect(positions.some((pos) => pos === 'bottom')).toBe(false);
     });
 
     await userEvent.click(tb);
     await vi.waitFor(() => {
-      expect(handlePositions(screen.getByTestId('workflow-dag')).filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
+      expect(handlePositions(screen.getByTestId('workflow-graph')).filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
     });
   });
 
   test('follow mode centers the viewport on the running step', async () => {
     renderDetail();
 
-    await screen.findByTestId('workflow-dag');
+    await screen.findByTestId('workflow-graph');
     const follow = screen.getByTestId('graph-follow-toggle');
     expect(follow).toHaveAttribute('aria-pressed', 'false');
     // No step is running yet in the fixture, so enabling follow with no
@@ -1249,8 +1249,8 @@ describe('RunDetailPage panel fullscreen', () => {
         }),
       );
     });
-    const dag = screen.getByTestId('workflow-dag');
-    const viewport = () => dag.querySelector('.react-flow__viewport') as HTMLElement;
+    const graphPanel = screen.getByTestId('workflow-graph');
+    const viewport = () => graphPanel.querySelector('.react-flow__viewport') as HTMLElement;
     const before = viewport().style.transform;
     await vi.waitFor(
       () => {
@@ -1428,14 +1428,14 @@ describe('RunDetailPage panel fullscreen', () => {
     }
 
     function nodeById(id: string): HTMLElement {
-      const node = document.querySelector(`[data-testid="workflow-dag"] [data-node-id="${id}"]`);
+      const node = document.querySelector(`[data-testid="workflow-graph"] [data-node-id="${id}"]`);
       if (!node) throw new Error(`graph node "${id}" is not rendered`);
       return node as HTMLElement;
     }
 
     function visibleNodeIds(): string[] {
       return Array.from(
-        document.querySelectorAll('[data-testid="workflow-dag"] [data-node-id]'),
+        document.querySelectorAll('[data-testid="workflow-graph"] [data-node-id]'),
       )      .map((n) => n.getAttribute('data-node-id'))
       .filter((id): id is string => id !== null);
     }
@@ -1444,7 +1444,7 @@ describe('RunDetailPage panel fullscreen', () => {
       renderSubworkflowPage();
 
       await screen.findByText('Workflow source');
-      const affordance = within(nodeById('test')).getByTestId('dag-node-explore');
+      const affordance = within(nodeById('test')).getByTestId('graph-node-explore');
       // Grayed-out is the contract, not hidden: no workflow.graphs event
       // yet means no layer graph, so the affordance stays but disabled.
       expect(affordance).toBeDisabled();
@@ -1460,7 +1460,7 @@ describe('RunDetailPage panel fullscreen', () => {
       await screen.findByText('Workflow source');
       dispatchGraphsEvent(1);
 
-      const affordance = within(nodeById('test')).getByTestId('dag-node-explore');
+      const affordance = within(nodeById('test')).getByTestId('graph-node-explore');
       expect(affordance).toBeEnabled();
 
       fireEvent.click(affordance);
@@ -1498,7 +1498,7 @@ describe('RunDetailPage panel fullscreen', () => {
       await screen.findByText('Workflow source');
       dispatchGraphsEvent(1);
 
-      fireEvent.click(within(nodeById('test')).getByTestId('dag-node-explore'));
+      fireEvent.click(within(nodeById('test')).getByTestId('graph-node-explore'));
       await screen.findByTestId('layer-breadcrumb');
 
       fireEvent.click(screen.getByTestId('layer-crumb-root'));
@@ -1522,7 +1522,7 @@ describe('RunDetailPage panel fullscreen', () => {
       await screen.findByText('Workflow source');
       dispatchGraphsEvent(1);
 
-      fireEvent.click(within(nodeById('test')).getByTestId('dag-node-explore'));
+      fireEvent.click(within(nodeById('test')).getByTestId('graph-node-explore'));
       await vi.waitFor(
         () => {
           expect(visibleNodeIds()).toContain('triage');

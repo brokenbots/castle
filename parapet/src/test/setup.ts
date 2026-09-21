@@ -6,7 +6,7 @@ import { server } from '@castle/run-viewer/src/test/mocks/server';
 vi.stubGlobal('AbortController', window.AbortController);
 vi.stubGlobal('AbortSignal', window.AbortSignal);
 
-// @xyflow/react (workflow DAG) uses ResizeObserver, which jsdom does not
+// @xyflow/react (workflow graph) uses ResizeObserver, which jsdom does not
 // provide. React Flow only renders edges once nodes report their measured
 // dimensions, so the stub notifies the callback asynchronously (synchronous
 // notification breaks React Flow's measure passes); dimension readers use

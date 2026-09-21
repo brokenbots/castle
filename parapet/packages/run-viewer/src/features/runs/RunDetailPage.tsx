@@ -16,22 +16,22 @@ import { PageState } from '../../components/PageState';
 import { DockedPanel } from '../../components/DockedPanel';
 import { Breadcrumbs } from '../../components/Breadcrumbs';
 import { useDocumentTitle } from '../../shell/useDocumentTitle';
-import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph } from './workflowGraph/parseWorkflowHcl';
+import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph as WorkflowGraphSpec } from './workflowGraph/parseWorkflowHcl';
 import { buildSubworkflowLayers, selectWorkflowGraphs, type SubworkflowLayer } from './workflowGraph/layers';
 import { WorkflowLayerNav } from './workflowGraph/WorkflowLayerNav';
-import { WorkflowDag } from './workflowGraph/WorkflowDag';
+import { WorkflowGraph } from './workflowGraph/WorkflowGraph';
 import { WorkflowSourceView } from './workflowGraph/WorkflowSourceView';
 import type { GraphOrientation } from './workflowGraph/layout';
 import { eventBelongsToStep, selectNodeOverlay } from './workflowGraph/nodeStatus';
 
 /**
- * Parses the run's workflow HCL into the DAG model. The `workflowHash` run
+ * Parses the run's workflow HCL into the graph model. The `workflowHash` run
  * field carries the full workflow source (castle rpc mapping), so the graph
  * is derived entirely client-side. Any parse failure — or a source with no
  * parseable nodes — yields null and the page keeps the text-edge fallback,
  * so the panel never blanks.
  */
-function parseGraph(source: string): WorkflowGraph | null {
+function parseGraph(source: string): WorkflowGraphSpec | null {
   if (!source) return null;
   try {
     const graph = parseWorkflowHcl(source);
@@ -64,7 +64,7 @@ type ExpandablePanel = 'events' | 'graph' | 'inspection';
 const FULLSCREEN_PANEL_CLASSES =
   'fixed inset-0 z-50 flex flex-col overflow-y-auto bg-canvas p-4 sm:p-6';
 const EVENTS_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=events-panel-body]]:flex [&_[data-testid=events-panel-body]]:flex-col [&_[data-testid=events-panel-body]]:flex-1 [&_[data-testid=events-panel-body]]:min-h-0 [&_[data-testid=events-panel-body]>div]:flex [&_[data-testid=events-panel-body]>div]:flex-col [&_[data-testid=events-panel-body]>div]:flex-1 [&_[data-testid=events-panel-body]>div]:min-h-0 [&_[data-testid=events-panel-body]>div>div:last-child]:flex-1 [&_[data-testid=events-panel-body]>div>div:last-child]:min-h-0 [&_[data-testid=event-log-scroll]]:h-full`;
-const GRAPH_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&>[data-testid=workflow-dag]]:flex-1 [&>[data-testid=workflow-dag]]:min-h-0`;
+const GRAPH_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&>[data-testid=workflow-graph]]:flex-1 [&>[data-testid=workflow-graph]]:min-h-0`;
 const INSPECTION_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=run-inspection]]:flex-1 [&_[data-testid=run-inspection]]:min-h-0 [&_[data-testid=run-inspection]]:overflow-y-auto`;
 const PANEL_ICON_BUTTON_CLASSES =
   'shrink-0 rounded-md border border-line-strong p-1.5 text-ink-muted hover:bg-surface-raised hover:text-ink';
@@ -615,7 +615,7 @@ export function RunDetailPage({
             </div>
           )}
           {currentGraph ? (
-            <WorkflowDag
+            <WorkflowGraph
               graph={currentGraph}
               statuses={overlay.statuses}
               forEachProgress={overlay.forEach}
