@@ -4,6 +4,7 @@ import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { PauseAffordance } from './PauseAffordance';
 import type { EventEnvelope } from '../../../api/castleApi';
 import { createRunViewerStore } from '../../../store';
+import { NO_CONTROLS_TOOLTIP, NO_CONTROL_CAPABILITIES, CASTLE_RUN_CAPABILITIES } from '../capabilities';
 
 // One store instance per test file; RTK Query caches per store.
 const store = createRunViewerStore();
@@ -44,10 +45,19 @@ function envelope(type: string, payload: unknown): EventEnvelope {
   };
 }
 
-function renderAffordance(pauseEvent: EventEnvelope, onRefresh = vi.fn()) {
+function renderAffordance(
+  pauseEvent: EventEnvelope,
+  onRefresh = vi.fn(),
+  capabilities?: typeof NO_CONTROL_CAPABILITIES,
+) {
   render(
     <Provider store={store}>
-      <PauseAffordance runId="run-1" pauseEvent={pauseEvent} onRefresh={onRefresh} />
+      <PauseAffordance
+        runId="run-1"
+        pauseEvent={pauseEvent}
+        onRefresh={onRefresh}
+        capabilities={capabilities}
+      />
     </Provider>,
   );
   return onRefresh;
@@ -85,5 +95,48 @@ describe('PauseAffordance', () => {
 
     expect(screen.getByText(/Approval Required/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Approve/i })).toBeInTheDocument();
+  });
+
+  test('threads no-control capabilities into the approval card actions', () => {
+    renderAffordance(
+      envelope('approvalRequested', { node: 'deploy', approvers: [], reason: '' }),
+      undefined,
+      NO_CONTROL_CAPABILITIES,
+    );
+
+    for (const name of [/Approve/i, /Reject/i]) {
+      const button = screen.getByRole('button', { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+    }
+  });
+
+  test('threads no-control capabilities into the pending signal delivery form', () => {
+    renderAffordance(
+      envelope('waitEntered', { mode: 'signal', signal: 'deploy-signal' }),
+      undefined,
+      NO_CONTROL_CAPABILITIES,
+    );
+
+    const submit = screen.getByTestId('pending-signal-submit');
+    expect(submit).toBeDisabled();
+    expect(submit).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+  });
+
+  test('keeps approval and signal actions enabled for the castle host', () => {
+    renderAffordance(
+      envelope('approvalRequested', { node: 'deploy', approvers: [], reason: '' }),
+      undefined,
+      CASTLE_RUN_CAPABILITIES,
+    );
+    expect(screen.getByRole('button', { name: /Approve/i })).toBeEnabled();
+
+    // A fresh mount so the signal card renders its own state.
+    renderAffordance(
+      envelope('waitEntered', { mode: 'signal', signal: 'deploy-signal' }),
+      undefined,
+      CASTLE_RUN_CAPABILITIES,
+    );
+    expect(screen.getByTestId('pending-signal-submit')).toBeEnabled();
   });
 });

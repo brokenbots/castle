@@ -2,15 +2,21 @@ import { EventEnvelope } from '../../../api/castleApi';
 import { DurationCountdown } from './DurationCountdown';
 import { PendingSignalCard } from './PendingSignalCard';
 import { ApprovalCard } from './ApprovalCard';
+import type { RunCapabilities } from '../capabilities';
 
 interface PauseAffordanceProps {
   runId: string;
   pauseEvent: EventEnvelope;
   /** Re-fetches the run and re-anchors the event log; used by the pending signal card. */
   onRefresh: () => void;
+  /**
+   * Capability probe result; defaults to the castle host where the control
+   * RPCs exist. Hosts without them render the pending actions grayed-out.
+   */
+  capabilities?: RunCapabilities;
 }
 
-export function PauseAffordance({ runId, pauseEvent, onRefresh }: PauseAffordanceProps) {
+export function PauseAffordance({ runId, pauseEvent, onRefresh, capabilities }: PauseAffordanceProps) {
   const payload = pauseEvent.payload as Record<string, unknown> | undefined;
 
   if (pauseEvent.type === 'waitEntered') {
@@ -23,7 +29,9 @@ export function PauseAffordance({ runId, pauseEvent, onRefresh }: PauseAffordanc
     }
 
     if (mode === 'signal') {
-      return <PendingSignalCard signal={signal} runId={runId} onRefresh={onRefresh} />;
+      return (
+        <PendingSignalCard signal={signal} runId={runId} onRefresh={onRefresh} capabilities={capabilities} />
+      );
     }
   }
 
@@ -32,7 +40,9 @@ export function PauseAffordance({ runId, pauseEvent, onRefresh }: PauseAffordanc
     const approvers = (payload?.approvers as string[]) ?? [];
     const reason = (payload?.reason as string) ?? '';
 
-    return <ApprovalCard node={node} runId={runId} approvers={approvers} reason={reason} />;
+    return (
+      <ApprovalCard node={node} runId={runId} approvers={approvers} reason={reason} capabilities={capabilities} />
+    );
   }
 
   return null;

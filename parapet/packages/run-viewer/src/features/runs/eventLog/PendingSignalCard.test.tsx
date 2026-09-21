@@ -3,6 +3,7 @@ import { Provider } from 'react-redux';
 import { describe, expect, test, vi } from 'vitest';
 import { PendingSignalCard } from './PendingSignalCard';
 import { createRunViewerStore } from '../../../store';
+import { NO_CONTROLS_TOOLTIP, NO_CONTROL_CAPABILITIES } from '../capabilities';
 
 // One store instance per test file; RTK Query caches per store.
 const store = createRunViewerStore();
@@ -22,7 +23,7 @@ vi.mock('../../../api/castleApi', async () => {
 
 import { useResumeMutation } from '../../../api/castleApi';
 
-function renderCard(overrides: Partial<{ signal: string; runId: string; onRefresh: () => void }> = {}) {
+function renderCard(overrides: Partial<{ signal: string; runId: string; onRefresh: () => void; capabilities: typeof NO_CONTROL_CAPABILITIES | undefined }> = {}) {
   const props = {
     signal: 'deploy-signal',
     runId: 'run-1',
@@ -31,7 +32,12 @@ function renderCard(overrides: Partial<{ signal: string; runId: string; onRefres
   };
   const result = render(
     <Provider store={store}>
-      <PendingSignalCard signal={props.signal} runId={props.runId} onRefresh={props.onRefresh} />
+      <PendingSignalCard
+        signal={props.signal}
+        runId={props.runId}
+        onRefresh={props.onRefresh}
+        capabilities={props.capabilities}
+      />
     </Provider>,
   );
   return { ...result, ...props };
@@ -184,5 +190,33 @@ describe('PendingSignalCard', () => {
 
     expect(screen.getByText(/✗ Error: Access denied/i)).toBeInTheDocument();
     expect(screen.queryByTestId('pending-signal-stale')).not.toBeInTheDocument();
+  });
+
+  test('keeps the delivery form visible but disabled with the capability tooltip when the host has no control RPC', () => {
+    const mockResume = vi.fn().mockResolvedValue({ data: { accepted: true, reason: 'ok' } });
+    vi.mocked(useResumeMutation).mockReturnValue([
+      mockResume,
+      { isLoading: false, error: null, isSuccess: false },
+    ] as any);
+    renderCard({ capabilities: NO_CONTROL_CAPABILITIES });
+
+    // Grayed-out is the contract, not hidden: the form stays present.
+    expect(screen.getByTestId('pending-signal-form')).toBeInTheDocument();
+    const submit = screen.getByTestId('pending-signal-submit');
+    expect(submit).toBeDisabled();
+    expect(submit).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+    expect(screen.getByTestId('pending-signal-note')).toBeDisabled();
+    // A disabled form never reaches the resume mutation.
+    fireEvent.click(submit);
+    expect(mockResume).not.toHaveBeenCalled();
+  });
+
+  test('leaves the deliver action enabled for the castle host (default capabilities)', () => {
+    renderCard();
+
+    const submit = screen.getByTestId('pending-signal-submit');
+    expect(submit).toBeEnabled();
+    expect(submit).not.toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+    expect(screen.getByTestId('pending-signal-note')).toBeEnabled();
   });
 });

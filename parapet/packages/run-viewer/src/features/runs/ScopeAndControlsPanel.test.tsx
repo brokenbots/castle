@@ -13,6 +13,18 @@ const store = createRunViewerStore();
 
 const pauseState = { isPaused: false, pauseEvent: null };
 
+function pausedEvent(type: 'approvalRequested' | 'waitEntered', payload: Record<string, unknown>) {
+  return {
+    schemaVersion: 1,
+    runId: 'run-1',
+    seq: 2,
+    type,
+    ts: new Date().toISOString(),
+    correlationId: '',
+    payload,
+  };
+}
+
 function renderPanel(overrides: Partial<Parameters<typeof ScopeAndControlsPanel>[0]> = {}) {
   const props: Parameters<typeof ScopeAndControlsPanel>[0] = {
     runId: 'run-1',
@@ -75,6 +87,57 @@ describe('ScopeAndControlsPanel', () => {
     }
     // The scope view stays readable in standalone mode.
     expect(screen.getByTestId('run-scope-panel')).toBeInTheDocument();
+  });
+
+  test('no-control capabilities gray out the approval actions of a paused run', () => {
+    renderPanel({
+      capabilities: NO_CONTROL_CAPABILITIES,
+      pauseState: {
+        isPaused: true,
+        pauseEvent: pausedEvent('approvalRequested', {
+          node: 'deploy',
+          approvers: ['alice'],
+          reason: 'ship it',
+        }),
+      },
+    });
+
+    // Grayed-out is the contract, not hidden: the approval card renders and
+    // both actions carry the capability tooltip.
+    const panel = screen.getByTestId('scope-controls-panel');
+    expect(within(panel).getByText(/Approval Required/i)).toBeInTheDocument();
+    for (const name of [/Approve/i, /Reject/i]) {
+      const button = within(panel).getByRole('button', { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+    }
+  });
+
+  test('no-control capabilities gray out the signal delivery of a paused run', () => {
+    renderPanel({
+      capabilities: NO_CONTROL_CAPABILITIES,
+      pauseState: {
+        isPaused: true,
+        pauseEvent: pausedEvent('waitEntered', { mode: 'signal', signal: 'deploy-signal' }),
+      },
+    });
+
+    const submit = screen.getByTestId('pending-signal-submit');
+    expect(submit).toBeDisabled();
+    expect(submit).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+  });
+
+  test('castle capabilities keep the approval actions of a paused run enabled', () => {
+    renderPanel({
+      pauseState: {
+        isPaused: true,
+        pauseEvent: pausedEvent('approvalRequested', { node: 'deploy', approvers: [], reason: '' }),
+      },
+    });
+
+    const panel = screen.getByTestId('scope-controls-panel');
+    expect(within(panel).getByRole('button', { name: /Approve/i })).toBeEnabled();
+    expect(within(panel).getByRole('button', { name: /Reject/i })).toBeEnabled();
   });
 
   test('collapses to a bar and restores the body on expand', async () => {

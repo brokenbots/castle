@@ -125,6 +125,40 @@ describe('RunViewerShell', () => {
     });
   });
 
+  test('grays out the approval actions of a paused run when the host has no control RPC', async () => {
+    window.location.hash = '#/runs/run-1';
+    // A paused run awaiting approval is reachable in standalone mode: the
+    // loopback data source replays approvalRequested events from the
+    // run-state files. The approval actions must gray out with the rest of
+    // the control matrix, not render live.
+    setRunDataSource({
+      ...dataSource,
+      openRunStream: vi.fn((_args, onEvent) => {
+        onEvent({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 1,
+          type: 'approvalRequested',
+          ts: '2026-02-05T08:31:00.000Z',
+          correlationId: '',
+          payload: { node: 'deploy', approvers: ['alice'], reason: 'ship it' },
+        } satisfies EventEnvelope);
+        return new Promise<RunStreamEnd>(() => {});
+      }),
+    });
+    render(<RunViewerShell store={createRunViewerStore()} />);
+
+    const layout = await screen.findByTestId('run-detail-layout');
+    await waitFor(() => {
+      expect(within(layout).getByText(/Approval Required/i)).toBeInTheDocument();
+    });
+    for (const name of [/Approve/i, /Reject/i]) {
+      const button = within(layout).getByRole('button', { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
+    }
+  });
+
   test('redirects unknown hashes to the run list', async () => {
     window.location.hash = '#/bogus';
     render(<RunViewerShell store={createRunViewerStore()} />);

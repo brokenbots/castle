@@ -1,16 +1,26 @@
 import { useState } from 'react';
 import { useResumeMutation } from '../../../api/castleApi';
+import { NO_CONTROLS_TOOLTIP, hasControls, type RunCapabilities } from '../capabilities';
 
 interface ApprovalCardProps {
   node: string;
   runId: string;
   approvers: string[];
   reason: string;
+  /**
+   * Capability probe result (CRI-186 guards matrix extension). Without a
+   * control RPC the Approve/Reject actions stay visible but disabled with
+   * the capability tooltip — grayed-out, not hidden.
+   */
+  capabilities?: RunCapabilities;
 }
 
-export function ApprovalCard({ node, runId, approvers, reason }: ApprovalCardProps) {
+export function ApprovalCard({ node, runId, approvers, reason, capabilities }: ApprovalCardProps) {
   const [resume, { isLoading, error, isSuccess }] = useResumeMutation();
   const [decision, setDecision] = useState<string | null>(null);
+  // Capability axis dominates the action matrix; the castle default keeps
+  // the buttons enabled per the existing status matrix.
+  const noControls = !hasControls(capabilities);
 
   const handleApprove = async () => {
     setDecision('approved');
@@ -48,14 +58,16 @@ export function ApprovalCard({ node, runId, approvers, reason }: ApprovalCardPro
         <div className="flex gap-2">
           <button
             onClick={handleApprove}
-            disabled={isLoading}
+            disabled={isLoading || noControls}
+            title={noControls ? NO_CONTROLS_TOOLTIP : undefined}
             className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
           >
             {isLoading && decision === 'approved' ? 'Approving...' : 'Approve'}
           </button>
           <button
             onClick={handleReject}
-            disabled={isLoading}
+            disabled={isLoading || noControls}
+            title={noControls ? NO_CONTROLS_TOOLTIP : undefined}
             className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
           >
             {isLoading && decision === 'rejected' ? 'Rejecting...' : 'Reject'}

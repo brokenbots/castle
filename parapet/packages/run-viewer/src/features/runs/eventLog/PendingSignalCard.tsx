@@ -1,12 +1,19 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useResumeMutation } from '../../../api/castleApi';
+import { NO_CONTROLS_TOOLTIP, hasControls, type RunCapabilities } from '../capabilities';
 
 interface PendingSignalCardProps {
   signal: string;
   runId: string;
   /** Re-fetches the run and re-anchors the event log; offered from the stale-signal state. */
   onRefresh: () => void;
+  /**
+   * Capability probe result (CRI-186 guards matrix extension). Without a
+   * control RPC the delivery form stays visible but disabled with the
+   * capability tooltip — grayed-out, not hidden.
+   */
+  capabilities?: RunCapabilities;
 }
 
 // ResumeRun failures surface as RTK errors shaped { status: connectCodeName, data: message }.
@@ -26,9 +33,12 @@ function isStaleSignalError(error: unknown): boolean {
   return status === 'failed_precondition' && typeof data === 'string' && STALE_SIGNAL_CAUSES.has(data);
 }
 
-export function PendingSignalCard({ signal, runId, onRefresh }: PendingSignalCardProps) {
+export function PendingSignalCard({ signal, runId, onRefresh, capabilities }: PendingSignalCardProps) {
   const [resume, { isLoading, error, isSuccess }] = useResumeMutation();
   const [note, setNote] = useState('');
+  // Capability axis dominates the action matrix; the castle default keeps
+  // the form enabled per the existing status matrix.
+  const noControls = !hasControls(capabilities);
 
   const curlExample = `curl -X POST http://localhost:8080/criteria.v1.CriteriaService/Resume \\
   -H "Content-Type: application/json" \\
@@ -40,6 +50,7 @@ export function PendingSignalCard({ signal, runId, onRefresh }: PendingSignalCar
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (noControls) return;
     const trimmed = note.trim();
     await resume({
       runId,
@@ -87,7 +98,7 @@ export function PendingSignalCard({ signal, runId, onRefresh }: PendingSignalCar
             type="text"
             value={signal}
             readOnly
-            disabled={isLoading}
+            disabled={isLoading || noControls}
             className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm font-mono text-slate-200 mb-2"
           />
           <label className="block text-xs text-slate-400 mb-1" htmlFor="pending-signal-note">
@@ -99,13 +110,14 @@ export function PendingSignalCard({ signal, runId, onRefresh }: PendingSignalCar
             type="text"
             value={note}
             onChange={(event) => setNote(event.target.value)}
-            disabled={isLoading}
+            disabled={isLoading || noControls}
             placeholder="Optional note delivered with the signal"
             className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm text-slate-200"
           />
           <button
             type="submit"
-            disabled={isLoading}
+            disabled={isLoading || noControls}
+            title={noControls ? NO_CONTROLS_TOOLTIP : undefined}
             data-testid="pending-signal-submit"
             className="mt-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
           >

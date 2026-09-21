@@ -55,7 +55,12 @@ export function ScopeAndControlsPanel({
             <RunControls runId={runId} status={status} pauseState={pauseState} capabilities={capabilities} />
           </div>
           {pauseState.isPaused && pauseState.pauseEvent && (
-            <PauseAffordance runId={runId} pauseEvent={pauseState.pauseEvent} onRefresh={onRefresh} />
+            <PauseAffordance
+              runId={runId}
+              pauseEvent={pauseState.pauseEvent}
+              onRefresh={onRefresh}
+              capabilities={capabilities}
+            />
           )}
           <RunScopePanel events={events} />
         </div>
