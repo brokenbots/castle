@@ -1,9 +1,13 @@
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { castleApi } from './castleApi';
-import { store } from '../store';
+import { createRunViewerStore } from '../store';
 import { server } from '../test/mocks/server';
 import { serverPath } from '../test/mocks/handlers';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
+
 
 // The store persists across tests; drop cached mutation entries so the
 // dispatches below always hit the wire.

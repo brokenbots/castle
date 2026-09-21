@@ -5,8 +5,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
 import { store } from './store';
 import { App } from './App';
-import { RunListPage } from './features/runs/RunListPage';
-import { RunDetailPage } from './features/runs/RunDetailPage';
+import { RunListPage } from '@castle/run-viewer';
+import { RunDetailPage } from '@castle/run-viewer';
 import { AgentListPage } from './features/agents/AgentListPage';
 import { AgentDetailPage } from './features/agents/AgentDetailPage';
 

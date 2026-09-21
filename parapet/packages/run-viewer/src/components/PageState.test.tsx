@@ -4,8 +4,12 @@ import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { PageState } from './PageState';
 import { selectAuthExpired } from '../features/auth/sessionSlice';
-import { store } from '../store';
+import { createRunViewerStore } from '../store';
 import { sessionRecovered } from '../features/auth/sessionSlice';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
+
 
 // PageState dispatches on the re-auth path, so every render goes through the
 // real store provider.

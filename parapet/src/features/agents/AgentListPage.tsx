@@ -1,8 +1,8 @@
 import { Link } from 'react-router-dom';
-import { useListAgentsQuery } from '../../api/castleApi';
-import { classifyError } from '../../api/errors';
-import { PageHeader } from '../../components/PageHeader';
-import { PageState } from '../../components/PageState';
+import { useListAgentsQuery } from '@castle/run-viewer';
+import { classifyError } from '@castle/run-viewer';
+import { PageHeader } from '@castle/run-viewer';
+import { PageState } from '@castle/run-viewer';
 
 export function AgentListPage() {
   const { data, isLoading, error, refetch } = useListAgentsQuery();

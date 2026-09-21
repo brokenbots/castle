@@ -2,10 +2,14 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { describe, expect, test } from 'vitest';
-import { store } from '../../store';
+import { createRunViewerStore } from '../../store';
 import { ScopeAndControlsPanel } from './ScopeAndControlsPanel';
 import { NO_CONTROLS_TOOLTIP, NO_CONTROL_CAPABILITIES } from './capabilities';
 import type { EventEnvelope } from '../../api/castleApi';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
+
 
 const pauseState = { isPaused: false, pauseEvent: null };
 

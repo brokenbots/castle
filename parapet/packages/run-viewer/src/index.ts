@@ -4,9 +4,6 @@
  * paths into src/ are not part of the package's public surface.
  */
 
-// Castle default data source: importing the index wires the seam.
-import './api/defaults';
-
 // Data seam + host extension points.
 export type {
   ListRunEventsArgs,
@@ -52,8 +49,23 @@ export {
   type ListRunsArgs,
   type RunsPage,
 } from './api/castleApi';
-export { connectCodeName, isUnauthenticatedError, classifyError } from './api/errors';
+export { connectCodeName, isUnauthenticatedError, classifyError, type PageErrorKind } from './api/errors';
 export { castleRunDataSource } from './api/castleDataSource';
+
+// Transport surface for hosts that talk to Castle directly (login probe).
+export { server, getRuntimeCodec, type Codec } from './api/client';
+
+// Shared run-status vocabulary + cells (used by host pages too).
+export {
+  RUN_TERMINAL_STATUSES,
+  RUN_STATUS_TEXT_COLORS,
+} from './features/runs/runStatus';
+export {
+  StartedCell,
+  DurationCell,
+  useDocumentVisible,
+  useNow,
+} from './features/runs/runCells';
 
 // Store factory.
 export {
@@ -77,10 +89,6 @@ export {
 // Runs feature UI.
 export { RunListPage } from './features/runs/RunListPage';
 export { RunDetailPage } from './features/runs/RunDetailPage';
-export { RunControls } from './features/runs/RunControls';
-export { RunInspection } from './features/runs/RunInspection';
-export { ScopeAndControlsPanel } from './features/runs/ScopeAndControlsPanel';
-export { StatusPill } from './features/runs/StatusPill';
 export { runsSlice, selectRunEvents, selectWatchStatus } from './features/runs/runsSlice';
 export type { WatchStatus, RunsState } from './features/runs/runsSlice';
 export {

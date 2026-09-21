@@ -8,10 +8,14 @@ import {
   adapterStateView,
 } from './RunInspection';
 import { castleApi } from '../../api/castleApi';
-import { store } from '../../store';
+import { createRunViewerStore } from '../../store';
 import { selectAuthExpired, sessionRecovered } from '../../features/auth/sessionSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
+
 
 // Wire shape mirrors the protojson canonical form (snake_case, int64 as a
 // string) that connect-web produces and parses.

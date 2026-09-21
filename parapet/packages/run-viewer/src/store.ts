@@ -37,17 +37,13 @@ export interface RunViewerStoreOptions {
   extraReducers?: ReducersMapObject;
 }
 
-export type RunViewerStore = ReturnType<typeof createRunViewerStore>;
-export type AppDispatch = RunViewerStore['dispatch'];
-export type RootState = ReturnType<RunViewerStore['getState']>;
-
 /**
  * Builds a self-contained store hosting the run-viewer feature: the RTK api,
  * the runs state, and the session-expiry flag the re-auth affordances drive.
  * Hosts call this once at boot; hosts with their own reducers merge them via
  * `extraReducers`.
  */
-export function createRunViewerStore(options: RunViewerStoreOptions = {}): RunViewerStore {
+export function createRunViewerStore(options: RunViewerStoreOptions = {}) {
   const extra = options.extraReducers ?? {};
   if ('castleApi' in extra || 'runs' in extra || 'session' in extra) {
     throw new Error("run-viewer reserves the 'castleApi', 'runs' and 'session' reducer keys");
@@ -63,3 +59,7 @@ export function createRunViewerStore(options: RunViewerStoreOptions = {}): RunVi
       getDefault().concat(castleApi.middleware, createUnauthenticatedErrorMiddleware()),
   });
 }
+
+export type RunViewerStore = ReturnType<typeof createRunViewerStore>;
+export type AppDispatch = RunViewerStore['dispatch'];
+export type RootState = ReturnType<RunViewerStore['getState']>;

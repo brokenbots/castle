@@ -2,7 +2,10 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { describe, expect, test, vi } from 'vitest';
 import { ApprovalCard } from './ApprovalCard';
-import { store } from '../../../store';
+import { createRunViewerStore } from '../../../store';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
 
 vi.mock('../../../api/castleApi', async () => {
   const actual = await vi.importActual<typeof import('../../../api/castleApi')>(

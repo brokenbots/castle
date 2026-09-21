@@ -1,4 +1,5 @@
-import { ConnectError, server } from './client';
+import { ConnectError } from '@connectrpc/connect';
+import { server } from './client';
 import {
   mapAgent,
   mapEnvelope,
@@ -6,7 +7,6 @@ import {
   mapRunInspection,
   RUNS_PAGE_LIMIT,
   tsToIso,
-  type Agent,
   type EventEnvelope,
   type InspectRunArgs,
   type ListRunsArgs,
@@ -17,9 +17,11 @@ import {
 import { connectCodeName, isUnauthenticatedError } from './errors';
 import {
   TERMINAL_EVENT_TYPES,
+  type ListRunEventsArgs,
   type ResumeArgs,
   type RunDataSource,
   type RunStreamArgs,
+  type RunEventsPage,
   type RunStreamEnd,
   type StopRunArgs,
 } from './dataSource';

@@ -5,11 +5,11 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test } from 'vitest';
 import { AgentDetailPage } from './AgentDetailPage';
-import { castleApi } from '../../api/castleApi';
+import { castleApi } from '@castle/run-viewer';
 import { store } from '../../store';
-import { selectAuthExpired, sessionRecovered } from '../../features/auth/sessionSlice';
-import { server } from '../../test/mocks/server';
-import { serverPath } from '../../test/mocks/handlers';
+import { selectAuthExpired, sessionRecovered } from '@castle/run-viewer';
+import { server } from '@castle/run-viewer/src/test/mocks/server';
+import { serverPath } from '@castle/run-viewer/src/test/mocks/handlers';
 
 // Fixtures use timestamps relative to "now" so relative-time assertions stay
 // stable regardless of when the suite runs.

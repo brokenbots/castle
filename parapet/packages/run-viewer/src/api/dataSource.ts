@@ -1,14 +1,13 @@
+import { castleRunDataSource } from './castleDataSource';
 import type {
   Agent,
   EventEnvelope,
   InspectRunArgs,
-  ListRunEventsArgs,
   ListRunsArgs,
   Run,
-  RunEventsPage,
   RunInspection,
   RunsPage,
-} from './api/castleApi';
+} from './castleApi';
 
 /** Argument shape for the resume control RPC. */
 export interface ResumeArgs {
@@ -103,17 +102,11 @@ let current: RunDataSource | undefined;
 
 /**
  * The data source backing runViewerApi and startWatch. Defaults to the
- * castle (Connect client) implementation, registered by the package's
- * defaults module; the standalone viewer swaps in the local implementation
- * via setRunDataSource before rendering.
+ * castle (Connect client) implementation; the standalone viewer swaps in
+ * the local implementation via setRunDataSource before rendering.
  */
 export function getRunDataSource(): RunDataSource {
-  if (!current) {
-    throw new Error(
-      'no RunDataSource registered — the package defaults module wires the castle data source',
-    );
-  }
-  return current;
+  return current ?? castleRunDataSource;
 }
 
 export function setRunDataSource(dataSource: RunDataSource): void {

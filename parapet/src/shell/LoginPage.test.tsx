@@ -4,8 +4,8 @@ import { delay, http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { LoginPage } from './LoginPage';
 import { getAuthToken, setAuthToken, clearAuthToken } from '../authToken';
-import { server } from '../test/mocks/server';
-import { serverPath } from '../test/mocks/handlers';
+import { server } from '@castle/run-viewer/src/test/mocks/server';
+import { serverPath } from '@castle/run-viewer/src/test/mocks/handlers';
 
 function renderLogin(props?: { notice?: string }) {
   const onAuthenticated = vi.fn();

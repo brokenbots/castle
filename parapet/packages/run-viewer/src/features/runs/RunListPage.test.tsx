@@ -6,10 +6,14 @@ import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { RunListPage } from './RunListPage';
 import { castleApi } from '../../api/castleApi';
-import { store } from '../../store';
+import { createRunViewerStore } from '../../store';
 import { selectAuthExpired, sessionRecovered } from '../../features/auth/sessionSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
+
 
 // Runs fixture shape mirrors the ListRuns MSW handler (snake_case protojson).
 // started_at is part of the default shape because Castle stamps it on the

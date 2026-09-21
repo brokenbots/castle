@@ -1,10 +1,14 @@
 import { describe, expect, test } from 'vitest';
 import { sessionRecovered, selectAuthExpired, sessionSlice, sessionExpired } from './sessionSlice';
 import { castleApi } from '../../api/castleApi';
-import { store } from '../../store';
+import { createRunViewerStore } from '../../store';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
 import { http, HttpResponse } from 'msw';
+
+// One store per file: the middleware behavior is asserted against real
+// dispatches through the package's factory.
+const store = createRunViewerStore();
 
 describe('sessionSlice reducer', () => {
   test('sessionExpired marks the session and sessionRecovered clears it', () => {

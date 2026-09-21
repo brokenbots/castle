@@ -3,10 +3,10 @@ import { Provider } from 'react-redux';
 import { delay, http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { ConnectionStatus, CONNECTION_POLL_INTERVAL_MS } from './ConnectionStatus';
-import { castleApi } from '../api/castleApi';
+import { castleApi } from '@castle/run-viewer';
 import { store } from '../store';
-import { server } from '../test/mocks/server';
-import { serverPath } from '../test/mocks/handlers';
+import { server } from '@castle/run-viewer/src/test/mocks/server';
+import { serverPath } from '@castle/run-viewer/src/test/mocks/handlers';
 
 function renderStatus() {
   return render(

@@ -1,24 +1,34 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { ConnectError, Code } from '@connectrpc/connect';
 import {
-  Envelope,
-  LogStream,
-  RunCompleted,
-  StepLog,
-  WatchReady,
-} from '../../gen/criteria/v1/events_pb';
+  TERMINAL_EVENT_TYPES,
+  setRunDataSource,
+  resetRunDataSource,
+  type RunDataSource,
+  type RunStreamArgs,
+  type RunStreamEnd,
+} from '../../api/dataSource';
+import type { EventEnvelope } from '../../api/castleApi';
 import { runsSlice } from './runsSlice';
 import { sessionExpired } from '../auth/sessionSlice';
 
-const watchRunMock = vi.fn();
+// The seam is mocked, not the transport: startWatch consumes
+// openRunStream(args, onEvent) and classifies the RunStreamEnd, so the fake
+// data source replays that contract directly.
+const openRunStreamMock = vi.fn();
 
-vi.mock('../../api/client', () => ({
-  server: {
-    watchRun: (...args: unknown[]) => watchRunMock(...args),
-  },
-}));
+function makeEvent(seq: number, type = 'stepLog'): EventEnvelope {
+  return {
+    schemaVersion: 1,
+    runId: 'r1',
+    seq,
+    type,
+    ts: '2026-01-01T00:00:00.000Z',
+    correlationId: '',
+    payload: { stream: 'STDOUT', chunk: `#${seq}` },
+  };
+}
 
-// Import after mock is installed.
+// Imports after the data source is swapped in.
 const {
   startWatch,
   watchReconnectDelayMs,
@@ -26,34 +36,21 @@ const {
   WATCH_RECONNECT_MAX_ATTEMPTS,
 } = await import('./watchRun');
 
-function makeEnvelope(seq: number, payloadCase: 'stepLog' | 'runCompleted' = 'stepLog'): Envelope {
-  const base = { schemaVersion: 1, runId: 'r1', seq: BigInt(seq) };
-  if (payloadCase === 'runCompleted') {
-    return new Envelope({ ...base, payload: { case: 'runCompleted', value: new RunCompleted({}) } });
-  }
-  return new Envelope({
-    ...base,
-    payload: { case: 'stepLog', value: new StepLog({ step: 'build', stream: LogStream.STDOUT, chunk: `#${seq}` }) },
+beforeEach(() => {
+  openRunStreamMock.mockReset();
+  // Every test drives the seam through the mock, never the castle impl.
+  setRunDataSource({ openRunStream: openRunStreamMock } as unknown as RunDataSource);
+});
+
+// Installs a data source whose openRunStream replays a scripted stream per
+// call; scripts are consumed in order (the last one repeats).
+function scriptStreams(scripts: Array<() => { deliver: (onEvent: (e: EventEnvelope) => void) => void; end: RunStreamEnd }>): void {
+  openRunStreamMock.mockImplementation(async (_args: RunStreamArgs, onEvent: (e: EventEnvelope) => void) => {
+    const script = scripts.length > 1 ? scripts.shift()! : scripts[0];
+    const { deliver, end } = script();
+    deliver(onEvent);
+    return end;
   });
-}
-
-function makeWatchReady(): Envelope {
-  return new Envelope({
-    schemaVersion: 1,
-    runId: 'r1',
-    seq: BigInt(0),
-    payload: { case: 'watchReady', value: new WatchReady({}) },
-  });
-}
-
-async function* asyncIter(items: Envelope[]): AsyncIterableIterator<Envelope> {
-  for (const it of items) yield it;
-}
-
-async function* failingIter(err: unknown): AsyncIterableIterator<Envelope> {
-  throw err;
-  // eslint-disable-next-line no-unreachable
-  yield makeEnvelope(1);
 }
 
 function eventCount(dispatch: ReturnType<typeof vi.fn>): number {
@@ -68,8 +65,8 @@ function watchStatusPayloads(dispatch: ReturnType<typeof vi.fn>): Array<Record<s
     .map((a) => a.payload.status);
 }
 
-beforeEach(() => {
-  watchRunMock.mockReset();
+afterEach(() => {
+  resetRunDataSource();
 });
 
 describe('startWatch', () => {
@@ -78,9 +75,16 @@ describe('startWatch', () => {
   });
 
   test('dispatches events received from the stream, skips WatchReady and marks the stream live', async () => {
-    watchRunMock.mockReturnValueOnce(
-      asyncIter([makeWatchReady(), makeEnvelope(1), makeEnvelope(2, 'runCompleted')]),
-    );
+    scriptStreams([
+      () => ({
+        deliver: (onEvent) => {
+          onEvent({ ...makeEvent(0), type: 'watchReady' });
+          onEvent(makeEvent(1));
+          onEvent({ ...makeEvent(2), type: 'runCompleted' });
+        },
+        end: { kind: 'terminal' },
+      }),
+    ]);
     const dispatch = vi.fn();
     const ctrl = new AbortController();
 
@@ -92,26 +96,29 @@ describe('startWatch', () => {
     expect(statuses.at(-1)).toMatchObject({ state: 'live' });
   });
 
-  test('passes sinceSeq and signal through to the Connect client', async () => {
-    watchRunMock.mockReturnValueOnce(asyncIter([makeEnvelope(1, 'runCompleted')]));
+  test('passes sinceSeq, subscriberId and signal through to the data source', async () => {
+    scriptStreams([
+      () => ({
+        deliver: () => undefined,
+        end: { kind: 'terminal' },
+      }),
+    ]);
     const dispatch = vi.fn();
     const ctrl = new AbortController();
 
     await startWatch('r1', 7, 'sub-7', dispatch, ctrl.signal);
 
-    expect(watchRunMock).toHaveBeenCalledTimes(1);
-    const [req, opts] = watchRunMock.mock.calls[0];
-    expect(req).toEqual({ runId: 'r1', sinceSeq: 7n, subscriberId: 'sub-7' });
-    expect(opts).toEqual({ signal: ctrl.signal });
+    expect(openRunStreamMock).toHaveBeenCalledTimes(1);
+    const [args, onEvent] = openRunStreamMock.mock.calls[0];
+    expect(args).toEqual({ runId: 'r1', sinceSeq: 7, subscriberId: 'sub-7', signal: ctrl.signal });
+    expect(typeof onEvent).toBe('function');
   });
 
   test('swallows errors once the caller has aborted', async () => {
     const ctrl = new AbortController();
-    watchRunMock.mockImplementationOnce(async function* () {
+    openRunStreamMock.mockImplementation(async () => {
       ctrl.abort();
       throw new Error('aborted');
-      // eslint-disable-next-line no-unreachable
-      yield makeEnvelope(1);
     });
     const dispatch = vi.fn();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -121,22 +128,29 @@ describe('startWatch', () => {
     // Only the initial 'connecting' status was dispatched; no events and no
     // reconnect churn after the caller aborted.
     expect(eventCount(dispatch)).toBe(0);
-    expect(watchRunMock).toHaveBeenCalledTimes(1);
+    expect(openRunStreamMock).toHaveBeenCalledTimes(1);
     expect(watchStatusPayloads(dispatch)).toHaveLength(1);
     warn.mockRestore();
   });
 
-  test('a clean end after a terminal event ends the watch without reconnecting', async () => {
-    watchRunMock.mockReturnValueOnce(
-      asyncIter([makeWatchReady(), makeEnvelope(1), makeEnvelope(2, 'runCompleted')]),
-    );
+  test('a terminal end closes the watch without reconnecting', async () => {
+    scriptStreams([
+      () => ({
+        deliver: (onEvent) => {
+          onEvent({ ...makeEvent(0), type: 'watchReady' });
+          onEvent(makeEvent(1));
+          onEvent({ ...makeEvent(2), type: 'runCompleted' });
+        },
+        end: { kind: 'terminal' },
+      }),
+    ]);
     const dispatch = vi.fn();
     const ctrl = new AbortController();
 
     await startWatch('r1', 0, 'sub-1', dispatch, ctrl.signal);
 
     // Only the initial connection: a terminal end is normal, not a loss.
-    expect(watchRunMock).toHaveBeenCalledTimes(1);
+    expect(openRunStreamMock).toHaveBeenCalledTimes(1);
     expect(eventCount(dispatch)).toBe(2);
     expect(dispatch.mock.calls.map((c) => c[0].type)).toContain(runsSlice.actions.watchEnded.type);
     const statuses = watchStatusPayloads(dispatch);
@@ -147,9 +161,22 @@ describe('startWatch', () => {
     vi.useFakeTimers();
     // Stream 1: delivers two events, then the server drops the stream
     // (clean end, no terminal event) — a stream loss.
-    watchRunMock.mockReturnValueOnce(asyncIter([makeWatchReady(), makeEnvelope(1), makeEnvelope(3)]));
-    // Stream 2: the reconnected stream delivers a newer event.
-    watchRunMock.mockReturnValueOnce(asyncIter([makeEnvelope(4)]));
+    scriptStreams([
+      () => ({
+        deliver: (onEvent) => {
+          onEvent({ ...makeEvent(0), type: 'watchReady' });
+          onEvent(makeEvent(1));
+          onEvent(makeEvent(3));
+        },
+        end: { kind: 'clean' },
+      }),
+      () => ({
+        deliver: (onEvent) => {
+          onEvent(makeEvent(4));
+        },
+        end: { kind: 'terminal' },
+      }),
+    ]);
     const dispatch = vi.fn();
     const ctrl = new AbortController();
 
@@ -157,10 +184,10 @@ describe('startWatch', () => {
     // First backoff step: 1s.
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(watchRunMock).toHaveBeenCalledTimes(2);
-    const [req] = watchRunMock.mock.calls[1];
+    expect(openRunStreamMock).toHaveBeenCalledTimes(2);
+    const [args] = openRunStreamMock.mock.calls[1];
     // Resume after the last delivered seq, not from the original cursor.
-    expect(req).toEqual({ runId: 'r1', sinceSeq: 3n, subscriberId: 'sub-1' });
+    expect(args).toEqual({ runId: 'r1', sinceSeq: 3, subscriberId: 'sub-1', signal: ctrl.signal });
 
     const statuses = watchStatusPayloads(dispatch);
     expect(statuses[0]).toMatchObject({ state: 'connecting' });
@@ -178,10 +205,9 @@ describe('startWatch', () => {
 
   test('reconnects use bounded exponential backoff and give up as lost', async () => {
     vi.useFakeTimers();
-    watchRunMock.mockImplementation(() => failingIter(new Error('boom')));
+    openRunStreamMock.mockResolvedValue({ kind: 'error', codeName: 'unavailable', message: 'boom' });
     const dispatch = vi.fn();
     const ctrl = new AbortController();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const promise = startWatch('r1', 0, 'sub-1', dispatch, ctrl.signal);
     // Total backoff: 1+2+4+8+15 (capped from 16) = 30s, then give up.
@@ -189,52 +215,52 @@ describe('startWatch', () => {
     await promise;
 
     // Initial connection + 5 reconnect attempts, then stop.
-    expect(watchRunMock).toHaveBeenCalledTimes(WATCH_RECONNECT_MAX_ATTEMPTS + 1);
+    expect(openRunStreamMock).toHaveBeenCalledTimes(WATCH_RECONNECT_MAX_ATTEMPTS + 1);
 
     const statuses = watchStatusPayloads(dispatch);
     expect(statuses[0]).toMatchObject({ state: 'connecting' });
     expect(statuses.filter((s) => s.state === 'reconnecting').map((s) => s.attempt)).toEqual([1, 2, 3, 4, 5]);
     expect(statuses.at(-1)).toMatchObject({ state: 'lost', attempt: 6, maxAttempts: WATCH_RECONNECT_MAX_ATTEMPTS });
-    warn.mockRestore();
   });
 
   test('an unauthenticated stream end stops retrying and expires the session', async () => {
-    watchRunMock.mockReturnValueOnce(
-      failingIter(new ConnectError('token rejected', Code.Unauthenticated)),
-    );
+    openRunStreamMock.mockResolvedValue({
+      kind: 'unauthenticated',
+      message: 'token rejected',
+    });
     const dispatch = vi.fn();
     const ctrl = new AbortController();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await startWatch('r1', 0, 'sub-1', dispatch, ctrl.signal);
 
     // No reconnect: auth failures require re-login, not retries.
-    expect(watchRunMock).toHaveBeenCalledTimes(1);
+    expect(openRunStreamMock).toHaveBeenCalledTimes(1);
     const statuses = watchStatusPayloads(dispatch);
     expect(statuses).toHaveLength(2);
     expect(statuses[0]).toMatchObject({ state: 'connecting' });
     expect(statuses[1]).toMatchObject({ state: 'unauthenticated' });
     expect(dispatch.mock.calls.map((c) => c[0].type)).toContain(sessionExpired.type);
-    warn.mockRestore();
   });
 
   test('an abort during the backoff sleep ends the watch without further calls', async () => {
     vi.useFakeTimers();
-    watchRunMock.mockImplementation(() => failingIter(new Error('boom')));
+    openRunStreamMock.mockResolvedValue({ kind: 'error', codeName: 'unavailable', message: 'boom' });
     const dispatch = vi.fn();
     const ctrl = new AbortController();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const promise = startWatch('r1', 0, 'sub-1', dispatch, ctrl.signal);
     // Let the first failure happen and the backoff sleep begin…
     await vi.advanceTimersByTimeAsync(1);
-    expect(watchRunMock).toHaveBeenCalledTimes(1);
+    expect(openRunStreamMock).toHaveBeenCalledTimes(1);
     // …then abort mid-sleep.
     ctrl.abort();
     await promise;
 
-    expect(watchRunMock).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
+    expect(openRunStreamMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('terminal event types are the seam contract vocabulary', () => {
+    expect([...TERMINAL_EVENT_TYPES].sort()).toEqual(['runCompleted', 'runFailed']);
   });
 });
 

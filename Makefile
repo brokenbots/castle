@@ -75,8 +75,8 @@ proto-check: ## Check protobuf compatibility against main
 
 proto-check-drift: ## Fail when generated bindings are stale
 	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf generate
-	@if ! git diff --quiet -- parapet/src/gen criteria-sdk/pb; then \
+	@if ! git diff --quiet -- parapet/packages/run-viewer/src/gen criteria-sdk/pb; then \
 		echo "Generated proto output is out of date. Run 'make proto' and commit the changes." >&2; \
-		git --no-pager diff --stat -- parapet/src/gen criteria-sdk/pb >&2; \
+		git --no-pager diff --stat -- parapet/packages/run-viewer/src/gen criteria-sdk/pb >&2; \
 		exit 1; \
 	fi

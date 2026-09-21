@@ -3,7 +3,10 @@ import { Provider } from 'react-redux';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { PauseAffordance } from './PauseAffordance';
 import type { EventEnvelope } from '../../../api/castleApi';
-import { store } from '../../../store';
+import { createRunViewerStore } from '../../../store';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
 import { useResumeMutation } from '../../../api/castleApi';
 
 vi.mock('../../../api/castleApi', async () => {

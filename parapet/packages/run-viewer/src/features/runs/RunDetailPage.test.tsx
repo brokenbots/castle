@@ -13,7 +13,7 @@ import {
   vi,
 } from 'vitest';
 import { RunDetailPage } from './RunDetailPage';
-import { store } from '../../store';
+import { createRunViewerStore } from '../../store';
 import { selectRunEvents, runsSlice } from './runsSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
@@ -23,6 +23,10 @@ vi.mock('./watchRun', () => ({
 }));
 
 import { startWatch } from './watchRun';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
+
 
 // jsdom has no layout; react-virtual (via EventLog) reads offsetHeight and
 // renders nothing when it measures 0. measureElement additionally reads
@@ -253,7 +257,10 @@ describe('RunDetailPage', () => {
     document.head.removeChild(meta);
   });
 
-  test('anchors at the newest page and lazy-loads older events', async () => {
+  // The 1000-event walk plus virtualization is the heaviest integration
+  // test here; the vitest 5s default only holds on an idle machine, so
+  // these get explicit headroom for full-suite parallel runs.
+  test('anchors at the newest page and lazy-loads older events', { timeout: 30_000 }, async () => {
     // A completed run: the live-tail affordances stay off so the log window
     // opens at the top of the loaded list.
     fixture.data.status = 'completed';
@@ -407,7 +414,7 @@ describe('RunDetailPage', () => {
     warn.mockRestore();
   });
 
-  test('keeps the load-earlier control retryable when the older-page fetch fails', async () => {
+  test('keeps the load-earlier control retryable when the older-page fetch fails', { timeout: 30_000 }, async () => {
     // The anchor walk succeeds (two pages), but every load-earlier request
     // errors: the control must come back enabled so the failure is
     // retryable, and the failed fetch must not touch the store.
@@ -484,7 +491,12 @@ describe('RunDetailPage', () => {
     await userEvent.click(
       screen.getByRole('button', { name: 'Load earlier events' }),
     );
-    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+    // RTK's serializability middleware warns on slow dispatches under load;
+    // count only the load-earlier failures the test is about.
+    const loadEarlierWarns = () =>
+      warn.mock.calls.filter(([msg]) => String(msg).includes('loading earlier events failed for run run-1'))
+        .length;
+    await vi.waitFor(() => expect(loadEarlierWarns()).toBe(2));
     expect(
       screen.getByRole('button', { name: 'Load earlier events' }),
     ).toBeEnabled();

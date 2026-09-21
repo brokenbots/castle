@@ -176,7 +176,7 @@ export const castleApi = createApi({
       queryFn: async ({ criteriaId = '', status = '', pageToken = '' }) => {
         try {
           const resp = await getRunDataSource().listRuns({ criteriaId, status, pageToken });
-          return { data: { runs: resp.runs.map(mapRun), nextPageToken: resp.nextPageToken } };
+          return { data: resp };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -197,7 +197,7 @@ export const castleApi = createApi({
       queryFn: async (runId) => {
         try {
           const resp = await getRunDataSource().getRun(runId);
-          return { data: mapRun(resp) };
+          return { data: resp };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -208,7 +208,7 @@ export const castleApi = createApi({
       queryFn: async ({ runId, sessionId = '' }) => {
         try {
           const resp = await getRunDataSource().inspectRun({ runId, sessionId });
-          return { data: mapRunInspection(resp) };
+          return { data: resp };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -220,8 +220,8 @@ export const castleApi = createApi({
     listAgents: b.query<Agent[], void>({
       queryFn: async () => {
         try {
-          const resp = { agents: await getRunDataSource().listAgents() };
-          return { data: resp.agents.map(mapAgent) };
+          const resp = await getRunDataSource().listAgents();
+          return { data: resp };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -235,7 +235,7 @@ export const castleApi = createApi({
       queryFn: async (criteriaId) => {
         try {
           const resp = await getRunDataSource().getAgent(criteriaId);
-          return { data: mapAgent(resp) };
+          return { data: resp };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -265,7 +265,7 @@ export const castleApi = createApi({
       queryFn: async ({ runId, signal, payload }) => {
         try {
           const resp = await getRunDataSource().resume({ runId, signal, payload });
-          return { data: { issuedAt: tsToIso(resp.issuedAt) } };
+          return { data: resp };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -276,7 +276,7 @@ export const castleApi = createApi({
       queryFn: async ({ runId }) => {
         try {
           const resp = await getRunDataSource().pauseRun(runId);
-          return { data: { issuedAt: tsToIso(resp.issuedAt) } };
+          return { data: resp };
         } catch (err) {
           return { error: toError(err) };
         }
@@ -290,7 +290,7 @@ export const castleApi = createApi({
       queryFn: async ({ runId, reason }) => {
         try {
           const resp = await getRunDataSource().stopRun({ runId, reason });
-          return { data: { issuedAt: tsToIso(resp.issuedAt) } };
+          return { data: resp };
         } catch (err) {
           return { error: toError(err) };
         }

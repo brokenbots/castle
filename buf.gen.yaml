@@ -5,11 +5,11 @@ plugins:
   # set. Bump together when upgrading. Local plugin binaries avoid BSR rate
   # limits and keep CI deterministic.
   - plugin: es
-    out: parapet/src/gen
+    out: parapet/packages/run-viewer/src/gen
     opt:
       - target=ts
   - plugin: connect-es
-    out: parapet/src/gen
+    out: parapet/packages/run-viewer/src/gen
     opt:
       - target=ts
   # Go bindings for the Criteria wire contract are generated into the local

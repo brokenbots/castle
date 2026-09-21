@@ -5,9 +5,13 @@ import { Provider } from 'react-redux';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { RunControls } from './RunControls';
 import { castleApi } from '../../api/castleApi';
-import { store } from '../../store';
+import { createRunViewerStore } from '../../store';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
+
+// One store instance per test file; RTK Query caches per store.
+const store = createRunViewerStore();
+
 
 // Integration tests through the real castleApi slice and the connect-web
 // transport: the mutation meta must actually transition (pending → success /
