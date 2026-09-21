@@ -1168,6 +1168,37 @@ describe('RunDetailPage panel fullscreen', () => {
     expect(within(dag).getAllByTestId('dag-node')).toHaveLength(3);
   });
 
+  test('toggles the graph orientation and swaps the handle sides', async () => {
+    renderDetail();
+
+    await screen.findByTestId('workflow-dag');
+    const tb = screen.getByTestId('orientation-top-bottom');
+    const lr = screen.getByTestId('orientation-left-right');
+    // Top-bottom is the default orientation.
+    expect(tb).toHaveAttribute('aria-pressed', 'true');
+    expect(lr).toHaveAttribute('aria-pressed', 'false');
+    const handlePositions = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('.react-flow__handle')).map((el) =>
+        el.getAttribute('data-handlepos'),
+      );
+    expect(handlePositions(screen.getByTestId('workflow-dag')).filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
+
+    await userEvent.click(lr);
+    expect(lr).toHaveAttribute('aria-pressed', 'true');
+    expect(tb).toHaveAttribute('aria-pressed', 'false');
+    // The orientation remounts the flow; handles move to the right side.
+    await vi.waitFor(() => {
+      const positions = handlePositions(screen.getByTestId('workflow-dag'));
+      expect(positions.filter((pos) => pos === 'right').length).toBeGreaterThan(0);
+      expect(positions.some((pos) => pos === 'bottom')).toBe(false);
+    });
+
+    await userEvent.click(tb);
+    await vi.waitFor(() => {
+      expect(handlePositions(screen.getByTestId('workflow-dag')).filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
+    });
+  });
+
   test('expands the inspection panel fullscreen and collapses back with data intact', async () => {
     renderDetail();
 

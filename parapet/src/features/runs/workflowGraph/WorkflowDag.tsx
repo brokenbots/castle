@@ -11,7 +11,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { WorkflowGraph, WorkflowGraphNode, WorkflowNodeKind } from './parseWorkflowHcl';
-import { layoutWorkflow } from './layout';
+import { layoutWorkflow, type GraphOrientation } from './layout';
 import type { ForEachProgress, StepNodeStatus } from './nodeStatus';
 
 export interface WorkflowDagProps {
@@ -22,6 +22,8 @@ export interface WorkflowDagProps {
   forEachProgress?: Record<string, ForEachProgress>;
   /** Currently selected node id, if any. */
   selectedId?: string | null;
+  /** Graph reading direction; top-bottom is the default. */
+  orientation?: GraphOrientation;
   /**
    * Called with the clicked node id, or with null when the already-selected
    * node is clicked again (toggling the selection off).
@@ -36,6 +38,8 @@ interface WorkflowNodeData extends Record<string, unknown> {
   badge?: string;
   /** Currently selected node (highlight ring). */
   selected: boolean;
+  /** Graph reading direction; drives handle sides. */
+  orientation: GraphOrientation;
 }
 
 type WorkflowFlowNode = Node<WorkflowNodeData, 'workflow'>;
@@ -72,8 +76,16 @@ const STATUS_MARK: Record<StepNodeStatus, string> = {
   failed: '✗',
 };
 
+/** Target/source handle sides per orientation: flow enters top (TB) or
+ * left (LR) and exits bottom (TB) or right (LR). */
+const HANDLE_POSITION: Record<GraphOrientation, { target: Position; source: Position }> = {
+  'top-bottom': { target: Position.Top, source: Position.Bottom },
+  'left-right': { target: Position.Left, source: Position.Right },
+};
+
 function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
-  const { node, status, badge, selected } = data;
+  const { node, status, badge, selected, orientation } = data;
+  const handle = HANDLE_POSITION[orientation];
   const selectedClass = selected ? ' ring-2 ring-sky-400' : '';
   return (
     <div
@@ -81,7 +93,7 @@ function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
       data-node-id={node.id}
       className={`rounded-lg border bg-slate-900/90 px-3 py-2 text-center shadow min-w-[8rem] max-w-[15rem] ${STATUS_CLASS[status]}${selectedClass}`}
     >
-      <Handle type="target" position={Position.Top} className="!h-1.5 !w-1.5 !border-0 !bg-slate-500" />
+      <Handle type="target" position={handle.target} className="!h-1.5 !w-1.5 !border-0 !bg-slate-500" />
       <p className="font-mono text-xs text-slate-100 break-all">{node.id}</p>
       <p className={`mt-0.5 text-[10px] uppercase tracking-wide font-semibold ${KIND_CLASS[node.kind]}`}>
         {KIND_LABEL[node.kind]}
@@ -102,17 +114,17 @@ function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
           {STATUS_MARK[status]}
         </span>
       </p>
-      <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-0 !bg-slate-500" />
+      <Handle type="source" position={handle.source} className="!h-1.5 !w-1.5 !border-0 !bg-slate-500" />
     </div>
   );
 }
 
 const nodeTypes = { workflow: WorkflowNodeView };
 
-export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, selectedId, onSelect }: WorkflowDagProps) {
+export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, selectedId, orientation = 'top-bottom', onSelect }: WorkflowDagProps) {
   const { nodes, edges } = useMemo(
-    () => buildFlow(graph, statuses, forEachProgress, selectedId ?? null),
-    [graph, statuses, forEachProgress, selectedId],
+    () => buildFlow(graph, statuses, forEachProgress, selectedId ?? null, orientation),
+    [graph, statuses, forEachProgress, selectedId, orientation],
   );
 
   const handleNodeClick = onSelect
@@ -125,6 +137,7 @@ export function WorkflowDag({ graph, statuses = {}, forEachProgress = {}, select
       className="h-[38vh] min-h-[280px] bg-slate-900 rounded border border-slate-800 overflow-hidden"
     >
       <ReactFlow
+        key={orientation}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
@@ -151,8 +164,9 @@ function buildFlow(
   statuses: Record<string, StepNodeStatus>,
   forEachProgress: Record<string, ForEachProgress>,
   selectedId: string | null,
+  orientation: GraphOrientation,
 ): { nodes: WorkflowFlowNode[]; edges: Edge[] } {
-  const positions = layoutWorkflow(graph);
+  const positions = layoutWorkflow(graph, { orientation });
   const nodes: WorkflowFlowNode[] = graph.nodes.map((node) => {
     const progress = forEachProgress[node.id];
     // Live per-iteration progress wins; otherwise show the declared
@@ -166,7 +180,7 @@ function buildFlow(
       id: node.id,
       type: 'workflow' as const,
       position: positions.get(node.id) ?? { x: 0, y: 0 },
-      data: { node, status: statuses[node.id] ?? 'idle', badge, selected: node.id === selectedId },
+      data: { node, status: statuses[node.id] ?? 'idle', badge, selected: node.id === selectedId, orientation },
     };
   });
   const edges: Edge[] = graph.edges.map((edge, index) => ({

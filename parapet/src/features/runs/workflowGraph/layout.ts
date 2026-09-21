@@ -3,6 +3,13 @@ import type { WorkflowGraph } from './parseWorkflowHcl';
 export const NODE_X_GAP = 240;
 export const NODE_Y_GAP = 110;
 
+/**
+ * Graph reading direction. `top-bottom` layers top-to-bottom (the original
+ * rendering); `left-right` transposes the same layered layout so layers run
+ * left-to-right (CRI-257 orientation toggle).
+ */
+export type GraphOrientation = 'top-bottom' | 'left-right';
+
 export interface NodePosition {
   x: number;
   y: number;
@@ -13,12 +20,12 @@ export interface NodePosition {
  * Layered (Sugiyama-lite) layout: breadth-first layers from the workflow's
  * `initial_state`, with nodes unreachable from it layered from their own
  * roots (in declaration order) so nothing is dropped. Nodes are centered
- * horizontally per layer. Deterministic: the result depends only on the
- * graph.
+ * across the intra-layer axis per layer. Deterministic: the result depends
+ * only on the graph.
  */
 export function layoutWorkflow(
   graph: WorkflowGraph,
-  { xGap = NODE_X_GAP, yGap = NODE_Y_GAP }: { xGap?: number; yGap?: number } = {},
+  { xGap = NODE_X_GAP, yGap = NODE_Y_GAP, orientation = 'top-bottom' }: { xGap?: number; yGap?: number; orientation?: GraphOrientation } = {},
 ): Map<string, NodePosition> {
   const adjacency = new Map<string, string[]>();
   const edgesBySource = new Map<string, string[]>();
@@ -70,9 +77,18 @@ export function layoutWorkflow(
 
   const positions = new Map<string, NodePosition>();
   for (const [layer, ids] of byLayer) {
-    const offset = ((ids.length - 1) / 2) * xGap;
     ids.forEach((id, index) => {
-      positions.set(id, { x: index * xGap - offset, y: layer * yGap, layer });
+      if (orientation === 'left-right') {
+        // Transposed: the layer axis runs along x, the intra-layer spread
+        // along y.
+        positions.set(id, {
+          x: layer * xGap,
+          y: index * yGap - ((ids.length - 1) / 2) * yGap,
+          layer,
+        });
+      } else {
+        positions.set(id, { x: index * xGap - ((ids.length - 1) / 2) * xGap, y: layer * yGap, layer });
+      }
     });
   }
   return positions;

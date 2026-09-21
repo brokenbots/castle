@@ -146,6 +146,36 @@ describe('WorkflowDag', () => {
     await vi.waitFor(() => expect(onSelect).toHaveBeenCalledWith('build'));
   });
 
+  test('swaps handle sides with the orientation', async () => {
+    // Top-bottom: flow enters at the top and exits at the bottom.
+    const first = render(<WorkflowDag graph={graph()} />);
+    const tbHandles = Array.from(document.querySelectorAll('.react-flow__handle')).map((el) =>
+      el.getAttribute('data-handlepos'),
+    );
+    expect(tbHandles.filter((pos) => pos === 'top').length).toBeGreaterThan(0);
+    expect(tbHandles.filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
+    expect(tbHandles.some((pos) => pos === 'left' || pos === 'right')).toBe(false);
+    first.unmount();
+
+    // Left-right: flow enters on the left and exits on the right.
+    const second = render(<WorkflowDag graph={graph()} orientation="left-right" />);
+    const lrHandles = Array.from(document.querySelectorAll('.react-flow__handle')).map(
+      (el) => el.getAttribute('data-handlepos'),
+    );
+    expect(lrHandles.filter((pos) => pos === 'left').length).toBeGreaterThan(0);
+    expect(lrHandles.filter((pos) => pos === 'right').length).toBeGreaterThan(0);
+    expect(lrHandles.some((pos) => pos === 'top' || pos === 'bottom')).toBe(false);
+    second.unmount();
+  });
+
+  test('calls onSelect with the clicked node id', async () => {
+    const onSelect = vi.fn();
+    render(<WorkflowDag graph={graph()} onSelect={onSelect} />);
+    const node = screen.getByText('test');
+    fireEvent.click(node);
+    await vi.waitFor(() => expect(onSelect).toHaveBeenCalledWith('test'));
+  });
+
   test('derives overlay state through selectNodeOverlay', async () => {
     const overlay = selectNodeOverlay([
       { schemaVersion: 1, runId: 'r', seq: 1, type: 'stepEntered', ts: '', correlationId: '', payload: { step: 'build' } },
