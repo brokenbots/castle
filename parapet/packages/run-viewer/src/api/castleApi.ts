@@ -2,7 +2,7 @@ import { createApi } from '@reduxjs/toolkit/query/react';
 import { fakeBaseQuery } from '@reduxjs/toolkit/query';
 import { ConnectError } from '@connectrpc/connect';
 import { Timestamp } from '@bufbuild/protobuf';
-import { server } from './client';
+import { getRunDataSource } from './dataSource';
 import { connectCodeName } from './errors';
 import type { Run as PbRun } from '../gen/criteria/v1/criteria_pb';
 import type { Agent as PbAgent, InspectRunResponse as PbInspectRunResponse } from '../gen/criteria/v1/server_pb';
@@ -61,7 +61,7 @@ export interface EventEnvelope {
   payload: unknown;
 }
 
-function tsToIso(ts?: Timestamp): string | undefined {
+export function tsToIso(ts?: Timestamp): string | undefined {
   if (!ts) return undefined;
   try {
     return ts.toDate().toISOString();
@@ -74,7 +74,7 @@ function orUndefined(s?: string): string | undefined {
   return s ? s : undefined;
 }
 
-function mapRun(r: PbRun): Run {
+export function mapRun(r: PbRun): Run {
   return {
     runId: r.runId,
     criteriaId: r.criteriaId,
@@ -92,7 +92,7 @@ function mapRun(r: PbRun): Run {
   };
 }
 
-function mapAgent(a: PbAgent): Agent {
+export function mapAgent(a: PbAgent): Agent {
   return {
     criteriaId: a.criteriaId,
     name: a.name,
@@ -103,7 +103,7 @@ function mapAgent(a: PbAgent): Agent {
   };
 }
 
-function mapRunInspection(r: PbInspectRunResponse): RunInspection {
+export function mapRunInspection(r: PbInspectRunResponse): RunInspection {
   return {
     runId: r.runId,
     sessionId: r.sessionId,
@@ -163,15 +163,19 @@ export interface RunsPage {
 // Page size requested for every ListRuns call (page_token cursor paging).
 export const RUNS_PAGE_LIMIT = 50;
 
+// Fixed reducer path: parapet's middleware and tests match on it; hosts must
+// keep it stable across versions of this package.
+export const RUN_VIEWER_API_REDUCER_PATH = 'castleApi';
+
 export const castleApi = createApi({
-  reducerPath: 'castleApi',
+  reducerPath: RUN_VIEWER_API_REDUCER_PATH,
   baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
   tagTypes: ['Run', 'Agent'],
   endpoints: (b) => ({
     listRuns: b.query<RunsPage, ListRunsArgs>({
       queryFn: async ({ criteriaId = '', status = '', pageToken = '' }) => {
         try {
-          const resp = await server.listRuns({ criteriaId, status, limit: RUNS_PAGE_LIMIT, pageToken });
+          const resp = await getRunDataSource().listRuns({ criteriaId, status, pageToken });
           return { data: { runs: resp.runs.map(mapRun), nextPageToken: resp.nextPageToken } };
         } catch (err) {
           return { error: toError(err) };
@@ -192,7 +196,7 @@ export const castleApi = createApi({
     getRun: b.query<Run, string>({
       queryFn: async (runId) => {
         try {
-          const resp = await server.getRun({ runId });
+          const resp = await getRunDataSource().getRun(runId);
           return { data: mapRun(resp) };
         } catch (err) {
           return { error: toError(err) };
@@ -203,7 +207,7 @@ export const castleApi = createApi({
     inspectRun: b.query<RunInspection, InspectRunArgs>({
       queryFn: async ({ runId, sessionId = '' }) => {
         try {
-          const resp = await server.inspectRun({ runId, sessionId });
+          const resp = await getRunDataSource().inspectRun({ runId, sessionId });
           return { data: mapRunInspection(resp) };
         } catch (err) {
           return { error: toError(err) };
@@ -216,7 +220,7 @@ export const castleApi = createApi({
     listAgents: b.query<Agent[], void>({
       queryFn: async () => {
         try {
-          const resp = await server.listAgents({});
+          const resp = { agents: await getRunDataSource().listAgents() };
           return { data: resp.agents.map(mapAgent) };
         } catch (err) {
           return { error: toError(err) };
@@ -230,7 +234,7 @@ export const castleApi = createApi({
     getAgent: b.query<Agent, string>({
       queryFn: async (criteriaId) => {
         try {
-          const resp = await server.getAgent({ criteriaId });
+          const resp = await getRunDataSource().getAgent(criteriaId);
           return { data: mapAgent(resp) };
         } catch (err) {
           return { error: toError(err) };
@@ -245,7 +249,7 @@ export const castleApi = createApi({
     getConnectionStatus: b.query<void, void>({
       queryFn: async () => {
         try {
-          await server.listAgents({ limit: 1 });
+          await getRunDataSource().connectionStatus();
           // Deliberately no payload: consumers derive the indicator state
           // from the request lifecycle (fulfilled vs errored).
           return { data: undefined };
@@ -260,7 +264,7 @@ export const castleApi = createApi({
     >({
       queryFn: async ({ runId, signal, payload }) => {
         try {
-          const resp = await server.resumeRun({ runId, signal: signal ?? '', payload: payload ?? {} });
+          const resp = await getRunDataSource().resume({ runId, signal, payload });
           return { data: { issuedAt: tsToIso(resp.issuedAt) } };
         } catch (err) {
           return { error: toError(err) };
@@ -271,7 +275,7 @@ export const castleApi = createApi({
     pauseRun: b.mutation<{ issuedAt?: string }, { runId: string }>({
       queryFn: async ({ runId }) => {
         try {
-          const resp = await server.pauseRun({ runId });
+          const resp = await getRunDataSource().pauseRun(runId);
           return { data: { issuedAt: tsToIso(resp.issuedAt) } };
         } catch (err) {
           return { error: toError(err) };
@@ -285,7 +289,7 @@ export const castleApi = createApi({
     >({
       queryFn: async ({ runId, reason }) => {
         try {
-          const resp = await server.stopRun({ runId, reason: reason ?? '' });
+          const resp = await getRunDataSource().stopRun({ runId, reason });
           return { data: { issuedAt: tsToIso(resp.issuedAt) } };
         } catch (err) {
           return { error: toError(err) };

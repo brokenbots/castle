@@ -2,7 +2,16 @@ import { createPromiseClient, Interceptor, PromiseClient } from '@connectrpc/con
 import { createConnectTransport } from '@connectrpc/connect-web';
 import { ServerService } from '../gen/criteria/v1/server_connect';
 import { CriteriaService } from '../gen/criteria/v1/criteria_connect';
-import { getAuthToken } from '../authToken';
+// Auth is host-owned (CRI-257): parapet wires its console token store;
+
+// the standalone viewer registers nothing, so requests stay anonymous.
+let runAuthTokenProvider: () => string | undefined = () => undefined;
+
+/** Register the host's auth-token source; called once by the host at boot. */
+export function setRunAuthTokenProvider(provider: () => string | undefined): void {
+  runAuthTokenProvider = provider;
+}
+
 
 declare global {
   interface Window {
@@ -29,7 +38,7 @@ const authTokenInterceptor: Interceptor = (next) => async (req) => {
   // Explicitly set Authorization headers (e.g. the login validation probe)
   // win; every other request is authenticated from the stored token.
   if (!req.header.has('Authorization')) {
-    const token = getAuthToken();
+    const token = runAuthTokenProvider();
     if (token) {
       req.header.set('Authorization', `Bearer ${token}`);
     }

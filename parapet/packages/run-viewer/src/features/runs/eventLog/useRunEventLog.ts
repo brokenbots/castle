@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { server } from '../../../api/client';
-import { mapEnvelope, type EventEnvelope } from '../../../api/castleApi';
+import { getRunDataSource, type ListRunEventsArgs } from '../../../api/dataSource';
+import type { EventEnvelope } from '../../../api/castleApi';
 import { runsSlice, selectRunEvents, selectWatchStatus, type WatchStatus } from '../runsSlice';
 import { subscriberIdForSession } from '../subscriberId';
 import { startWatch } from '../watchRun';
@@ -53,16 +53,12 @@ export function useRunEventLog(runId: string): RunEventLogView {
     aliveRef.current = true;
 
     void anchorRunEventLog(async (since, limit) => {
-      const resp = await server.listRunEvents(
-        { runId, sinceSeq: BigInt(since), limit },
-        { signal: ctrl.signal },
-      );
-      // next_since_seq is only set on full pages; 0 means "no continuation".
-      const nextSinceSeq = resp.nextSinceSeq === 0n ? null : Number(resp.nextSinceSeq);
+      const args: ListRunEventsArgs = { runId, sinceSeq: since, limit };
+      const page = await getRunDataSource().listRunEvents(args);
       return {
-        events: resp.events.map(mapEnvelope),
-        lastSeq: Number(resp.lastSeq),
-        nextSinceSeq,
+        events: page.events,
+        lastSeq: page.lastSeq,
+        nextSinceSeq: page.nextSinceSeq,
       };
     })
       .then((outcome) => {
@@ -115,13 +111,12 @@ export function useRunEventLog(runId: string): RunEventLogView {
     if (!current.hasEarlier || current.loadingEarlier || current.oldestLoaded === null) return;
     dispatchLog({ type: 'loadEarlierStart' });
     const since = loadEarlierCursor(current);
-    void server
-      .listRunEvents({ runId, sinceSeq: BigInt(since), limit: EVENT_PAGE_SIZE })
-      .then((resp) => {
+    void getRunDataSource()
+      .listRunEvents({ runId, sinceSeq: since, limit: EVENT_PAGE_SIZE })
+      .then((page) => {
         if (!aliveRef.current) return;
-        const events = resp.events.map(mapEnvelope);
-        for (const e of events) dispatch(runsSlice.actions.eventReceived(e));
-        dispatchLog({ type: 'earlierPageLoaded', events });
+        for (const e of page.events) dispatch(runsSlice.actions.eventReceived(e));
+        dispatchLog({ type: 'earlierPageLoaded', events: page.events });
       })
       .catch((err) => {
         if (!aliveRef.current) return;

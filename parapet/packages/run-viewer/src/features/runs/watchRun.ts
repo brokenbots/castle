@@ -1,8 +1,5 @@
 import type { Dispatch } from '@reduxjs/toolkit';
-import { ConnectError } from '@connectrpc/connect';
-import { server } from '../../api/client';
-import { mapEnvelope } from '../../api/castleApi';
-import { connectCodeName, isUnauthenticatedError } from '../../api/errors';
+import { getRunDataSource, TERMINAL_EVENT_TYPES, type RunStreamEnd } from '../../api/dataSource';
 import { sessionExpired } from '../auth/sessionSlice';
 import { runsSlice, type WatchStatus } from './runsSlice';
 
@@ -17,8 +14,6 @@ export function watchReconnectDelayMs(attempt: number): number {
   const clamped = Math.max(1, attempt);
   return Math.min(WATCH_RECONNECT_BASE_MS * 2 ** (clamped - 1), WATCH_RECONNECT_MAX_MS);
 }
-
-const TERMINAL_EVENT_TYPES = new Set(['runCompleted', 'runFailed']);
 
 function safeMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
@@ -46,13 +41,13 @@ function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-// Streams a run's events, dispatching them into the runs slice. The Castle
-// server closes the stream cleanly after a terminal event (runCompleted /
-// runFailed), so a clean end there is normal. Any other clean end means the
-// stream was lost (server restart or eviction); it and stream errors are
-// surfaced to the user and retried with bounded backoff, resuming from the
-// last delivered seq. An unauthenticated end marks the session expired and
-// stops retrying — the user must sign in again first.
+// Streams a run's events through the host's RunDataSource, dispatching them
+// into the runs slice. The stream closes cleanly after a terminal event
+// (runCompleted / runFailed), so a terminal end is normal. Any other clean
+// end means the stream was lost (server restart or eviction); it and stream
+// errors are surfaced to the user and retried with bounded backoff, resuming
+// from the last delivered seq. An unauthenticated end marks the session
+// expired and stops retrying — the user must sign in again first.
 export async function startWatch(
   runId: string,
   sinceSeq: number,
@@ -66,47 +61,47 @@ export async function startWatch(
 
   while (!signal.aborted) {
     let terminalSeen = false;
-    let failure: unknown;
+    let end: RunStreamEnd;
     try {
-      for await (const env of server.watchRun(
-        { runId, sinceSeq: BigInt(cursor), subscriberId },
-        { signal },
-      )) {
-        // WatchReady confirms the watch is established; it has no run state.
-        if (env.payload?.case === 'watchReady') {
-          attempt = 0;
-          setStatus(runId, dispatch, { state: 'live', attempt: 0, maxAttempts: WATCH_RECONNECT_MAX_ATTEMPTS });
-          continue;
-        }
-        const mapped = mapEnvelope(env);
-        dispatch(runsSlice.actions.eventReceived(mapped));
-        cursor = Math.max(cursor, mapped.seq);
-        if (TERMINAL_EVENT_TYPES.has(mapped.type)) {
-          terminalSeen = true;
-          break;
-        }
-      }
+      end = await getRunDataSource().openRunStream(
+        { runId, sinceSeq: cursor, subscriberId, signal },
+        (event) => {
+          if (signal.aborted) return;
+          // WatchReady confirms the watch is established; it has no run state.
+          if (event.type === 'watchReady') {
+            attempt = 0;
+            setStatus(runId, dispatch, { state: 'live', attempt: 0, maxAttempts: WATCH_RECONNECT_MAX_ATTEMPTS });
+            return;
+          }
+          dispatch(runsSlice.actions.eventReceived(event));
+          cursor = Math.max(cursor, event.seq);
+          if (TERMINAL_EVENT_TYPES.has(event.type)) {
+            terminalSeen = true;
+          }
+        },
+      );
     } catch (err) {
       if (signal.aborted) return;
       // eslint-disable-next-line no-console
       console.warn('watchRun terminated:', err);
-      if (isUnauthenticatedError(err)) {
-        setStatus(runId, dispatch, {
-          state: 'unauthenticated',
-          attempt: 0,
-          maxAttempts: WATCH_RECONNECT_MAX_ATTEMPTS,
-          message: safeMessage(err),
-        });
-        dispatch(sessionExpired());
-        return;
-      }
-      failure = err;
+      end = { kind: 'error', message: safeMessage(err) };
     }
 
     if (signal.aborted) return;
 
-    if (terminalSeen) {
+    if (terminalSeen || end.kind === 'terminal') {
       dispatch(runsSlice.actions.watchEnded(runId));
+      return;
+    }
+
+    if (end.kind === 'unauthenticated') {
+      setStatus(runId, dispatch, {
+        state: 'unauthenticated',
+        attempt: 0,
+        maxAttempts: WATCH_RECONNECT_MAX_ATTEMPTS,
+        message: end.message,
+      });
+      dispatch(sessionExpired());
       return;
     }
 
@@ -124,10 +119,9 @@ export async function startWatch(
       state: 'reconnecting',
       attempt,
       maxAttempts: WATCH_RECONNECT_MAX_ATTEMPTS,
-      message: failure instanceof ConnectError
-        ? connectCodeName(failure.code)
-        : failure
-          ? safeMessage(failure)
+      message:
+        end.kind === 'error'
+          ? (end.codeName ?? end.message ?? 'stream failed')
           : 'stream ended unexpectedly',
     });
     await sleepAbortable(watchReconnectDelayMs(attempt), signal);
