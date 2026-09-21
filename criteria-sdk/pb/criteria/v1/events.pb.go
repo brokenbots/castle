@@ -129,6 +129,7 @@ type Envelope struct {
 	//	*Envelope_RunMetadata
 	//	*Envelope_AdapterLifecycleProvisionWanted
 	//	*Envelope_AdapterLifecycleReleased
+	//	*Envelope_WorkflowGraphs
 	//	*Envelope_WatchReady
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
@@ -450,6 +451,15 @@ func (x *Envelope) GetAdapterLifecycleReleased() *AdapterLifecycleReleased {
 	return nil
 }
 
+func (x *Envelope) GetWorkflowGraphs() *WorkflowGraphs {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_WorkflowGraphs); ok {
+			return x.WorkflowGraphs
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetWatchReady() *WatchReady {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_WatchReady); ok {
@@ -594,6 +604,14 @@ type Envelope_AdapterLifecycleReleased struct {
 	AdapterLifecycleReleased *AdapterLifecycleReleased `protobuf:"bytes,36,opt,name=adapter_lifecycle_released,json=adapterLifecycleReleased,proto3,oneof"` // permanent (CRI-115)
 }
 
+type Envelope_WorkflowGraphs struct {
+	// WorkflowGraphs — compiled subworkflow layers of the run's workflow
+	// (CRI-257). Emitted by the agent after compilation so UIs can render the
+	// subworkflow graphs the top-level module references; the server stores
+	// and fans out the event verbatim and interprets none of the fields.
+	WorkflowGraphs *WorkflowGraphs `protobuf:"bytes,37,opt,name=workflow_graphs,json=workflowGraphs,proto3,oneof"`
+}
+
 type Envelope_WatchReady struct {
 	// WatchReady is a protocol-level sentinel sent once at the start of a
 	// WatchRun server-stream, after any persisted-event replay, to flush
@@ -655,6 +673,8 @@ func (*Envelope_RunMetadata) isEnvelope_Payload() {}
 func (*Envelope_AdapterLifecycleProvisionWanted) isEnvelope_Payload() {}
 
 func (*Envelope_AdapterLifecycleReleased) isEnvelope_Payload() {}
+
+func (*Envelope_WorkflowGraphs) isEnvelope_Payload() {}
 
 func (*Envelope_WatchReady) isEnvelope_Payload() {}
 
@@ -2360,6 +2380,130 @@ func (x *AdapterLifecycleReleased) GetTokenRef() string {
 	return ""
 }
 
+// SubworkflowGraph — one compiled subworkflow layer of a run's workflow
+// (CRI-257). The agent compiler emits one entry per subworkflow the top-level
+// module references, recursively. Permanent field numbers.
+type SubworkflowGraph struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// name matches the `subworkflow "<name>"` declaration in the parent
+	// module; permanent.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// source_path is the module path the parent module declared for the
+	// subworkflow (e.g. "../qa_triage_v1"); display-only; permanent.
+	SourcePath string `protobuf:"bytes,2,opt,name=source_path,json=sourcePath,proto3" json:"source_path,omitempty"`
+	// body is the compiled subworkflow module source in the same HCL dialect
+	// as the top-level workflow, so consumers parse it with the same parser;
+	// permanent.
+	Body          string `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubworkflowGraph) Reset() {
+	*x = SubworkflowGraph{}
+	mi := &file_criteria_v1_events_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubworkflowGraph) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubworkflowGraph) ProtoMessage() {}
+
+func (x *SubworkflowGraph) ProtoReflect() protoreflect.Message {
+	mi := &file_criteria_v1_events_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubworkflowGraph.ProtoReflect.Descriptor instead.
+func (*SubworkflowGraph) Descriptor() ([]byte, []int) {
+	return file_criteria_v1_events_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *SubworkflowGraph) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SubworkflowGraph) GetSourcePath() string {
+	if x != nil {
+		return x.SourcePath
+	}
+	return ""
+}
+
+func (x *SubworkflowGraph) GetBody() string {
+	if x != nil {
+		return x.Body
+	}
+	return ""
+}
+
+// WorkflowGraphs — compiled workflow graphs for a run (CRI-257). Emitted by
+// the agent after it compiles the workflow. Carries the compiled subworkflow
+// layers the top-level module references; the top-level module itself is the
+// run record's workflow source and is not repeated here. A resend replaces
+// the previous payload: consumers use the most recent workflow_graphs event
+// per run. The server stores and fans out the event verbatim and interprets
+// none of the fields.
+type WorkflowGraphs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// subworkflows carries one entry per compiled subworkflow layer,
+	// recursively (a layer may itself declare subworkflows, which appear as
+	// their own entries); permanent.
+	Subworkflows  []*SubworkflowGraph `protobuf:"bytes,1,rep,name=subworkflows,proto3" json:"subworkflows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowGraphs) Reset() {
+	*x = WorkflowGraphs{}
+	mi := &file_criteria_v1_events_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowGraphs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowGraphs) ProtoMessage() {}
+
+func (x *WorkflowGraphs) ProtoReflect() protoreflect.Message {
+	mi := &file_criteria_v1_events_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowGraphs.ProtoReflect.Descriptor instead.
+func (*WorkflowGraphs) Descriptor() ([]byte, []int) {
+	return file_criteria_v1_events_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *WorkflowGraphs) GetSubworkflows() []*SubworkflowGraph {
+	if x != nil {
+		return x.Subworkflows
+	}
+	return nil
+}
+
 type RunOutputs_Output struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                                     // output declaration name; permanent
@@ -2371,7 +2515,7 @@ type RunOutputs_Output struct {
 
 func (x *RunOutputs_Output) Reset() {
 	*x = RunOutputs_Output{}
-	mi := &file_criteria_v1_events_proto_msgTypes[32]
+	mi := &file_criteria_v1_events_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2383,7 +2527,7 @@ func (x *RunOutputs_Output) String() string {
 func (*RunOutputs_Output) ProtoMessage() {}
 
 func (x *RunOutputs_Output) ProtoReflect() protoreflect.Message {
-	mi := &file_criteria_v1_events_proto_msgTypes[32]
+	mi := &file_criteria_v1_events_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2424,7 +2568,7 @@ var File_criteria_v1_events_proto protoreflect.FileDescriptor
 
 const file_criteria_v1_events_proto_rawDesc = "" +
 	"\n" +
-	"\x18criteria/v1/events.proto\x12\vcriteria.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd8\x11\n" +
+	"\x18criteria/v1/events.proto\x12\vcriteria.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa0\x12\n" +
 	"\bEnvelope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\x05R\rschemaVersion\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x10\n" +
@@ -2461,7 +2605,8 @@ const file_criteria_v1_events_proto_rawDesc = "" +
 	"runOutputs\x12=\n" +
 	"\frun_metadata\x18\" \x01(\v2\x18.criteria.v1.RunMetadataH\x00R\vrunMetadata\x12{\n" +
 	"\"adapter_lifecycle_provision_wanted\x18# \x01(\v2,.criteria.v1.AdapterLifecycleProvisionWantedH\x00R\x1fadapterLifecycleProvisionWanted\x12e\n" +
-	"\x1aadapter_lifecycle_released\x18$ \x01(\v2%.criteria.v1.AdapterLifecycleReleasedH\x00R\x18adapterLifecycleReleased\x12:\n" +
+	"\x1aadapter_lifecycle_released\x18$ \x01(\v2%.criteria.v1.AdapterLifecycleReleasedH\x00R\x18adapterLifecycleReleased\x12F\n" +
+	"\x0fworkflow_graphs\x18% \x01(\v2\x1b.criteria.v1.WorkflowGraphsH\x00R\x0eworkflowGraphs\x12:\n" +
 	"\vwatch_ready\x18c \x01(\v2\x17.criteria.v1.WatchReadyH\x00R\n" +
 	"watchReadyB\t\n" +
 	"\apayload\"T\n" +
@@ -2592,7 +2737,14 @@ const file_criteria_v1_events_proto_rawDesc = "" +
 	"\x18AdapterLifecycleReleased\x12*\n" +
 	"\x11scope_instance_id\x18\x01 \x01(\tR\x0fscopeInstanceId\x12.\n" +
 	"\x13shim_listen_address\x18\x02 \x01(\tR\x11shimListenAddress\x12\x1b\n" +
-	"\ttoken_ref\x18\x03 \x01(\tR\btokenRef*k\n" +
+	"\ttoken_ref\x18\x03 \x01(\tR\btokenRef\"[\n" +
+	"\x10SubworkflowGraph\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
+	"\vsource_path\x18\x02 \x01(\tR\n" +
+	"sourcePath\x12\x12\n" +
+	"\x04body\x18\x03 \x01(\tR\x04body\"S\n" +
+	"\x0eWorkflowGraphs\x12A\n" +
+	"\fsubworkflows\x18\x01 \x03(\v2\x1d.criteria.v1.SubworkflowGraphR\fsubworkflows*k\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
@@ -2612,7 +2764,7 @@ func file_criteria_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_criteria_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_criteria_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_criteria_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_criteria_v1_events_proto_goTypes = []any{
 	(LogStream)(0),                          // 0: criteria.v1.LogStream
 	(*Envelope)(nil),                        // 1: criteria.v1.Envelope
@@ -2644,15 +2796,17 @@ var file_criteria_v1_events_proto_goTypes = []any{
 	(*RunMetadata)(nil),                     // 27: criteria.v1.RunMetadata
 	(*AdapterLifecycleProvisionWanted)(nil), // 28: criteria.v1.AdapterLifecycleProvisionWanted
 	(*AdapterLifecycleReleased)(nil),        // 29: criteria.v1.AdapterLifecycleReleased
-	nil,                                     // 30: criteria.v1.StepOutputCaptured.OutputsEntry
-	nil,                                     // 31: criteria.v1.WaitResumed.PayloadEntry
-	nil,                                     // 32: criteria.v1.ApprovalDecision.PayloadEntry
-	(*RunOutputs_Output)(nil),               // 33: criteria.v1.RunOutputs.Output
-	(*timestamppb.Timestamp)(nil),           // 34: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),                 // 35: google.protobuf.Struct
+	(*SubworkflowGraph)(nil),                // 30: criteria.v1.SubworkflowGraph
+	(*WorkflowGraphs)(nil),                  // 31: criteria.v1.WorkflowGraphs
+	nil,                                     // 32: criteria.v1.StepOutputCaptured.OutputsEntry
+	nil,                                     // 33: criteria.v1.WaitResumed.PayloadEntry
+	nil,                                     // 34: criteria.v1.ApprovalDecision.PayloadEntry
+	(*RunOutputs_Output)(nil),               // 35: criteria.v1.RunOutputs.Output
+	(*timestamppb.Timestamp)(nil),           // 36: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),                 // 37: google.protobuf.Struct
 }
 var file_criteria_v1_events_proto_depIdxs = []int32{
-	34, // 0: criteria.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
+	36, // 0: criteria.v1.Envelope.ts:type_name -> google.protobuf.Timestamp
 	2,  // 1: criteria.v1.Envelope.run_started:type_name -> criteria.v1.RunStarted
 	3,  // 2: criteria.v1.Envelope.run_completed:type_name -> criteria.v1.RunCompleted
 	4,  // 3: criteria.v1.Envelope.run_failed:type_name -> criteria.v1.RunFailed
@@ -2680,18 +2834,20 @@ var file_criteria_v1_events_proto_depIdxs = []int32{
 	27, // 25: criteria.v1.Envelope.run_metadata:type_name -> criteria.v1.RunMetadata
 	28, // 26: criteria.v1.Envelope.adapter_lifecycle_provision_wanted:type_name -> criteria.v1.AdapterLifecycleProvisionWanted
 	29, // 27: criteria.v1.Envelope.adapter_lifecycle_released:type_name -> criteria.v1.AdapterLifecycleReleased
-	13, // 28: criteria.v1.Envelope.watch_ready:type_name -> criteria.v1.WatchReady
-	0,  // 29: criteria.v1.StepLog.stream:type_name -> criteria.v1.LogStream
-	35, // 30: criteria.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
-	30, // 31: criteria.v1.StepOutputCaptured.outputs:type_name -> criteria.v1.StepOutputCaptured.OutputsEntry
-	31, // 32: criteria.v1.WaitResumed.payload:type_name -> criteria.v1.WaitResumed.PayloadEntry
-	32, // 33: criteria.v1.ApprovalDecision.payload:type_name -> criteria.v1.ApprovalDecision.PayloadEntry
-	33, // 34: criteria.v1.RunOutputs.outputs:type_name -> criteria.v1.RunOutputs.Output
-	35, // [35:35] is the sub-list for method output_type
-	35, // [35:35] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	31, // 28: criteria.v1.Envelope.workflow_graphs:type_name -> criteria.v1.WorkflowGraphs
+	13, // 29: criteria.v1.Envelope.watch_ready:type_name -> criteria.v1.WatchReady
+	0,  // 30: criteria.v1.StepLog.stream:type_name -> criteria.v1.LogStream
+	37, // 31: criteria.v1.AdapterEvent.data:type_name -> google.protobuf.Struct
+	32, // 32: criteria.v1.StepOutputCaptured.outputs:type_name -> criteria.v1.StepOutputCaptured.OutputsEntry
+	33, // 33: criteria.v1.WaitResumed.payload:type_name -> criteria.v1.WaitResumed.PayloadEntry
+	34, // 34: criteria.v1.ApprovalDecision.payload:type_name -> criteria.v1.ApprovalDecision.PayloadEntry
+	35, // 35: criteria.v1.RunOutputs.outputs:type_name -> criteria.v1.RunOutputs.Output
+	30, // 36: criteria.v1.WorkflowGraphs.subworkflows:type_name -> criteria.v1.SubworkflowGraph
+	37, // [37:37] is the sub-list for method output_type
+	37, // [37:37] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_criteria_v1_events_proto_init() }
@@ -2727,6 +2883,7 @@ func file_criteria_v1_events_proto_init() {
 		(*Envelope_RunMetadata)(nil),
 		(*Envelope_AdapterLifecycleProvisionWanted)(nil),
 		(*Envelope_AdapterLifecycleReleased)(nil),
+		(*Envelope_WorkflowGraphs)(nil),
 		(*Envelope_WatchReady)(nil),
 	}
 	type x struct{}
@@ -2735,7 +2892,7 @@ func file_criteria_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_criteria_v1_events_proto_rawDesc), len(file_criteria_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   33,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

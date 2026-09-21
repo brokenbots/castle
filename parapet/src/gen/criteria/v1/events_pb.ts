@@ -312,6 +312,17 @@ export class Envelope extends Message<Envelope> {
     case: "adapterLifecycleReleased";
   } | {
     /**
+     * WorkflowGraphs — compiled subworkflow layers of the run's workflow
+     * (CRI-257). Emitted by the agent after compilation so UIs can render the
+     * subworkflow graphs the top-level module references; the server stores
+     * and fans out the event verbatim and interprets none of the fields.
+     *
+     * @generated from field: criteria.v1.WorkflowGraphs workflow_graphs = 37;
+     */
+    value: WorkflowGraphs;
+    case: "workflowGraphs";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -363,6 +374,7 @@ export class Envelope extends Message<Envelope> {
     { no: 34, name: "run_metadata", kind: "message", T: RunMetadata, oneof: "payload" },
     { no: 35, name: "adapter_lifecycle_provision_wanted", kind: "message", T: AdapterLifecycleProvisionWanted, oneof: "payload" },
     { no: 36, name: "adapter_lifecycle_released", kind: "message", T: AdapterLifecycleReleased, oneof: "payload" },
+    { no: 37, name: "workflow_graphs", kind: "message", T: WorkflowGraphs, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -1938,6 +1950,118 @@ export class AdapterLifecycleReleased extends Message<AdapterLifecycleReleased> 
 
   static equals(a: AdapterLifecycleReleased | PlainMessage<AdapterLifecycleReleased> | undefined, b: AdapterLifecycleReleased | PlainMessage<AdapterLifecycleReleased> | undefined): boolean {
     return proto3.util.equals(AdapterLifecycleReleased, a, b);
+  }
+}
+
+/**
+ * SubworkflowGraph — one compiled subworkflow layer of a run's workflow
+ * (CRI-257). The agent compiler emits one entry per subworkflow the top-level
+ * module references, recursively. Permanent field numbers.
+ *
+ * @generated from message criteria.v1.SubworkflowGraph
+ */
+export class SubworkflowGraph extends Message<SubworkflowGraph> {
+  /**
+   * name matches the `subworkflow "<name>"` declaration in the parent
+   * module; permanent.
+   *
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * source_path is the module path the parent module declared for the
+   * subworkflow (e.g. "../qa_triage_v1"); display-only; permanent.
+   *
+   * @generated from field: string source_path = 2;
+   */
+  sourcePath = "";
+
+  /**
+   * body is the compiled subworkflow module source in the same HCL dialect
+   * as the top-level workflow, so consumers parse it with the same parser;
+   * permanent.
+   *
+   * @generated from field: string body = 3;
+   */
+  body = "";
+
+  constructor(data?: PartialMessage<SubworkflowGraph>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.SubworkflowGraph";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "source_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "body", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SubworkflowGraph {
+    return new SubworkflowGraph().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SubworkflowGraph {
+    return new SubworkflowGraph().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SubworkflowGraph {
+    return new SubworkflowGraph().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SubworkflowGraph | PlainMessage<SubworkflowGraph> | undefined, b: SubworkflowGraph | PlainMessage<SubworkflowGraph> | undefined): boolean {
+    return proto3.util.equals(SubworkflowGraph, a, b);
+  }
+}
+
+/**
+ * WorkflowGraphs — compiled workflow graphs for a run (CRI-257). Emitted by
+ * the agent after it compiles the workflow. Carries the compiled subworkflow
+ * layers the top-level module references; the top-level module itself is the
+ * run record's workflow source and is not repeated here. A resend replaces
+ * the previous payload: consumers use the most recent workflow_graphs event
+ * per run. The server stores and fans out the event verbatim and interprets
+ * none of the fields.
+ *
+ * @generated from message criteria.v1.WorkflowGraphs
+ */
+export class WorkflowGraphs extends Message<WorkflowGraphs> {
+  /**
+   * subworkflows carries one entry per compiled subworkflow layer,
+   * recursively (a layer may itself declare subworkflows, which appear as
+   * their own entries); permanent.
+   *
+   * @generated from field: repeated criteria.v1.SubworkflowGraph subworkflows = 1;
+   */
+  subworkflows: SubworkflowGraph[] = [];
+
+  constructor(data?: PartialMessage<WorkflowGraphs>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.WorkflowGraphs";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "subworkflows", kind: "message", T: SubworkflowGraph, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowGraphs {
+    return new WorkflowGraphs().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkflowGraphs {
+    return new WorkflowGraphs().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkflowGraphs {
+    return new WorkflowGraphs().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkflowGraphs | PlainMessage<WorkflowGraphs> | undefined, b: WorkflowGraphs | PlainMessage<WorkflowGraphs> | undefined): boolean {
+    return proto3.util.equals(WorkflowGraphs, a, b);
   }
 }
 

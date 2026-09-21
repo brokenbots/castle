@@ -140,6 +140,8 @@ func newPayloadForType(typ string) (proto.Message, error) {
 		return &pb.AdapterLifecycleProvisionWanted{}, nil
 	case "adapter.lifecycle.released":
 		return &pb.AdapterLifecycleReleased{}, nil
+	case "workflow.graphs":
+		return &pb.WorkflowGraphs{}, nil
 	default:
 		return nil, fmt.Errorf("unknown event type %q", typ)
 	}
@@ -203,6 +205,8 @@ func payloadMessage(env *criteria.Envelope) proto.Message {
 		return p.AdapterLifecycleProvisionWanted
 	case *pb.Envelope_AdapterLifecycleReleased:
 		return p.AdapterLifecycleReleased
+	case *pb.Envelope_WorkflowGraphs:
+		return p.WorkflowGraphs
 	default:
 		return nil
 	}
@@ -266,6 +270,8 @@ func setPayload(env *criteria.Envelope, msg proto.Message) {
 		env.Payload = &criteria.Envelope_AdapterLifecycleProvisionWanted{AdapterLifecycleProvisionWanted: p}
 	case *pb.AdapterLifecycleReleased:
 		env.Payload = &criteria.Envelope_AdapterLifecycleReleased{AdapterLifecycleReleased: p}
+	case *pb.WorkflowGraphs:
+		env.Payload = &criteria.Envelope_WorkflowGraphs{WorkflowGraphs: p}
 	}
 }
 
