@@ -218,6 +218,90 @@ describe('WorkflowGraph', () => {
     expect(screen.getAllByLabelText('status idle')).toHaveLength(4);
   });
 
+  describe('cyclic graph rendering', () => {
+    // A review-shaped loop: build -> review -> build, plus an acyclic
+    // tail.
+    function loopGraph(): WorkflowGraph {
+      return graph({
+        nodes: [
+          { id: 'build', kind: 'step' },
+          { id: 'review', kind: 'step' },
+          { id: 'done', kind: 'state', terminal: true, success: true },
+        ],
+        edges: [
+          { from: 'build', via: 'success', to: 'review' },
+          { from: 'review', via: 'revise', to: 'build' },
+          { from: 'review', via: 'approve', to: 'done' },
+        ],
+      });
+    }
+
+    test('renders a loop badge on the source of the upward cycle leg', async () => {
+      await renderGraph(<WorkflowGraph graph={loopGraph()} />);
+      const badge = screen.getByTestId('graph-node-loop-badge');
+      // The badge is collapsed onto review — the node whose revise edge
+      // sweeps back up to build — and names the target.
+      const holder = badge.closest('[data-node-id="review"]');
+      expect(holder).not.toBeNull();
+      expect(badge).toHaveTextContent('↺ loops back to build');
+    });
+
+    test('renders cycle legs with the loop edge class and upward legs dashed', async () => {
+      await renderGraph(<WorkflowGraph graph={loopGraph()} />);
+      const loopEdges = document.querySelectorAll('.react-flow__edge.workflow-edge-loop');
+      expect(loopEdges).toHaveLength(2);
+      // Both legs are violet; the upward leg (review -> build, e1) is
+      // further de-emphasized (lower opacity + dashed), the forward leg
+      // (build -> review, e0) stays solid. React Flow applies the edge
+      // style prop inline.
+      for (const edge of loopEdges) {
+        const path = edge.querySelector('path.react-flow__edge-path') as SVGPathElement | null;
+        expect(path).not.toBeNull();
+        expect(path!.style.stroke).toBe('#a78bfa');
+      }
+      const upPath = loopEdges[1].querySelector('path.react-flow__edge-path') as SVGPathElement;
+      const forwardPath = loopEdges[0].querySelector('path.react-flow__edge-path') as SVGPathElement;
+      expect(upPath.style.opacity).toBe('0.7');
+      expect(forwardPath.style.opacity).toBe('0.9');
+      expect(upPath.style.strokeDasharray).toBeTruthy();
+      expect(forwardPath.style.strokeDasharray).toBe('');
+    });
+
+    test('renders non-cycle upward returns dimmed and dashed, without loop styling', async () => {
+      // build layers test and failed onto layer 1, so test -> failed
+      // sweeps at/behind its source layer — but failed never reaches
+      // test: a back edge, not a loop.
+      const returns = graph({
+        nodes: [
+          { id: 'build', kind: 'step' },
+          { id: 'test', kind: 'step' },
+          { id: 'failed', kind: 'state' },
+        ],
+        edges: [
+          { from: 'build', via: 'success', to: 'test' },
+          { from: 'build', via: 'failure', to: 'failed' },
+          { from: 'test', via: 'failure', to: 'failed' },
+        ],
+      });
+      await renderGraph(<WorkflowGraph graph={returns} />);
+      const backEdge = document.querySelector('.react-flow__edge.workflow-edge-back');
+      expect(backEdge).not.toBeNull();
+      const path = backEdge!.querySelector('path.react-flow__edge-path') as SVGPathElement;
+      expect(path.style.stroke).toBe('#64748b');
+      expect(path.style.opacity).toBe('0.55');
+      expect(path.style.strokeDasharray).toBeTruthy();
+      // No loop badge: the graph is acyclic.
+      expect(screen.queryByTestId('graph-node-loop-badge')).not.toBeInTheDocument();
+    });
+
+    test('exposes the loop to screen readers via aria-label on badge edges', async () => {
+      await renderGraph(<WorkflowGraph graph={loopGraph()} />);
+      const loopEdges = Array.from(document.querySelectorAll('.react-flow__edge.workflow-edge-loop'));
+      const labeled = loopEdges.filter((edge) => edge.getAttribute('aria-label') === 'review loops back to build');
+      expect(labeled).toHaveLength(1);
+    });
+  });
+
   describe('subworkflow explore affordance (CRI-257)', () => {
     function subworkflowGraph(): WorkflowGraph {
       return graph({

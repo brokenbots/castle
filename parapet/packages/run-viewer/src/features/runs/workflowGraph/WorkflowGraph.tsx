@@ -13,7 +13,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { WorkflowGraph, WorkflowGraphNode, WorkflowNodeKind } from './parseWorkflowHcl';
-import { layoutWorkflow, type GraphOrientation } from './layout';
+import { classifyEdges, layoutWorkflow, type GraphOrientation } from './layout';
 import type { ForEachProgress, StepNodeStatus } from './nodeStatus';
 
 export interface WorkflowGraphProps {
@@ -58,6 +58,13 @@ interface WorkflowNodeData extends Record<string, unknown> {
   status: StepNodeStatus;
   /** for_each iteration badge text, e.g. "2/5". */
   badge?: string;
+  /**
+   * Targets of this node's loop legs (edges classified as back + cycle),
+   * e.g. ["build"] — rendered as the collapsed loop badge "↺ loops back
+   * to build". Cycles are the designed norm in workflows, so the badge
+   * reads as a first-class feature rather than edge noise.
+   */
+  loopsTo?: string[];
   /** Currently selected node (highlight ring). */
   selected: boolean;
   /** Graph reading direction; drives handle sides. */
@@ -113,7 +120,7 @@ const HANDLE_POSITION: Record<GraphOrientation, { target: Position; source: Posi
 };
 
 function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
-  const { node, status, badge, selected, orientation, explore } = data;
+  const { node, status, badge, selected, orientation, explore, loopsTo } = data;
   const handle = HANDLE_POSITION[orientation];
   const selectedClass = selected ? ' ring-2 ring-sky-400' : '';
   return (
@@ -128,6 +135,11 @@ function WorkflowNodeView({ data }: NodeProps<WorkflowFlowNode>) {
         {KIND_LABEL[node.kind]}
       </p>
       {badge && <p className="text-[10px] font-mono text-slate-400">{badge}</p>}
+      {loopsTo && loopsTo.length > 0 && (
+        <p data-testid="graph-node-loop-badge" className="mt-0.5 text-[10px] font-mono text-violet-300">
+          ↺ loops back to {truncate(loopsTo.join(', '))}
+        </p>
+      )}
       {explore && (
         <button
           type="button"
@@ -252,6 +264,17 @@ function buildFlow(
   exploreableLayers?: Set<string>,
 ): { nodes: WorkflowFlowNode[]; edges: Edge[] } {
   const positions = layoutWorkflow(graph, { orientation });
+  const roles = classifyEdges(graph);
+  // Upward loop legs carry the collapsed loop badge on their source node
+  // ("↺ loops back to X"); badge edges from the same source are grouped
+  // so a node shows one badge listing its targets.
+  const loopsTo = new Map<string, string[]>();
+  for (const index of roles.loopBadge) {
+    const edge = graph.edges[index];
+    const targets = loopsTo.get(edge.from) ?? [];
+    if (!targets.includes(edge.to)) targets.push(edge.to);
+    loopsTo.set(edge.from, targets);
+  }
   const nodes: WorkflowFlowNode[] = graph.nodes.map((node) => {
     const progress = forEachProgress[node.id];
     // Live per-iteration progress wins; otherwise show the declared
@@ -269,6 +292,7 @@ function buildFlow(
         node,
         status: statuses[node.id] ?? 'idle',
         badge,
+        loopsTo: loopsTo.get(node.id),
         selected: node.id === selectedId,
         orientation,
         explore: node.subworkflow
@@ -281,18 +305,39 @@ function buildFlow(
       },
     };
   });
-  const edges: Edge[] = graph.edges.map((edge, index) => ({
-    id: `e${index}`,
-    source: edge.from,
-    target: edge.to,
-    label: truncate(edge.via),
-    type: 'smoothstep',
-    style: { stroke: '#475569' },
-    labelStyle: { fill: '#cbd5e1', fontSize: 10 },
-    labelBgStyle: { fill: '#0f172a' },
-    labelBgPadding: [4, 2],
-    labelBgBorderRadius: 3,
-  }));
+  const edges: Edge[] = graph.edges.map((edge, index) => {
+    const flowEdge: Edge = {
+      id: `e${index}`,
+      source: edge.from,
+      target: edge.to,
+      label: truncate(edge.via),
+      type: 'smoothstep',
+      style: { stroke: '#475569' },
+      labelStyle: { fill: '#cbd5e1', fontSize: 10 },
+      labelBgStyle: { fill: '#0f172a' },
+      labelBgPadding: [4, 2],
+      labelBgBorderRadius: 3,
+    };
+    if (roles.cycle.has(index)) {
+      // Cycle leg: violet, dashed when it sweeps upward. Forward legs
+      // stay solid so the loop reads without erasing the flow direction.
+      flowEdge.style = roles.back.has(index)
+        ? { stroke: '#a78bfa', strokeDasharray: '6 4', opacity: 0.7 }
+        : { stroke: '#a78bfa', opacity: 0.9 };
+      flowEdge.className = 'workflow-edge-loop';
+      if (roles.loopBadge.has(index)) {
+        // The badge on the source node carries the target; the edge
+        // itself is de-emphasized. The label is for screen readers.
+        flowEdge.ariaLabel = `${edge.from} loops back to ${edge.to}`;
+      }
+    } else if (roles.back.has(index)) {
+      // Layered back edge without a cycle: an upward return (failure
+      // convergence, visited-guard artifact), dimmed and dashed.
+      flowEdge.style = { stroke: '#64748b', strokeDasharray: '6 4', opacity: 0.55 };
+      flowEdge.className = 'workflow-edge-back';
+    }
+    return flowEdge;
+  });
   return { nodes, edges };
 }
 
