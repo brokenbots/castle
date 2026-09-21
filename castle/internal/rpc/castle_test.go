@@ -914,7 +914,7 @@ func TestWatchRun_CursorUpdate_FinalWriteRetriesBusy(t *testing.T) {
 }
 
 func TestWatchRun_CursorUpdate_IntermediateWriteRetriesBusy(t *testing.T) {
-	ts, fault := newFaultStack(t /*failOnSeq=*/, 100, 0)
+	ts, fault := newFaultStack(t, 0 /*failOnSeq=*/, 1 /*failOnCall=*/)
 	_, oClient, cClient := ts.startServer(t)
 	overseerID, _ := mustRegister(t, oClient)
 	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
@@ -949,10 +949,9 @@ func TestWatchRun_CursorUpdate_IntermediateWriteRetriesBusy(t *testing.T) {
 	if !fault.Failed() {
 		t.Fatal("expected an intermediate cursor write to be faulted")
 	}
-	// The writer flushes on the 100-envelope batch boundary, so the first
-	// intermediate write lands at seq 100 while the final write lands at
-	// seq 500. Faulting seq 100 therefore deterministically faults an
-	// intermediate write rather than the final one.
+	// The fault lands on the first upsert call, which by construction runs
+	// during replay and is therefore an intermediate write; the final flush
+	// runs after the stream closes, in the deferred writer shutdown.
 	if fault.Calls() < 1 {
 		t.Fatalf("expected at least 1 upsert call, got %d", fault.Calls())
 	}
