@@ -1659,6 +1659,103 @@ describe('RunDetailPage panel fullscreen', () => {
       expect(sourceBody.textContent).toContain('\n  "name": "inner_task"');
       expect(sourceBody.textContent).not.toContain(compiledBody.slice(0, 40));
     });
+
+    // CRI-296: nested layers ride inside a layer body's own `subworkflows`
+    // key — drill-down must not stop one layer deep. Mirrors run fd98126e:
+    // handler inlines pair_programming_loop, which itself renders as a
+    // depth-3 stack (linear_develop_v1 > handler > pair_programming_loop).
+    test('a nested layer inside an opened layer opens at depth 3', async () => {
+      // Top-level module whose step runs the `handler` layer.
+      fixture.data.workflowHash =
+        'workflow {\n  name = "linear_develop_v1"\n  initial_state = "build"\n}\nsubworkflow "handler" {\n  source = "../handler"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  target = subworkflow.handler\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
+      const pairBody = JSON.stringify({
+        name: 'pair_programming_loop',
+        initial_state: 'pair',
+        steps: [{ name: 'pair', outcomes: [{ name: 'success', next: 'wrap' }] }],
+        states: [{ name: 'wrap', terminal: true, success: true }],
+      });
+      // The handler layer's compiled body: a step runs the nested
+      // `pair_programming_loop` layer, which the body inlines.
+      const handlerBody = JSON.stringify({
+        name: 'handler',
+        initial_state: 'route',
+        steps: [
+          { name: 'route', subworkflow: 'pair_programming_loop', outcomes: [{ name: 'success', next: 'done_handler' }] },
+        ],
+        states: [{ name: 'done_handler', terminal: true, success: true }],
+        subworkflows: [
+          { name: 'pair_programming_loop', source_path: '../pair_programming_loop_v1', body: pairBody },
+        ],
+      });
+      renderDetail();
+      await screen.findByText('Workflow source');
+      act(() => {
+        store.dispatch(
+          runsSlice.actions.eventReceived({
+            schemaVersion: 1,
+            runId: 'run-1',
+            seq: 1,
+            type: 'workflowGraphs',
+            ts: new Date(0).toISOString(),
+            correlationId: '',
+            payload: {
+              subworkflows: [{ name: 'handler', sourcePath: '../handler', body: handlerBody }],
+            },
+          }),
+        );
+      });
+
+      // Open the handler layer from the top-level workflow.
+      fireEvent.click(within(nodeById('test')).getByTestId('graph-node-explore'));
+      await vi.waitFor(
+        () => {
+          expect(visibleNodeIds()).toContain('route');
+        },
+        { timeout: 1500 },
+      );
+
+      // INSIDE the handler layer, the nested affordance is enabled (the
+      // regression: nested layers must land in the built layer map).
+      const nestedAffordance = within(nodeById('route')).getByTestId('graph-node-explore');
+      expect(nestedAffordance).toBeEnabled();
+      fireEvent.click(nestedAffordance);
+
+      // The breadcrumb reads linear_develop_v1 > handler >
+      // pair_programming_loop, and the graph shows the nested layer's own
+      // nodes.
+      const crumbs = screen.getAllByTestId('layer-crumb');
+      expect(crumbs).toHaveLength(2);
+      expect(crumbs[0]).toHaveTextContent('handler');
+      expect(crumbs[1]).toHaveTextContent('pair_programming_loop');
+      expect(crumbs[1]).toHaveAttribute('aria-current', 'page');
+      await vi.waitFor(
+        () => {
+          expect(visibleNodeIds()).toContain('pair');
+          expect(visibleNodeIds()).not.toContain('route');
+        },
+        { timeout: 1500 },
+      );
+
+      // Back navigation returns through the stack: one level up first...
+      fireEvent.click(crumbs[0]);
+      await vi.waitFor(
+        () => {
+          expect(visibleNodeIds()).toContain('route');
+        },
+        { timeout: 1500 },
+      );
+      expect(screen.getAllByTestId('layer-crumb')).toHaveLength(1);
+
+      // ...and the root crumb closes the drill-down.
+      fireEvent.click(screen.getByTestId('layer-crumb-root'));
+      await vi.waitFor(
+        () => {
+          expect(visibleNodeIds()).toContain('build');
+        },
+        { timeout: 1500 },
+      );
+      expect(screen.queryByTestId('layer-breadcrumb')).not.toBeInTheDocument();
+    });
   });
 });
 

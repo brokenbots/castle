@@ -19,6 +19,20 @@ function envelope(
   };
 }
 
+// A compiled module body helper: the `criteria compile --format json` shape
+// the CRI-294 contract pins, with an optional inline `subworkflows` key
+// (CRI-296) listing the layers this module's own steps reference.
+function moduleBody(name: string, subworkflows?: unknown[]): string {
+  const module: Record<string, unknown> = {
+    name,
+    initial_state: 'begin',
+    steps: [{ name: 'begin', outcomes: [{ name: 'success', next: 'done' }] }],
+    states: [{ name: 'done', terminal: true, success: true }],
+  };
+  if (subworkflows) module.subworkflows = subworkflows;
+  return JSON.stringify(module);
+}
+
 const LAYER_BODY = 'workflow {\n  name = "qa_triage"\n  initial_state = "triage"\n}\nstep "triage" {\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
 
 // The CRI-294 wire contract: the emitter ships each layer body as the
@@ -151,6 +165,158 @@ describe('buildSubworkflowLayers', () => {
     const layers = buildSubworkflowLayers({ subworkflows: [{ name: 'empty', body: '' }] });
     expect(layers[0].graph).toBeNull();
     expect(layers[0].compiledJson).toBe(false);
+  });
+
+  // CRI-296 regression: the emitter ships the FULL nesting — a layer body's
+  // `subworkflows` key inlines the layers that body's own steps reference.
+  // Every nested layer must land in the built map, or the affordances
+  // inside an opened layer gray out ("Subworkflow <name> graph not
+  // available yet"). Mirrors run fd98126e: handler inlines four nested
+  // layers, each with its own compiled body.
+  test('registers nested layers inlined in a compiled layer body', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [
+        {
+          name: 'handler',
+          sourcePath: '../linear_develop_v1/handler',
+          body: moduleBody('handler', [
+            { name: 'branch_manager', source_path: '../branch_manager_v1', body: moduleBody('branch_manager') },
+            { name: 'pr_reviewer_loop', source_path: '../pr_reviewer_loop_v1', body: moduleBody('pr_reviewer_loop') },
+            { name: 'pair_programming_loop', source_path: '../pair_programming_loop_v1', body: moduleBody('pair_programming_loop') },
+            {
+              name: 'pair_programming_loop_feedback',
+              source_path: '../pair_programming_loop_feedback_v1',
+              body: moduleBody('pair_programming_loop_feedback'),
+            },
+          ]),
+        },
+      ],
+    });
+    expect(layers.map((l) => l.name)).toEqual([
+      'handler',
+      'branch_manager',
+      'pr_reviewer_loop',
+      'pair_programming_loop',
+      'pair_programming_loop_feedback',
+    ]);
+    // Every layer parses to a graph: each affordance is enabled.
+    for (const layer of layers) {
+      expect(layer.compiledJson).toBe(true);
+      expect(layer.graph?.name).toBe(layer.name);
+      expect(layer.graph?.nodes.map((n) => n.id)).toEqual(['begin', 'done']);
+      expect(layer.graph?.startAt).toBe('begin');
+    }
+    // The display-only source path rides snake_case inside a compiled body.
+    expect(layers[1].sourcePath).toBe('../branch_manager_v1');
+  });
+
+  // The recursion is not hard-coded to two levels: a body may inline bodies
+  // that inline bodies, at any depth the wire carries.
+  test('registers layers at depth 3+ the same way', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [
+        {
+          name: 'handler',
+          sourcePath: '../handler',
+          body: moduleBody('handler', [
+            {
+              name: 'mid',
+              source_path: './mid',
+              body: moduleBody('mid', [
+                {
+                  name: 'inner',
+                  source_path: './inner',
+                  body: moduleBody('inner', [
+                    { name: 'leaf', sourcePath: './leaf', body: moduleBody('leaf') },
+                  ]),
+                },
+              ]),
+            },
+          ]),
+        },
+      ],
+    });
+    expect(layers.map((l) => l.name)).toEqual(['handler', 'mid', 'inner', 'leaf']);
+    for (const layer of layers) expect(layer.graph).not.toBeNull();
+    // The innermost entry rides camelCase inside a hand-built body.
+    expect(layers[3].sourcePath).toBe('./leaf');
+  });
+
+  // Layer names are unique across the compiled tree in practice; a repeat
+  // collapses to its shallowest occurrence so the name-keyed layer map
+  // resolves deterministically.
+  test('a repeated layer name keeps its shallowest occurrence', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [
+        {
+          name: 'handler',
+          sourcePath: '../handler',
+          body: moduleBody('handler', [
+            { name: 'shared', source_path: './shared_nested', body: moduleBody('shared_nested') },
+          ]),
+        },
+        { name: 'shared', sourcePath: './shared_top', body: moduleBody('shared_top') },
+      ],
+    });
+    expect(layers.map((l) => l.name)).toEqual(['handler', 'shared']);
+    const shared = layers[1];
+    expect(shared.sourcePath).toBe('./shared_top');
+    expect(shared.graph?.name).toBe('shared_top');
+  });
+
+  test('a nested body that does not parse keeps the layer with a null graph', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [
+        {
+          name: 'handler',
+          body: moduleBody('handler', [
+            { name: 'broken', source_path: './broken', body: 'workflow { this is not hcl }' },
+          ]),
+        },
+      ],
+    });
+    expect(layers.map((l) => l.name)).toEqual(['handler', 'broken']);
+    const broken = layers[1];
+    expect(broken.compiledJson).toBe(false);
+    expect(broken.graph).toBeNull();
+    // The source pane can still show the raw body.
+    expect(broken.body).toBe('workflow { this is not hcl }');
+  });
+
+  test('nested entries without a name or body are skipped', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [
+        {
+          name: 'handler',
+          body: moduleBody('handler', [
+            { body: moduleBody('orphan') },
+            { name: 'no-body' },
+            'garbage',
+            { name: 'ok', body: moduleBody('ok') },
+          ]),
+        },
+      ],
+    });
+    expect(layers.map((l) => l.name)).toEqual(['handler', 'ok']);
+  });
+
+  // The inline walk is lenient about the carrier body's own shape: any
+  // JSON body with a `subworkflows` array registers its layers, even when
+  // the carrier itself does not parse to a graph.
+  test('a JSON body without the module shape still registers its inlined layers', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [
+        {
+          name: 'odd',
+          body: JSON.stringify({
+            subworkflows: [{ name: 'nested', source_path: './nested', body: moduleBody('nested') }],
+          }),
+        },
+      ],
+    });
+    expect(layers.map((l) => l.name)).toEqual(['odd', 'nested']);
+    expect(layers[0].graph).toBeNull();
+    expect(layers[1].graph?.name).toBe('nested');
   });
 });
 
