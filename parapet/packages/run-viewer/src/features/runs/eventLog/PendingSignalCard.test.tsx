@@ -219,4 +219,24 @@ describe('PendingSignalCard', () => {
     expect(submit).not.toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
     expect(screen.getByTestId('pending-signal-note')).toBeEnabled();
   });
+
+  test('copies the curl example via the execCommand fallback on insecure origins', async () => {
+    // The castle ingress is plain HTTP, so navigator.clipboard is undefined
+    // for real browsers there (CRI-284); jsdom matches that shape.
+    expect(navigator.clipboard).toBeUndefined();
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      value: execCommand,
+      configurable: true,
+    });
+
+    renderCard();
+    const summary = screen.getByText(/Resume via curl/i);
+    // The copy affordance lives inside the collapsed details block.
+    (summary.parentElement as HTMLDetailsElement).open = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+
+    await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'));
+    expect(document.querySelectorAll('textarea')).toHaveLength(0);
+  });
 });

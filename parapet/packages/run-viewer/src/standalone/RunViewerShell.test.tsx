@@ -80,7 +80,8 @@ describe('RunViewerShell', () => {
   beforeEach(() => {
     dataSource = fakeDataSource();
     setRunDataSource(dataSource);
-    vi.spyOn(crypto, 'randomUUID').mockReturnValue('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    // No crypto.randomUUID mock needed: the subscriber id is generated from
+    // crypto.getRandomValues (CRI-284), which jsdom provides.
   });
 
   afterEach(() => {
