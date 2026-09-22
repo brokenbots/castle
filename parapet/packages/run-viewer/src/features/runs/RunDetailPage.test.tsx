@@ -18,7 +18,7 @@ import { createRunViewerStore } from '../../store';
 import { selectRunEvents, runsSlice } from './runsSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
-import wirePayload from './workflowGraph/fixtures/workflow_graphs_fd98126e.json';
+import wirePayload from './workflowGraph/fixtures/workflow_graphs_synthetic.json';
 
 vi.mock('./watchRun', () => ({
   startWatch: vi.fn().mockResolvedValue(undefined),
@@ -1662,9 +1662,10 @@ describe('RunDetailPage panel fullscreen', () => {
     });
 
     // CRI-296: nested layers ride inside a layer body's own `subworkflows`
-    // key — drill-down must not stop one layer deep. Mirrors run fd98126e:
-    // handler inlines pair_programming_loop, which itself renders as a
-    // depth-3 stack (linear_develop_v1 > handler > pair_programming_loop).
+    // key — drill-down must not stop one layer deep. Shaped like the
+    // nesting observed on run fd98126e: handler inlines
+    // pair_programming_loop, which renders as a depth-3 stack
+    // (linear_develop_v1 > handler > pair_programming_loop).
     test('a nested layer inside an opened layer opens at depth 3', async () => {
       // Top-level module whose step runs the `handler` layer.
       fixture.data.workflowHash =
@@ -1758,14 +1759,19 @@ describe('RunDetailPage panel fullscreen', () => {
       expect(screen.queryByTestId('layer-breadcrumb')).not.toBeInTheDocument();
     });
 
-    // CRI-297: the live wire shape differs from the synthesized one above —
-    // the emitter stringifies only top-level layer bodies, so the nested
+    // CRI-297: the wire shape observed on run fd98126e (WorkflowGraphs
+    // seq 1) differs from the synthesized string-body one above — the
+    // emitter stringifies only top-level layer bodies, so the nested
     // entries inside a body's `subworkflows` key ride as INLINE OBJECTS
-    // with snake_case source_path (run fd98126e, WorkflowGraphs seq 1).
-    // The CRI-296 walk skipped those entries entirely; every nested
-    // affordance inside the opened handler layer stayed grayed out with
-    // "graph not available yet". The fixture pins the exact live payload.
-    test('the fd98126e wire shape (inline object nested bodies) drills to depth 3', async () => {
+    // with snake_case source_path. The CRI-296 walk skipped those entries
+    // entirely; every nested affordance inside the opened handler layer
+    // stayed grayed out with "graph not available yet".
+    //
+    // The fixture is a SYNTHESIZED stand-in for that wire shape — the
+    // verbatim captured payload was not retained — exercising the same
+    // guards (top-level string body, inline-object nested bodies,
+    // snake_case source_path), not a literal replay of the run.
+    test('a synthesized fd98126e-style wire shape (inline object nested bodies) drills to depth 3', async () => {
       fixture.data.workflowHash =
         'workflow {\n  name = "linear_develop_v1"\n  initial_state = "build"\n}\nsubworkflow "handler" {\n  source = "../handler"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  target = subworkflow.handler\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
       renderDetail();

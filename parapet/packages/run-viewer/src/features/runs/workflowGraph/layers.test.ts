@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { EventEnvelope } from '../../../api/castleApi';
 import { buildSubworkflowLayers, layerSourceText, selectWorkflowGraphs } from './layers';
-import wirePayload from './fixtures/workflow_graphs_fd98126e.json';
+import wirePayload from './fixtures/workflow_graphs_synthetic.json';
 
 function envelope(
   type: string,
@@ -172,8 +172,9 @@ describe('buildSubworkflowLayers', () => {
   // `subworkflows` key inlines the layers that body's own steps reference.
   // Every nested layer must land in the built map, or the affordances
   // inside an opened layer gray out ("Subworkflow <name> graph not
-  // available yet"). Mirrors run fd98126e: handler inlines four nested
-  // layers, each with its own compiled body.
+  // available yet"). Shaped like the nesting observed on run fd98126e
+  // (handler inlining four nested layers, each with its own compiled
+  // body); the bodies themselves are synthesized.
   test('registers nested layers inlined in a compiled layer body', () => {
     const layers = buildSubworkflowLayers({
       subworkflows: [
@@ -320,16 +321,23 @@ describe('buildSubworkflowLayers', () => {
     expect(layers[1].graph?.name).toBe('nested');
   });
 
-  // CRI-297 regression, pinning the EXACT live wire shape (run fd98126e,
-  // WorkflowGraphs seq 1): the emitter stringifies only the top-level layer
+  // CRI-297 regression, pinning the wire SHAPE observed on run fd98126e
+  // (WorkflowGraphs seq 1): the emitter stringifies only the top-level layer
   // bodies, so the entries inside a body's `subworkflows` key ride as
   // INLINE OBJECTS with snake_case source_path. The CRI-296 walk skipped
   // those entries entirely (the string guard), leaving every depth>=2
   // affordance grayed out with "graph not available yet".
+  //
+  // The fixture is a SYNTHESIZED stand-in — the verbatim captured payload
+  // was not retained — so it reproduces the shape invariants, not the
+  // literal event (module/step names are invented; see the `_synthetic`
+  // marker in the fixture).
   test('registers nested layers whose bodies ride as inline objects (fd98126e wire shape)', () => {
-    // Guard the fixture against drift: it must carry the live shape —
-    // top-level string body, nested inline object bodies, snake_case
-    // source_path — not the all-strings shape the other tests synthesize.
+    // Guard the fixture against drift: it must carry the observed
+    // fd98126e shape — top-level string body, nested inline object bodies,
+    // snake_case source_path — not the all-strings shape the other tests
+    // synthesize, and it must stay honestly labeled as synthesized.
+    expect(typeof wirePayload._synthetic).toBe('string');
     const topEntry = wirePayload.subworkflows[0];
     expect(typeof topEntry.body).toBe('string');
     const handlerModule = JSON.parse(topEntry.body) as {

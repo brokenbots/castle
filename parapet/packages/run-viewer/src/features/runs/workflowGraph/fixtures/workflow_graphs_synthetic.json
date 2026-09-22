@@ -1,4 +1,5 @@
 {
+  "_synthetic": "SYNTHESIZED FIXTURE, not captured data: this payload does NOT come from run fd98126e or any live event. The verbatim captured payload was not retained. It reproduces only the wire-shape invariants observed on that run (WorkflowGraphs seq 1): the top-level layer body rides as a compact JSON STRING with camelCase sourcePath, while the nested entries inside that body's subworkflows key ride as INLINE OBJECTS with snake_case source_path. Module/step names are invented.",
   "subworkflows": [
     {
       "name": "handler",
