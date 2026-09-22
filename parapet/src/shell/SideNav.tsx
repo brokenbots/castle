@@ -35,45 +35,6 @@ const SECTIONS: NavSection[] = [
   { label: 'Agents', items: [{ to: '/agents', label: 'All agents', icon: <AgentsIcon /> }] },
 ];
 
-// The standalone run-viewer (CRI-257) is a separate static root at
-// /runview/, outside parapet's router — a plain anchor navigates to it.
-function StandaloneViewerLink({ collapsed }: { collapsed: boolean }) {
-  return (
-    <div className="px-2 py-1">
-      <p
-        className={`px-1 pb-1 text-meta font-semibold uppercase tracking-wide text-ink-faint ${
-          collapsed ? 'sr-only' : ''
-        }`}
-      >
-        Standalone
-      </p>
-      <ul aria-label="Standalone">
-        <li>
-          <a
-            href="/runview/"
-            data-testid="runview-link"
-            title={collapsed ? 'Run viewer' : undefined}
-            className="flex items-center gap-2 rounded-md px-3 py-2 text-body text-ink-muted hover:bg-surface-raised hover:text-ink"
-          >
-            <svg
-              aria-hidden
-              viewBox="0 0 16 16"
-              className="h-4 w-4 shrink-0"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-            >
-              <path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z" />
-              <circle cx="8" cy="8" r="2" />
-            </svg>
-            <span className={collapsed ? 'sr-only' : ''}>Run viewer</span>
-          </a>
-        </li>
-      </ul>
-    </div>
-  );
-}
-
 export function SideNav({ collapsed, onToggle }: SideNavProps) {
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-2 rounded-md text-body ${
@@ -111,7 +72,6 @@ export function SideNav({ collapsed, onToggle }: SideNavProps) {
           </ul>
         </div>
       ))}
-      <StandaloneViewerLink collapsed={collapsed} />
       <button
         type="button"
         data-testid="nav-toggle"
