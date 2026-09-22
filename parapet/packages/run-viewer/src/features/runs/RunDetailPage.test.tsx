@@ -18,6 +18,7 @@ import { createRunViewerStore } from '../../store';
 import { selectRunEvents, runsSlice } from './runsSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
+import wirePayload from './workflowGraph/fixtures/workflow_graphs_fd98126e.json';
 
 vi.mock('./watchRun', () => ({
   startWatch: vi.fn().mockResolvedValue(undefined),
@@ -1755,6 +1756,64 @@ describe('RunDetailPage panel fullscreen', () => {
         { timeout: 1500 },
       );
       expect(screen.queryByTestId('layer-breadcrumb')).not.toBeInTheDocument();
+    });
+
+    // CRI-297: the live wire shape differs from the synthesized one above —
+    // the emitter stringifies only top-level layer bodies, so the nested
+    // entries inside a body's `subworkflows` key ride as INLINE OBJECTS
+    // with snake_case source_path (run fd98126e, WorkflowGraphs seq 1).
+    // The CRI-296 walk skipped those entries entirely; every nested
+    // affordance inside the opened handler layer stayed grayed out with
+    // "graph not available yet". The fixture pins the exact live payload.
+    test('the fd98126e wire shape (inline object nested bodies) drills to depth 3', async () => {
+      fixture.data.workflowHash =
+        'workflow {\n  name = "linear_develop_v1"\n  initial_state = "build"\n}\nsubworkflow "handler" {\n  source = "../handler"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  target = subworkflow.handler\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
+      renderDetail();
+      await screen.findByText('Workflow source');
+      act(() => {
+        store.dispatch(
+          runsSlice.actions.eventReceived({
+            schemaVersion: 1,
+            runId: 'run-1',
+            seq: 1,
+            type: 'workflowGraphs',
+            ts: new Date(0).toISOString(),
+            correlationId: '',
+            payload: wirePayload,
+          }),
+        );
+      });
+
+      // Open the handler layer from the top-level workflow.
+      fireEvent.click(within(nodeById('test')).getByTestId('graph-node-explore'));
+      await vi.waitFor(
+        () => {
+          expect(visibleNodeIds()).toContain('route');
+        },
+        { timeout: 1500 },
+      );
+
+      // INSIDE the handler layer, ALL FOUR nested affordances are enabled —
+      // the reported symptom had every one grayed out ("graph not
+      // available yet") because inline-object bodies were skipped.
+      for (const step of ['route', 'review', 'pair', 'feedback']) {
+        expect(within(nodeById(step)).getByTestId('graph-node-explore')).toBeEnabled();
+      }
+
+      // Opening pair_programming_loop renders its own graph at depth 3.
+      fireEvent.click(within(nodeById('pair')).getByTestId('graph-node-explore'));
+      const crumbs = screen.getAllByTestId('layer-crumb');
+      expect(crumbs).toHaveLength(2);
+      expect(crumbs[0]).toHaveTextContent('handler');
+      expect(crumbs[1]).toHaveTextContent('pair_programming_loop');
+      expect(crumbs[1]).toHaveAttribute('aria-current', 'page');
+      await vi.waitFor(
+        () => {
+          expect(visibleNodeIds()).toContain('continue_check');
+          expect(visibleNodeIds()).not.toContain('route');
+        },
+        { timeout: 1500 },
+      );
     });
   });
 });

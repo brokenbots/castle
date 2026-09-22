@@ -17,7 +17,11 @@ export interface SubworkflowLayer {
   name: string;
   /** Module path the parent declared for the subworkflow; display-only. */
   sourcePath: string;
-  /** Layer body as the event carries it (compiled module JSON or HCL). */
+  /**
+   * Layer body as a JSON string — the event carries it as a string (top
+   * level) or an inline object (nested, CRI-297); object bodies are
+   * serialized here. Content is compiled module JSON or HCL.
+   */
   body: string;
   /** True when the body is the compiled module JSON (CRI-294 contract). */
   compiledJson: boolean;
@@ -29,7 +33,10 @@ export interface SubworkflowLayer {
  * One subworkflow entry as the wire carries it — a top-level
  * `payload.subworkflows` member (protojson camelCase) or an entry inlined in
  * a layer body's own `subworkflows` key (CRI-296, compiled module JSON
- * snake_case). Both spellings of the display-only source path are accepted.
+ * snake_case). Both spellings of the display-only source path are accepted,
+ * and a body is a string (top level: the emitter stringifies the layer
+ * body) or an inline object (nested: the body rides the serialized parent
+ * un-stringified — CRI-297).
  */
 interface SubworkflowEntry {
   name?: unknown;
@@ -65,10 +72,13 @@ export function selectWorkflowGraphs(events: EventEnvelope[]): WorkflowGraphsPay
  * layer the payload carries, recursively (CRI-296): compiled module JSON
  * bodies inline the layers their own steps reference in a `subworkflows`
  * key, and those must land in the built map too, or the affordances inside
- * an opened layer gray out. Entries missing a name or body are skipped at
- * every level; a body that does not parse keeps the layer visible with
- * `graph: null` (the drill-down stays closed for it) instead of dropping
- * the entry — the source pane can still show it.
+ * an opened layer gray out. Entry bodies are normalized at every level
+ * (CRI-297): the emitter stringifies only the top-level layer bodies, so a
+ * nested body rides its parent's serialized body as an inline object, not
+ * a string — both spellings register. Entries missing a name or body are
+ * skipped at every level; a body that does not parse keeps the layer
+ * visible with `graph: null` (the drill-down stays closed for it) instead
+ * of dropping the entry — the source pane can still show it.
  */
 export function buildSubworkflowLayers(payload: WorkflowGraphsPayload): SubworkflowLayer[] {
   const layers: SubworkflowLayer[] = [];
@@ -84,30 +94,55 @@ export function buildSubworkflowLayers(payload: WorkflowGraphsPayload): Subworkf
   while (frontier.length > 0) {
     const nested: SubworkflowEntry[] = [];
     for (const entry of frontier) {
-      if (typeof entry?.name !== 'string' || entry.name === '' || typeof entry?.body !== 'string') {
-        continue;
-      }
+      if (typeof entry?.name !== 'string' || entry.name === '') continue;
+      const body = normalizeLayerBody(entry.body);
+      if (body === null) continue;
       if (seen.has(entry.name)) continue;
       seen.add(entry.name);
-      const { compiledJson, graph } = parseLayerBody(entry.body);
+      const { compiledJson, graph } = parseLayerBody(body.text, body.inlineObject);
       layers.push({
         name: entry.name,
         sourcePath: readSourcePath(entry),
-        body: entry.body,
+        body: body.text,
         compiledJson,
         graph,
       });
       // The layers this body inlines ride its own `subworkflows` key;
       // walk them with the same rules. HCL bodies (older producers) and
       // bodies that do not JSON-parse inline nothing.
-      nested.push(...inlinedEntries(entry.body));
+      nested.push(...inlinedEntries(body.text));
     }
     frontier = nested;
   }
   return layers;
 }
 
-function parseLayerBody(body: string): { compiledJson: boolean; graph: WorkflowGraph | null } {
+/**
+ * Normalizes an entry body to the string the layer record carries
+ * (CRI-297): the emitter stringifies only top-level layer bodies, so a
+ * nested body rides its parent's serialized body as an inline object. The
+ * two spellings are the same content at different depths; the record keeps
+ * the string form (serialized when the wire carried an object) so the
+ * source pane and the inline walk need no second path. An inline object is
+ * compiled module JSON by producer contract — HCL module source is text
+ * and never rides as an object.
+ */
+function normalizeLayerBody(body: unknown): { text: string; inlineObject: boolean } | null {
+  if (typeof body === 'string') return { text: body, inlineObject: false };
+  if (typeof body === 'object' && body !== null && !Array.isArray(body)) {
+    try {
+      return { text: JSON.stringify(body), inlineObject: true };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function parseLayerBody(
+  body: string,
+  inlineObject: boolean,
+): { compiledJson: boolean; graph: WorkflowGraph | null } {
   let compiledJson = false;
   let graph: WorkflowGraph | null = null;
   try {
@@ -117,7 +152,7 @@ function parseLayerBody(body: string): { compiledJson: boolean; graph: WorkflowG
     if (compiled) {
       compiledJson = true;
       graph = compiled;
-    } else if (body) {
+    } else if (!inlineObject && body) {
       graph = parseWorkflowHcl(body);
     }
   } catch {
@@ -125,7 +160,9 @@ function parseLayerBody(body: string): { compiledJson: boolean; graph: WorkflowG
     // crash (e.g. pathological nesting) must not blank the page.
     graph = null;
   }
-  return { compiledJson, graph };
+  // An inline object body is compiled JSON even when it lacks the module
+  // shape: the source pane still pretty-prints it, only the graph drops.
+  return { compiledJson: compiledJson || inlineObject, graph };
 }
 
 function readSourcePath(entry: SubworkflowEntry): string {
@@ -156,8 +193,10 @@ function inlinedEntries(body: string): SubworkflowEntry[] {
 /**
  * Source-pane text for a layer (CRI-294): HCL bodies render as-is;
  * compiled module JSON renders pretty-printed — the emitter ships the
- * body as a compact JSON string, and a one-line blob is unreadable in the
- * pane. Falls back to the raw body when re-parsing fails.
+ * body as a compact JSON string (nested bodies arrive as inline objects
+ * and are serialized on the way in, CRI-297), and a one-line blob is
+ * unreadable in the pane. Falls back to the raw body when re-parsing
+ * fails.
  */
 export function layerSourceText(layer: SubworkflowLayer): string {
   if (!layer.compiledJson) return layer.body;

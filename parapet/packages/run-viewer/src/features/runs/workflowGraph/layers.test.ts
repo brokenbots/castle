@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { EventEnvelope } from '../../../api/castleApi';
 import { buildSubworkflowLayers, layerSourceText, selectWorkflowGraphs } from './layers';
+import wirePayload from './fixtures/workflow_graphs_fd98126e.json';
 
 function envelope(
   type: string,
@@ -317,6 +318,143 @@ describe('buildSubworkflowLayers', () => {
     expect(layers.map((l) => l.name)).toEqual(['odd', 'nested']);
     expect(layers[0].graph).toBeNull();
     expect(layers[1].graph?.name).toBe('nested');
+  });
+
+  // CRI-297 regression, pinning the EXACT live wire shape (run fd98126e,
+  // WorkflowGraphs seq 1): the emitter stringifies only the top-level layer
+  // bodies, so the entries inside a body's `subworkflows` key ride as
+  // INLINE OBJECTS with snake_case source_path. The CRI-296 walk skipped
+  // those entries entirely (the string guard), leaving every depth>=2
+  // affordance grayed out with "graph not available yet".
+  test('registers nested layers whose bodies ride as inline objects (fd98126e wire shape)', () => {
+    // Guard the fixture against drift: it must carry the live shape —
+    // top-level string body, nested inline object bodies, snake_case
+    // source_path — not the all-strings shape the other tests synthesize.
+    const topEntry = wirePayload.subworkflows[0];
+    expect(typeof topEntry.body).toBe('string');
+    const handlerModule = JSON.parse(topEntry.body) as {
+      subworkflows: { name: string; source_path?: unknown; sourcePath?: unknown; body: unknown }[];
+    };
+    expect(handlerModule.subworkflows.map((e) => typeof e.body)).toEqual([
+      'object',
+      'object',
+      'object',
+      'object',
+    ]);
+    expect(handlerModule.subworkflows.map((e) => e.source_path)).toEqual([
+      '../branch_manager_v1',
+      '../pr_reviewer_loop_v1',
+      '../pair_programming_loop_v1',
+      '../pair_programming_loop_feedback_v1',
+    ]);
+    expect(handlerModule.subworkflows.map((e) => e.sourcePath)).toEqual([undefined, undefined, undefined, undefined]);
+
+    const payload = selectWorkflowGraphs([envelope('workflowGraphs', wirePayload)])!;
+    const layers = buildSubworkflowLayers(payload);
+    expect(layers.map((l) => l.name)).toEqual([
+      'handler',
+      'branch_manager',
+      'pr_reviewer_loop',
+      'pair_programming_loop',
+      'pair_programming_loop_feedback',
+    ]);
+    // Top level keeps the CRI-294 behavior: string body, camelCase
+    // sourcePath.
+    expect(layers[0].sourcePath).toBe('../linear_develop_v1/handler');
+    expect(layers[0].compiledJson).toBe(true);
+    expect(layers[0].graph?.name).toBe('handler');
+    // Nested layers register, parse, and read the snake_case source path —
+    // the four affordances inside the opened handler layer.
+    expect(layers.slice(1).map((l) => l.sourcePath)).toEqual([
+      '../branch_manager_v1',
+      '../pr_reviewer_loop_v1',
+      '../pair_programming_loop_v1',
+      '../pair_programming_loop_feedback_v1',
+    ]);
+    for (const layer of layers.slice(1)) {
+      expect(layer.compiledJson).toBe(true);
+      expect(layer.graph?.name).toBe(layer.name);
+      expect(layer.graph).not.toBeNull();
+    }
+    // The pair_programming_loop graph parses its loop: a pair step whose
+    // continue arm routes through the switch, plus the wrap terminal.
+    const pair = layers[3];
+    expect(pair.graph?.startAt).toBe('pair');
+    expect(pair.graph?.nodes.map((n) => n.id)).toEqual(['pair', 'wrap', 'continue_check']);
+    expect(pair.graph?.edges.map((e) => e.via)).toEqual(['continue', 'success', 'arm[0]', 'default']);
+    // The record keeps the object body serialized; the source pane
+    // pretty-prints the original object back.
+    expect(JSON.parse(layerSourceText(pair))).toEqual(handlerModule.subworkflows[2].body);
+  });
+
+  // The normalization is not tied to one depth: an inline object body may
+  // itself inline objects, at any depth the wire carries.
+  test('normalizes inline object bodies at every depth', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [
+        {
+          name: 'top',
+          sourcePath: '../top',
+          body: moduleBody('top', [
+            {
+              name: 'mid',
+              source_path: '../mid',
+              body: {
+                name: 'mid',
+                initial_state: 'begin',
+                steps: [{ name: 'begin', outcomes: [{ name: 'success', next: 'done' }] }],
+                states: [{ name: 'done', terminal: true, success: true }],
+                subworkflows: [
+                  {
+                    name: 'leaf',
+                    source_path: '../leaf',
+                    body: {
+                      name: 'leaf',
+                      initial_state: 'begin',
+                      steps: [{ name: 'begin', outcomes: [{ name: 'success', next: 'done' }] }],
+                      states: [{ name: 'done', terminal: true, success: true }],
+                    },
+                  },
+                ],
+              },
+            },
+          ]),
+        },
+      ],
+    });
+    expect(layers.map((l) => l.name)).toEqual(['top', 'mid', 'leaf']);
+    for (const layer of layers) {
+      expect(layer.compiledJson).toBe(true);
+      expect(layer.graph?.name).toBe(layer.name);
+    }
+    expect(layers[1].sourcePath).toBe('../mid');
+    expect(layers[2].sourcePath).toBe('../leaf');
+  });
+
+  // An inline object body is compiled JSON by producer contract: even
+  // without the module shape the layer keeps compiledJson (the source pane
+  // still pretty-prints it) and only the graph drops.
+  test('an inline object body without the module shape keeps compiledJson with a null graph', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [{ name: 'odd', source_path: '../odd', body: { foo: 1, subworkflows: [] } }],
+    });
+    expect(layers).toHaveLength(1);
+    expect(layers[0].compiledJson).toBe(true);
+    expect(layers[0].graph).toBeNull();
+    expect(JSON.parse(layerSourceText(layers[0]))).toEqual({ foo: 1, subworkflows: [] });
+  });
+
+  // Bodies that are neither a string nor an object (numbers, arrays) are
+  // still skipped at every level.
+  test('bodies that are neither string nor object are skipped', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: [
+        { name: 'num', body: 42 },
+        { name: 'arr', body: [LAYER_BODY] },
+        { name: 'ok', body: LAYER_BODY },
+      ],
+    });
+    expect(layers.map((l) => l.name)).toEqual(['ok']);
   });
 });
 
