@@ -1,20 +1,26 @@
 import type { EventEnvelope } from '../../../api/castleApi';
 import { parseWorkflowHcl, type WorkflowGraph } from './parseWorkflowHcl';
+import { parseCompiledModuleBody } from './parseCompiledModule';
 
 /**
  * Subworkflow drill-down data (CRI-257). Castle carries the compiled
  * subworkflow layers of the run's workflow through the `workflow.graphs`
- * event (protojson camelCase: name/sourcePath/body); each layer body is
- * the subworkflow's HCL module source in the same dialect as the
- * top-level workflow, parsed with the same parser.
+ * event (protojson camelCase: name/sourcePath/body). Each layer body is the
+ * subworkflow's compiled module JSON — the `criteria compile --format json`
+ * `subworkflows[].body` shape (CRI-294): the emitter serializes the
+ * already-compiled graph rather than re-compiling HCL. Bodies are parsed
+ * with {@link parseCompiledModuleBody}; HCL module source (older producers)
+ * still parses with the workflow parser.
  */
 export interface SubworkflowLayer {
   /** Matches the parent module's `subworkflow "<name>"` declaration. */
   name: string;
   /** Module path the parent declared for the subworkflow; display-only. */
   sourcePath: string;
-  /** Compiled module source; the layer's source pane content. */
+  /** Layer body as the event carries it (compiled module JSON or HCL). */
   body: string;
+  /** True when the body is the compiled module JSON (CRI-294 contract). */
+  compiledJson: boolean;
   /** Parsed layer graph; null when the body does not parse. */
   graph: WorkflowGraph | null;
 }
@@ -53,9 +59,18 @@ export function buildSubworkflowLayers(payload: WorkflowGraphsPayload): Subworkf
     if (typeof entry?.name !== 'string' || entry.name === '' || typeof entry?.body !== 'string') {
       continue;
     }
+    let compiledJson = false;
     let graph: WorkflowGraph | null = null;
     try {
-      graph = entry.body ? parseWorkflowHcl(entry.body) : null;
+      // The emitter ships the compiled module JSON (CRI-294); HCL module
+      // source is the fallback for producers that predate the contract.
+      const compiled = entry.body ? parseCompiledModuleBody(entry.body) : null;
+      if (compiled) {
+        compiledJson = true;
+        graph = compiled;
+      } else {
+        graph = entry.body ? parseWorkflowHcl(entry.body) : null;
+      }
     } catch {
       // Unparseable layer body: keep the layer, drop the graph. A parser
       // crash (e.g. pathological nesting) must not blank the page.
@@ -65,8 +80,24 @@ export function buildSubworkflowLayers(payload: WorkflowGraphsPayload): Subworkf
       name: entry.name,
       sourcePath: typeof entry.sourcePath === 'string' ? entry.sourcePath : '',
       body: entry.body,
+      compiledJson,
       graph,
     });
   }
   return layers;
+}
+
+/**
+ * Source-pane text for a layer (CRI-294): HCL bodies render as-is;
+ * compiled module JSON renders pretty-printed — the emitter ships the
+ * body as a compact JSON string, and a one-line blob is unreadable in the
+ * pane. Falls back to the raw body when re-parsing fails.
+ */
+export function layerSourceText(layer: SubworkflowLayer): string {
+  if (!layer.compiledJson) return layer.body;
+  try {
+    return `${JSON.stringify(JSON.parse(layer.body), null, 2)}\n`;
+  } catch {
+    return layer.body;
+  }
 }
