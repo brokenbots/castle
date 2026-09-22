@@ -16,8 +16,9 @@ describe('SideNav', () => {
     renderSideNav(false);
 
     // The nav owns two sections: Runs and Agents, each a labelled group
-    // carrying its route as a router link (never a plain anchor — every
-    // destination is inside parapet's router).
+    // carrying its route as a router link; the complete-link-set regression
+    // test below enforces that every destination stays inside parapet's
+    // router.
     const runsGroup = screen.getByRole('list', { name: 'Runs' });
     expect(runsGroup).toBeInTheDocument();
     const runsLink = screen.getByRole('link', { name: /all runs/i });
@@ -42,5 +43,24 @@ describe('SideNav', () => {
     expect(screen.getByText('Agents')).toHaveClass('sr-only');
     expect(screen.getByRole('link', { name: /all runs/i })).toHaveAttribute('title', 'All runs');
     expect(screen.getByRole('link', { name: /all agents/i })).toHaveAttribute('title', 'All agents');
+  });
+
+  test('offers no castle-hosted standalone run-viewer entry', () => {
+    // Regression (CRI-283): the standalone run viewer's data server lives
+    // inside the criteria CLI's loopback, unreachable from a browser at the
+    // castle ingress — a castle-hosted /runview/ entry is a dead link by
+    // design and must never return. The nav's complete link set is asserted
+    // so every destination provably stays inside parapet's router.
+    renderSideNav(false);
+
+    const nav = screen.getByTestId('side-nav');
+    expect(screen.queryByTestId('runview-link')).not.toBeInTheDocument();
+    expect(
+      within(nav).queryAllByRole('link', { name: /run viewer|standalone/i }),
+    ).toHaveLength(0);
+    expect(within(nav).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual([
+      '/runs',
+      '/agents',
+    ]);
   });
 });
