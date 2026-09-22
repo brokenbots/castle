@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { EventEnvelope } from '../../../api/castleApi';
 import { buildSubworkflowLayers, layerSourceText, selectWorkflowGraphs } from './layers';
-import wirePayload from './fixtures/workflow_graphs_synthetic.json';
+import wirePayload from './fixtures/workflow_graphs_fd98126e.json';
 
 function envelope(
   type: string,
@@ -63,6 +63,13 @@ const COMPILED_BODY = JSON.stringify({
   plugins_required: ['shell'],
   metadata: { schema_version: 1 },
 });
+
+// The absolute paths the verbatim fd98126e capture carries: the top-level
+// handler entry points at the compiled workstream_handler_v1 module, and
+// the nested entries point at sibling module dirs under its `workflows/`
+// directory (snake_case, ride-only display values).
+const HANDLER_DIR =
+  '/tmp/criteria-home/cache/workflows/https___github.com_brokenbots_workflow-example.git/8c37e20493ec9c5539495a25c8ba20bf862bc161/workstream_handler_v1';
 
 describe('selectWorkflowGraphs', () => {
   test('returns null when no workflowGraphs event exists', () => {
@@ -321,28 +328,31 @@ describe('buildSubworkflowLayers', () => {
     expect(layers[1].graph?.name).toBe('nested');
   });
 
-  // CRI-297 regression, pinning the wire SHAPE observed on run fd98126e
-  // (WorkflowGraphs seq 1): the emitter stringifies only the top-level layer
-  // bodies, so the entries inside a body's `subworkflows` key ride as
-  // INLINE OBJECTS with snake_case source_path. The CRI-296 walk skipped
-  // those entries entirely (the string guard), leaving every depth>=2
-  // affordance grayed out with "graph not available yet".
-  //
-  // The fixture is a SYNTHESIZED stand-in — the verbatim captured payload
-  // was not retained — so it reproduces the shape invariants, not the
-  // literal event (module/step names are invented; see the `_synthetic`
-  // marker in the fixture).
+  // CRI-297 regression, pinning the exact live wire shape of run fd98126e
+  // (WorkflowGraphs seq 1, captured verbatim in the fixture): the emitter
+  // stringifies only the top-level layer bodies, so the entries inside a
+  // body's `subworkflows` key ride as INLINE OBJECTS with snake_case
+  // source_path. The CRI-296 walk skipped those entries entirely (the
+  // string guard), leaving every depth>=2 affordance grayed out with
+  // "graph not available yet".
   test('registers nested layers whose bodies ride as inline objects (fd98126e wire shape)', () => {
-    // Guard the fixture against drift: it must carry the observed
-    // fd98126e shape — top-level string body, nested inline object bodies,
-    // snake_case source_path — not the all-strings shape the other tests
-    // synthesize, and it must stay honestly labeled as synthesized.
-    expect(typeof wirePayload._synthetic).toBe('string');
+    // Guard the fixture against drift: it must stay the literal captured
+    // fd98126e event — top-level string body, four nested inline object
+    // bodies, snake_case source_path — not the all-strings shape the
+    // other tests synthesize.
     const topEntry = wirePayload.subworkflows[0];
+    expect(topEntry.name).toBe('handler');
+    expect(topEntry.sourcePath).toBe(HANDLER_DIR);
     expect(typeof topEntry.body).toBe('string');
     const handlerModule = JSON.parse(topEntry.body) as {
+      name: string;
+      initial_state: string;
+      steps: { name: string }[];
       subworkflows: { name: string; source_path?: unknown; sourcePath?: unknown; body: unknown }[];
     };
+    expect(handlerModule.name).toBe('workstream_handler_v1');
+    expect(handlerModule.initial_state).toBe('read_workstream');
+    expect(handlerModule.steps).toHaveLength(16);
     expect(handlerModule.subworkflows.map((e) => typeof e.body)).toEqual([
       'object',
       'object',
@@ -350,10 +360,12 @@ describe('buildSubworkflowLayers', () => {
       'object',
     ]);
     expect(handlerModule.subworkflows.map((e) => e.source_path)).toEqual([
-      '../branch_manager_v1',
-      '../pr_reviewer_loop_v1',
-      '../pair_programming_loop_v1',
-      '../pair_programming_loop_feedback_v1',
+      `${HANDLER_DIR}/workflows/branch_manager`,
+      `${HANDLER_DIR}/workflows/pr_reviewer_loop`,
+      `${HANDLER_DIR}/workflows/pair_programming_loop`,
+      // The wire reuses the pair module dir for the feedback entry — the
+      // capture carries this verbatim.
+      `${HANDLER_DIR}/workflows/pair_programming_loop`,
     ]);
     expect(handlerModule.subworkflows.map((e) => e.sourcePath)).toEqual([undefined, undefined, undefined, undefined]);
 
@@ -368,28 +380,62 @@ describe('buildSubworkflowLayers', () => {
     ]);
     // Top level keeps the CRI-294 behavior: string body, camelCase
     // sourcePath.
-    expect(layers[0].sourcePath).toBe('../linear_develop_v1/handler');
+    expect(layers[0].sourcePath).toBe(HANDLER_DIR);
     expect(layers[0].compiledJson).toBe(true);
-    expect(layers[0].graph?.name).toBe('handler');
+    // The wire entry is named `handler`; the compiled module it carries is
+    // `workstream_handler_v1` — the graph reads the module's own name.
+    expect(layers[0].graph?.name).toBe('workstream_handler_v1');
     // Nested layers register, parse, and read the snake_case source path —
     // the four affordances inside the opened handler layer.
     expect(layers.slice(1).map((l) => l.sourcePath)).toEqual([
-      '../branch_manager_v1',
-      '../pr_reviewer_loop_v1',
-      '../pair_programming_loop_v1',
-      '../pair_programming_loop_feedback_v1',
+      `${HANDLER_DIR}/workflows/branch_manager`,
+      `${HANDLER_DIR}/workflows/pr_reviewer_loop`,
+      `${HANDLER_DIR}/workflows/pair_programming_loop`,
+      `${HANDLER_DIR}/workflows/pair_programming_loop`,
     ]);
     for (const layer of layers.slice(1)) {
       expect(layer.compiledJson).toBe(true);
-      expect(layer.graph?.name).toBe(layer.name);
       expect(layer.graph).not.toBeNull();
     }
-    // The pair_programming_loop graph parses its loop: a pair step whose
-    // continue arm routes through the switch, plus the wrap terminal.
+    // Entry names (what the wire calls each layer) vs embedded module
+    // names (each body's own `name`): branch_manager and pr_reviewer_loop
+    // match their entries, but both pair entries embed the `pair_loop`
+    // module — the drill-down keys on the entry name either way.
+    expect(layers.slice(1).map((l) => l.graph?.name)).toEqual([
+      'branch_manager',
+      'pr_reviewer_loop',
+      'pair_loop',
+      'pair_loop',
+    ]);
+    // The pair_programming_loop graph parses the real pair_loop module:
+    // it starts at get_branch_name and carries all 15 steps plus the
+    // terminal states and the triage_review switch.
     const pair = layers[3];
-    expect(pair.graph?.startAt).toBe('pair');
-    expect(pair.graph?.nodes.map((n) => n.id)).toEqual(['pair', 'wrap', 'continue_check']);
-    expect(pair.graph?.edges.map((e) => e.via)).toEqual(['continue', 'success', 'arm[0]', 'default']);
+    expect(pair.graph?.name).toBe('pair_loop');
+    expect(pair.graph?.startAt).toBe('get_branch_name');
+    const pairNodeIds = pair.graph!.nodes.map((n) => n.id);
+    expect(pairNodeIds).toEqual(
+      expect.arrayContaining([
+        'get_branch_name',
+        'read_workstream',
+        'checkout_branch',
+        'check_working_tree',
+        'develop',
+        'push_checkpoint',
+        'write_work_log',
+        'commit_work_log',
+        'push_wip_checkpoint',
+        'verify_committed',
+        'ci_gate',
+        'review',
+        'write_review_log',
+        'commit_review_log',
+        'push_review_checkpoint',
+      ]),
+    );
+    expect(pairNodeIds).toContain('done');
+    expect(pairNodeIds).toContain('failed');
+    expect(pairNodeIds).toContain('triage_review');
     // The record keeps the object body serialized; the source pane
     // pretty-prints the original object back.
     expect(JSON.parse(layerSourceText(pair))).toEqual(handlerModule.subworkflows[2].body);
