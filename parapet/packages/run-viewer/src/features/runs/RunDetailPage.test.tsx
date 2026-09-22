@@ -150,34 +150,75 @@ describe('RunDetailPage', () => {
     // status explicit so tests that change it don't leak.
     fixture.data.status = 'running';
     fixture.data.workflowHash = DEFAULT_WORKFLOW_SOURCE;
+    // CRI-284: clear any subscriber id an earlier test persisted, so the
+    // insecure-origin render actually reaches the id generator instead of
+    // silently reusing a sessionStorage-cached id.
+    sessionStorage.clear();
   });
 
   test('starts WatchRun with sinceSeq=0 and subscriberId', async () => {
-    const randomUUID = vi
-      .spyOn(crypto, 'randomUUID')
-      .mockReturnValue('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    // CRI-284: the subscriber id is built from crypto.getRandomValues, not
+    // the secure-context-only crypto.randomUUID. A constant byte stream makes
+    // the id deterministic: all-0xaa stamps to aaaaaaaa-aaaa-4aaa-8aaa-…
+    const getRandomValues = vi
+      .spyOn(crypto, 'getRandomValues')
+      .mockImplementation((array) => {
+        new Uint8Array(array.buffer, array.byteOffset, array.byteLength).fill(0xaa);
+        return array;
+      });
 
-    render(
-      <Provider store={store}>
-        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-          <Routes>
-            <Route path="/runs/:id" element={<RunDetailPage />} />
-          </Routes>
-        </MemoryRouter>
-      </Provider>,
-    );
+    try {
+      render(
+        <Provider store={store}>
+          <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <Routes>
+              <Route path="/runs/:id" element={<RunDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </Provider>,
+      );
 
-    expect(await screen.findByText('Workflow source')).toBeInTheDocument();
-    // The watch starts once the event log is anchored at the newest page,
-    // which resolves after the initial ListRunEvents walk.
-    await vi.waitFor(() => expect(startWatch).toHaveBeenCalled());
+      expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+      // The watch starts once the event log is anchored at the newest page,
+      // which resolves after the initial ListRunEvents walk.
+      await vi.waitFor(() => expect(startWatch).toHaveBeenCalled());
 
-    const firstCall = vi.mocked(startWatch).mock.calls[0];
-    expect(firstCall[0]).toBe('run-1');
-    expect(firstCall[1]).toBe(0);
-    expect(firstCall[2]).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+      const firstCall = vi.mocked(startWatch).mock.calls[0];
+      expect(firstCall[0]).toBe('run-1');
+      expect(firstCall[1]).toBe(0);
+      expect(firstCall[2]).toBe('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
+    } finally {
+      getRandomValues.mockRestore();
+    }
+  });
 
-    randomUUID.mockRestore();
+  test('renders without crypto.randomUUID (insecure origin, CRI-284)', async () => {
+    // Simulate a plain-HTTP ingress: secure-context-only randomUUID is
+    // absent. The page used to throw "crypto.randomUUID is not a function"
+    // during render and take the whole route down.
+    const original = crypto.randomUUID;
+    Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true });
+    try {
+      render(
+        <Provider store={store}>
+          <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <Routes>
+              <Route path="/runs/:id" element={<RunDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </Provider>,
+      );
+
+      // The page renders and the watch still starts with a well-formed id.
+      expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+      await vi.waitFor(() => expect(startWatch).toHaveBeenCalled());
+      const subscriberId = vi.mocked(startWatch).mock.calls.at(-1)![2];
+      expect(subscriberId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    } finally {
+      Object.defineProperty(crypto, 'randomUUID', { value: original, configurable: true });
+    }
   });
 
   test('renders workflow source and graph', async () => {

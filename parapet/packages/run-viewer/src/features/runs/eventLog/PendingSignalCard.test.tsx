@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { PendingSignalCard } from './PendingSignalCard';
 import { createRunViewerStore } from '../../../store';
 import { NO_CONTROLS_TOOLTIP, NO_CONTROL_CAPABILITIES } from '../capabilities';
@@ -44,6 +44,13 @@ function renderCard(overrides: Partial<{ signal: string; runId: string; onRefres
 }
 
 describe('PendingSignalCard', () => {
+  // Tests that stub secure-context-only browser APIs must restore the
+  // originals so later stubs observe jsdom's real (absent) baseline.
+  afterEach(() => {
+    delete (navigator as { clipboard?: unknown }).clipboard;
+    delete (document as { execCommand?: unknown }).execCommand;
+  });
+
   test('renders the pending signal name and the delivery form', () => {
     renderCard();
 
@@ -218,5 +225,25 @@ describe('PendingSignalCard', () => {
     expect(submit).toBeEnabled();
     expect(submit).not.toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
     expect(screen.getByTestId('pending-signal-note')).toBeEnabled();
+  });
+
+  test('copies the curl example via the execCommand fallback on insecure origins', async () => {
+    // The castle ingress is plain HTTP, so navigator.clipboard is undefined
+    // for real browsers there (CRI-284); jsdom matches that shape.
+    expect(navigator.clipboard).toBeUndefined();
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', {
+      value: execCommand,
+      configurable: true,
+    });
+
+    renderCard();
+    const summary = screen.getByText(/Resume via curl/i);
+    // The copy affordance lives inside the collapsed details block.
+    (summary.parentElement as HTMLDetailsElement).open = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+
+    await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'));
+    expect(document.querySelectorAll('textarea')).toHaveLength(0);
   });
 });

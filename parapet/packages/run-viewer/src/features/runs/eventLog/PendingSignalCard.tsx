@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useResumeMutation } from '../../../api/castleApi';
+import { copyTextToClipboard } from './clipboard';
 import { NO_CONTROLS_TOOLTIP, hasControls, type RunCapabilities } from '../capabilities';
 
 interface PendingSignalCardProps {
@@ -45,7 +46,7 @@ export function PendingSignalCard({ signal, runId, onRefresh, capabilities }: Pe
   -d '{"run_id":"${runId}","signal":"${signal}"}'`;
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(curlExample);
+    void copyTextToClipboard(curlExample);
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
