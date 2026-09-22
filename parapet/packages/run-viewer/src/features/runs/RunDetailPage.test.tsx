@@ -1579,6 +1579,86 @@ describe('RunDetailPage panel fullscreen', () => {
       // source (the parent body has no such step).
       expect(sourceBody.textContent).not.toContain('initial_state = "build"');
     });
+
+    // CRI-294: the deployed emitter ships layer bodies as the compiled
+    // module JSON (the Evidence-B payload shape), not HCL source — the
+    // drill-down must still open and the pane must render the body
+    // readably.
+    test('a compiled-JSON layer body opens the drill-down and renders the module body', async () => {
+      // Parent module whose step runs the `inner_task` layer (the
+      // Evidence-B demo shape).
+      fixture.data.workflowHash =
+        'workflow {\n  name = "hello"\n  initial_state = "build"\n}\nsubworkflow "inner_task" {\n  source = "/tmp/cri286-fixture/subworkflows/inner"\n}\nstep "build" {\n  outcome "success" { next = state.done }\n}\nstep "test" {\n  target = subworkflow.inner_task\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
+      const compiledBody = JSON.stringify({
+        name: 'inner_task',
+        initial_state: 'execute',
+        target_state: 'complete',
+        adapters: [{ type: 'shell', name: 'default', on_crash: 'fail', config_keys: null }],
+        steps: [
+          {
+            name: 'execute',
+            adapter: 'shell.default',
+            input_keys: ['command'],
+            allow_tools: null,
+            outcomes: [
+              { name: 'failure', next: 'complete' },
+              { name: 'success', next: 'complete' },
+            ],
+          },
+        ],
+        states: [{ name: 'complete', terminal: true, success: true }],
+        outputs: [],
+        switches: [],
+        step_order: ['execute'],
+        plugins_required: ['shell'],
+        metadata: { schema_version: 1 },
+      });
+      renderDetail();
+      await screen.findByText('Workflow source');
+      act(() => {
+        store.dispatch(
+          runsSlice.actions.eventReceived({
+            schemaVersion: 1,
+            runId: 'run-1',
+            seq: 1,
+            type: 'workflowGraphs',
+            ts: new Date(0).toISOString(),
+            correlationId: '',
+            payload: {
+              subworkflows: [
+                { name: 'inner_task', sourcePath: '/tmp/cri286-fixture/subworkflows/inner', body: compiledBody },
+              ],
+            },
+          }),
+        );
+      });
+
+      // The affordance on the subworkflow-carrying step is enabled.
+      const affordance = within(nodeById('test')).getByTestId('graph-node-explore');
+      expect(affordance).toBeEnabled();
+
+      fireEvent.click(affordance);
+
+      // The layer opens: breadcrumb plus the layer's own nodes.
+      expect(screen.getByTestId('layer-breadcrumb')).toBeInTheDocument();
+      await vi.waitFor(
+        () => {
+          const ids = visibleNodeIds();
+          expect(ids).toContain('execute');
+          expect(ids).toContain('complete');
+          expect(ids).not.toContain('build');
+        },
+        { timeout: 1500 },
+      );
+
+      // The source pane shows the layer's compiled module body,
+      // pretty-printed rather than the compact one-line blob the event
+      // carries.
+      const sourceBody = screen.getByTestId('source-pane-body');
+      expect(JSON.parse(sourceBody.textContent ?? '')).toEqual(JSON.parse(compiledBody));
+      expect(sourceBody.textContent).toContain('\n  "name": "inner_task"');
+      expect(sourceBody.textContent).not.toContain(compiledBody.slice(0, 40));
+    });
   });
 });
 

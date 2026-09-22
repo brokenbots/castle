@@ -63,8 +63,10 @@ const TRAVERSAL_QUALIFIERS = ['step', 'state', 'wait', 'switch', 'approval', 'su
  * Strips the traversal qualifier (`step.`/`state.`/…) from a `next`
  * traversal so node ids match the bare names the event stream carries
  * (`StepOutcome.step`, `StepTransition.from/to`, `WaitEntered.node`, …).
+ * Exported for the compiled-module parser, whose JSON bodies carry bare
+ * node names already but are stripped the same way for parity.
  */
-function traversalTarget(raw: string): string {
+export function traversalTarget(raw: string): string {
   const name = raw.trim();
   const match = new RegExp(`^(?:${TRAVERSAL_QUALIFIERS.join('|')})\\.(.+)$`).exec(name);
   return match ? match[1] : name;

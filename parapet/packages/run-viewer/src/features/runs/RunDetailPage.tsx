@@ -17,7 +17,7 @@ import { DockedPanel } from '../../components/DockedPanel';
 import { Breadcrumbs } from '../../components/Breadcrumbs';
 import { useDocumentTitle } from '../../shell/useDocumentTitle';
 import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph as WorkflowGraphSpec } from './workflowGraph/parseWorkflowHcl';
-import { buildSubworkflowLayers, selectWorkflowGraphs, type SubworkflowLayer } from './workflowGraph/layers';
+import { buildSubworkflowLayers, layerSourceText, selectWorkflowGraphs, type SubworkflowLayer } from './workflowGraph/layers';
 import { WorkflowLayerNav } from './workflowGraph/WorkflowLayerNav';
 import { WorkflowGraph } from './workflowGraph/WorkflowGraph';
 import { WorkflowSourceView } from './workflowGraph/WorkflowSourceView';
@@ -236,7 +236,8 @@ export function RunDetailPage({
   }, [layersByName]);
   // A subworkflow layer's source pane shows the layer's own module body
   // (carried by the workflow.graphs event), not the parent's source.
-  const currentSource = topLayer?.body ?? workflowSource;
+  // Compiled-JSON bodies (CRI-294) render pretty-printed.
+  const currentSource = topLayer ? layerSourceText(topLayer) : workflowSource;
   const openLayer = (name: string) => {
     const layer = layersByName.get(name);
     if (!layer?.graph || !run.data) return;
