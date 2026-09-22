@@ -64,12 +64,12 @@ export function buildSubworkflowLayers(payload: WorkflowGraphsPayload): Subworkf
     try {
       // The emitter ships the compiled module JSON (CRI-294); HCL module
       // source is the fallback for producers that predate the contract.
-      const compiled = entry.body ? parseCompiledModuleBody(entry.body) : null;
+      const compiled = parseCompiledModuleBody(entry.body);
       if (compiled) {
         compiledJson = true;
         graph = compiled;
-      } else {
-        graph = entry.body ? parseWorkflowHcl(entry.body) : null;
+      } else if (entry.body) {
+        graph = parseWorkflowHcl(entry.body);
       }
     } catch {
       // Unparseable layer body: keep the layer, drop the graph. A parser
