@@ -150,6 +150,10 @@ describe('RunDetailPage', () => {
     // status explicit so tests that change it don't leak.
     fixture.data.status = 'running';
     fixture.data.workflowHash = DEFAULT_WORKFLOW_SOURCE;
+    // CRI-284: clear any subscriber id an earlier test persisted, so the
+    // insecure-origin render actually reaches the id generator instead of
+    // silently reusing a sessionStorage-cached id.
+    sessionStorage.clear();
   });
 
   test('starts WatchRun with sinceSeq=0 and subscriberId', async () => {
@@ -163,27 +167,29 @@ describe('RunDetailPage', () => {
         return array;
       });
 
-    render(
-      <Provider store={store}>
-        <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-          <Routes>
-            <Route path="/runs/:id" element={<RunDetailPage />} />
-          </Routes>
-        </MemoryRouter>
-      </Provider>,
-    );
+    try {
+      render(
+        <Provider store={store}>
+          <MemoryRouter initialEntries={['/runs/run-1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <Routes>
+              <Route path="/runs/:id" element={<RunDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </Provider>,
+      );
 
-    expect(await screen.findByText('Workflow source')).toBeInTheDocument();
-    // The watch starts once the event log is anchored at the newest page,
-    // which resolves after the initial ListRunEvents walk.
-    await vi.waitFor(() => expect(startWatch).toHaveBeenCalled());
+      expect(await screen.findByText('Workflow source')).toBeInTheDocument();
+      // The watch starts once the event log is anchored at the newest page,
+      // which resolves after the initial ListRunEvents walk.
+      await vi.waitFor(() => expect(startWatch).toHaveBeenCalled());
 
-    const firstCall = vi.mocked(startWatch).mock.calls[0];
-    expect(firstCall[0]).toBe('run-1');
-    expect(firstCall[1]).toBe(0);
-    expect(firstCall[2]).toBe('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
-
-    getRandomValues.mockRestore();
+      const firstCall = vi.mocked(startWatch).mock.calls[0];
+      expect(firstCall[0]).toBe('run-1');
+      expect(firstCall[1]).toBe(0);
+      expect(firstCall[2]).toBe('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
+    } finally {
+      getRandomValues.mockRestore();
+    }
   });
 
   test('renders without crypto.randomUUID (insecure origin, CRI-284)', async () => {
