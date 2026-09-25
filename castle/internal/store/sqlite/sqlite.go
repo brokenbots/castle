@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,10 @@ type Store struct {
 	// queue behind or hold the single serialized writer connection that all
 	// RPC traffic shares.
 	reader *sql.DB
+	// freshness lets ListOverseers audit its reader view against the newest
+	// write the writer handle has committed (KB-10 staleness telemetry).
+	freshness readerFreshness
+	log       *slog.Logger
 }
 
 // openDSN is the pragma set every pool handle uses. WAL mode still allows
@@ -63,7 +68,19 @@ func Open(path string) (*Store, error) {
 	// scan a connection that never competes with RPC work on this one (CRI-143).
 	db.SetMaxOpenConns(1)
 	reader.SetMaxOpenConns(1)
-	return &Store{db: db, reader: reader}, nil
+	// Disable idle pooling on the reader (KB-10): a pooled reader connection
+	// can keep an open read transaction alive (e.g. a driver bug that leaks an
+	// active statement, or a scan interrupted mid-read), pinning the WAL
+	// snapshot it holds. Everything the reader then returns is frozen at the
+	// pin, so agents registered afterwards become invisible to the auth token
+	// resolution path and CreateRun rejects their fresh tokens with
+	// "unauthenticated: invalid token" — observed live on 2026-09-25. With no
+	// idle connections every read opens a fresh connection and therefore
+	// reads the current WAL snapshot by construction. Concurrency is
+	// unchanged: MaxOpenConns(1) still serializes reader work so reaper scans
+	// stay isolated from the writer (CRI-143).
+	reader.SetMaxIdleConns(0)
+	return &Store{db: db, reader: reader, log: slog.Default()}, nil
 }
 
 func (s *Store) Close() error {
@@ -95,6 +112,9 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?)`,
 		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, o.CreatedAt.Format(tsLayout), o.LastSeenAt.Format(tsLayout))
+	if err == nil {
+		s.freshness.recordWrite(o.CreatedAt)
+	}
 	return err
 }
 
@@ -134,7 +154,18 @@ func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
 		o.Labels = unmarshalLabels(labels.String)
 		out = append(out, &o)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Audit the reader view against the writer's newest write (KB-10): a
+	// reader snapshot pinned before the latest registration is the symptom
+	// that left fresh agent tokens rejected as unauthenticated.
+	var readerNewest time.Time
+	if len(out) > 0 {
+		readerNewest = out[0].CreatedAt // ordered by created_at DESC
+	}
+	s.freshness.check(ctx, readerNewest, s.log)
+	return out, nil
 }
 
 func (s *Store) UpdateOverseerSeen(ctx context.Context, id string, ts time.Time) error {
