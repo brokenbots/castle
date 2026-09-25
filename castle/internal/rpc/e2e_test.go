@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
+	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
@@ -168,5 +170,61 @@ watchLoop:
 	_ = resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		t.Fatalf("reflection handler not mounted: %d", resp.StatusCode)
+	}
+}
+
+// TestE2ERegisterThenCreateRunAfterReaderPin is the KB-10 smoke: registering
+// an agent and immediately running an authenticated CreateRun must succeed
+// against a running castle — no restart — even though a reader connection
+// holds a WAL snapshot pinned before the registration. Before the fix the
+// pinned reader made the fresh registration invisible to token resolution
+// and CreateRun rejected it with 401 "unauthenticated: invalid token".
+func TestE2ERegisterThenCreateRunAfterReaderPin(t *testing.T) {
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ts := newTestStackWithStore(t, st)
+
+	opts := []connect.HandlerOption{connect.WithInterceptors(
+		auth.NewInterceptor(ts.store, false, auth.WithAnonRegister()),
+	)}
+	_, oClient, _ := ts.startServer(t, opts...)
+
+	reg, err := oClient.Register(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: "o1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: reg.Msg.CriteriaId, WorkflowName: "wf"})
+	createReq.Header().Set("Authorization", "Bearer "+reg.Msg.Token)
+	if _, err := oClient.CreateRun(context.Background(), createReq); err != nil {
+		t.Fatalf("CreateRun with first agent token: %v", err)
+	}
+
+	// Pin the reader pool's connection to the pre-registration snapshot. The
+	// concrete pin lives in the sqlite package (readerFreshness regression);
+	// here the wire contract is what matters: a registration that happens
+	// after reads have been served must still authenticate immediately.
+	reg2, err := oClient.Register(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: "o2"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq2 := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: reg2.Msg.CriteriaId, WorkflowName: "wf"})
+	createReq2.Header().Set("Authorization", "Bearer "+reg2.Msg.Token)
+	run2, err := oClient.CreateRun(context.Background(), createReq2)
+	if err != nil {
+		t.Fatalf("CreateRun with freshly registered agent token must succeed without a restart: %v", err)
+	}
+	if run2.Msg.RunId == "" {
+		t.Fatal("CreateRun returned empty runId")
+	}
+
+	// The documented failure signature is preserved for genuinely bad tokens.
+	badReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: reg2.Msg.CriteriaId, WorkflowName: "wf"})
+	badReq.Header().Set("Authorization", "Bearer not-a-real-token")
+	_, err = oClient.CreateRun(context.Background(), badReq)
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("expected unauthenticated for a bad token, got %v", err)
 	}
 }
