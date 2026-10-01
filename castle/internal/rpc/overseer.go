@@ -239,9 +239,13 @@ func (s *CriteriaServer) ReattachRun(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	// Cannot resume a terminal run.
+	// Cannot resume a terminal run; cannot reattach a stopped run either
+	// (CRI-207): an operator-parked run resumes through the StopRun/ResumeRun
+	// console path on the agent that owns it, never through crash-recovery
+	// re-registration, which would create an ambiguous second executor for the
+	// same run.
 	isTerminal := run.Status == "succeeded" || run.Status == "failed" || run.Status == "cancelled"
-	if isTerminal {
+	if isTerminal || run.Status == "stopped" {
 		return connect.NewResponse(&pb.ReattachRunResponse{
 			Status:    run.Status,
 			CanResume: false,
@@ -475,6 +479,15 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 			// itself stays pollable via the event log.
 			return
 		}
+		if run.Status == "stopped" {
+			// A run an operator parked as stopped stays parked (CRI-207):
+			// stop tears the engine's sessions down and the agent may surface
+			// teardown/completion events while parking, but the operator stop
+			// is authoritative and only an explicit ResumeRun returns the run
+			// to running. The event itself stays pollable via the event log.
+			s.Log.Debug("applyRunStatus: ignoring completion event for stopped run", "run_id", env.RunId, "type", criteria.TypeString(env))
+			return
+		}
 		now := time.Now().UTC()
 		run.EndedAt = &now
 		if p.RunCompleted != nil && p.RunCompleted.Success {
@@ -496,6 +509,13 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		}
 		if isTerminalRunStatus(run.Status) {
 			// See RunCompleted above: terminal stamps are final (CRI-142).
+			return
+		}
+		if run.Status == "stopped" {
+			// See RunCompleted above: an operator-parked run stays parked
+			// (CRI-207) even when the stopping agent reports a failure from
+			// its own teardown; resume is operator-driven.
+			s.Log.Debug("applyRunStatus: ignoring failure event for stopped run", "run_id", env.RunId, "type", criteria.TypeString(env))
 			return
 		}
 		now := time.Now().UTC()

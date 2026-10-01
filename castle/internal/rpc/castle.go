@@ -459,6 +459,9 @@ func (s *ServerServer) StopRun(ctx context.Context, req *connect.Request[pb.Stop
 	if isTerminalRunStatus(run.Status) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is terminal"))
 	}
+	if run.Status == "stopped" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is already stopped"))
+	}
 	reason := req.Msg.Reason
 	if reason == "" {
 		reason = "requested by operator"
@@ -467,6 +470,14 @@ func (s *ServerServer) StopRun(ctx context.Context, req *connect.Request[pb.Stop
 	issuedAt, err := s.issueControlCommand(ctx, run, msg)
 	if err != nil {
 		return nil, err
+	}
+	// Stop parks the run as STOPPED on the same run id (CRI-207): a
+	// first-class resumable state that is exempt from heartbeat reaping.
+	// Stamping after the enqueue mirrors ResumeRun's clear-after-enqueue order
+	// so a delivery failure keeps the run resumable too; a stamping failure is
+	// logged and does not rescind the accepted stop.
+	if err := s.Store.SetRunStopped(ctx, run.ID); err != nil {
+		s.Log.Error("stop accepted but parking run in stopped failed", "run_id", run.ID, "err", err)
 	}
 	return connect.NewResponse(&pb.StopRunResponse{IssuedAt: issuedAt}), nil
 }
@@ -478,6 +489,9 @@ func (s *ServerServer) PauseRun(ctx context.Context, req *connect.Request[pb.Pau
 	}
 	if isTerminalRunStatus(run.Status) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is terminal"))
+	}
+	if run.Status == "stopped" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is stopped"))
 	}
 	reason := "requested by operator"
 	msg := &pb.ControlMessage{Command: &pb.ControlMessage_PauseRun{PauseRun: &pb.PauseRun{RunId: run.ID, Reason: reason}}}
@@ -495,6 +509,32 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 	}
 	if isTerminalRunStatus(run.Status) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is terminal"))
+	}
+	if run.Status == "stopped" {
+		// Operator-driven resume from the CRI-207 parked state: a stopped run
+		// carries no pending signal, so the empty-signal resume instructs the
+		// agent to re-enter its parked execution from its own checkpoints.
+		// Crash-recovery reattach (ReattachRun) is deliberately not the resume
+		// path for stopped runs — reattachment is for genuinely interrupted
+		// runs, and castle-side, ReattachRun answers CanResume=false for a
+		// parked run so a fresh agent registration never double-starts it.
+		if req.Msg.Signal != "" {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("stopped run has no pending signal"))
+		}
+		msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Payload: req.Msg.Payload}}}
+		issuedAt, err := s.issueControlCommand(ctx, run, msg)
+		if err != nil {
+			// The agent must deliver the resume; until it is delivered the run
+			// stays stopped and resumable, so map the failure directly.
+			return nil, err
+		}
+		// Clearing after the enqueue mirrors the paused-resume contract: once
+		// accepted the run reads as running again (same run id), and a failed
+		// clear is logged without rescinding the accepted resume.
+		if err := s.Store.ClearRunStopped(ctx, run.ID); err != nil {
+			s.Log.Error("resume accepted but clearing run stopped state failed", "run_id", run.ID, "err", err)
+		}
+		return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
 	}
 	if run.Status != "paused" {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is not paused"))
@@ -730,6 +770,9 @@ func (s *ServerServer) SendPrompt(ctx context.Context, req *connect.Request[pb.S
 	}
 	if isTerminalRunStatus(run.Status) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is terminal"))
+	}
+	if run.Status == "stopped" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is stopped"))
 	}
 	if req.Msg.Step == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("step required"))
