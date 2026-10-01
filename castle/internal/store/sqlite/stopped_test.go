@@ -253,3 +253,101 @@ func TestLeaseWorkflowAssignment_SkipsTerminalRun(t *testing.T) {
 		t.Fatalf("expected ErrNotFound leasing terminal run's queued work, got %v", err)
 	}
 }
+
+// TestMarkRunUnstartedReturnsToLeasableBucket (CRI-207 review R1) pins the
+// resume re-queue contract for a never-started parked run: the run returns to
+// pending with started_at NULL and its held lease binding intact, the
+// redelivery scan serves the held lease to the leasing agent again, a second
+// lease attempt is refused while the agent holds the lease, and the stopped
+// guard keeps a terminal run untouched.
+func TestMarkRunUnstartedReturnsToLeasableBucket(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	a := &store.WorkflowAssignment{
+		OwnerCriteriaID: "owner-1",
+		WorkflowName:    "wf",
+		WorkflowSource:  "source",
+		IdempotencyKey:  "key-1",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if _, _, err := s.CreateWorkflowAssignment(ctx, a); err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := s.CreateOverseer(ctx, &store.Overseer{
+		ID: "o1", Name: "agent-1", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+
+	// Lease the run to the agent without any acceptance event: the
+	// assignment is leased and the run has started_at NULL.
+	leased, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
+	if err != nil {
+		t.Fatalf("lease assignment: %v", err)
+	}
+	if leased.RunID != a.RunID || leased.State != store.WorkflowAssignmentStateLeased {
+		t.Fatalf("unexpected lease: run=%s state=%s", leased.RunID, leased.State)
+	}
+
+	// Park it with the operator stop while the agent holds the lease.
+	if err := s.SetRunStopped(ctx, a.RunID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// While parked, the redelivery scan stays quiet: a stopped run is not
+	// deliverable — only resume returns it to the deliverable bucket.
+	active, err := s.ListLeasedPendingAssignmentsByCriteriaID(ctx, "o1")
+	if err != nil {
+		t.Fatalf("redelivery scan while stopped: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("parked run redelivered while stopped: %d assignments", len(active))
+	}
+
+	if err := s.MarkRunUnstarted(ctx, a.RunID); err != nil {
+		t.Fatalf("mark unstarted: %v", err)
+	}
+	r, err := s.GetRun(ctx, a.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != "pending" || r.StartedAt != nil || r.EndedAt != nil {
+		t.Fatalf("run after mark: status=%q started_at=%v ended_at=%v, want pending with started_at NULL", r.Status, r.StartedAt, r.EndedAt)
+	}
+
+	// The redelivery scan now serves the held lease to the leasing agent —
+	// the path a resumed run relies on to get its work delivered again.
+	active, err = s.ListLeasedPendingAssignmentsByCriteriaID(ctx, "o1")
+	if err != nil {
+		t.Fatalf("redelivery scan after mark: %v", err)
+	}
+	if len(active) != 1 || active[0].RunID != a.RunID {
+		t.Fatalf("resumed unstarted run not redeliverable: %d assignments", len(active))
+	}
+
+	// The agent still holds the lease, so a competing lease attempt is
+	// refused: redelivery goes through the held lease, not a re-lease.
+	if _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now.Add(time.Second), time.Minute); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound while the agent holds the redeliverable lease, got %v", err)
+	}
+
+	// The stopped guard keeps the transition out of a terminal run's state.
+	r.Status = "succeeded"
+	r.EndedAt = &now
+	if err := s.UpdateRun(ctx, r); err != nil {
+		t.Fatalf("stamp terminal: %v", err)
+	}
+	if err := s.MarkRunUnstarted(ctx, a.RunID); err != nil {
+		t.Fatalf("mark unstarted on terminal run: %v", err)
+	}
+	got, err := s.GetRun(ctx, a.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "succeeded" {
+		t.Fatalf("terminal run moved to %q, want succeeded (stopped guard)", got.Status)
+	}
+}

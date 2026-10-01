@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
@@ -47,6 +48,24 @@ func expectNoCommand(t *testing.T, ch <-chan *pb.ControlMessage, quiet time.Dura
 	case msg := <-ch:
 		t.Fatalf("unexpected control command: %T", msg.Command)
 	case <-time.After(quiet):
+	}
+}
+
+// stampRunStarted seeds a run's start instant (test scaffold for the
+// already-started parked shape: UpdateRun coalesces started_at, so an unset
+// stamp is written and an existing one is preserved).
+func stampRunStarted(t *testing.T, ts *testStack, runID string) {
+	t.Helper()
+	r, err := ts.store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StartedAt == nil {
+		now := time.Now().UTC()
+		r.StartedAt = &now
+	}
+	if err := ts.store.UpdateRun(context.Background(), r); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -153,9 +172,11 @@ func TestStopRunAlreadyStopped(t *testing.T) {
 }
 
 // TestResumeRunFromStopped (CRI-207): resume from the console/API moves a
-// parked run back to running on the same run id; the resume control is
-// delivered with an empty signal because a stopped run never has a pending
-// signal.
+// parked, already-started run back to running on the same run id; the resume
+// control is delivered with an empty signal because a stopped run never has
+// a pending signal. (A parked run whose delivery never landed is covered by
+// TestResumeRunRedeliversUnstartedStoppedWork: resume re-queues it into the
+// leasable pending bucket instead of faking a start.)
 func TestResumeRunFromStopped(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
@@ -166,6 +187,9 @@ func TestResumeRunFromStopped(t *testing.T) {
 	}
 	runID := run.Msg.RunId
 	markRunStatus(t, ts, runID, "stopped")
+	// Parked mid-execution: started_at is already stamped, so resume returns
+	// the run to running directly.
+	stampRunStarted(t, ts, runID)
 
 	// A signal-bearing resume is rejected: a stopped run has no pending signal.
 	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: runID, Signal: "deploy"}))
@@ -212,8 +236,11 @@ func TestResumeRunFromStopped(t *testing.T) {
 }
 
 // TestResumeRunFromStoppedAgentDisconnected (CRI-207): with the agent
-// disconnected the resume cannot be delivered and the run stays stopped and
-// resumable for a later attempt.
+// disconnected the resume cannot be delivered and the call fails with the
+// precondition. The run stays recoverable anyway: a never-started parked run
+// has already been re-queued into the leasable pending bucket (reconnect
+// redelivery and lease expiry take over from there), so the failed delivery
+// cannot strand a running record whose work nobody will ever deliver.
 func TestResumeRunFromStoppedAgentDisconnected(t *testing.T) {
 	ts := newTestStack(t)
 	_, oClient, cClient := ts.startServer(t)
@@ -228,10 +255,19 @@ func TestResumeRunFromStoppedAgentDisconnected(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition when agent disconnected, got %v", err)
 	}
-	if got, err := ts.store.GetRun(context.Background(), run.Msg.RunId); err != nil {
+	got, err := ts.store.GetRun(context.Background(), run.Msg.RunId)
+	if err != nil {
 		t.Fatal(err)
-	} else if got.Status != "stopped" {
-		t.Fatalf("status = %q, want stopped after failed delivery", got.Status)
+	}
+	// The re-queue is committed before the delivery attempt, so the failed
+	// resume leaves the never-started run in the leasable bucket with
+	// started_at NULL — recoverable by reconnect redelivery or lease expiry,
+	// not parked as a fake running record.
+	if got.Status != "pending" {
+		t.Fatalf("status = %q, want pending after failed delivery (re-queued for redelivery)", got.Status)
+	}
+	if got.StartedAt != nil {
+		t.Fatalf("started_at stamped on a never-started run: %v", got.StartedAt)
 	}
 }
 
@@ -491,28 +527,36 @@ func TestStopRun_NeverAssignedRunNotParked(t *testing.T) {
 	}
 }
 
-// TestStoppedRunNotRedeliveredByDispatch (CRI-207 review R1b/R1c): a run
+// TestResumeRunRedeliversUnstartedStoppedWork (CRI-207 review R1): a run
 // stopped after its assignment was leased but before the agent accepted it
-// keeps holding that lease — a dispatch fire must not deliver the parked
-// run's work again, and the operator resume hands execution back to the same
-// agent on the same run id instead of leaving a running record with no
-// lease. Queued, never-assigned work is covered by
+// keeps holding that lease with started_at NULL. A dispatch fire must not
+// deliver the parked run's work out of band of the operator, and the resume
+// must not stamp a fake start: it re-queues the run into the leasable pending
+// bucket, after which the next dispatch fire for the same agent redelivers
+// the held assignment and the ordinary protocol round-trip (RunAssignment →
+// RunStarted → RunCompleted) carries the run to a terminal state with no
+// synthetic event injection. Queued, never-assigned work is covered by
 // TestStopRun_NeverAssignedRunNotParked here and the lease-scan tests in the
-// store package.
-func TestStoppedRunNotRedeliveredByDispatch(t *testing.T) {
+// store package; the already-started parked shape is covered by
+// TestResumeRunFromStopped.
+func TestResumeRunRedeliversUnstartedStoppedWork(t *testing.T) {
 	ts := newTestStack(t)
 	ctx := context.Background()
+	_, oClient, _ := ts.startServer(t,
+		connect.WithInterceptors(auth.NewInterceptor(ts.store, false, auth.WithAnonRegister())),
+	)
 
-	agentID, _ := registerAgent(t, ts, "agent-1", map[string]string{"env": "prod"})
+	agentID, agentToken := registerAgent(t, ts, "agent-1", map[string]string{"env": "prod"})
 	ch, err := ts.controls.Register(agentID)
 	if err != nil {
 		t.Fatalf("register control channel: %v", err)
 	}
 	defer ts.controls.Unregister(agentID, ch)
 
-	// Submit real work so dispatch delivers the assignment and binds the run
-	// to the agent (the lease sets overseer_id). The agent has not accepted
-	// yet: the run is leased-pending, never started.
+	// Submit real work so dispatch leases the assignment and binds the run to
+	// the agent. This fake agent never accepts the delivery — no RunStarted
+	// ever arrives — so the run is a leased assignment with started_at NULL,
+	// the shape whose work the pre-R1 resume path would silently drop.
 	ownerCtx := auth.WithCallerCriteriaID(ctx, "owner-1")
 	submitResp, err := ts.server.SubmitWorkflowAssignment(ownerCtx, connect.NewRequest(&pb.SubmitWorkflowAssignmentRequest{
 		WorkflowName:   "wf",
@@ -535,13 +579,15 @@ func TestStoppedRunNotRedeliveredByDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.OverseerID != agentID {
-		t.Fatalf("leased run attached to %q, want %q", run.OverseerID, agentID)
+	if run.OverseerID != agentID || run.StartedAt != nil {
+		t.Fatalf("leased run attached to %q with started_at %v, want %q unstarted", run.OverseerID, run.StartedAt, agentID)
 	}
 
 	// Operator stop: reaches the connected agent and parks the run while the
-	// assignment stays leased to the same agent — the engine-side teardown
-	// and any later resume both key on the retained lease.
+	// assignment stays leased to the same agent. A dispatch fire must not
+	// deliver the parked run's work: the redelivery scan re-sends only
+	// pending runs' leases and the lease scan only picks executable queued
+	// work — only the operator resume returns the work to the agent.
 	runCaller := auth.WithCallerCriteriaID(ctx, agentID)
 	if _, err := ts.server.StopRun(runCaller, connect.NewRequest(&pb.StopRunRequest{RunId: runID})); err != nil {
 		t.Fatalf("stop leased run: %v", err)
@@ -552,29 +598,18 @@ func TestStoppedRunNotRedeliveredByDispatch(t *testing.T) {
 			t.Fatalf("expected RunCancel for %s, got %T", runID, msg.Command)
 		}
 	})
-	if run, err := ts.store.GetRun(ctx, runID); err != nil {
-		t.Fatal(err)
-	} else if run.Status != "stopped" {
-		t.Fatalf("status = %q, want stopped after stop", run.Status)
-	}
-
-	// A dispatch fire must not deliver the parked run's work: the redelivery
-	// scan re-sends only pending runs' leases, and the lease scan only picks
-	// executable queued work.
 	ts.criteria.dispatchForAgent(ctx, agentID)
 	expectNoCommand(t, ch, 300*time.Millisecond)
 	if a, err := ts.store.GetWorkflowAssignmentByRunID(ctx, runID); err != nil {
 		t.Fatal(err)
-	} else if a.State != store.WorkflowAssignmentStateLeased {
-		t.Fatalf("parked run's assignment %q, want leased", a.State)
-	}
-	if run, err := ts.store.GetRun(ctx, runID); err != nil || run.Status != "stopped" {
-		t.Fatalf("parked run disturbed by dispatch: status %v err %v", run, err)
+	} else if a.State != store.WorkflowAssignmentStateLeased || a.LeasedCriteriaID != agentID {
+		t.Fatalf("parked run's lease disturbed: state=%q leased=%q", a.State, a.LeasedCriteriaID)
 	}
 
-	// Operator resume: the resume control is delivered and the run returns
-	// to RUNNING on the same run id; the resume dispatch trigger does not
-	// double-deliver the lease the agent already holds.
+	// Operator resume: the resume control is delivered, but the run does not
+	// return to running with started_at NULL — resume never fakes a start.
+	// It re-queues the run into the leasable pending bucket with started_at
+	// still NULL, and the resume itself delivers nothing beyond the signal.
 	if _, err := ts.server.ResumeRun(runCaller, connect.NewRequest(&pb.ResumeRunRequest{RunId: runID})); err != nil {
 		t.Fatalf("resume parked run: %v", err)
 	}
@@ -589,22 +624,71 @@ func TestStoppedRunNotRedeliveredByDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != "running" || run.ID != runID {
-		t.Fatalf("resumed run: status=%q id=%s, want running on same id", run.Status, run.ID)
+	if run.Status != "pending" || run.StartedAt != nil {
+		t.Fatalf("resumed run: status=%q started_at=%v, want pending with started_at NULL (leasable again)", run.Status, run.StartedAt)
 	}
-	if run.StartedAt != nil {
-		t.Fatalf("resume faked a start: started_at=%v", run.StartedAt)
+	if a, err := ts.store.GetWorkflowAssignmentByRunID(ctx, runID); err != nil {
+		t.Fatal(err)
+	} else if a.State != store.WorkflowAssignmentStateLeased || a.LeasedCriteriaID != agentID {
+		t.Fatalf("resume disturbed the held lease: state=%q leased=%q", a.State, a.LeasedCriteriaID)
 	}
 
-	// The restored run participates in ordinary execution: its own start
-	// event stamps started_at and stays running (the stopped guard only
-	// protects parked runs).
-	ts.criteria.applyRunStatus(ctx, criteria.NewEnvelope(runID, &pb.RunStarted{WorkflowName: "wf", InitialStep: "step-1"}))
+	// The held lease is redeliverable: the next dispatch fire for the agent —
+	// the trigger the control stream open / reconnect invokes — re-delivers
+	// the same assignment without a competing re-lease.
+	ts.criteria.dispatchForAgent(ctx, agentID)
+	expectCommand(t, ch, 2*time.Second, func(msg *pb.ControlMessage) {
+		wa := msg.GetWorkflowAssignment()
+		if wa == nil || wa.RunId != runID {
+			t.Fatalf("expected redelivered assignment for %s, got %T", runID, msg.Command)
+		}
+	})
+
+	// End-to-end: over the real agent protocol, the agent accepts the
+	// redelivered assignment — RunStarted stamps started_at and the run
+	// executes to a terminal state with no synthetic event injection.
+	submitEvents := oClient.SubmitEvents(ctx)
+	submitEvents.RequestHeader().Set("Authorization", "Bearer "+agentToken)
+	if err := submitEvents.Send(&pb.Envelope{
+		SchemaVersion: 1,
+		RunId:         runID,
+		CorrelationId: "accept-redelivery",
+		Ts:            timestamppb.Now(),
+		Payload:       &pb.Envelope_RunStarted{RunStarted: &pb.RunStarted{WorkflowName: "wf", InitialStep: "step-1"}},
+	}); err != nil {
+		t.Fatalf("send RunStarted: %v", err)
+	}
+	ack, err := submitEvents.Receive()
+	if err != nil {
+		t.Fatalf("receive RunStarted ack: %v", err)
+	}
+	if ack.RunId != runID {
+		t.Fatalf("unexpected ack run id: %s", ack.RunId)
+	}
 	run, err = ts.store.GetRun(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != "running" || run.StartedAt == nil {
-		t.Fatalf("resumed run did not execute: status=%q started_at=%v", run.Status, run.StartedAt)
+		t.Fatalf("run after acceptance: status=%q started_at=%v, want running with started_at stamped", run.Status, run.StartedAt)
+	}
+	if err := submitEvents.Send(&pb.Envelope{
+		SchemaVersion: 1,
+		RunId:         runID,
+		CorrelationId: "complete-redelivery",
+		Ts:            timestamppb.Now(),
+		Payload:       &pb.Envelope_RunCompleted{RunCompleted: &pb.RunCompleted{Success: true}},
+	}); err != nil {
+		t.Fatalf("send RunCompleted: %v", err)
+	}
+	if _, err := submitEvents.Receive(); err != nil {
+		t.Fatalf("receive RunCompleted ack: %v", err)
+	}
+	run, err = ts.store.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "succeeded" || run.EndedAt == nil {
+		t.Fatalf("run after completion: status=%q ended_at=%v, want succeeded terminal", run.Status, run.EndedAt)
 	}
 }

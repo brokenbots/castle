@@ -521,6 +521,22 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 		if req.Msg.Signal != "" {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("stopped run has no pending signal"))
 		}
+		// A stopped run whose delivery never landed (assignment leased but the
+		// agent never accepted it: started_at is NULL) must return to the
+		// leasable pending bucket or nothing will ever deliver its work: the
+		// dispatch redelivery scan and lease expiry both apply only to
+		// pending runs, so a resumed record left as running with started_at
+		// NULL would sit undelivered forever. MarkRunUnstarted's stopped
+		// guard keeps the transition out of band of a competing stop or event,
+		// and the resumed run's leasability is the resume contract —
+		// redelivery happens through the ordinary dispatch and lease-expiry
+		// paths from here. Runs that already started keep their delivered
+		// workflow: their resume re-enters the parked execution below.
+		if run.StartedAt == nil {
+			if err := s.Store.MarkRunUnstarted(ctx, run.ID); err != nil {
+				s.Log.Error("resume accepted but requeueing unstarted run failed", "run_id", run.ID, "err", err)
+			}
+		}
 		msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Payload: req.Msg.Payload}}}
 		issuedAt, err := s.issueControlCommand(ctx, run, msg)
 		if err != nil {
@@ -529,20 +545,12 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 			return nil, err
 		}
 		// Clearing after the enqueue mirrors the paused-resume contract: once
-		// accepted the run reads as running again (same run id), and a failed
-		// clear is logged without rescinding the accepted resume.
+		// accepted the run reads as running again (same run id) — except a
+		// re-queued unstarted run, which stays pending and leasable, the
+		// state resume just gave it. A failed clear is logged without
+		// rescinding the accepted resume.
 		if err := s.Store.ClearRunStopped(ctx, run.ID); err != nil {
 			s.Log.Error("resume accepted but clearing run stopped state failed", "run_id", run.ID, "err", err)
-		}
-		// A never-started stopped run still holds its queued assignment: the
-		// dispatch path refuses to lease parked work, so resume itself must
-		// hand the work back to the agent — otherwise the resumed run would
-		// sit as a running record with no lease. Runs that already started
-		// hold a delivered assignment, and this lease attempt simply finds
-		// nothing queued for them. It runs synchronously so the resume RPC
-		// returns with the resumed work already delivered.
-		if run.OverseerID != "" {
-			s.dispatchQueuedForAgent(ctx, run.OverseerID)
 		}
 		return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
 	}
@@ -793,25 +801,6 @@ func (s *ServerServer) SendPrompt(ctx context.Context, req *connect.Request[pb.S
 		return nil, err
 	}
 	return connect.NewResponse(&pb.SendPromptResponse{IssuedAt: issuedAt}), nil
-}
-
-// dispatchQueuedForAgent leases and delivers one queued assignment for a
-// connected agent. It is the resume-path dispatch trigger (CRI-207): a
-// stopped run that never started still holds a queued assignment, so resuming
-// it must hand the work back to the agent instead of leaving the run as a
-// running record with no lease. Redelivery of already-held leases remains the
-// CriteriaServer connect/dispatch concern. Errors and a disconnected agent
-// are logged, never fail the RPC.
-func (s *ServerServer) dispatchQueuedForAgent(ctx context.Context, criteriaID string) {
-	o, err := s.Store.GetOverseer(ctx, criteriaID)
-	if err != nil {
-		s.Log.Debug("resume dispatch: cannot load agent", "criteria_id", criteriaID, "err", err)
-		return
-	}
-	if o.Status != "online" {
-		return
-	}
-	leaseAndDispatchNext(ctx, s.Store, s.controls, s.Log, criteriaID, o.Labels, s.assignmentLeaseDuration)
 }
 
 // issueControlCommand enqueues a control message to the criteria agent that

@@ -560,6 +560,22 @@ func (s *Store) ClearRunStopped(ctx context.Context, runID string) error {
 	return err
 }
 
+// MarkRunUnstarted returns a never-started stopped run to the leasable pending
+// bucket (CRI-207 resume path): a stopped run whose assignment was leased but
+// whose delivery never landed (started_at is NULL) is re-queued as pending so
+// the dispatch redelivery scan and the lease-expiry scan — both of which apply
+// only to pending runs — can deliver its work again; a resumed record left as
+// status running with started_at NULL would qualify for neither and sit
+// undelivered forever. started_at is explicitly kept NULL ("unstarted"). One
+// conditional UPDATE guarded to status='stopped', the same pattern as the
+// pause and stopped guards, so it cannot race a competing transition, rewrite
+// a terminal or paused run, or resurrect a run that left the parked state.
+func (s *Store) MarkRunUnstarted(ctx context.Context, runID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status='pending', started_at=NULL WHERE id=? AND status='stopped'`, runID)
+	return err
+}
+
 // ReapStaleAgentRuns stamps runs in status pending or running as failed with
 // reason "agent heartbeat lost" when their owning criteria agent's heartbeat
 // (overseers.last_seen_at) is older than staleBefore (CRI-142). Runs without

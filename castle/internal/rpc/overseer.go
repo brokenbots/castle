@@ -579,11 +579,11 @@ func (s *CriteriaServer) dispatchForAgent(ctx context.Context, criteriaID string
 }
 
 // leaseAndDispatchNext leases one queued assignment for the agent under the
-// registry lease lock and pushes it to the agent's control channel. Shared by
-// the CriteriaServer dispatch loop and the ServerServer resume path (CRI-207):
-// a resumed never-started stopped run still holds a queued assignment that
-// must actually be delivered instead of sitting as a running record with no
-// lease. Safe to run in a goroutine; errors are logged.
+// registry lease lock and pushes it to the agent's control channel. It is the
+// CriteriaServer dispatch loop's lease trigger (CRI-73): an agent that has
+// accepted its running work becomes eligible for the next queued assignment,
+// and a reconnecting agent re-leases work it no longer holds. Safe to run in
+// a goroutine; errors are logged.
 func leaseAndDispatchNext(ctx context.Context, st store.Store, controls *ControlRegistry, log *slog.Logger, criteriaID string, agentLabels map[string]string, leaseDuration time.Duration) {
 	controls.LeaseLock()
 	defer controls.LeaseUnlock()

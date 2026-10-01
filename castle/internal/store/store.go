@@ -310,6 +310,11 @@ type Store interface {
 	// ClearRunStopped moves a stopped run back to running (the resume path,
 	// same run id). Only runs currently in status stopped are affected.
 	ClearRunStopped(ctx context.Context, runID string) error
+	// MarkRunUnstarted returns a never-started stopped run to the leasable
+	// pending bucket (CRI-207 resume path): status='pending' and
+	// started_at=NULL, so the dispatch redelivery and lease-expiry paths
+	// apply to it again. Only runs currently in status stopped are affected.
+	MarkRunUnstarted(ctx context.Context, runID string) error
 
 	// Workflow assignments
 	// CreateWorkflowAssignment atomically creates the queued run and assignment
