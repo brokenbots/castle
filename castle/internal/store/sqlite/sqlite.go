@@ -519,9 +519,12 @@ func (s *Store) GetRunVariableScope(ctx context.Context, runID string) (string, 
 }
 
 // SetRunPaused marks a run as paused with the given pending signal (W05).
+// Guarded against terminal and stopped runs (CRI-207): a late WaitEntered or
+// event-driven pause on a run an operator already parked must not flip it out
+// of stopped, and terminal runs are never rewritten.
 func (s *Store) SetRunPaused(ctx context.Context, runID, pendingSignal string, pausedAt time.Time) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status='paused', pending_signal=?, paused_at=? WHERE id=?`,
+		`UPDATE runs SET status='paused', pending_signal=?, paused_at=? WHERE id=? AND status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped')`,
 		pendingSignal, pausedAt.Format(tsLayout), runID)
 	return err
 }
@@ -535,10 +538,49 @@ func (s *Store) ClearRunPaused(ctx context.Context, runID string) error {
 	return err
 }
 
+// SetRunStopped parks the run in status stopped (CRI-207): the operator
+// requested a stop, and stop is resumable, so the run keeps its id and is not
+// terminal — ended_at is untouched. Pause state is dropped: a parked run is
+// neither paused nor waiting on a signal. Guarded like CancelRun so terminal
+// runs are never rewritten.
+func (s *Store) SetRunStopped(ctx context.Context, runID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status='stopped', pending_signal=NULL, paused_at=NULL WHERE id=? AND status NOT IN ('succeeded', 'failed', 'cancelled')`,
+		runID)
+	return err
+}
+
+// ClearRunStopped moves a stopped run back to running (the resume path,
+// CRI-207): the run keeps its identity and checkpoint ownership (criteria is
+// checkpoint-owner; castle only points at it). Guarded to stopped runs so the
+// operator resume can never clobber a concurrent transition or a terminal run.
+func (s *Store) ClearRunStopped(ctx context.Context, runID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status='running', pending_signal=NULL, paused_at=NULL WHERE id=? AND status='stopped'`, runID)
+	return err
+}
+
+// MarkRunUnstarted returns a never-started stopped run to the leasable pending
+// bucket (CRI-207 resume path): a stopped run whose assignment was leased but
+// whose delivery never landed (started_at is NULL) is re-queued as pending so
+// the dispatch redelivery scan and the lease-expiry scan — both of which apply
+// only to pending runs — can deliver its work again; a resumed record left as
+// status running with started_at NULL would qualify for neither and sit
+// undelivered forever. started_at is explicitly kept NULL ("unstarted"). One
+// conditional UPDATE guarded to status='stopped', the same pattern as the
+// pause and stopped guards, so it cannot race a competing transition, rewrite
+// a terminal or paused run, or resurrect a run that left the parked state.
+func (s *Store) MarkRunUnstarted(ctx context.Context, runID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status='pending', started_at=NULL WHERE id=? AND status='stopped'`, runID)
+	return err
+}
+
 // ReapStaleAgentRuns stamps runs in status pending or running as failed with
 // reason "agent heartbeat lost" when their owning criteria agent's heartbeat
 // (overseers.last_seen_at) is older than staleBefore (CRI-142). Runs without
-// an owning agent (queued assignment work) and paused runs are left alone;
+// an owning agent (queued assignment work), paused runs and stopped runs
+// (CRI-207: reaper-exempt regardless of heartbeat age) are left alone;
 // terminal runs are never rewritten. Each reaped run's workflow assignment is
 // marked terminal so dead-agent work is never re-dispatched. Returns the IDs
 // of the reaped runs.
@@ -565,6 +607,10 @@ func (s *Store) reapStaleAgentRunsAttempt(ctx context.Context, now time.Time, st
 
 	const reapReason = "agent heartbeat lost"
 
+	// Stopped runs are deliberately absent from the scan (CRI-207): a run an
+	// operator parked as stopped has no live agent heartbeat by design and is
+	// never reaped regardless of how old its agent's last heartbeat is.
+	// Reaper semantics for genuinely dead agents are unchanged.
 	rows, err := s.reader.QueryContext(ctx, `
 		SELECT r.id
 		FROM runs r
@@ -621,7 +667,8 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 
 	// Re-validate inside the write transaction against the same staleness
 	// criteria as the scan: only still-active runs of agents whose heartbeat
-	// is still older than staleBefore survive into the UPDATE.
+	// is still older than staleBefore survive into the UPDATE. Stopped runs
+	// are reaper-exempt (CRI-207) and never enter this scan either.
 	revalidateArgs := make([]any, 0, len(candidates)+1)
 	revalidateArgs = append(revalidateArgs, staleBefore.Format(tsLayout))
 	for _, id := range candidates {
@@ -1292,13 +1339,20 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		return nil, store.ErrNotFound
 	}
 
-	// Find queued assignments and their required labels, oldest first.
+	// Find queued assignments and their required labels, oldest first. Only
+	// work whose run is still executable is eligible (CRI-207): the dispatch
+	// path must never lease an assignment whose run the operator parked as
+	// stopped, or whose run already reached a terminal state — only an
+	// explicit ResumeRun moves a stopped run back to running (and back into
+	// this scan), so parked work is delivered only through resume.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
 		       a.idempotency_key, a.created_at, a.updated_at, l.key, l.value
 		FROM workflow_assignments a
+		JOIN runs r ON r.id = a.run_id
 		LEFT JOIN workflow_assignment_labels l ON l.assignment_id = a.id
 		WHERE a.state = ?
+		  AND r.status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped')
 		ORDER BY a.created_at ASC, a.id ASC`,
 		store.WorkflowAssignmentStateQueued)
 	if err != nil {

@@ -59,6 +59,10 @@ export function StatusPill({ status, pauseEvent }: StatusPillProps) {
         bgColor = 'bg-slate-600';
         textColor = 'text-white';
         break;
+      case 'stopped':
+        bgColor = 'bg-violet-600';
+        textColor = 'text-white';
+        break;
     }
   }
 

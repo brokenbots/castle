@@ -94,6 +94,9 @@ describe('RunControls', () => {
       { status: 'running', isPaused: true, pause: false, resume: true, stop: true },
       // Control-paused runs report "paused" without a wait event yet.
       { status: 'paused', pause: false, resume: true, stop: true },
+      // A stopped run (CRI-207) is parked, not dead: resume is the lever,
+      // and a second stop is rejected as already stopped.
+      { status: 'stopped', pause: false, resume: true, stop: false },
       { status: 'pending', pause: false, resume: false, stop: true },
       { status: 'succeeded', pause: false, resume: false, stop: false },
       { status: 'failed', pause: false, resume: false, stop: false },
@@ -139,6 +142,15 @@ describe('RunControls', () => {
     await user.click(screen.getByRole('button', { name: 'Resume' }));
     expect(triggers.resume).toHaveBeenCalledWith({ runId: 'run-1' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  test('resume acts on a stopped run without a dialog (CRI-207)', async () => {
+    const user = userEvent.setup();
+    renderControls('stopped');
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(triggers.resume).toHaveBeenCalledWith({ runId: 'run-1' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(triggers.stop).not.toHaveBeenCalled();
   });
 
   test('in-flight pause shows the optimistic pending state and blocks other controls', () => {

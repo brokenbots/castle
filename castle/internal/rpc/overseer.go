@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -239,9 +240,13 @@ func (s *CriteriaServer) ReattachRun(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	// Cannot resume a terminal run.
+	// Cannot resume a terminal run; cannot reattach a stopped run either
+	// (CRI-207): an operator-parked run resumes through the StopRun/ResumeRun
+	// console path on the agent that owns it, never through crash-recovery
+	// re-registration, which would create an ambiguous second executor for the
+	// same run.
 	isTerminal := run.Status == "succeeded" || run.Status == "failed" || run.Status == "cancelled"
-	if isTerminal {
+	if isTerminal || run.Status == "stopped" {
 		return connect.NewResponse(&pb.ReattachRunResponse{
 			Status:    run.Status,
 			CanResume: false,
@@ -285,6 +290,15 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 			// RunStarted after an operator CancelRun or heartbeat reaping
 			// must not flip the run back to "running". The event itself
 			// stays pollable via the event log.
+			return
+		}
+		if run.Status == "stopped" {
+			// A run an operator parked as stopped (CRI-207) stays parked out
+			// of band of agent events: only an explicit ResumeRun returns it
+			// to running, and RunStarted must not stamp started_at for a run
+			// whose work castle did not dispatch. The event itself stays
+			// pollable via the event log.
+			s.Log.Debug("applyRunStatus: ignoring run started for stopped run", "run_id", env.RunId)
 			return
 		}
 		run.Status = "running"
@@ -475,6 +489,15 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 			// itself stays pollable via the event log.
 			return
 		}
+		if run.Status == "stopped" {
+			// A run an operator parked as stopped stays parked (CRI-207):
+			// stop tears the engine's sessions down and the agent may surface
+			// teardown/completion events while parking, but the operator stop
+			// is authoritative and only an explicit ResumeRun returns the run
+			// to running. The event itself stays pollable via the event log.
+			s.Log.Debug("applyRunStatus: ignoring completion event for stopped run", "run_id", env.RunId, "type", criteria.TypeString(env))
+			return
+		}
 		now := time.Now().UTC()
 		run.EndedAt = &now
 		if p.RunCompleted != nil && p.RunCompleted.Success {
@@ -496,6 +519,13 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 		}
 		if isTerminalRunStatus(run.Status) {
 			// See RunCompleted above: terminal stamps are final (CRI-142).
+			return
+		}
+		if run.Status == "stopped" {
+			// See RunCompleted above: an operator-parked run stays parked
+			// (CRI-207) even when the stopping agent reports a failure from
+			// its own teardown; resume is operator-driven.
+			s.Log.Debug("applyRunStatus: ignoring failure event for stopped run", "run_id", env.RunId, "type", criteria.TypeString(env))
 			return
 		}
 		now := time.Now().UTC()
@@ -545,19 +575,29 @@ func (s *CriteriaServer) dispatchForAgent(ctx context.Context, criteriaID string
 
 	// Serialize lease attempts to prevent concurrent dispatchers from granting
 	// this agent a second unstarted lease before it accepts the first one.
-	s.controls.LeaseLock()
-	defer s.controls.LeaseUnlock()
+	leaseAndDispatchNext(ctx, s.Store, s.controls, s.Log, criteriaID, o.Labels, s.leaseDuration())
+}
+
+// leaseAndDispatchNext leases one queued assignment for the agent under the
+// registry lease lock and pushes it to the agent's control channel. It is the
+// CriteriaServer dispatch loop's lease trigger (CRI-73): an agent that has
+// accepted its running work becomes eligible for the next queued assignment,
+// and a reconnecting agent re-leases work it no longer holds. Safe to run in
+// a goroutine; errors are logged.
+func leaseAndDispatchNext(ctx context.Context, st store.Store, controls *ControlRegistry, log *slog.Logger, criteriaID string, agentLabels map[string]string, leaseDuration time.Duration) {
+	controls.LeaseLock()
+	defer controls.LeaseUnlock()
 
 	now := time.Now().UTC()
-	leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, s.leaseDuration())
+	leased, err := st.LeaseWorkflowAssignment(ctx, criteriaID, agentLabels, now, leaseDuration)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
-			s.Log.Debug("dispatch for agent: lease failed", "criteria_id", criteriaID, "err", err)
+			log.Debug("dispatch for agent: lease failed", "criteria_id", criteriaID, "err", err)
 		}
 		return
 	}
-	if err := enqueueWorkflowAssignment(s.Store, s.controls, criteriaID, leased, s.Log); err != nil {
-		s.Log.Warn("dispatch for agent: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
+	if err := enqueueWorkflowAssignment(st, controls, criteriaID, leased, log); err != nil {
+		log.Warn("dispatch for agent: control enqueue failed", "criteria_id", criteriaID, "run_id", leased.RunID, "err", err)
 	}
 }
 

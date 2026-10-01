@@ -318,7 +318,27 @@ func TestAgentTokenCanControlOwnedRun(t *testing.T) {
 	if _, err := srvClient.StopRun(context.Background(), cancelReq); err != nil {
 		t.Fatalf("stop run as agent: %v", err)
 	}
-	watchRunTerminal(t, srvClient, ownerToken, stopRunID, "failed", 15*time.Second)
+
+	// Stop parks the run (CRI-207): the run reads "stopped" on the same run id
+	// without a terminal event, so heartbeat reaping leaves it alone.
+	waitCtx4, waitCancel4 := context.WithTimeout(ctx, 15*time.Second)
+	defer waitCancel4()
+	waitForRunStatus(waitCtx4, t, srvClient, ownerToken, stopRunID, "stopped")
+
+	// Resume from the parked state (empty signal — a stopped run has no
+	// pending signal): the run moves back to RUNNING on the same run id and
+	// then completes.
+	resumeStoppedReq := connect.NewRequest(&pb.ResumeRunRequest{RunId: stopRunID})
+	resumeStoppedReq.Header().Set("Authorization", "Bearer "+a.token())
+	if _, err := srvClient.ResumeRun(context.Background(), resumeStoppedReq); err != nil {
+		t.Fatalf("resume stopped run as agent: %v", err)
+	}
+	waitCtx5, waitCancel5 := context.WithTimeout(ctx, 15*time.Second)
+	defer waitCancel5()
+	waitForRunStatus(waitCtx5, t, srvClient, ownerToken, stopRunID, "running")
+
+	// The engine re-enters the parked execution and finishes it.
+	watchRunTerminal(t, srvClient, ownerToken, stopRunID, "succeeded", 15*time.Second)
 }
 
 func TestAgentReattachAfterRestart(t *testing.T) {
