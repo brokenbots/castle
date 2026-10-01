@@ -144,7 +144,7 @@ type Run struct {
 	OverseerID   string
 	WorkflowName string
 	WorkflowHCL  string
-	Status       string // "pending"|"running"|"succeeded"|"failed"|"paused"|"cancelled"
+	Status       string // "pending"|"running"|"succeeded"|"failed"|"paused"|"stopped"|"cancelled"
 	CurrentStep  string
 	LastSeq      uint64
 	CreatedAt    time.Time
@@ -240,8 +240,10 @@ type Store interface {
 	// ReapStaleAgentRuns stamps runs in status pending or running as failed
 	// with reason "agent heartbeat lost" when their owning agent's heartbeat
 	// is older than staleBefore. Runs without an owning agent (queued
-	// assignment work) and paused runs are left alone. Each reaped run's
-	// workflow assignment is marked terminal. Returns the reaped run IDs.
+	// assignment work), paused runs and stopped runs (CRI-207: an operator
+	// parked run is reaper-exempt regardless of heartbeat age, because it has
+	// no live agent by design) are left alone. Each reaped run's workflow
+	// assignment is marked terminal. Returns the reaped run IDs.
 	ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error)
 	// CancelRun stamps runID terminal as "cancelled" with the given reason
 	// (CRI-142). Terminal runs are never rewritten: an already terminal run
@@ -295,6 +297,19 @@ type Store interface {
 	// ClearRunPaused clears the pending_signal and paused_at and sets status back to running.
 	// Only runs currently in status paused are affected; terminal runs are left untouched.
 	ClearRunPaused(ctx context.Context, runID string) error
+
+	// Stop/Resume (CRI-207): STOPPED is a first-class resumable, reaper-exempt
+	// run status. Stop parks the operator-intent: the same run id transitions
+	// RUNNING -> STOPPED -> RUNNING; checkpoint/state retention is
+	// criteria-owned, castle holds only pointers.
+	// SetRunStopped parks the run in status stopped and clears any pause
+	// state. Never rewrites a terminal run; unknown ids are a no-op. Castle
+	// records no dedicated stopped_at column — the stop instant lives in the
+	// control command and operator-visible issued_at (CRI-207).
+	SetRunStopped(ctx context.Context, runID string) error
+	// ClearRunStopped moves a stopped run back to running (the resume path,
+	// same run id). Only runs currently in status stopped are affected.
+	ClearRunStopped(ctx context.Context, runID string) error
 
 	// Workflow assignments
 	// CreateWorkflowAssignment atomically creates the queued run and assignment
