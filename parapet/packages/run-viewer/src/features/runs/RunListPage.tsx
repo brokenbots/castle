@@ -20,6 +20,7 @@ const STATUS_FILTERS = [
   { value: 'running', label: 'running' },
   { value: 'succeeded', label: 'succeeded' },
   { value: 'failed', label: 'failed' },
+  { value: 'stopped', label: 'stopped' },
   { value: 'cancelled', label: 'cancelled' },
 ] as const;
 

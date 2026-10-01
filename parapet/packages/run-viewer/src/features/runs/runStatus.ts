@@ -5,6 +5,8 @@ export const RUN_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled'
 
 // Text-color palette shared by run status cells (StatusPill uses the same
 // background classes). `paused` is a real status surfaced by RunControls.
+// `stopped` (CRI-207) is a first-class reaper-exempt resumable state, not a
+// terminal one — it is deliberately absent from RUN_TERMINAL_STATUSES.
 export const RUN_STATUS_TEXT_COLORS: Record<string, string> = {
   running: 'text-amber-400',
   succeeded: 'text-emerald-400',
@@ -12,4 +14,5 @@ export const RUN_STATUS_TEXT_COLORS: Record<string, string> = {
   pending: 'text-slate-400',
   paused: 'text-amber-400',
   cancelled: 'text-slate-500',
+  stopped: 'text-violet-400',
 };

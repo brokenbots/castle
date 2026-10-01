@@ -57,7 +57,8 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
   const noControls = !controlsAvailable;
 
   const canPause = controlsAvailable && status === 'running' && !isPaused;
-  const canResume = controlsAvailable && isPaused;
+  // A stopped run (CRI-207) is a parked, resumable state — not terminal.
+  const canResume = controlsAvailable && (isPaused || status === 'stopped');
   const canStop =
     controlsAvailable &&
     (status === 'running' || status === 'pending' || isPaused) &&
@@ -102,9 +103,11 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
                   ? 'A control action is in flight'
                   : isPaused
                     ? 'Run is paused'
-                    : status !== 'running'
-                      ? 'Run has not started yet'
-                      : 'Pause the run'
+                    : status === 'stopped'
+                      ? 'Run is stopped'
+                      : status !== 'running'
+                        ? 'Run has not started yet'
+                        : 'Pause the run'
           }
           className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
         >
@@ -144,7 +147,9 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
                     ? 'Stop already requested'
                     : canStop
                       ? 'Stop the run'
-                      : 'Run has not started yet'
+                      : status === 'stopped'
+                        ? 'Run is already stopped'
+                        : 'Run has not started yet'
           }
           className="px-3 py-1.5 bg-rose-700 hover:bg-rose-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
         >
@@ -154,8 +159,9 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
 
       {stopRequestedAt && (
         <p className="text-xs text-amber-400" data-testid="stop-requested">
-          Stop requested at {stopRequestedAt} — waiting for the run to cancel;
-          status updates arrive via the event stream.
+          Stop requested at {stopRequestedAt} — waiting for the run to park as
+          stopped; it can be resumed afterwards, and status updates arrive via
+          the event stream.
         </p>
       )}
 
@@ -193,9 +199,11 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
               Stop run?
             </h4>
             <p className="text-sm text-slate-300 mt-2">
-              This cancels run <span className="font-mono">{runId}</span>. Any
-              in-flight work is lost and the run cannot be resumed. The run may
-              take a moment to observe the cancel.
+              This stops run <span className="font-mono">{runId}</span>. Any
+              in-flight work is torn down and the run parks as{" "}
+              <span className="font-semibold">stopped</span> on the same run
+              id — it can be resumed later. The run may take a moment to
+              observe the cancel.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button
