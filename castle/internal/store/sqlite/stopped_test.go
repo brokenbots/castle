@@ -1,6 +1,8 @@
 package sqlite
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -161,5 +163,93 @@ func TestReapStaleAgentRuns_IgnoresStopped(t *testing.T) {
 	r := f.getRun(t, "r-stale-stopped")
 	if r.Status != "failed" || r.FailureReason != "agent heartbeat lost" {
 		t.Fatalf("after resume+reap: status=%q reason=%q", r.Status, r.FailureReason)
+	}
+}
+
+// TestLeaseWorkflowAssignment_SkipsStoppedRun pins the dispatch-side half of
+// the CRI-207 invariant: the dispatch path must never hand a parked run's
+// queued work to an agent. A silent re-dispatch would restart the run out of
+// band of the operator — violating the rule that only an explicit ResumeRun
+// moves a stopped run back to running (and back into this scan). The second
+// half proves a resumed run that never started is actually executable again:
+// its assignment is leasable, so resume leads to real execution instead of a
+// running record with no lease.
+func TestLeaseWorkflowAssignment_SkipsStoppedRun(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	a := &store.WorkflowAssignment{
+		OwnerCriteriaID: "owner-1",
+		WorkflowName:    "wf",
+		WorkflowSource:  "source",
+		IdempotencyKey:  "key-1",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if _, _, err := s.CreateWorkflowAssignment(ctx, a); err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := s.CreateOverseer(ctx, &store.Overseer{
+		ID: "o1", Name: "agent-1", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+
+	if err := s.SetRunStopped(ctx, a.RunID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound leasing parked run's queued work, got %v", err)
+	}
+
+	if err := s.ClearRunStopped(ctx, a.RunID); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	leased, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
+	if err != nil {
+		t.Fatalf("expected lease after resume, got %v", err)
+	}
+	if leased.RunID != a.RunID || leased.State != store.WorkflowAssignmentStateLeased {
+		t.Fatalf("unexpected lease after resume: run=%s state=%s", leased.RunID, leased.State)
+	}
+}
+
+// TestLeaseWorkflowAssignment_SkipsTerminalRun covers the same guard for the
+// terminal cases: queued work whose run already finished is never dispatched.
+func TestLeaseWorkflowAssignment_SkipsTerminalRun(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	a := &store.WorkflowAssignment{
+		OwnerCriteriaID: "owner-1",
+		WorkflowName:    "wf",
+		WorkflowSource:  "source",
+		IdempotencyKey:  "key-1",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if _, _, err := s.CreateWorkflowAssignment(ctx, a); err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := s.CreateOverseer(ctx, &store.Overseer{
+		ID: "o1", Name: "agent-1", TokenHash: "t", Status: "online", CreatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+
+	r, err := s.GetRun(ctx, a.RunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	r.Status = "cancelled"
+	r.EndedAt = &now
+	if err := s.UpdateRun(ctx, r); err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+
+	if _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound leasing terminal run's queued work, got %v", err)
 	}
 }

@@ -534,6 +534,15 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 		if err := s.Store.ClearRunStopped(ctx, run.ID); err != nil {
 			s.Log.Error("resume accepted but clearing run stopped state failed", "run_id", run.ID, "err", err)
 		}
+		// A never-started stopped run still holds its queued assignment: the
+		// dispatch path refuses to lease parked work, so resume itself must
+		// hand the work back to the agent — otherwise the resumed run would
+		// sit as a running record with no lease. Runs that already started
+		// hold a delivered assignment, and this lease attempt simply finds
+		// nothing queued for them.
+		if run.OverseerID != "" {
+			go s.dispatchQueuedForAgent(context.Background(), run.OverseerID)
+		}
 		return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
 	}
 	if run.Status != "paused" {
@@ -783,6 +792,24 @@ func (s *ServerServer) SendPrompt(ctx context.Context, req *connect.Request[pb.S
 		return nil, err
 	}
 	return connect.NewResponse(&pb.SendPromptResponse{IssuedAt: issuedAt}), nil
+}
+
+// dispatchQueuedForAgent leases and delivers one queued assignment for a
+// connected agent. It is the resume-path dispatch trigger (CRI-207): a
+// stopped run that never started still holds a queued assignment, so resuming
+// it must hand the work back to the agent instead of leaving the run as a
+// running record with no lease. Redelivery of already-held leases remains the
+// CriteriaServer connect/dispatch concern.
+func (s *ServerServer) dispatchQueuedForAgent(ctx context.Context, criteriaID string) {
+	o, err := s.Store.GetOverseer(ctx, criteriaID)
+	if err != nil {
+		s.Log.Debug("resume dispatch: cannot load agent", "criteria_id", criteriaID, "err", err)
+		return
+	}
+	if o.Status != "online" {
+		return
+	}
+	leaseAndDispatchNext(ctx, s.Store, s.controls, s.Log, criteriaID, o.Labels, s.assignmentLeaseDuration)
 }
 
 // issueControlCommand enqueues a control message to the criteria agent that

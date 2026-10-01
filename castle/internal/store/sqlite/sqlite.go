@@ -1323,13 +1323,20 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		return nil, store.ErrNotFound
 	}
 
-	// Find queued assignments and their required labels, oldest first.
+	// Find queued assignments and their required labels, oldest first. Only
+	// work whose run is still executable is eligible (CRI-207): the dispatch
+	// path must never lease an assignment whose run the operator parked as
+	// stopped, or whose run already reached a terminal state — only an
+	// explicit ResumeRun moves a stopped run back to running (and back into
+	// this scan), so parked work is delivered only through resume.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
 		       a.idempotency_key, a.created_at, a.updated_at, l.key, l.value
 		FROM workflow_assignments a
+		JOIN runs r ON r.id = a.run_id
 		LEFT JOIN workflow_assignment_labels l ON l.assignment_id = a.id
 		WHERE a.state = ?
+		  AND r.status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped')
 		ORDER BY a.created_at ASC, a.id ASC`,
 		store.WorkflowAssignmentStateQueued)
 	if err != nil {

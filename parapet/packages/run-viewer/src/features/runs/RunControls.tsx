@@ -199,11 +199,13 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
               Stop run?
             </h4>
             <p className="text-sm text-slate-300 mt-2">
-              This stops run <span className="font-mono">{runId}</span>. Any
-              in-flight work is torn down and the run parks as{" "}
+              This stops run <span className="font-mono">{runId}</span>. The
+              agent tears down in-flight work and the run parks as{" "}
               <span className="font-semibold">stopped</span> on the same run
-              id — it can be resumed later. The run may take a moment to
-              observe the cancel.
+              id — it can be resumed later (the run may take a moment to
+              observe the cancel). A queued run that has not been assigned to
+              an agent yet cannot be cancelled: the request is rejected and
+              the run stays pending.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button
