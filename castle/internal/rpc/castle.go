@@ -539,9 +539,10 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 		// hand the work back to the agent — otherwise the resumed run would
 		// sit as a running record with no lease. Runs that already started
 		// hold a delivered assignment, and this lease attempt simply finds
-		// nothing queued for them.
+		// nothing queued for them. It runs synchronously so the resume RPC
+		// returns with the resumed work already delivered.
 		if run.OverseerID != "" {
-			go s.dispatchQueuedForAgent(context.Background(), run.OverseerID)
+			s.dispatchQueuedForAgent(ctx, run.OverseerID)
 		}
 		return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
 	}
@@ -799,7 +800,8 @@ func (s *ServerServer) SendPrompt(ctx context.Context, req *connect.Request[pb.S
 // stopped run that never started still holds a queued assignment, so resuming
 // it must hand the work back to the agent instead of leaving the run as a
 // running record with no lease. Redelivery of already-held leases remains the
-// CriteriaServer connect/dispatch concern.
+// CriteriaServer connect/dispatch concern. Errors and a disconnected agent
+// are logged, never fail the RPC.
 func (s *ServerServer) dispatchQueuedForAgent(ctx context.Context, criteriaID string) {
 	o, err := s.Store.GetOverseer(ctx, criteriaID)
 	if err != nil {

@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -26,20 +25,6 @@ func markRunStatus(t *testing.T, ts *testStack, runID, status string) {
 	if err := ts.store.UpdateRun(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// pollUntil runs condition until it holds or a short deadline passes; tests
-// use it to wait out fire-and-forget async bookkeeping (dispatch goroutines).
-func pollUntil(t *testing.T, condition func() bool) error {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return nil
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return errors.New("condition not met within 2s")
 }
 
 // expectCommand receives one control message within the given window and
