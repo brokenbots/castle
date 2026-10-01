@@ -363,7 +363,7 @@ func (a *agent) runControlStream(ctx context.Context) error {
 		case *pb.ControlMessage_PauseRun:
 			a.handlePauseRun(cmd.PauseRun)
 		case *pb.ControlMessage_ResumeRun:
-			a.handleResumeRun(cmd.ResumeRun)
+			a.handleResumeRun(ctx, cmd.ResumeRun)
 		default:
 			a.log.Debug("ignored control command", "type", fmt.Sprintf("%T", msg.Command))
 		}
@@ -433,14 +433,19 @@ func (a *agent) isCurrentExecutor(runID string, gen int64) bool {
 func (a *agent) handleRunCancel(cancel *pb.RunCancel) {
 	a.log.Info("received run cancel", "run_id", cancel.RunId, "reason", cancel.Reason)
 
-	// Mark the run as failed immediately using a background stream; do not
-	// rely on the run goroutine noticing the cancellation, because the
-	// goroutine's event stream may already be closed.
+	// Park the run as stopped (CRI-207): stop is resumable, so the engine
+	// tears its session down without emitting a terminal event. The persisted
+	// runState stays in place with status "stopped" so a later resume re-enters
+	// the parked execution, and reattachment never restarts it (castle answers
+	// can_resume=false for parked runs).
 	a.mu.Lock()
 	rs, ok := a.state.Runs[cancel.RunId]
 	a.mu.Unlock()
 	if ok && !isTerminal(rs.Status) {
-		a.failRunWithBackgroundStream(rs, "cancelled: "+cancel.Reason)
+		rs.Status = "stopped"
+		rs.Paused = false
+		rs.ResumeSignal = ""
+		a.setRunState(rs)
 	}
 
 	a.runMu.Lock()
@@ -462,8 +467,25 @@ func (a *agent) handlePauseRun(pause *pb.PauseRun) {
 	}
 }
 
-func (a *agent) handleResumeRun(resume *pb.ResumeRun) {
+func (a *agent) handleResumeRun(ctx context.Context, resume *pb.ResumeRun) {
 	a.log.Info("received run resume", "run_id", resume.RunId, "signal", resume.Signal)
+	if resume.Signal == "" {
+		// Empty-signal resume: the operator path (CRI-207) un-parks a stopped
+		// run on the same run id. The engine re-enters its parked execution
+		// from its own checkpoints, emitting no RunStarted (the run never went
+		// back to pending).
+		a.mu.Lock()
+		rs, ok := a.state.Runs[resume.RunId]
+		a.mu.Unlock()
+		if ok && rs.Status == "stopped" {
+			rs.Status = "running"
+			a.setRunState(rs)
+			a.restartRunGoroutine(ctx, rs)
+		} else if ok {
+			a.log.Info("ignoring empty-signal resume for non-stopped run", "run_id", resume.RunId, "status", rs.Status)
+		}
+		return
+	}
 	a.mu.Lock()
 	ch, ok := a.resumeCh[resume.RunId]
 	a.mu.Unlock()
@@ -738,30 +760,6 @@ func deterministicCorrelationID(runID string, env *criteria.Envelope) string {
 	default:
 		return fmt.Sprintf("%s-%s", runID, typ)
 	}
-}
-
-// failRunWithBackgroundStream sends a terminal RunFailed event using a fresh
-// SubmitEvents stream. It is used when the run's own event stream has already
-// been closed (e.g. the run was cancelled via StopRun).
-func (a *agent) failRunWithBackgroundStream(rs *runState, reason string) {
-	a.log.Info("failing run on background stream", "run_id", rs.RunID, "reason", reason)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	stream := a.client.SubmitEvents(ctx)
-	stream.RequestHeader().Set("Authorization", "Bearer "+a.token())
-	defer func() {
-		_ = stream.CloseRequest()
-		_ = stream.CloseResponse()
-	}()
-	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.RunFailed{
-		Reason: reason,
-	})); err != nil {
-		a.log.Error("failed to emit run failed on background stream", "run_id", rs.RunID, "err", err)
-	}
-	rs.Status = "failed"
-	rs.FailureReason = reason
-	a.setRunState(rs)
-	a.deleteRunState(rs.RunID)
 }
 
 func (a *agent) failRun(ctx context.Context, stream *connect.BidiStreamForClient[criteria.Envelope, pb.Ack], rs *runState, gen int64, reason string) {
