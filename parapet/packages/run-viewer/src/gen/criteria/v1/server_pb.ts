@@ -713,10 +713,6 @@ export class PauseRunResponse extends Message<PauseRunResponse> {
 }
 
 /**
- * Request to resume a run from the console/operator side. `signal` and
- * `payload` are optional: when set they must match the run's pending signal
- * and are forwarded to the agent's ResumeRun control message.
- *
  * @generated from message criteria.v1.ResumeRunRequest
  */
 export class ResumeRunRequest extends Message<ResumeRunRequest> {
@@ -724,20 +720,6 @@ export class ResumeRunRequest extends Message<ResumeRunRequest> {
    * @generated from field: string run_id = 1;
    */
   runId = "";
-
-  /**
-   * optional; validated against the run's pending signal
-   *
-   * @generated from field: string signal = 2;
-   */
-  signal = "";
-
-  /**
-   * optional; forwarded to the agent
-   *
-   * @generated from field: map<string, string> payload = 3;
-   */
-  payload: { [key: string]: string } = {};
 
   constructor(data?: PartialMessage<ResumeRunRequest>) {
     super();
@@ -748,8 +730,6 @@ export class ResumeRunRequest extends Message<ResumeRunRequest> {
   static readonly typeName = "criteria.v1.ResumeRunRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 2, name: "signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "payload", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResumeRunRequest {
@@ -945,6 +925,22 @@ export class SendPromptRequest extends Message<SendPromptRequest> {
    */
   prompt = "";
 
+  /**
+   * session_id optionally addresses a specific live adapter session
+   * (ADR-0006 D2). Empty means the agent resolves the step's live session.
+   *
+   * @generated from field: string session_id = 4;
+   */
+  sessionId = "";
+
+  /**
+   * caller is the Criteria identity issuing the prompt (ADR-0006 D4);
+   * re-checked at delivery against the run's owner.
+   *
+   * @generated from field: string caller = 5;
+   */
+  caller = "";
+
   constructor(data?: PartialMessage<SendPromptRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -956,6 +952,8 @@ export class SendPromptRequest extends Message<SendPromptRequest> {
     { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "prompt", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "caller", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SendPromptRequest {
@@ -984,6 +982,22 @@ export class SendPromptResponse extends Message<SendPromptResponse> {
    */
   issuedAt?: Timestamp;
 
+  /**
+   * accepted reports whether the agent accepted the prompt for delivery
+   * (ADR-0006 D6). False means the prompt was not delivered; detail carries
+   * the typed rejection reason.
+   *
+   * @generated from field: bool accepted = 2;
+   */
+  accepted = false;
+
+  /**
+   * detail carries acceptance detail or the typed rejection reason.
+   *
+   * @generated from field: string detail = 3;
+   */
+  detail = "";
+
   constructor(data?: PartialMessage<SendPromptResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -993,6 +1007,8 @@ export class SendPromptResponse extends Message<SendPromptResponse> {
   static readonly typeName = "criteria.v1.SendPromptResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "issued_at", kind: "message", T: Timestamp },
+    { no: 2, name: "accepted", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 3, name: "detail", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SendPromptResponse {
