@@ -12,14 +12,14 @@ plugins:
     out: parapet/packages/run-viewer/src/gen
     opt:
       - target=ts
-  # Go bindings for the Criteria wire contract are generated into the local
-  # criteria-sdk module so Castle can evolve the proto schema without waiting
-  # for a published SDK release.
+  # Go bindings for castle-owned surfaces (castle.v1, e.g. the human console
+  # login service CRI-195). The criteria.v1 wire contract itself is generated
+  # upstream — castle consumes the published criteria/sdk module (KB-102).
   - plugin: go
-    out: criteria-sdk/pb
+    out: castle/gen
     opt:
       - paths=source_relative
   - plugin: connect-go
-    out: criteria-sdk/pb
+    out: castle/gen
     opt:
       - paths=source_relative

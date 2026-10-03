@@ -25,6 +25,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
+
+	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 )
 
 func envOrDefault(key, fallback string) string {
@@ -223,14 +225,19 @@ func main() {
 	critPath, critHandler := criteria.NewServiceHandler(criteriaRPC, connect.WithInterceptors(interceptors...))
 	serverPath, serverHandler := criteriav1connect.NewServerServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
 	orchestratorPath, orchestratorHandler := criteriav1connect.NewOrchestratorServiceHandler(orchestratorRPC, connect.WithInterceptors(interceptors...))
+	// Console login is castle-owned (CRI-195): served on its own
+	// /castle.v1.ConsoleService/ prefix; upstream criteria does not ship it.
+	consolePath, consoleHandler := castlev1connect.NewConsoleServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
 	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
 		criteria.ServiceName,
 		criteriav1connect.ServerServiceName,
 		criteriav1connect.OrchestratorServiceName,
+		castlev1connect.ConsoleServiceName,
 	))
 	mux.Handle(critPath, critHandler)
 	mux.Handle(serverPath, serverHandler)
 	mux.Handle(orchestratorPath, orchestratorHandler)
+	mux.Handle(consolePath, consoleHandler)
 	mux.Handle(healthPath, healthHandler)
 
 	if *grpcReflection {

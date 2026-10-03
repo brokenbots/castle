@@ -11,6 +11,10 @@ import (
 	"github.com/brokenbots/castle/castle/internal/auth"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+
+	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
+	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
+	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 )
 
 // consoleWireHarness starts the full HTTP stack with the auth interceptor in
@@ -18,16 +22,17 @@ import (
 // and seeds the default console user + enables console login — mirroring what
 // main.go does with CASTLE_CONSOLE_USER/CASTLE_CONSOLE_PASSWORD set.
 type consoleWireHarness struct {
-	ts           *testStack
-	oClient      criteriav1connect.CriteriaServiceClient
-	cClient      criteriav1connect.ServerServiceClient
-	orchClient   criteriav1connect.OrchestratorServiceClient
-	agentID      string
-	agentToken   string
-	otherID      string
-	otherToken   string
-	runID        string // owned by agentID
-	consoleToken string
+	ts            *testStack
+	oClient       criteriav1connect.CriteriaServiceClient
+	cClient       criteriav1connect.ServerServiceClient
+	orchClient    criteriav1connect.OrchestratorServiceClient
+	consoleClient castlev1connect.ConsoleServiceClient
+	agentID       string
+	agentToken    string
+	otherID       string
+	otherToken    string
+	runID         string // owned by agentID
+	consoleToken  string
 }
 
 func newConsoleWireHarness(t *testing.T, allowAnonReads bool) *consoleWireHarness {
@@ -58,22 +63,24 @@ func newConsoleWireHarness(t *testing.T, allowAnonReads bool) *consoleWireHarnes
 		t.Fatalf("create run: %v", err)
 	}
 
-	loginResp, err := cClient.Login(ctx, connect.NewRequest(&pb.LoginRequest{Username: "operator", Password: "op-password"}))
+	consoleCli := consoleClient(tsrv)
+	loginResp, err := consoleCli.Login(ctx, connect.NewRequest(&castlev1.LoginRequest{Username: "operator", Password: "op-password"}))
 	if err != nil {
 		t.Fatalf("console login over the wire: %v", err)
 	}
 
 	return &consoleWireHarness{
-		ts:           ts,
-		oClient:      oClient,
-		cClient:      cClient,
-		orchClient:   orchestratorClient(tsrv),
-		agentID:      regA.Msg.CriteriaId,
-		agentToken:   regA.Msg.Token,
-		otherID:      regB.Msg.CriteriaId,
-		otherToken:   regB.Msg.Token,
-		runID:        runResp.Msg.RunId,
-		consoleToken: loginResp.Msg.SessionToken,
+		ts:            ts,
+		oClient:       oClient,
+		cClient:       cClient,
+		orchClient:    orchestratorClient(tsrv),
+		consoleClient: consoleCli,
+		agentID:       regA.Msg.CriteriaId,
+		agentToken:    regA.Msg.Token,
+		otherID:       regB.Msg.CriteriaId,
+		otherToken:    regB.Msg.Token,
+		runID:         runResp.Msg.RunId,
+		consoleToken:  loginResp.Msg.SessionToken,
 	}
 }
 
@@ -83,10 +90,11 @@ func (h *consoleWireHarness) authHeader(req connect.AnyRequest) {
 
 func TestConsoleWire_LoginOverHTTP(t *testing.T) {
 	ts := newTestStack(t)
-	_, _, cClient := ts.startServer(t, connect.WithInterceptors(auth.NewInterceptor(ts.store, false)))
+	tsrv, _, cClient := ts.startServer(t, connect.WithInterceptors(auth.NewInterceptor(ts.store, false)))
+	consoleCli := consoleClient(tsrv)
 
 	// Disabled: Login returns Unimplemented with actionable guidance.
-	_, err := cClient.Login(context.Background(), connect.NewRequest(&pb.LoginRequest{Username: "operator", Password: "pw"}))
+	_, err := consoleCli.Login(context.Background(), connect.NewRequest(&castlev1.LoginRequest{Username: "operator", Password: "pw"}))
 	if connect.CodeOf(err) != connect.CodeUnimplemented {
 		t.Fatalf("expected unimplemented with console login disabled, got %v", err)
 	}
@@ -97,18 +105,18 @@ func TestConsoleWire_LoginOverHTTP(t *testing.T) {
 	}
 
 	// Wrong password: unauthenticated.
-	_, err = cClient.Login(context.Background(), connect.NewRequest(&pb.LoginRequest{Username: "operator", Password: "nope"}))
+	_, err = consoleCli.Login(context.Background(), connect.NewRequest(&castlev1.LoginRequest{Username: "operator", Password: "nope"}))
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("expected unauthenticated for wrong password, got %v", err)
 	}
 	// Unknown username: unauthenticated.
-	_, err = cClient.Login(context.Background(), connect.NewRequest(&pb.LoginRequest{Username: "ghost", Password: "op-password"}))
+	_, err = consoleCli.Login(context.Background(), connect.NewRequest(&castlev1.LoginRequest{Username: "ghost", Password: "op-password"}))
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("expected unauthenticated for unknown username, got %v", err)
 	}
 
 	// Correct credentials: token issued and usable as console identity.
-	resp, err := cClient.Login(context.Background(), connect.NewRequest(&pb.LoginRequest{Username: "operator", Password: "op-password"}))
+	resp, err := consoleCli.Login(context.Background(), connect.NewRequest(&castlev1.LoginRequest{Username: "operator", Password: "op-password"}))
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
@@ -449,7 +457,7 @@ func TestConsoleWire_AgentTokenPathUnchanged(t *testing.T) {
 
 	// Agent tokens do not authenticate as console: a presented agent token on
 	// a console read is fine (agent surface), but Login still requires creds.
-	if _, err := h.cClient.Login(ctx, connect.NewRequest(&pb.LoginRequest{Username: h.agentID, Password: h.agentToken})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+	if _, err := h.consoleClient.Login(ctx, connect.NewRequest(&castlev1.LoginRequest{Username: h.agentID, Password: h.agentToken})); connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("agent credentials must not work on Login, got %v", err)
 	}
 }

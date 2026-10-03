@@ -115,13 +115,11 @@ message CreateRunRequest {
   string workflow_name = 2;
   // Hash of the compiled workflow; used by the server for de-duplication/tracing.
   string workflow_hash = 3;
-  // ticket is the external ticket identifier the run is attached to (e.g.
-  // "CRI-104"). Empty for agent-initiated runs. External orchestrators such
-  // as the criteria-k8s operator set it so UIs can show the ticket label.
-  string ticket = 4;
-  // repo_url is the repository the run operates on (e.g. "brokenbots/castle").
-  // Empty for agent-initiated runs.
-  string repo_url = 5;
+  // Fields 4-5 (ticket/repo_url) are removed (CRI-131 dave ruling: run
+  // context never rides first-class wire fields). External orchestrators
+  // publish it afterwards via a run.metadata envelope.
+  reserved 4, 5;
+  reserved "ticket", "repo_url";
 }
 
 // Run is the persisted record of a run (mirrors Phase 0 REST DTO).
@@ -136,16 +134,12 @@ message Run {
   google.protobuf.Timestamp ended_at = 8;
   string final_state = 9;
   string failure_reason = 10;
-  // ticket is the external ticket identifier the run is attached to (e.g.
-  // "CRI-104"). Empty for agent-initiated runs. CRI-131.
-  string ticket = 11;
-  // repo_url is the repository the run operates on. Empty for agent-initiated
-  // runs. CRI-131.
-  string repo_url = 12;
-  // pr_url is the pull request URL produced by the run, when known. External
-  // orchestrators publish it via a run.metadata event once it is known.
-  // CRI-131.
-  string pr_url = 13;
+  // Fields 11-13 (ticket/repo_url/pr_url) are removed (CRI-131 dave ruling:
+  // run context never rides wire fields). External orchestrators publish it
+  // via run.metadata envelopes; castle keeps display metadata in its own
+  // store, promoted from those envelopes.
+  reserved 11, 12, 13;
+  reserved "ticket", "repo_url", "pr_url";
 }
 
 // ReattachRunRequest is sent by a Criteria agent on startup to query the state of

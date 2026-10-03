@@ -172,12 +172,18 @@ func NewInterceptor(st store.Store, allowAnonReads bool, opts ...InterceptorOpti
 	return i
 }
 
+// consoleLoginProcedure is the castle-owned human console login RPC
+// (CRI-195). It lives under the castle.v1 ConsoleService — upstream criteria
+// deliberately does not ship a human login, so Castle owns the surface after
+// re-pinning the released criteria/sdk (KB-102).
+const consoleLoginProcedure = "/castle.v1.ConsoleService/Login"
+
 func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		// Login is the credential bootstrap: it must reach its handler
 		// unauthenticated so the handler can own the feature gate (console
 		// login disabled → Unimplemented) and verify credentials (CRI-195).
-		if req.Spec().Procedure == criteriav1connect.ServerServiceLoginProcedure {
+		if req.Spec().Procedure == consoleLoginProcedure {
 			return next(ctx, req)
 		}
 		if req.Spec().Procedure == criteria.RegisterProcedure {

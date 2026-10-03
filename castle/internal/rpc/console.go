@@ -13,6 +13,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
+
+	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 )
 
 // ConsoleDefaultUserID is the fixed ID of the single seeded console user
@@ -96,7 +98,7 @@ func RevokeConsoleAuth(ctx context.Context, st store.Store) error {
 // this handler owns the feature gate: without CASTLE_CONSOLE_USER and
 // CASTLE_CONSOLE_PASSWORD both set, login is disabled (Unimplemented) — never
 // an open default.
-func (s *ServerServer) Login(ctx context.Context, req *connect.Request[pb.LoginRequest]) (*connect.Response[pb.LoginResponse], error) {
+func (s *ServerServer) Login(ctx context.Context, req *connect.Request[castlev1.LoginRequest]) (*connect.Response[castlev1.LoginResponse], error) {
 	if !s.consoleLogin {
 		return nil, connect.NewError(connect.CodeUnimplemented,
 			errors.New("console login is disabled: set CASTLE_CONSOLE_USER and CASTLE_CONSOLE_PASSWORD to enable"))
@@ -137,7 +139,7 @@ func (s *ServerServer) Login(ctx context.Context, req *connect.Request[pb.LoginR
 		// Log the username only; never the password or the issued token.
 		s.Log.Info("console login succeeded", "username", u.Username)
 	}
-	return connect.NewResponse(&pb.LoginResponse{
+	return connect.NewResponse(&castlev1.LoginResponse{
 		SessionToken: token,
 		Username:     u.Username,
 	}), nil
