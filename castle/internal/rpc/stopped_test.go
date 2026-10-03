@@ -12,6 +12,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/store"
 	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+
+	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 )
 
 // markRunStatus moves a run to the given status in the store (test scaffold
@@ -179,7 +181,8 @@ func TestStopRunAlreadyStopped(t *testing.T) {
 // leasable pending bucket instead of faking a start.)
 func TestResumeRunFromStopped(t *testing.T) {
 	ts := newTestStack(t)
-	_, oClient, cClient := ts.startServer(t)
+	tsrv, oClient, cClient := ts.startServer(t)
+	resumeCli := consoleClient(tsrv)
 	overseerID, _ := mustRegister(t, oClient)
 	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
@@ -191,8 +194,10 @@ func TestResumeRunFromStopped(t *testing.T) {
 	// the run to running directly.
 	stampRunStarted(t, ts, runID)
 
-	// A signal-bearing resume is rejected: a stopped run has no pending signal.
-	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: runID, Signal: "deploy"}))
+	// A signal-bearing resolve is rejected: a stopped run has no pending
+	// signal. The signal lives on the castle-owned ConsoleService.ResolveResume
+	// decision surface (released ServerService.ResumeRun is run_id-only).
+	_, err = resumeCli.ResolveResume(context.Background(), connect.NewRequest(&castlev1.ResolveResumeRequest{RunId: runID, Signal: "deploy"}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition for signal on stopped run, got %v", err)
 	}

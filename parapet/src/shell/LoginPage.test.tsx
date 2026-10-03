@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { LoginPage } from './LoginPage';
 import { getAuthToken, setAuthToken, clearAuthToken } from '../authToken';
 import { server } from '@castle/run-viewer/src/test/mocks/server';
-import { serverPath } from '@castle/run-viewer/src/test/mocks/handlers';
+import { serverPath, consolePath } from '@castle/run-viewer/src/test/mocks/handlers';
 
 function renderLogin(props?: { notice?: string }) {
   const onAuthenticated = vi.fn();
@@ -79,7 +79,7 @@ describe('LoginPage password mode (default, CRI-195)', () => {
 
   test('a disabled console login surfaces an explicit, actionable error', async () => {
     server.use(
-      http.post(serverPath('Login'), () =>
+      http.post(consolePath('Login'), () =>
         HttpResponse.json(
           { code: 'unimplemented', message: 'console login is disabled' },
           { status: 501 },
@@ -101,7 +101,7 @@ describe('LoginPage password mode (default, CRI-195)', () => {
 
   test('a failed precondition response is treated as disabled login too', async () => {
     server.use(
-      http.post(serverPath('Login'), () =>
+      http.post(consolePath('Login'), () =>
         HttpResponse.json(
           { code: 'failed_precondition', message: 'console login not configured' },
           { status: 400 },
@@ -120,7 +120,7 @@ describe('LoginPage password mode (default, CRI-195)', () => {
 
   test('shows a signing-in state while credentials are validated', async () => {
     server.use(
-      http.post(serverPath('Login'), async () => {
+      http.post(consolePath('Login'), async () => {
         await delay(1000);
         return HttpResponse.json({ session_token: 'tok', username: 'operator' });
       }),
@@ -158,7 +158,7 @@ describe('LoginPage agent-token mode (secondary option)', () => {
 
   test('switching modes clears the error', async () => {
     server.use(
-      http.post(serverPath('Login'), () =>
+      http.post(consolePath('Login'), () =>
         HttpResponse.json({ code: 'unauthenticated', message: 'nope' }, { status: 401 }),
       ),
     );
@@ -239,7 +239,7 @@ describe('LoginPage shared surface', () => {
 
   test('non-auth connect failures surface an unreachable message', async () => {
     server.use(
-      http.post(serverPath('Login'), () =>
+      http.post(consolePath('Login'), () =>
         HttpResponse.json({ code: 'unavailable', message: 'connection refused' }, { status: 503 }),
       ),
     );
@@ -255,7 +255,7 @@ describe('LoginPage shared surface', () => {
 
   test('unexpected error shapes still surface as errors, never as success', async () => {
     server.use(
-      http.post(serverPath('Login'), () => HttpResponse.error()),
+      http.post(consolePath('Login'), () => HttpResponse.error()),
     );
     const user = userEvent.setup();
     const { onAuthenticated } = renderLogin();

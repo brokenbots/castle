@@ -2,6 +2,7 @@ import { createPromiseClient, Interceptor, PromiseClient } from '@connectrpc/con
 import { createConnectTransport } from '@connectrpc/connect-web';
 import { ServerService } from '../gen/criteria/v1/server_connect';
 import { CriteriaService } from '../gen/criteria/v1/criteria_connect';
+import { ConsoleService } from '../gen/castle/v1/console_connect';
 // Auth is host-owned (CRI-257): parapet wires its console token store;
 
 // the standalone viewer registers nothing, so requests stay anonymous.
@@ -64,6 +65,10 @@ export function createCastleTransport(codec: Codec = getRuntimeCodec()) {
 
 export type ServerClient = PromiseClient<typeof ServerService>;
 export type CriteriaClient = PromiseClient<typeof CriteriaService>;
+export type ConsoleClient = PromiseClient<typeof ConsoleService>;
 
 export const server: ServerClient = createPromiseClient(ServerService, createCastleTransport());
 export const criteria: CriteriaClient = createPromiseClient(CriteriaService, createCastleTransport());
+// castle-owned console surface (CRI-195/196): Login + ResolveResume live on
+// castle.v1.ConsoleService, not on the criteria.v1 mirror.
+export const consoleClient: ConsoleClient = createPromiseClient(ConsoleService, createCastleTransport());

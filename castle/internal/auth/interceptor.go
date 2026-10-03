@@ -11,6 +11,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/store"
 	criteria "github.com/brokenbots/criteria/sdk"
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
+
+	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 )
 
 // callerCriteriaIDKey is the context key for the authenticated caller's criteria agent ID.
@@ -84,18 +86,24 @@ func isOrchestratorAllowed(procedure string) bool {
 	return false
 }
 
-// consoleRunControlProcedures are the ServerService run-control writes a
-// console identity may invoke (CRI-196). A human operator manages runs from
-// the Parapet console — Stop/Pause/Resume, including runs owned by other
-// agents — without being able to act like a workflow: ResumeRun carries the
-// operator-supplied signal + payload contract (approval decisions), CancelRun
-// (OrchestratorService, CRI-142), SubmitWorkflowAssignment, SendPrompt, and
-// every agent-owned CriteriaService procedure stay denied. Like every console
-// surface this is deterministic map membership, not judgment.
+// consoleRunControlProcedures are the run-control writes a console identity
+// may invoke (CRI-196): the released ServerService run-control RPCs plus the
+// castle-owned ConsoleService.ResolveResume, which carries the operator's
+// explicit decision payload (approval decisions / signal notes) the released
+// criteria sdk deliberately does not ship on ServerService.ResumeRun (KB-102).
+// A human operator manages runs from the Parapet console — Stop/Pause/
+// Resume, including runs owned by other agents — without being able to act
+// like a workflow: ResumeRun carries the operator-supplied signal + payload
+// contract (approval decisions), CancelRun (OrchestratorService, CRI-142),
+// SubmitWorkflowAssignment, SendPrompt, and every agent-owned
+// CriteriaService procedure stay denied. Like every console surface this is
+// deterministic map membership, not judgment.
 var consoleRunControlProcedures = map[string]struct{}{
 	criteriav1connect.ServerServiceStopRunProcedure:   {},
 	criteriav1connect.ServerServicePauseRunProcedure:  {},
 	criteriav1connect.ServerServiceResumeRunProcedure: {},
+
+	castlev1connect.ConsoleServiceResolveResumeProcedure: {},
 }
 
 // isConsoleAllowed reports whether a console identity may invoke the
@@ -172,12 +180,18 @@ func NewInterceptor(st store.Store, allowAnonReads bool, opts ...InterceptorOpti
 	return i
 }
 
+// consoleLoginProcedure is the castle-owned human console login RPC
+// (CRI-195). It lives under the castle.v1 ConsoleService — upstream criteria
+// deliberately does not ship a human login, so Castle owns the surface after
+// re-pinning the released criteria/sdk (KB-102).
+const consoleLoginProcedure = "/castle.v1.ConsoleService/Login"
+
 func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		// Login is the credential bootstrap: it must reach its handler
 		// unauthenticated so the handler can own the feature gate (console
 		// login disabled → Unimplemented) and verify credentials (CRI-195).
-		if req.Spec().Procedure == criteriav1connect.ServerServiceLoginProcedure {
+		if req.Spec().Procedure == consoleLoginProcedure {
 			return next(ctx, req)
 		}
 		if req.Spec().Procedure == criteria.RegisterProcedure {

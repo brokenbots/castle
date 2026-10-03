@@ -24,6 +24,8 @@ import (
 	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+
+	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 )
 
 type testStack struct {
@@ -65,9 +67,11 @@ func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*h
 	oPath, oHandler := criteriav1connect.NewCriteriaServiceHandler(s.criteria, opts...)
 	cPath, cHandler := criteriav1connect.NewServerServiceHandler(s.server, opts...)
 	orchPath, orchHandler := criteriav1connect.NewOrchestratorServiceHandler(s.orchestrator, opts...)
+	consolePath, consoleHandler := castlev1connect.NewConsoleServiceHandler(s.server, opts...)
 	mux.Handle(oPath, oHandler)
 	mux.Handle(cPath, cHandler)
 	mux.Handle(orchPath, orchHandler)
+	mux.Handle(consolePath, consoleHandler)
 
 	// Mount reflection so e2e tests can assert the endpoint is reachable
 	// and exempt from auth.
@@ -95,6 +99,12 @@ func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*h
 // server returned by startServer.
 func orchestratorClient(tsrv *httptest.Server) criteriav1connect.OrchestratorServiceClient {
 	return criteriav1connect.NewOrchestratorServiceClient(h2cClient(), tsrv.URL)
+}
+
+// consoleClient builds a castle-owned ConsoleServiceClient against the test
+// server returned by startServer (CRI-195 login surface).
+func consoleClient(tsrv *httptest.Server) castlev1connect.ConsoleServiceClient {
+	return castlev1connect.NewConsoleServiceClient(h2cClient(), tsrv.URL)
 }
 
 // provisionOrchestratorIdentity stores an orchestrator accept-token identity

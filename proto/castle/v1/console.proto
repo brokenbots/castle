@@ -1,0 +1,84 @@
+// ConsoleService — castle-owned console surface (CRI-195). Castle is the
+// orchestrator of record and Parapet is its console; upstream criteria
+// deliberately does not ship a human login RPC, so the console surface lives
+// under the castle.v1 package and keeps the criteria.v1 wire contract an
+// exact mirror of the released SDK.
+syntax = "proto3";
+
+package castle.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/brokenbots/castle/castle/gen/castle/v1;castlev1";
+
+service ConsoleService {
+  // Login exchanges human console credentials (username + password) for a
+  // short-lived console session token (CRI-195). It is the interim human
+  // login for the Parapet console: agents keep using agent tokens via the
+  // normal auth headers.
+  //
+  // Login is a public bootstrap RPC: it never requires an Authorization
+  // header. Implementations MUST return UNIMPLEMENTED (or
+  // FAILED_PRECONDITION) when console login is not configured on the
+  // server, and UNAUTHENTICATED for unknown usernames or wrong passwords.
+  // Passwords are verified against a stored hash (never plaintext) and are
+  // never logged.
+  //
+  // The issued session token authenticates a CONSOLE identity, which is
+  // authorized for the read-only ServerService observation surface across
+  // all runs and agents, and denied every write procedure.
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // ResolveResume delivers the console's explicit pending-signal decision —
+  // an approval decision (ApprovalCard) or a signal note — to a paused run
+  // (CRI-196). It mirrors the CRI-255 ResolveResume vocabulary while keeping
+  // delivery on castle's Control stream.
+  //
+  // The released criteria ServerService.ResumeRun accepts only a run_id:
+  // upstream does not ship an operator-side decision payload, so the CRI-196
+  // console contract is castle-owned and lives here instead. A plain
+  // unpause (no decision) must use ServerService.ResumeRun.
+  //
+  // Implementations MUST reject a request whose signal does not match the
+  // run's pending signal with FAILED_PRECONDITION, so a stale console view
+  // cannot resolve the wrong wait, and MUST deny non-console callers
+  // (agents and orchestrators) exactly as for other console writes.
+  rpc ResolveResume(ResolveResumeRequest) returns (ResolveResumeResponse);
+}
+
+message LoginRequest {
+  // username is the console user's login name.
+  string username = 1;
+  // password is the console user's plaintext password, supplied only on the
+  // wire and never persisted or logged by the server.
+  string password = 2;
+}
+
+message LoginResponse {
+  // session_token is the console session bearer token. It authenticates the
+  // read-only console identity via the standard Authorization header. The
+  // server persists only its SHA-256 digest; the plaintext token is returned
+  // exactly once.
+  string session_token = 1;
+  // username echoes the authenticated console user's login name.
+  string username = 2;
+}
+
+message ResolveResumeRequest {
+  // run_id is the paused run to resolve.
+  string run_id = 1;
+  // signal optionally pins the pending signal the caller intends to resume.
+  // For wait nodes with signal=<name> this is that signal name; for approval
+  // nodes this is the approval node name. If set it must match the run's
+  // pending signal.
+  string signal = 2;
+  // payload carries optional key/value metadata (the CRI-196 decision
+  // contract): payload["decision"] = "approved" | "rejected",
+  // payload["actor"] = identity of approver (audit metadata).
+  map<string, string> payload = 3;
+}
+
+message ResolveResumeResponse {
+  // issued_at is the time the resume control command was accepted.
+  google.protobuf.Timestamp issued_at = 1;
+}

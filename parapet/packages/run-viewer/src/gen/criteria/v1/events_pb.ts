@@ -323,6 +323,67 @@ export class Envelope extends Message<Envelope> {
     case: "workflowGraphs";
   } | {
     /**
+     * AgentPromptInjected — a user prompt was delivered into a running step's
+     * adapter session (ADR-0006, M12.2). Emitted by the agent exactly once, at
+     * the moment the prompt is delivered into the adapter session — never at
+     * receipt and never on delivery failure. Permanent field number.
+     *
+     * @generated from field: criteria.v1.AgentPromptInjected agent_prompt_injected = 38;
+     */
+    value: AgentPromptInjected;
+    case: "agentPromptInjected";
+  } | {
+    /**
+     * CheckpointPointer — advisory pointer to an engine-local adapter
+     * checkpoint (CRI-203). Emitted by the agent after a durable checkpoint
+     * save. Castle keeps only the pointer; the checkpoint bytes stay in the
+     * engine's state home and restore is engine-local from it — consumers
+     * MUST NOT treat castle reachability as part of the restore path. The
+     * pointer is for UI visibility, inspection, and accounting only.
+     * Permanent field number.
+     *
+     * @generated from field: criteria.v1.CheckpointPointer checkpoint_pointer = 39;
+     */
+    value: CheckpointPointer;
+    case: "checkpointPointer";
+  } | {
+    /**
+     * StepOutcomeInvalid — an adapter outcome was rejected by host-side
+     * contract validation before any projection or state write (KB-45).
+     * issues are the per-contract validation errors; attempt is the rejected
+     * attempt number. The run then continues the standard retry loop.
+     * Permanent field number.
+     *
+     * @generated from field: criteria.v1.StepOutcomeInvalid step_outcome_invalid = 42;
+     */
+    value: StepOutcomeInvalid;
+    case: "stepOutcomeInvalid";
+  } | {
+    /**
+     * RunPaused — the run is paused: at a wait or approval node (mode
+     * "duration" | "signal") or by a control-surface pause request at a
+     * step boundary (mode "external", CRI-255). Emitted by both the local
+     * control path (loopback RPC) and the orchestrator control path so
+     * consumers see identical shapes for local and server runs. Permanent
+     * field number.
+     *
+     * @generated from field: criteria.v1.RunPaused run_paused = 40;
+     */
+    value: RunPaused;
+    case: "runPaused";
+  } | {
+    /**
+     * RunResumed — a paused run is resuming execution from the named node
+     * (CRI-255). Emitted when a resume payload (approval decision or signal)
+     * or a boundary ResumeRun control request is applied. Permanent field
+     * number.
+     *
+     * @generated from field: criteria.v1.RunResumed run_resumed = 41;
+     */
+    value: RunResumed;
+    case: "runResumed";
+  } | {
+    /**
      * WatchReady is a protocol-level sentinel sent once at the start of a
      * WatchRun server-stream, after any persisted-event replay, to flush
      * response headers so the client's WatchRun call can return. It has no
@@ -375,6 +436,11 @@ export class Envelope extends Message<Envelope> {
     { no: 35, name: "adapter_lifecycle_provision_wanted", kind: "message", T: AdapterLifecycleProvisionWanted, oneof: "payload" },
     { no: 36, name: "adapter_lifecycle_released", kind: "message", T: AdapterLifecycleReleased, oneof: "payload" },
     { no: 37, name: "workflow_graphs", kind: "message", T: WorkflowGraphs, oneof: "payload" },
+    { no: 38, name: "agent_prompt_injected", kind: "message", T: AgentPromptInjected, oneof: "payload" },
+    { no: 39, name: "checkpoint_pointer", kind: "message", T: CheckpointPointer, oneof: "payload" },
+    { no: 42, name: "step_outcome_invalid", kind: "message", T: StepOutcomeInvalid, oneof: "payload" },
+    { no: 40, name: "run_paused", kind: "message", T: RunPaused, oneof: "payload" },
+    { no: 41, name: "run_resumed", kind: "message", T: RunResumed, oneof: "payload" },
     { no: 99, name: "watch_ready", kind: "message", T: WatchReady, oneof: "payload" },
   ]);
 
@@ -607,6 +673,15 @@ export class StepOutcome extends Message<StepOutcome> {
    */
   error = "";
 
+  /**
+   * Comment returned by the adapter's ExecuteResult (KB-45). Opaque metadata
+   * produced by the adapter; the engine neither interprets nor validates it.
+   * Empty when the adapter returned none.
+   *
+   * @generated from field: string comment = 5;
+   */
+  comment = "";
+
   constructor(data?: PartialMessage<StepOutcome>) {
     super();
     proto3.util.initPartial(data, this);
@@ -619,6 +694,7 @@ export class StepOutcome extends Message<StepOutcome> {
     { no: 2, name: "outcome", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "duration_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 4, name: "error", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "comment", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StepOutcome {
@@ -635,6 +711,66 @@ export class StepOutcome extends Message<StepOutcome> {
 
   static equals(a: StepOutcome | PlainMessage<StepOutcome> | undefined, b: StepOutcome | PlainMessage<StepOutcome> | undefined): boolean {
     return proto3.util.equals(StepOutcome, a, b);
+  }
+}
+
+/**
+ * StepOutcomeInvalid — host-side contract validation rejected an adapter
+ * outcome before any projection or state write (KB-45). Emitted once per
+ * rejected attempt; issues carry the per-contract validation errors in
+ * evaluation order. attempt is the rejected attempt's number (1-based).
+ *
+ * @generated from message criteria.v1.StepOutcomeInvalid
+ */
+export class StepOutcomeInvalid extends Message<StepOutcomeInvalid> {
+  /**
+   * @generated from field: string step = 1;
+   */
+  step = "";
+
+  /**
+   * @generated from field: string outcome = 2;
+   */
+  outcome = "";
+
+  /**
+   * @generated from field: repeated string issues = 3;
+   */
+  issues: string[] = [];
+
+  /**
+   * @generated from field: int32 attempt = 4;
+   */
+  attempt = 0;
+
+  constructor(data?: PartialMessage<StepOutcomeInvalid>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.StepOutcomeInvalid";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "outcome", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "issues", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 4, name: "attempt", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StepOutcomeInvalid {
+    return new StepOutcomeInvalid().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): StepOutcomeInvalid {
+    return new StepOutcomeInvalid().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): StepOutcomeInvalid {
+    return new StepOutcomeInvalid().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: StepOutcomeInvalid | PlainMessage<StepOutcomeInvalid> | undefined, b: StepOutcomeInvalid | PlainMessage<StepOutcomeInvalid> | undefined): boolean {
+    return proto3.util.equals(StepOutcomeInvalid, a, b);
   }
 }
 
@@ -1955,8 +2091,9 @@ export class AdapterLifecycleReleased extends Message<AdapterLifecycleReleased> 
 
 /**
  * SubworkflowGraph — one compiled subworkflow layer of a run's workflow
- * (CRI-257). The agent compiler emits one entry per subworkflow the top-level
- * module references, recursively. Permanent field numbers.
+ * (CRI-257). The agent compiler emits one flat entry per subworkflow layer at
+ * every nesting depth; bodies carry only their own layer (no layer is
+ * embedded in another). Permanent field numbers.
  *
  * @generated from message criteria.v1.SubworkflowGraph
  */
@@ -1978,9 +2115,13 @@ export class SubworkflowGraph extends Message<SubworkflowGraph> {
   sourcePath = "";
 
   /**
-   * body is the compiled subworkflow module source in the same HCL dialect
-   * as the top-level workflow, so consumers parse it with the same parser;
-   * permanent.
+   * body is that layer's OWN compiled graph (steps/states/adapters)
+   * serialized as JSON; its own subworkflows key is stripped, so no body
+   * contains another layer (CRI-299). Nested subworkflow layers appear as
+   * their own entries in the top-level repeated field, and nesting is
+   * expressed by the parent's subworkflow.<name> step targets plus that
+   * flat entry list; consumers rebuild the tree with a plain name->layer
+   * map. Permanent.
    *
    * @generated from field: string body = 3;
    */
@@ -2029,9 +2170,10 @@ export class SubworkflowGraph extends Message<SubworkflowGraph> {
  */
 export class WorkflowGraphs extends Message<WorkflowGraphs> {
   /**
-   * subworkflows carries one entry per compiled subworkflow layer,
-   * recursively (a layer may itself declare subworkflows, which appear as
-   * their own entries); permanent.
+   * subworkflows carries one flat entry per compiled subworkflow layer at
+   * every nesting depth (a layer may itself declare subworkflows, which
+   * appear as their own entries — bodies never embed other layers);
+   * permanent.
    *
    * @generated from field: repeated criteria.v1.SubworkflowGraph subworkflows = 1;
    */
@@ -2062,6 +2204,305 @@ export class WorkflowGraphs extends Message<WorkflowGraphs> {
 
   static equals(a: WorkflowGraphs | PlainMessage<WorkflowGraphs> | undefined, b: WorkflowGraphs | PlainMessage<WorkflowGraphs> | undefined): boolean {
     return proto3.util.equals(WorkflowGraphs, a, b);
+  }
+}
+
+/**
+ * AgentPromptInjected — a user prompt was delivered into a running step's
+ * adapter session (ADR-0006). The agent emits it exactly once, at the moment
+ * the prompt is delivered into the adapter session; it is never emitted at
+ * receipt or on delivery failure. Permanent field number.
+ *
+ * @generated from message criteria.v1.AgentPromptInjected
+ */
+export class AgentPromptInjected extends Message<AgentPromptInjected> {
+  /**
+   * step is the workflow step whose adapter session received the prompt.
+   *
+   * @generated from field: string step = 1;
+   */
+  step = "";
+
+  /**
+   * session_id is the live adapter session the prompt was delivered into.
+   *
+   * @generated from field: string session_id = 2;
+   */
+  sessionId = "";
+
+  /**
+   * prompt is the delivered prompt text.
+   *
+   * @generated from field: string prompt = 3;
+   */
+  prompt = "";
+
+  /**
+   * caller identifies the Criteria identity that issued the prompt (ADR-0006
+   * D4); re-checked by the agent at delivery against the run's owner.
+   *
+   * @generated from field: string caller = 4;
+   */
+  caller = "";
+
+  /**
+   * delivered_at is when the agent delivered the prompt into the session.
+   *
+   * @generated from field: google.protobuf.Timestamp delivered_at = 5;
+   */
+  deliveredAt?: Timestamp;
+
+  constructor(data?: PartialMessage<AgentPromptInjected>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.AgentPromptInjected";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "prompt", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "caller", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "delivered_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AgentPromptInjected {
+    return new AgentPromptInjected().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AgentPromptInjected {
+    return new AgentPromptInjected().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AgentPromptInjected {
+    return new AgentPromptInjected().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AgentPromptInjected | PlainMessage<AgentPromptInjected> | undefined, b: AgentPromptInjected | PlainMessage<AgentPromptInjected> | undefined): boolean {
+    return proto3.util.equals(AgentPromptInjected, a, b);
+  }
+}
+
+/**
+ * CheckpointPointer — advisory pointer to an engine-local adapter checkpoint
+ * (CRI-203). It references a durable checkpoint without carrying its bytes:
+ * the blob lives in the engine's state home (criteriadb state tables going
+ * forward, CRI-199) and restore is engine-local from there, never mediated
+ * by castle. Consumers use the pointer for UI visibility, inspection, and
+ * accounting only. Every field is engine-local metadata; none carries state.
+ *
+ * @generated from message criteria.v1.CheckpointPointer
+ */
+export class CheckpointPointer extends Message<CheckpointPointer> {
+  /**
+   * state_id is the engine-local checkpoint identifier,
+   * "<session-id>/<seq>"; opaque to consumers. The checkpoint's bytes are
+   * keyed by it in the engine's state home, which is the authoritative
+   * source for restore.
+   *
+   * @generated from field: string state_id = 1;
+   */
+  stateId = "";
+
+  /**
+   * adapter_kind is the adapter implementation type that owns the
+   * checkpointed session (e.g. "shell", "copilot").
+   *
+   * @generated from field: string adapter_kind = 2;
+   */
+  adapterKind = "";
+
+  /**
+   * state_schema is the adapter-declared checkpoint-state schema tag the
+   * checkpoint was saved under.
+   *
+   * @generated from field: string state_schema = 3;
+   */
+  stateSchema = "";
+
+  /**
+   * state_digest is the "sha256:<hex>" digest of the checkpointed state
+   * blob the pointer references.
+   *
+   * @generated from field: string state_digest = 4;
+   */
+  stateDigest = "";
+
+  /**
+   * state_size is the checkpointed state blob's size in bytes.
+   *
+   * @generated from field: int64 state_size = 5;
+   */
+  stateSize = protoInt64.zero;
+
+  /**
+   * granularity is the adapter's declared save granularity
+   * (per-step|per-turn|on-demand).
+   *
+   * @generated from field: string granularity = 6;
+   */
+  granularity = "";
+
+  /**
+   * session_id is the adapter session the checkpoint belongs to (the
+   * workflow's "<adapter-type>.<instance-name>" session key); per-scope
+   * sessions carry their scope-qualified key.
+   *
+   * @generated from field: string session_id = 7;
+   */
+  sessionId = "";
+
+  constructor(data?: PartialMessage<CheckpointPointer>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.CheckpointPointer";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "state_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "adapter_kind", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "state_schema", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "state_digest", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "state_size", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "granularity", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CheckpointPointer {
+    return new CheckpointPointer().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CheckpointPointer {
+    return new CheckpointPointer().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CheckpointPointer {
+    return new CheckpointPointer().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CheckpointPointer | PlainMessage<CheckpointPointer> | undefined, b: CheckpointPointer | PlainMessage<CheckpointPointer> | undefined): boolean {
+    return proto3.util.equals(CheckpointPointer, a, b);
+  }
+}
+
+/**
+ * RunPaused — the run is paused: at a wait or approval node (mode
+ * "duration" | "signal") or by a control-surface pause request at a step
+ * boundary ("external", CRI-255). At a boundary pause the run's durable
+ * state (step checkpoint + adapter session checkpoints) is written before
+ * the pause is acknowledged.
+ *
+ * @generated from message criteria.v1.RunPaused
+ */
+export class RunPaused extends Message<RunPaused> {
+  /**
+   * node the run paused on; for a boundary pause this is the node that is
+   * about to evaluate when the run resumes.
+   *
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  /**
+   * mode is "duration", "signal", or "external" (control-surface boundary
+   * pause).
+   *
+   * @generated from field: string mode = 2;
+   */
+  mode = "";
+
+  /**
+   * signal is the pending signal name for signal-mode pauses; empty
+   * otherwise. For approval nodes the pending signal is the node name and
+   * ApprovalRequested already carries the approval details.
+   *
+   * @generated from field: string signal = 3;
+   */
+  signal = "";
+
+  /**
+   * actor identifies who requested the pause; empty for duration/signal
+   * mode. Populated only by control-surface pauses; the local loopback
+   * surface leaves it empty because the caller is in the same trust domain
+   * as the CLI.
+   *
+   * @generated from field: string actor = 4;
+   */
+  actor = "";
+
+  constructor(data?: PartialMessage<RunPaused>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.RunPaused";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "mode", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "actor", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunPaused {
+    return new RunPaused().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RunPaused {
+    return new RunPaused().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RunPaused {
+    return new RunPaused().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RunPaused | PlainMessage<RunPaused> | undefined, b: RunPaused | PlainMessage<RunPaused> | undefined): boolean {
+    return proto3.util.equals(RunPaused, a, b);
+  }
+}
+
+/**
+ * RunResumed — a paused run is resuming execution from the named node
+ * (CRI-255). Emitted when a resume payload (approval decision or signal) or
+ * a boundary ResumeRun control request is applied.
+ *
+ * @generated from message criteria.v1.RunResumed
+ */
+export class RunResumed extends Message<RunResumed> {
+  /**
+   * node the run resumes from.
+   *
+   * @generated from field: string node = 1;
+   */
+  node = "";
+
+  constructor(data?: PartialMessage<RunResumed>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.RunResumed";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "node", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunResumed {
+    return new RunResumed().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RunResumed {
+    return new RunResumed().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RunResumed {
+    return new RunResumed().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RunResumed | PlainMessage<RunResumed> | undefined, b: RunResumed | PlainMessage<RunResumed> | undefined): boolean {
+    return proto3.util.equals(RunResumed, a, b);
   }
 }
 

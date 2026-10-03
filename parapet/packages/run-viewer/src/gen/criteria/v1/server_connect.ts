@@ -6,9 +6,9 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { Agent, GetAgentRequest, GetAssignmentDispositionRequest, GetAssignmentDispositionResponse, GetRunRequest, InspectRunRequest, InspectRunResponse, ListAgentsRequest, ListAgentsResponse, ListRunEventsRequest, ListRunEventsResponse, ListRunsRequest, ListRunsResponse, LoginRequest, LoginResponse, PauseRunRequest, PauseRunResponse, ResumeRunRequest, ResumeRunResponse, SendPromptRequest, SendPromptResponse, StopRunRequest, StopRunResponse, SubmitWorkflowAssignmentRequest, SubmitWorkflowAssignmentResponse, WatchRunRequest } from "./server_pb.js";
+import { Agent, GetAgentRequest, GetAssignmentDispositionRequest, GetAssignmentDispositionResponse, GetRunRequest, InspectRunRequest, InspectRunResponse, ListAgentsRequest, ListAgentsResponse, ListRunEventsRequest, ListRunEventsResponse, ListRunsRequest, ListRunsResponse, PauseRunRequest, PauseRunResponse, ResumeRunRequest, ResumeRunResponse, SendPromptRequest, SendPromptResponse, StopRunRequest, StopRunResponse, SubmitWorkflowAssignmentRequest, SubmitWorkflowAssignmentResponse, WatchRunRequest } from "./server_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
-import { Run } from "./criteria_pb.js";
+import { ResumeRequest, ResumeResponse, Run } from "./criteria_pb.js";
 import { Envelope } from "./events_pb.js";
 
 /**
@@ -173,8 +173,8 @@ export const ServerService = {
       kind: MethodKind.Unary,
     },
     /**
-     * SendPrompt delivers a prompt to the agent executing a specific run step.
-     * The prompt is sent over the Criteria Control stream; callers must own the run.
+     * SendPrompt — schema-only stub for Phase 2.3. UI clients can wire up
+     * against this method, but the server currently returns UNIMPLEMENTED.
      *
      * @generated from rpc criteria.v1.ServerService.SendPrompt
      */
@@ -184,29 +184,61 @@ export const ServerService = {
       O: SendPromptResponse,
       kind: MethodKind.Unary,
     },
+  }
+} as const;
+
+/**
+ * LocalControlService — the control surface served by a local `criteria
+ * apply` process on loopback (CRI-255). It shares ServerService's request /
+ * response messages and Engine.Pause / Engine.Resume semantics with the
+ * orchestrator control path, but binds loopback only: there is no auth
+ * surface beyond the loopback bind because the caller (CLI, local UI) is in
+ * the same trust domain as the apply process itself. This service is never
+ * served by the orchestrator.
+ *
+ * @generated from service criteria.v1.LocalControlService
+ */
+export const LocalControlService = {
+  typeName: "criteria.v1.LocalControlService",
+  methods: {
     /**
-     * Login exchanges human console credentials (username + password) for a
-     * short-lived console session token (CRI-195). It is the interim human
-     * login for the Parapet console: agents keep using agent tokens via the
-     * normal auth headers.
+     * PauseRun pauses the owned run at the next checkpoint point (step
+     * boundary): the in-flight step completes, the step and adapter session
+     * checkpoints are written, and only then does the call return.
      *
-     * Login is a public bootstrap RPC: it never requires an Authorization
-     * header. Implementations MUST return UNIMPLEMENTED (or
-     * FAILED_PRECONDITION) when console login is not configured on the
-     * server, and UNAUTHENTICATED for unknown usernames or wrong passwords.
-     * Passwords are verified against a stored hash (never plaintext) and are
-     * never logged.
-     *
-     * The issued session token authenticates a CONSOLE identity, which is
-     * authorized for the read-only ServerService observation surface across
-     * all runs and agents, and denied every write procedure.
-     *
-     * @generated from rpc criteria.v1.ServerService.Login
+     * @generated from rpc criteria.v1.LocalControlService.PauseRun
      */
-    login: {
-      name: "Login",
-      I: LoginRequest,
-      O: LoginResponse,
+    pauseRun: {
+      name: "PauseRun",
+      I: PauseRunRequest,
+      O: PauseRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ResumeRun continues a boundary-paused run. The response is
+     * synchronous: once it returns, apply drives the engine to the next
+     * pause point or to a terminal state.
+     *
+     * @generated from rpc criteria.v1.LocalControlService.ResumeRun
+     */
+    resumeRun: {
+      name: "ResumeRun",
+      I: ResumeRunRequest,
+      O: ResumeRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ResolveResume delivers an approval decision or a signal outcome to the
+     * paused run, satisfying node pausing (mode "duration" | "signal"). The
+     * same call replaces the local CRITERIA_LOCAL_APPROVAL file protocol as
+     * the primary integration surface.
+     *
+     * @generated from rpc criteria.v1.LocalControlService.ResolveResume
+     */
+    resolveResume: {
+      name: "ResolveResume",
+      I: ResumeRequest,
+      O: ResumeResponse,
       kind: MethodKind.Unary,
     },
   }

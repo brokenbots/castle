@@ -10,7 +10,8 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
-	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1" // import-lint:allow castle service bindings (W08: move to castle-proto)
+
+	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 )
 
 // consoleLoginHarness wires a test stack with console login enabled and the
@@ -25,8 +26,8 @@ func consoleLoginHarness(t *testing.T, log *slog.Logger) *testStack {
 	return ts
 }
 
-func loginRequest(username, password string) *connect.Request[pb.LoginRequest] {
-	return connect.NewRequest(&pb.LoginRequest{Username: username, Password: password})
+func loginRequest(username, password string) *connect.Request[castlev1.LoginRequest] {
+	return connect.NewRequest(&castlev1.LoginRequest{Username: username, Password: password})
 }
 
 func TestLogin_DisabledWhenNotEnabled(t *testing.T) {
@@ -42,7 +43,7 @@ func TestLogin_DisabledWhenNotEnabled(t *testing.T) {
 
 func TestLogin_EmptyCredentialsInvalidArgument(t *testing.T) {
 	ts := consoleLoginHarness(t, nil)
-	for _, req := range []*connect.Request[pb.LoginRequest]{
+	for _, req := range []*connect.Request[castlev1.LoginRequest]{
 		loginRequest("", "op-password"),
 		loginRequest("operator", ""),
 		loginRequest("", ""),

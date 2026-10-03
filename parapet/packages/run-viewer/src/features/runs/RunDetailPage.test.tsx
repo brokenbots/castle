@@ -106,9 +106,6 @@ const fixture = vi.hoisted(() => ({
     createdAt: new Date().toISOString(),
     finalState: '',
     failureReason: '',
-    ticket: '',
-    repoUrl: '',
-    prUrl: '',
   } as Record<string, unknown>,
 }));
 
@@ -141,12 +138,22 @@ function wireEvents(count: number) {
   }));
 }
 
+// A run.metadata envelope as the ListRunEvents wire delivers it (protojson
+// flattens the payload oneof to its case name; message fields stay snake_case).
+function wireMetadataEvent(seq: number, meta: { ticket?: string; repo_url?: string; pr_url?: string }) {
+  return {
+    schemaVersion: 1,
+    runId: 'run-1',
+    seq: String(seq),
+    ts: new Date(0).toISOString(),
+    correlationId: '',
+    runMetadata: meta,
+  };
+}
+
 describe('RunDetailPage', () => {
   beforeEach(() => {
     fixture.error = undefined;
-    fixture.data.ticket = '';
-    fixture.data.repoUrl = '';
-    fixture.data.prUrl = '';
     // Live-tail affordances key off run status; make the shared fixture's
     // status explicit so tests that change it don't leak.
     fixture.data.status = 'running';
@@ -238,10 +245,21 @@ describe('RunDetailPage', () => {
     expect((await screen.findAllByText(/build/)).length).toBeGreaterThan(0);
   });
 
-  test('renders ticket, repo and PR link for k8s-native runs', async () => {
-    fixture.data.ticket = 'CRI-131';
-    fixture.data.repoUrl = 'brokenbots/castle';
-    fixture.data.prUrl = 'https://github.com/brokenbots/castle/pull/42';
+  test('renders ticket, repo and PR link from run.metadata events', async () => {
+    // CRI-131 re-home (KB-102): identity metadata is published as run.metadata
+    // envelopes, not wire fields on the run row. The header derives it from
+    // the event log with last-wins/non-empty promotion.
+    server.use(
+      http.post(serverPath('ListRunEvents'), () =>
+        HttpResponse.json({
+          events: [
+            wireMetadataEvent(1, { ticket: 'CRI-131', repo_url: 'brokenbots/castle' }),
+            wireMetadataEvent(2, { pr_url: 'https://github.com/brokenbots/castle/pull/42' }),
+          ],
+          last_seq: '2',
+        }),
+      ),
+    );
 
     render(
       <Provider store={store}>
@@ -260,9 +278,17 @@ describe('RunDetailPage', () => {
     expect(link.getAttribute('rel')).toBe('noreferrer');
   });
 
-  test('does not render PR link for non-http prUrl values', async () => {
-    fixture.data.ticket = 'CRI-131';
-    fixture.data.prUrl = 'javascript:alert(1)';
+  test('does not render PR link for non-http metadata values', async () => {
+    server.use(
+      http.post(serverPath('ListRunEvents'), () =>
+        HttpResponse.json({
+          events: [
+            wireMetadataEvent(1, { ticket: 'CRI-131', pr_url: 'javascript:alert(1)' }),
+          ],
+          last_seq: '1',
+        }),
+      ),
+    );
 
     render(
       <Provider store={store}>

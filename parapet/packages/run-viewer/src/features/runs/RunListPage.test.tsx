@@ -178,7 +178,7 @@ describe('RunListPage', () => {
     server.use(
       http.post(serverPath('ListRuns'), () =>
         HttpResponse.json({
-          runs: [run('run-1', 'running', { ticket: 'CRI-187' })],
+          runs: [run('run-1', 'running')],
           next_page_token: '',
         }),
       ),
@@ -186,7 +186,7 @@ describe('RunListPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('CRI-187')).toBeInTheDocument();
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
     const link = screen.getByRole('link', { name: 'run-1' });
     expect(link.getAttribute('href')).toBe('/runs/run-1');
   });
@@ -368,14 +368,13 @@ describe('RunListPage', () => {
     installListRuns(() => ({
       runs: [
         run('run-1', 'succeeded', {
-          ticket: 'CRI-187',
           started_at: '2026-02-05T08:30:00.000Z',
           ended_at: '2026-02-05T08:31:30.000Z',
         }),
         // The never-started wire shape (no started_at — a run reaped while
-        // still pending): the duration column shows an em dash, so give the
-        // row a ticket to keep the em dash unique.
-        run('run-2', 'failed', { ticket: 'CRI-188', started_at: undefined }),
+        // still pending): the duration column shows an em dash, and run-2's
+        // link keeps the row identifiable.
+        run('run-2', 'failed', { started_at: undefined }),
       ],
       nextPageToken: '',
     }));
@@ -430,7 +429,7 @@ describe('RunListPage auth expiry and retry', () => {
           });
         }
         return HttpResponse.json({
-          runs: [run('run-1', 'running', { ticket: 'CRI-192' })],
+          runs: [run('run-1', 'running')],
           next_page_token: '',
         });
       }),
@@ -442,7 +441,7 @@ describe('RunListPage auth expiry and retry', () => {
     failing = false;
     await userEvent.click(retry);
 
-    expect(await screen.findByText('CRI-192')).toBeInTheDocument();
+    expect(await screen.findByText('run-1')).toBeInTheDocument();
   });
 });
 
@@ -636,7 +635,7 @@ describe('RunListPage URL param sync', () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
     installListRuns(() => ({
-      runs: [run('run-1', 'pending', { started_at: undefined, ticket: 'CRI-189' })],
+      runs: [run('run-1', 'pending', { started_at: undefined })],
       nextPageToken: '',
     }));
 

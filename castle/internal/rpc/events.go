@@ -136,12 +136,22 @@ func newPayloadForType(typ string) (proto.Message, error) {
 		return &pb.RunOutputs{}, nil
 	case "run.metadata":
 		return &pb.RunMetadata{}, nil
+	case "agent.prompt_injected":
+		return &pb.AgentPromptInjected{}, nil
+	case "checkpoint.pointer":
+		return &pb.CheckpointPointer{}, nil
 	case "adapter.lifecycle.provision_wanted":
 		return &pb.AdapterLifecycleProvisionWanted{}, nil
 	case "adapter.lifecycle.released":
 		return &pb.AdapterLifecycleReleased{}, nil
 	case "workflow.graphs":
 		return &pb.WorkflowGraphs{}, nil
+	case "run.paused":
+		return &pb.RunPaused{}, nil
+	case "run.resumed":
+		return &pb.RunResumed{}, nil
+	case "step.outcome_invalid":
+		return &pb.StepOutcomeInvalid{}, nil
 	default:
 		return nil, fmt.Errorf("unknown event type %q", typ)
 	}
@@ -201,12 +211,22 @@ func payloadMessage(env *criteria.Envelope) proto.Message {
 		return p.RunOutputs
 	case *pb.Envelope_RunMetadata:
 		return p.RunMetadata
+	case *pb.Envelope_AgentPromptInjected:
+		return p.AgentPromptInjected
+	case *pb.Envelope_CheckpointPointer:
+		return p.CheckpointPointer
 	case *pb.Envelope_AdapterLifecycleProvisionWanted:
 		return p.AdapterLifecycleProvisionWanted
 	case *pb.Envelope_AdapterLifecycleReleased:
 		return p.AdapterLifecycleReleased
 	case *pb.Envelope_WorkflowGraphs:
 		return p.WorkflowGraphs
+	case *pb.Envelope_RunPaused:
+		return p.RunPaused
+	case *pb.Envelope_RunResumed:
+		return p.RunResumed
+	case *pb.Envelope_StepOutcomeInvalid:
+		return p.StepOutcomeInvalid
 	default:
 		return nil
 	}
@@ -266,12 +286,22 @@ func setPayload(env *criteria.Envelope, msg proto.Message) {
 		env.Payload = &pb.Envelope_RunOutputs{RunOutputs: p}
 	case *pb.RunMetadata:
 		env.Payload = &criteria.Envelope_RunMetadata{RunMetadata: p}
+	case *pb.AgentPromptInjected:
+		env.Payload = &pb.Envelope_AgentPromptInjected{AgentPromptInjected: p}
+	case *pb.CheckpointPointer:
+		env.Payload = &pb.Envelope_CheckpointPointer{CheckpointPointer: p}
 	case *pb.AdapterLifecycleProvisionWanted:
 		env.Payload = &criteria.Envelope_AdapterLifecycleProvisionWanted{AdapterLifecycleProvisionWanted: p}
 	case *pb.AdapterLifecycleReleased:
 		env.Payload = &criteria.Envelope_AdapterLifecycleReleased{AdapterLifecycleReleased: p}
 	case *pb.WorkflowGraphs:
 		env.Payload = &criteria.Envelope_WorkflowGraphs{WorkflowGraphs: p}
+	case *pb.RunPaused:
+		env.Payload = &pb.Envelope_RunPaused{RunPaused: p}
+	case *pb.RunResumed:
+		env.Payload = &pb.Envelope_RunResumed{RunResumed: p}
+	case *pb.StepOutcomeInvalid:
+		env.Payload = &pb.Envelope_StepOutcomeInvalid{StepOutcomeInvalid: p}
 	}
 }
 

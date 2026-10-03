@@ -42,9 +42,6 @@ func mapRun(r *store.Run) *pb.Run {
 		WorkflowHash:  r.WorkflowHCL,
 		Status:        r.Status,
 		CreatedAt:     timestamppb.New(r.CreatedAt),
-		Ticket:        r.Ticket,
-		RepoUrl:       r.RepoURL,
-		PrUrl:         r.PRURL,
 		FailureReason: r.FailureReason,
 	}
 	if r.EndedAt != nil {

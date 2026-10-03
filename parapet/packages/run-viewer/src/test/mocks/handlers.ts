@@ -1,7 +1,7 @@
 import { http, HttpResponse } from 'msw';
 
 // MSW handlers for Connect-web JSON transport. Each RPC is a
-// `POST /criteria.v1.ServerService/<Method>` returning a protojson response.
+// `POST /<package>.<Service>/<Method>` returning a protojson response.
 // Protojson's canonical wire form uses snake_case field names; connect-web
 // accepts either, but we stick to snake_case for consistency with the proto
 // source of truth. Streaming RPCs (e.g. WatchRun) are left unhandled here —
@@ -11,11 +11,16 @@ export function serverPath(method: string): string {
   return `/criteria.v1.ServerService/${method}`;
 }
 
+export function consolePath(method: string): string {
+  return `/castle.v1.ConsoleService/${method}`;
+}
+
 export const handlers = [
-  // CRI-195: default console login. Successful credentials return a session
-  // token; wrong credentials are unauthenticated — mirroring castle's Login
-  // handler for tests that exercise the password login path.
-  http.post(serverPath('Login'), async ({ request }) => {
+  // CRI-195: default console login (castle.v1.ConsoleService). Successful
+  // credentials return a session token; wrong credentials are unauthenticated
+  // — mirroring castle's Login handler for tests that exercise the password
+  // login path.
+  http.post(consolePath('Login'), async ({ request }) => {
     const body = (await request.json().catch(() => ({}))) as { username?: string; password?: string };
     if (body.username === 'operator' && body.password === 'op-password') {
       return HttpResponse.json({
@@ -98,6 +103,25 @@ export const handlers = [
   http.post(serverPath('ResumeRun'), async () => {
     return HttpResponse.json({
       issued_at: new Date().toISOString(),
+    });
+  }),
+  // CRI-196 decision delivery rides castle.v1.ConsoleService.ResolveResume
+  // (KB-102): signal/payload contracts are castle-owned, not criteria wire.
+  http.post(consolePath('ResolveResume'), async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as {
+      run_id?: string;
+      signal?: string;
+    };
+    if (body.run_id === 'run-stale') {
+      return HttpResponse.json(
+        { code: 'failed_precondition', message: 'signal already satisfied' },
+        { status: 412 },
+      );
+    }
+    return HttpResponse.json({
+      issued_at: new Date().toISOString(),
+      run_id: body.run_id,
+      signal: body.signal ?? '',
     });
   }),
   http.post(serverPath('PauseRun'), async () => {

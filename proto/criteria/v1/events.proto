@@ -89,6 +89,37 @@ message Envelope {
     // subworkflow graphs the top-level module references; the server stores
     // and fans out the event verbatim and interprets none of the fields.
     WorkflowGraphs workflow_graphs = 37;
+    // AgentPromptInjected — a user prompt was delivered into a running step's
+    // adapter session (ADR-0006, M12.2). Emitted by the agent exactly once, at
+    // the moment the prompt is delivered into the adapter session — never at
+    // receipt and never on delivery failure. Permanent field number.
+    AgentPromptInjected agent_prompt_injected = 38;
+    // CheckpointPointer — advisory pointer to an engine-local adapter
+    // checkpoint (CRI-203). Emitted by the agent after a durable checkpoint
+    // save. Castle keeps only the pointer; the checkpoint bytes stay in the
+    // engine's state home and restore is engine-local from it — consumers
+    // MUST NOT treat castle reachability as part of the restore path. The
+    // pointer is for UI visibility, inspection, and accounting only.
+    // Permanent field number.
+    CheckpointPointer checkpoint_pointer = 39;
+    // StepOutcomeInvalid — an adapter outcome was rejected by host-side
+    // contract validation before any projection or state write (KB-45).
+    // issues are the per-contract validation errors; attempt is the rejected
+    // attempt number. The run then continues the standard retry loop.
+    // Permanent field number.
+    StepOutcomeInvalid step_outcome_invalid = 42;
+    // RunPaused — the run is paused: at a wait or approval node (mode
+    // "duration" | "signal") or by a control-surface pause request at a
+    // step boundary (mode "external", CRI-255). Emitted by both the local
+    // control path (loopback RPC) and the orchestrator control path so
+    // consumers see identical shapes for local and server runs. Permanent
+    // field number.
+    RunPaused run_paused = 40;
+    // RunResumed — a paused run is resuming execution from the named node
+    // (CRI-255). Emitted when a resume payload (approval decision or signal)
+    // or a boundary ResumeRun control request is applied. Permanent field
+    // number.
+    RunResumed run_resumed = 41;
     // WatchReady is a protocol-level sentinel sent once at the start of a
     // WatchRun server-stream, after any persisted-event replay, to flush
     // response headers so the client's WatchRun call can return. It has no
@@ -128,6 +159,21 @@ message StepOutcome {
   string outcome = 2;
   int64 duration_ms = 3;
   string error = 4;
+  // Comment returned by the adapter's ExecuteResult (KB-45). Opaque metadata
+  // produced by the adapter; the engine neither interprets nor validates it.
+  // Empty when the adapter returned none.
+  string comment = 5;
+}
+
+// StepOutcomeInvalid — host-side contract validation rejected an adapter
+// outcome before any projection or state write (KB-45). Emitted once per
+// rejected attempt; issues carry the per-contract validation errors in
+// evaluation order. attempt is the rejected attempt's number (1-based).
+message StepOutcomeInvalid {
+  string step = 1;
+  string outcome = 2;
+  repeated string issues = 3;
+  int32 attempt = 4;
 }
 
 // StepTransition — the FSM moved from one node to another via an outcome.
@@ -365,8 +411,9 @@ message AdapterLifecycleReleased {
 }
 
 // SubworkflowGraph — one compiled subworkflow layer of a run's workflow
-// (CRI-257). The agent compiler emits one entry per subworkflow the top-level
-// module references, recursively. Permanent field numbers.
+// (CRI-257). The agent compiler emits one flat entry per subworkflow layer at
+// every nesting depth; bodies carry only their own layer (no layer is
+// embedded in another). Permanent field numbers.
 message SubworkflowGraph {
   // name matches the `subworkflow "<name>"` declaration in the parent
   // module; permanent.
@@ -374,9 +421,13 @@ message SubworkflowGraph {
   // source_path is the module path the parent module declared for the
   // subworkflow (e.g. "../qa_triage_v1"); display-only; permanent.
   string source_path = 2;
-  // body is the compiled subworkflow module source in the same HCL dialect
-  // as the top-level workflow, so consumers parse it with the same parser;
-  // permanent.
+  // body is that layer's OWN compiled graph (steps/states/adapters)
+  // serialized as JSON; its own subworkflows key is stripped, so no body
+  // contains another layer (CRI-299). Nested subworkflow layers appear as
+  // their own entries in the top-level repeated field, and nesting is
+  // expressed by the parent's subworkflow.<name> step targets plus that
+  // flat entry list; consumers rebuild the tree with a plain name->layer
+  // map. Permanent.
   string body = 3;
 }
 
@@ -388,8 +439,90 @@ message SubworkflowGraph {
 // per run. The server stores and fans out the event verbatim and interprets
 // none of the fields.
 message WorkflowGraphs {
-  // subworkflows carries one entry per compiled subworkflow layer,
-  // recursively (a layer may itself declare subworkflows, which appear as
-  // their own entries); permanent.
+  // subworkflows carries one flat entry per compiled subworkflow layer at
+  // every nesting depth (a layer may itself declare subworkflows, which
+  // appear as their own entries — bodies never embed other layers);
+  // permanent.
   repeated SubworkflowGraph subworkflows = 1;
+}
+
+// AgentPromptInjected — a user prompt was delivered into a running step's
+// adapter session (ADR-0006). The agent emits it exactly once, at the moment
+// the prompt is delivered into the adapter session; it is never emitted at
+// receipt or on delivery failure. Permanent field number.
+message AgentPromptInjected {
+  // step is the workflow step whose adapter session received the prompt.
+  string step = 1;
+  // session_id is the live adapter session the prompt was delivered into.
+  string session_id = 2;
+  // prompt is the delivered prompt text.
+  string prompt = 3;
+  // caller identifies the Criteria identity that issued the prompt (ADR-0006
+  // D4); re-checked by the agent at delivery against the run's owner.
+  string caller = 4;
+  // delivered_at is when the agent delivered the prompt into the session.
+  google.protobuf.Timestamp delivered_at = 5;
+}
+
+// CheckpointPointer — advisory pointer to an engine-local adapter checkpoint
+// (CRI-203). It references a durable checkpoint without carrying its bytes:
+// the blob lives in the engine's state home (criteriadb state tables going
+// forward, CRI-199) and restore is engine-local from there, never mediated
+// by castle. Consumers use the pointer for UI visibility, inspection, and
+// accounting only. Every field is engine-local metadata; none carries state.
+message CheckpointPointer {
+  // state_id is the engine-local checkpoint identifier,
+  // "<session-id>/<seq>"; opaque to consumers. The checkpoint's bytes are
+  // keyed by it in the engine's state home, which is the authoritative
+  // source for restore.
+  string state_id = 1;
+  // adapter_kind is the adapter implementation type that owns the
+  // checkpointed session (e.g. "shell", "copilot").
+  string adapter_kind = 2;
+  // state_schema is the adapter-declared checkpoint-state schema tag the
+  // checkpoint was saved under.
+  string state_schema = 3;
+  // state_digest is the "sha256:<hex>" digest of the checkpointed state
+  // blob the pointer references.
+  string state_digest = 4;
+  // state_size is the checkpointed state blob's size in bytes.
+  int64 state_size = 5;
+  // granularity is the adapter's declared save granularity
+  // (per-step|per-turn|on-demand).
+  string granularity = 6;
+  // session_id is the adapter session the checkpoint belongs to (the
+  // workflow's "<adapter-type>.<instance-name>" session key); per-scope
+  // sessions carry their scope-qualified key.
+  string session_id = 7;
+}
+
+// RunPaused — the run is paused: at a wait or approval node (mode
+// "duration" | "signal") or by a control-surface pause request at a step
+// boundary ("external", CRI-255). At a boundary pause the run's durable
+// state (step checkpoint + adapter session checkpoints) is written before
+// the pause is acknowledged.
+message RunPaused {
+  // node the run paused on; for a boundary pause this is the node that is
+  // about to evaluate when the run resumes.
+  string node = 1;
+  // mode is "duration", "signal", or "external" (control-surface boundary
+  // pause).
+  string mode = 2;
+  // signal is the pending signal name for signal-mode pauses; empty
+  // otherwise. For approval nodes the pending signal is the node name and
+  // ApprovalRequested already carries the approval details.
+  string signal = 3;
+  // actor identifies who requested the pause; empty for duration/signal
+  // mode. Populated only by control-surface pauses; the local loopback
+  // surface leaves it empty because the caller is in the same trust domain
+  // as the CLI.
+  string actor = 4;
+}
+
+// RunResumed — a paused run is resuming execution from the named node
+// (CRI-255). Emitted when a resume payload (approval decision or signal) or
+// a boundary ResumeRun control request is applied.
+message RunResumed {
+  // node the run resumes from.
+  string node = 1;
 }

@@ -14,9 +14,11 @@ import (
 )
 
 // TestK8sRunLifecyclePublishing is the CRI-131 contract test for the
-// criteria-k8s operator flow: CreateRun with ticket + repo URL, RunMetadata
-// events promoting the PR URL, and full read-path visibility
-// (ListRuns/GetRun/ListRunEvents/WatchRun) for the Parapet UI.
+// criteria-k8s operator flow against the released criteria/sdk: CreateRun
+// carries no run-context fields, ticket/repo/pr arrive via run.metadata
+// envelopes and are promoted onto castle's local run row (non-empty-only),
+// and every metadata envelope stays visible on the read path
+// (ListRunEvents/WatchRun) for the Parapet UI.
 func TestK8sRunLifecyclePublishing(t *testing.T) {
 	ts := newTestStack(t)
 	ctx := context.Background()
@@ -26,13 +28,13 @@ func TestK8sRunLifecyclePublishing(t *testing.T) {
 
 	overseerID, token := mustRegisterNamed(t, oClient, "criteria-k8s-operator")
 
-	// Operator-side item 1: CreateRun carries the run identifier, ticket label
-	// and repo URL. Castle mints the run id; the operator persists it in the CR.
+	// Operator-side item 1: CreateRun mints the run id that the operator
+	// persists in the CR. The released wire contract has no first-class
+	// ticket/repo fields, so run context is published afterwards via
+	// run.metadata envelopes (CRI-131 dave ruling: never wire fields).
 	createReq := connect.NewRequest(&pb.CreateRunRequest{
 		CriteriaId:   overseerID,
 		WorkflowName: "cri-131-flow",
-		Ticket:       "CRI-131",
-		RepoUrl:      "brokenbots/castle",
 	})
 	createReq.Header().Set("Authorization", "Bearer "+token)
 	runResp, err := oClient.CreateRun(ctx, createReq)
@@ -43,40 +45,15 @@ func TestK8sRunLifecyclePublishing(t *testing.T) {
 	if runID == "" {
 		t.Fatal("expected castle to mint a run id")
 	}
-	if got := runResp.Msg.Ticket; got != "CRI-131" {
-		t.Fatalf("created run ticket=%q want CRI-131", got)
-	}
-	if got := runResp.Msg.RepoUrl; got != "brokenbots/castle" {
-		t.Fatalf("created run repo_url=%q want brokenbots/castle", got)
-	}
-
-	// Parapet read path: ListRuns and GetRun expose the k8s-native fields.
-	listResp, err := cClient.ListRuns(ctx, connect.NewRequest(&pb.ListRunsRequest{}))
+	row, err := ts.store.GetRun(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var listed *pb.Run
-	for _, r := range listResp.Msg.Runs {
-		if r.RunId == runID {
-			listed = r
-		}
-	}
-	if listed == nil {
-		t.Fatal("created run missing from ListRuns")
-	}
-	if listed.Ticket != "CRI-131" || listed.RepoUrl != "brokenbots/castle" {
-		t.Fatalf("ListRun fields=%q/%q want ticket/repo persisted", listed.Ticket, listed.RepoUrl)
+	if row.Ticket != "" || row.RepoURL != "" || row.PRURL != "" {
+		t.Fatalf("fresh run row should carry no run context, got %q/%q/%q", row.Ticket, row.RepoURL, row.PRURL)
 	}
 
-	getResp, err := cClient.GetRun(ctx, connect.NewRequest(&pb.GetRunRequest{RunId: runID}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if getResp.Msg.Ticket != "CRI-131" || getResp.Msg.RepoUrl != "brokenbots/castle" {
-		t.Fatalf("GetRun fields=%q/%q want ticket/repo persisted", getResp.Msg.Ticket, getResp.Msg.RepoUrl)
-	}
-
-	// Subscribe before publishing so the run.metadata event is observed live.
+	// Subscribe before publishing so the run.metadata events are observed live.
 	watch, err := cClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: runID, SinceSeq: 0}))
 	if err != nil {
 		t.Fatal(err)
@@ -88,67 +65,90 @@ func TestK8sRunLifecyclePublishing(t *testing.T) {
 		t.Fatalf("expected WatchReady, got %T", watch.Msg().Payload)
 	}
 
-	// Operator-side item 2: a phase/metadata transition is submitted through
-	// SubmitEvents; the PR URL is only known once the run reaches a terminal
-	// phase, so it is published via a run.metadata envelope. The store must
-	// promote it onto the run row without clearing ticket/repo_url.
-	stream := oClient.SubmitEvents(ctx)
-	stream.RequestHeader().Set("Authorization", "Bearer "+token)
-	err = stream.Send(&pb.Envelope{
-		SchemaVersion: int32(criteria.SchemaVersion),
-		RunId:         runID,
-		CorrelationId: "cri131-meta-1",
-		Ts:            timestamppb.Now(),
-		Payload: &pb.Envelope_RunMetadata{RunMetadata: &pb.RunMetadata{
-			PrUrl: "https://github.com/brokenbots/castle/pull/42",
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stream.Receive(); err != nil {
-		t.Fatal(err)
-	}
-	if err := stream.CloseRequest(); err != nil {
-		t.Fatal(err)
+	// submitMeta publishes one run.metadata envelope through SubmitEvents.
+	submitMeta := func(t *testing.T, corr string, meta *pb.RunMetadata) {
+		t.Helper()
+		stream := oClient.SubmitEvents(ctx)
+		stream.RequestHeader().Set("Authorization", "Bearer "+token)
+		err := stream.Send(&pb.Envelope{
+			SchemaVersion: int32(criteria.SchemaVersion),
+			RunId:         runID,
+			CorrelationId: corr,
+			Ts:            timestamppb.Now(),
+			Payload:       &pb.Envelope_RunMetadata{RunMetadata: meta},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Receive(); err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.CloseRequest(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
+	expectRow := func(t *testing.T, ticket, repo, pr string) {
+		t.Helper()
+		row, err := ts.store.GetRun(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Ticket != ticket || row.RepoURL != repo || row.PRURL != pr {
+			t.Fatalf("run row=%q/%q/%q want %q/%q/%q", row.Ticket, row.RepoURL, row.PRURL, ticket, repo, pr)
+		}
+	}
+
+	// Operator-side item 2: ticket + repo are published as soon as the
+	// operator reconciles the run; the PR URL is only known once the run
+	// reaches a terminal phase, so it arrives in a later envelope.
+	submitMeta(t, "cri131-meta-1", &pb.RunMetadata{
+		Ticket:  "CRI-131",
+		RepoUrl: "brokenbots/castle",
+	})
 	if !watch.Receive() {
 		t.Fatalf("expected run.metadata event, err=%v", watch.Err())
 	}
 	if watch.Msg().GetRunMetadata() == nil {
 		t.Fatalf("expected run.metadata payload, got %T", watch.Msg().Payload)
 	}
+	expectRow(t, "CRI-131", "brokenbots/castle", "")
 
-	afterMeta, err := cClient.GetRun(ctx, connect.NewRequest(&pb.GetRunRequest{RunId: runID}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := afterMeta.Msg.PrUrl; got != "https://github.com/brokenbots/castle/pull/42" {
-		t.Fatalf("run pr_url=%q want promoted value", got)
-	}
-	// Non-empty-only promotion: empty ticket in the metadata event must not
-	// clear the ticket recorded at create time.
-	if got := afterMeta.Msg.Ticket; got != "CRI-131" {
-		t.Fatalf("run ticket=%q want unchanged", got)
-	}
+	submitMeta(t, "cri131-meta-2", &pb.RunMetadata{
+		PrUrl: "https://github.com/brokenbots/castle/pull/42",
+	})
+	expectRow(t, "CRI-131", "brokenbots/castle", "https://github.com/brokenbots/castle/pull/42")
 
-	// The metadata event is also queryable for the run detail event log.
+	// Non-empty-only promotion: an all-empty metadata envelope must not clear
+	// anything already recorded (proto3 absence is indistinguishable from "").
+	submitMeta(t, "cri131-meta-3", &pb.RunMetadata{})
+	expectRow(t, "CRI-131", "brokenbots/castle", "https://github.com/brokenbots/castle/pull/42")
+
+	// The metadata envelopes are queryable for the run detail event log.
 	events, err := cClient.ListRunEvents(ctx, connect.NewRequest(&pb.ListRunEventsRequest{RunId: runID, SinceSeq: 0, Limit: 100}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var metaEvent *pb.Envelope
+	var metaEvents []*pb.RunMetadata
 	for _, ev := range events.Msg.Events {
-		if ev.GetRunMetadata() != nil {
-			metaEvent = ev
+		if m := ev.GetRunMetadata(); m != nil {
+			metaEvents = append(metaEvents, m)
 		}
 	}
-	if metaEvent == nil {
-		t.Fatalf("expected a run.metadata event in ListRunEvents, got %d events", len(events.Msg.Events))
+	if len(metaEvents) != 3 {
+		t.Fatalf("expected 3 run.metadata events in ListRunEvents, got %d", len(metaEvents))
 	}
-	if got := metaEvent.GetRunMetadata().GetPrUrl(); got != "https://github.com/brokenbots/castle/pull/42" {
-		t.Fatalf("run.metadata pr_url=%q want payload preserved", got)
+	// Envelopes are stored exactly as submitted (non-empty-only promotion is
+	// derived store state, never a rewrite of the event log).
+	if metaEvents[0].Ticket != "CRI-131" || metaEvents[0].RepoUrl != "brokenbots/castle" {
+		t.Fatalf("run.metadata[0]=%q/%q want ticket+repo", metaEvents[0].Ticket, metaEvents[0].RepoUrl)
+	}
+	const wantPR = "https://github.com/brokenbots/castle/pull/42"
+	if metaEvents[1].PrUrl != wantPR {
+		t.Fatalf("run.metadata pr_url=%q want payload preserved", metaEvents[1].PrUrl)
+	}
+	if metaEvents[2].Ticket != "" || metaEvents[2].RepoUrl != "" || metaEvents[2].PrUrl != "" {
+		t.Fatalf("run.metadata[2] should be the empty promotion guard event, got %+v", metaEvents[2])
 	}
 
 	// Phase transitions follow the existing vocabulary: Running → Succeeded.
@@ -191,17 +191,8 @@ func TestK8sRunLifecyclePublishing(t *testing.T) {
 	if got := phaseRun.Msg.Status; got != "succeeded" {
 		t.Fatalf("run status=%q want succeeded after RunCompleted", got)
 	}
-
-	// The agent-initiated shape stays intact: no ticket, repo or PR.
-	legacyReq := connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "legacy-agent-run"})
-	legacyReq.Header().Set("Authorization", "Bearer "+token)
-	legacyResp, err := oClient.CreateRun(ctx, legacyReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacyResp.Msg.Ticket != "" || legacyResp.Msg.RepoUrl != "" || legacyResp.Msg.PrUrl != "" {
-		t.Fatalf("legacy run metadata should be empty, got %q/%q/%q", legacyResp.Msg.Ticket, legacyResp.Msg.RepoUrl, legacyResp.Msg.PrUrl)
-	}
+	// Run lifecycle must not disturb promoted run context.
+	expectRow(t, "CRI-131", "brokenbots/castle", "https://github.com/brokenbots/castle/pull/42")
 }
 
 func mustRegisterNamed(t *testing.T, client criteriav1connect.CriteriaServiceClient, name string) (string, string) {

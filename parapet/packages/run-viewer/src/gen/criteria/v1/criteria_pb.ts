@@ -214,23 +214,6 @@ export class CreateRunRequest extends Message<CreateRunRequest> {
    */
   workflowHash = "";
 
-  /**
-   * ticket is the external ticket identifier the run is attached to (e.g.
-   * "CRI-104"). Empty for agent-initiated runs. External orchestrators such
-   * as the criteria-k8s operator set it so UIs can show the ticket label.
-   *
-   * @generated from field: string ticket = 4;
-   */
-  ticket = "";
-
-  /**
-   * repo_url is the repository the run operates on (e.g. "brokenbots/castle").
-   * Empty for agent-initiated runs.
-   *
-   * @generated from field: string repo_url = 5;
-   */
-  repoUrl = "";
-
   constructor(data?: PartialMessage<CreateRunRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -242,8 +225,6 @@ export class CreateRunRequest extends Message<CreateRunRequest> {
     { no: 1, name: "criteria_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "workflow_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "workflow_hash", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 4, name: "ticket", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 5, name: "repo_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateRunRequest {
@@ -321,31 +302,6 @@ export class Run extends Message<Run> {
    */
   failureReason = "";
 
-  /**
-   * ticket is the external ticket identifier the run is attached to (e.g.
-   * "CRI-104"). Empty for agent-initiated runs. CRI-131.
-   *
-   * @generated from field: string ticket = 11;
-   */
-  ticket = "";
-
-  /**
-   * repo_url is the repository the run operates on. Empty for agent-initiated
-   * runs. CRI-131.
-   *
-   * @generated from field: string repo_url = 12;
-   */
-  repoUrl = "";
-
-  /**
-   * pr_url is the pull request URL produced by the run, when known. External
-   * orchestrators publish it via a run.metadata event once it is known.
-   * CRI-131.
-   *
-   * @generated from field: string pr_url = 13;
-   */
-  prUrl = "";
-
   constructor(data?: PartialMessage<Run>) {
     super();
     proto3.util.initPartial(data, this);
@@ -364,9 +320,6 @@ export class Run extends Message<Run> {
     { no: 8, name: "ended_at", kind: "message", T: Timestamp },
     { no: 9, name: "final_state", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "failure_reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 11, name: "ticket", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 12, name: "repo_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 13, name: "pr_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Run {
@@ -639,7 +592,7 @@ export class ControlMessage extends Message<ControlMessage> {
     case: "runCancel";
   } | {
     /**
-     * Phase 2.3; stub in 1.1.
+     * AgentPrompt carries a user prompt for the addressed step (ADR-0006).
      *
      * @generated from field: criteria.v1.AgentPrompt agent_prompt = 2;
      */
@@ -685,7 +638,10 @@ export class ControlMessage extends Message<ControlMessage> {
   } | {
     /**
      * PauseRun asks the Criteria agent to pause an in-flight run. The agent
-     * should preserve adapter/run state and enter a paused state.
+     * should preserve adapter/run state and enter a paused state. Mirror of
+     * the orchestrator's control contract (CRI-74): the pause lands only at
+     * a checkpoint boundary (CRI-254), the in-flight step drains first, and
+     * the acknowledged run emits a RunPaused event.
      *
      * CRI-74
      *
@@ -725,51 +681,6 @@ export class ControlMessage extends Message<ControlMessage> {
 
   static equals(a: ControlMessage | PlainMessage<ControlMessage> | undefined, b: ControlMessage | PlainMessage<ControlMessage> | undefined): boolean {
     return proto3.util.equals(ControlMessage, a, b);
-  }
-}
-
-/**
- * PauseRun asks the Criteria agent to pause an in-flight run.
- *
- * @generated from message criteria.v1.PauseRun
- */
-export class PauseRun extends Message<PauseRun> {
-  /**
-   * @generated from field: string run_id = 1;
-   */
-  runId = "";
-
-  /**
-   * @generated from field: string reason = 2;
-   */
-  reason = "";
-
-  constructor(data?: PartialMessage<PauseRun>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "criteria.v1.PauseRun";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 2, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PauseRun {
-    return new PauseRun().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PauseRun {
-    return new PauseRun().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PauseRun {
-    return new PauseRun().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: PauseRun | PlainMessage<PauseRun> | undefined, b: PauseRun | PlainMessage<PauseRun> | undefined): boolean {
-    return proto3.util.equals(PauseRun, a, b);
   }
 }
 
@@ -892,7 +803,57 @@ export class RunCancel extends Message<RunCancel> {
 }
 
 /**
- * AgentPrompt forwards a user prompt to a running agent step. Phase 2.3.
+ * PauseRun asks the Criteria agent to pause an in-flight run. Mirror of the
+ * orchestrator's control contract (CRI-74, CRI-254): the agent pauses at the
+ * next checkpoint boundary and acknowledges the landed pause with a RunPaused
+ * event.
+ *
+ * @generated from message criteria.v1.PauseRun
+ */
+export class PauseRun extends Message<PauseRun> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  /**
+   * @generated from field: string reason = 2;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<PauseRun>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "criteria.v1.PauseRun";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PauseRun {
+    return new PauseRun().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PauseRun {
+    return new PauseRun().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PauseRun {
+    return new PauseRun().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PauseRun | PlainMessage<PauseRun> | undefined, b: PauseRun | PlainMessage<PauseRun> | undefined): boolean {
+    return proto3.util.equals(PauseRun, a, b);
+  }
+}
+
+/**
+ * AgentPrompt forwards a user prompt to a running agent step (ADR-0006). The
+ * orchestrator enqueues it on the owning agent's Control stream; the agent
+ * delivers it into the addressed step's live adapter session.
  *
  * @generated from message criteria.v1.AgentPrompt
  */
@@ -912,6 +873,32 @@ export class AgentPrompt extends Message<AgentPrompt> {
    */
   prompt = "";
 
+  /**
+   * session_id optionally addresses a specific live adapter session (ADR-0006
+   * D2). Empty means the agent resolves the addressed step's live session
+   * authoritatively; a non-empty value that does not match the live session
+   * is a delivery failure, never a silent mismatch.
+   *
+   * @generated from field: string session_id = 4;
+   */
+  sessionId = "";
+
+  /**
+   * issued_at is when the orchestrator accepted the prompt for delivery.
+   *
+   * @generated from field: google.protobuf.Timestamp issued_at = 5;
+   */
+  issuedAt?: Timestamp;
+
+  /**
+   * caller_criteria_id identifies the Criteria identity that issued the
+   * prompt (ADR-0006 D4). The agent re-checks it at delivery against the
+   * run's owner; on mismatch the prompt is not delivered.
+   *
+   * @generated from field: string caller_criteria_id = 6;
+   */
+  callerCriteriaId = "";
+
   constructor(data?: PartialMessage<AgentPrompt>) {
     super();
     proto3.util.initPartial(data, this);
@@ -923,6 +910,9 @@ export class AgentPrompt extends Message<AgentPrompt> {
     { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "prompt", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "issued_at", kind: "message", T: Timestamp },
+    { no: 6, name: "caller_criteria_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AgentPrompt {
