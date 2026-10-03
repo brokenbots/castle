@@ -20,9 +20,6 @@ const RUN: Run = {
   createdAt: '2026-02-05T08:30:00.000Z',
   finalState: '',
   failureReason: '',
-  ticket: '',
-  repoUrl: '',
-  prUrl: '',
 };
 
 const AGENT: Agent = {

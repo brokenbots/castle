@@ -1,6 +1,6 @@
 import { FormEvent, useState } from 'react';
 import { Code, ConnectError } from '@connectrpc/connect';
-import { server } from '@castle/run-viewer';
+import { consoleClient, server } from '@castle/run-viewer';
 
 interface LoginPageProps {
   onAuthenticated: (token: string) => void;
@@ -60,7 +60,9 @@ export function LoginPage({ onAuthenticated, notice }: LoginPageProps) {
     setError(null);
     try {
       if (mode === 'password') {
-        const resp = await server.login({ username: username.trim(), password });
+        // Login lives on the castle-owned console surface (CRI-195); the
+        // released criteria SDK deliberately ships no human login RPC.
+        const resp = await consoleClient.login({ username: username.trim(), password });
         onAuthenticated(resp.sessionToken);
         return;
       }

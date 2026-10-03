@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { castleApi } from './castleApi';
 import { createRunViewerStore } from '../store';
 import { server } from '../test/mocks/server';
-import { serverPath } from '../test/mocks/handlers';
+import { serverPath, consolePath } from '../test/mocks/handlers';
 
 // One store instance per test file; RTK Query caches per store.
 const store = createRunViewerStore();
@@ -51,10 +51,29 @@ describe('castleApi run-control mutations', () => {
     expect(res.data).toEqual({ issuedAt: expect.any(String) });
   });
 
-  test('resumeRun forwards the signal and payload to the wire', async () => {
+  test('plain resume posts only the run id to ServerService', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     server.use(
       http.post(serverPath('ResumeRun'), async ({ request }) => {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        bodies.push(body);
+        return HttpResponse.json({ issued_at: '2026-09-17T09:00:00.000Z' });
+      }),
+    );
+
+    const res = await store.dispatch(
+      castleApi.endpoints.resume.initiate({ runId: 'run-1' }),
+    );
+
+    expect(bodies).toHaveLength(1);
+    expect(String(bodies[0].runId ?? bodies[0].run_id)).toBe('run-1');
+    expect(res.data).toEqual({ issuedAt: '2026-09-17T09:00:00.000Z' });
+  });
+
+  test('signal-bearing resume rides castle.v1.ConsoleService/ResolveResume', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    server.use(
+      http.post(consolePath('ResolveResume'), async ({ request }) => {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
         bodies.push(body);
         return HttpResponse.json({ issued_at: '2026-09-17T09:00:00.000Z' });
@@ -70,6 +89,7 @@ describe('castleApi run-control mutations', () => {
     );
 
     expect(bodies).toHaveLength(1);
+    expect(String(bodies[0].runId ?? bodies[0].run_id)).toBe('run-1');
     expect(String(bodies[0].signal)).toBe('continue');
     expect(bodies[0].payload).toEqual({ decision: 'approve' });
     expect(res.data).toEqual({ issuedAt: '2026-09-17T09:00:00.000Z' });

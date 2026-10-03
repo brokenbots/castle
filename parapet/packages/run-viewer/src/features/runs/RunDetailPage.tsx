@@ -288,9 +288,33 @@ export function RunDetailPage({
   );
   const highlightRange = selectedNode?.sourceRange ?? null;
 
+  // CRI-131 re-home (KB-102): run identity metadata (ticket / repo / PR) no
+  // longer rides wire fields on the run row — the producer publishes it as
+  // run.metadata envelopes. Derive the display metadata from the event log
+  // with the same promotion rules the castle store applies: last-wins per
+  // field, non-empty values only. Payload keys are read in both protojson
+  // spellings (camel jsonName and the proto field name).
+  const runMeta = useMemo(() => {
+    const meta: { ticket?: string; repo?: string; pr?: string } = {};
+    const pick = (msg: Record<string, unknown>, camel: string, snake: string): string | undefined => {
+      const v = msg[camel] ?? msg[snake];
+      return typeof v === 'string' && v.length > 0 ? v : undefined;
+    };
+    for (const e of events) {
+      if (e.type !== 'runMetadata') continue;
+      const p = e.payload as Record<string, unknown> | null | undefined;
+      if (!p) continue;
+      meta.ticket = pick(p, 'ticket', 'ticket') ?? meta.ticket;
+      meta.repo = pick(p, 'repoUrl', 'repo_url') ?? meta.repo;
+      meta.pr = pick(p, 'prUrl', 'pr_url') ?? meta.pr;
+    }
+    return meta;
+  }, [events]);
+
   // Only render the PR link for http(s) URLs; the publisher controls the
   // value and must not be able to inject javascript: hrefs.
-  const prUrl = run.data?.prUrl?.startsWith('http://') || run.data?.prUrl?.startsWith('https://') ? run.data.prUrl : undefined;
+  const prUrl =
+    runMeta.pr?.startsWith('http://') || runMeta.pr?.startsWith('https://') ? runMeta.pr : undefined;
 
   // A run is live-tailing while its status is running and no terminal event
   // has arrived yet (the status can lag the event stream).
@@ -380,14 +404,14 @@ export function RunDetailPage({
           }
         >
           <div className="flex flex-wrap items-center gap-4 text-body">
-            {run.data.ticket && (
+            {runMeta.ticket && (
               <span>
-                ticket: <span className="font-mono">{run.data.ticket}</span>
+                ticket: <span className="font-mono">{runMeta.ticket}</span>
               </span>
             )}
-            {run.data.repoUrl && (
+            {runMeta.repo && (
               <span>
-                repo: <span className="font-mono">{run.data.repoUrl}</span>
+                repo: <span className="font-mono">{runMeta.repo}</span>
               </span>
             )}
             {run.data.finalState && (

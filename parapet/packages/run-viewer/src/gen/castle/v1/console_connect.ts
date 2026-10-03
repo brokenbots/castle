@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { LoginRequest, LoginResponse } from "./console_pb.js";
+import { LoginRequest, LoginResponse, ResolveResumeRequest, ResolveResumeResponse } from "./console_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -41,6 +41,30 @@ export const ConsoleService = {
       name: "Login",
       I: LoginRequest,
       O: LoginResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ResolveResume delivers the console's explicit pending-signal decision —
+     * an approval decision (ApprovalCard) or a signal note — to a paused run
+     * (CRI-196). It mirrors the CRI-255 ResolveResume vocabulary while keeping
+     * delivery on castle's Control stream.
+     *
+     * The released criteria ServerService.ResumeRun accepts only a run_id:
+     * upstream does not ship an operator-side decision payload, so the CRI-196
+     * console contract is castle-owned and lives here instead. A plain
+     * unpause (no decision) must use ServerService.ResumeRun.
+     *
+     * Implementations MUST reject a request whose signal does not match the
+     * run's pending signal with FAILED_PRECONDITION, so a stale console view
+     * cannot resolve the wrong wait, and MUST deny non-console callers
+     * (agents and orchestrators) exactly as for other console writes.
+     *
+     * @generated from rpc castle.v1.ConsoleService.ResolveResume
+     */
+    resolveResume: {
+      name: "ResolveResume",
+      I: ResolveResumeRequest,
+      O: ResolveResumeResponse,
       kind: MethodKind.Unary,
     },
   }

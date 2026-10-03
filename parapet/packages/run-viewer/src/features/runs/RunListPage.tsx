@@ -276,7 +276,6 @@ export function RunListPage() {
           <thead className="text-slate-400">
             <tr>
               <th className="px-2 py-1">ID</th>
-              <th className="px-2 py-1">Ticket</th>
               <th className="px-2 py-1">Workflow</th>
               <th className="px-2 py-1">Status</th>
               <th className="px-2 py-1">Started</th>
@@ -291,7 +290,6 @@ export function RunListPage() {
                     {run.runId}
                   </Link>
                 </td>
-                <td className="px-2 py-1">{run.ticket ?? '—'}</td>
                 <td className="px-2 py-1">{run.workflowName}</td>
                 <td className="px-2 py-1">
                   {/* Status chip links into the run list filtered by this

@@ -53,7 +53,9 @@ export { connectCodeName, isUnauthenticatedError, classifyError, type PageErrorK
 export { castleRunDataSource } from './api/castleDataSource';
 
 // Transport surface for hosts that talk to Castle directly (login probe).
-export { server, getRuntimeCodec, type Codec } from './api/client';
+// The console login + decision surface lives on castle.v1.ConsoleService
+// (CRI-195/196): criteria.v1 stays an exact mirror of the released SDK.
+export { server, consoleClient, getRuntimeCodec, type Codec } from './api/client';
 
 // Shared run-status vocabulary + cells (used by host pages too).
 export {

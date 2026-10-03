@@ -10,7 +10,7 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3 } from "@bufbuild/protobuf";
+import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 
 /**
  * @generated from message castle.v1.LoginRequest
@@ -107,6 +107,105 @@ export class LoginResponse extends Message<LoginResponse> {
 
   static equals(a: LoginResponse | PlainMessage<LoginResponse> | undefined, b: LoginResponse | PlainMessage<LoginResponse> | undefined): boolean {
     return proto3.util.equals(LoginResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.ResolveResumeRequest
+ */
+export class ResolveResumeRequest extends Message<ResolveResumeRequest> {
+  /**
+   * run_id is the paused run to resolve.
+   *
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  /**
+   * signal optionally pins the pending signal the caller intends to resume.
+   * For wait nodes with signal=<name> this is that signal name; for approval
+   * nodes this is the approval node name. If set it must match the run's
+   * pending signal.
+   *
+   * @generated from field: string signal = 2;
+   */
+  signal = "";
+
+  /**
+   * payload carries optional key/value metadata (the CRI-196 decision
+   * contract): payload["decision"] = "approved" | "rejected",
+   * payload["actor"] = identity of approver (audit metadata).
+   *
+   * @generated from field: map<string, string> payload = 3;
+   */
+  payload: { [key: string]: string } = {};
+
+  constructor(data?: PartialMessage<ResolveResumeRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.ResolveResumeRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "signal", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "payload", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResolveResumeRequest {
+    return new ResolveResumeRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResolveResumeRequest {
+    return new ResolveResumeRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResolveResumeRequest {
+    return new ResolveResumeRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResolveResumeRequest | PlainMessage<ResolveResumeRequest> | undefined, b: ResolveResumeRequest | PlainMessage<ResolveResumeRequest> | undefined): boolean {
+    return proto3.util.equals(ResolveResumeRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.ResolveResumeResponse
+ */
+export class ResolveResumeResponse extends Message<ResolveResumeResponse> {
+  /**
+   * issued_at is the time the resume control command was accepted.
+   *
+   * @generated from field: google.protobuf.Timestamp issued_at = 1;
+   */
+  issuedAt?: Timestamp;
+
+  constructor(data?: PartialMessage<ResolveResumeResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.ResolveResumeResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "issued_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResolveResumeResponse {
+    return new ResolveResumeResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResolveResumeResponse {
+    return new ResolveResumeResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResolveResumeResponse {
+    return new ResolveResumeResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResolveResumeResponse | PlainMessage<ResolveResumeResponse> | undefined, b: ResolveResumeResponse | PlainMessage<ResolveResumeResponse> | undefined): boolean {
+    return proto3.util.equals(ResolveResumeResponse, a, b);
   }
 }
 

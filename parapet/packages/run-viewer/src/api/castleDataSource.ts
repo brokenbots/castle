@@ -1,5 +1,5 @@
 import { ConnectError } from '@connectrpc/connect';
-import { server } from './client';
+import { server, consoleClient } from './client';
 import {
   mapAgent,
   mapEnvelope,
@@ -76,7 +76,15 @@ export const castleRunDataSource: RunDataSource = {
   },
 
   async resume({ runId, signal, payload }: ResumeArgs) {
-    const resp = await server.resumeRun({ runId, signal: signal ?? '', payload: payload ?? {} });
+    // A signal-bearing resume is a console decision (CRI-196 approval /
+    // pending-signal resolution): it rides the castle-owned ConsoleService
+    // ResolveResume (KB-102 re-home) because the released ServerService
+    // ResumeRun is run_id-only. Plain resume (no signal, no payload) keeps
+    // the ServerService path.
+    const hasDecision = (signal !== undefined && signal.length > 0) || (payload !== undefined && Object.keys(payload).length > 0);
+    const resp = hasDecision
+      ? await consoleClient.resolveResume({ runId, signal: signal ?? '', payload: payload ?? {} })
+      : await server.resumeRun({ runId });
     return { issuedAt: tsToIso(resp.issuedAt) };
   },
 
