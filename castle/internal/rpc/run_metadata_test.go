@@ -138,9 +138,17 @@ func TestK8sRunLifecyclePublishing(t *testing.T) {
 	if len(metaEvents) != 3 {
 		t.Fatalf("expected 3 run.metadata events in ListRunEvents, got %d", len(metaEvents))
 	}
-	last := metaEvents[len(metaEvents)-1]
-	if last.PrUrl != "https://github.com/brokenbots/castle/pull/42" {
-		t.Fatalf("run.metadata pr_url=%q want payload preserved", last.PrUrl)
+	// Envelopes are stored exactly as submitted (non-empty-only promotion is
+	// derived store state, never a rewrite of the event log).
+	if metaEvents[0].Ticket != "CRI-131" || metaEvents[0].RepoUrl != "brokenbots/castle" {
+		t.Fatalf("run.metadata[0]=%q/%q want ticket+repo", metaEvents[0].Ticket, metaEvents[0].RepoUrl)
+	}
+	const wantPR = "https://github.com/brokenbots/castle/pull/42"
+	if metaEvents[1].PrUrl != wantPR {
+		t.Fatalf("run.metadata pr_url=%q want payload preserved", metaEvents[1].PrUrl)
+	}
+	if metaEvents[2].Ticket != "" || metaEvents[2].RepoUrl != "" || metaEvents[2].PrUrl != "" {
+		t.Fatalf("run.metadata[2] should be the empty promotion guard event, got %+v", metaEvents[2])
 	}
 
 	// Phase transitions follow the existing vocabulary: Running → Succeeded.
