@@ -75,6 +75,10 @@ func (s *CriteriaServer) CreateRun(ctx context.Context, req *connect.Request[pb.
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("criteria_id and workflow_name required"))
 	}
 	now := time.Now().UTC()
+	// Run context (ticket/repo/pr) no longer rides CreateRun (CRI-131: the
+	// released criteria/sdk has no first-class fields for it); external
+	// orchestrators publish it afterwards via run.metadata envelopes, which
+	// castle promotes onto the run row in applyRunStatus.
 	r := &store.Run{
 		ID:           uuid.NewString(),
 		OverseerID:   criteriaID,
@@ -82,8 +86,6 @@ func (s *CriteriaServer) CreateRun(ctx context.Context, req *connect.Request[pb.
 		WorkflowHCL:  req.Msg.WorkflowHash,
 		Status:       "pending",
 		CreatedAt:    now,
-		Ticket:       req.Msg.Ticket,
-		RepoURL:      req.Msg.RepoUrl,
 	}
 	if err := s.Store.CreateRun(ctx, r); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
