@@ -9,8 +9,8 @@ help:
 bootstrap: ## Install backend and frontend dependencies
 	cd parapet && npm ci
 
-tidy: ## Tidy the local Criteria SDK module
-	cd criteria-sdk && go mod tidy
+tidy: ## Tidy the Castle module
+	cd castle && go mod tidy
 
 build: build-castle build-parapet ## Build Castle and Parapet
 
@@ -66,6 +66,7 @@ clean: ## Remove build outputs and local state
 
 proto: ## Regenerate Go and TypeScript bindings
 	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf generate
+	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf generate --template buf.gen.go.yaml --path proto/castle/v1
 
 proto-lint: ## Lint protobuf schemas
 	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf lint
@@ -75,8 +76,9 @@ proto-check: ## Check protobuf compatibility against main
 
 proto-check-drift: ## Fail when generated bindings are stale
 	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf generate
-	@if ! git diff --quiet -- parapet/packages/run-viewer/src/gen criteria-sdk/pb; then \
+	PATH="$(PWD)/parapet/node_modules/.bin:$(PATH)" buf generate --template buf.gen.go.yaml --path proto/castle/v1
+	@if ! git diff --quiet -- parapet/packages/run-viewer/src/gen castle/gen; then \
 		echo "Generated proto output is out of date. Run 'make proto' and commit the changes." >&2; \
-		git --no-pager diff --stat -- parapet/packages/run-viewer/src/gen criteria-sdk/pb >&2; \
+		git --no-pager diff --stat -- parapet/packages/run-viewer/src/gen castle/gen >&2; \
 		exit 1; \
 	fi

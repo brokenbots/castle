@@ -12,7 +12,6 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 
 	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 )

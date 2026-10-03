@@ -17,6 +17,8 @@ import (
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
+
+	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 )
 
 const (
@@ -503,7 +505,33 @@ func (s *ServerServer) PauseRun(ctx context.Context, req *connect.Request[pb.Pau
 }
 
 func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.ResumeRunRequest]) (*connect.Response[pb.ResumeRunResponse], error) {
-	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
+	// Released criteria ServerService.ResumeRun accepts only a run_id: a
+	// plain unpause. Signal pinning and the CRI-196 decision payload are the
+	// castle-owned castle.v1 ConsoleService.ResolveResume surface (KB-102).
+	issuedAt, err := s.resumeRunControl(ctx, req.Msg.RunId, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
+}
+
+// ResolveResume delivers a console approval decision or signal note (CRI-196)
+// to a paused run. It is the castle-owned console surface for the decision
+// payload the released criteria sdk deliberately does not ship upstream.
+func (s *ServerServer) ResolveResume(ctx context.Context, req *connect.Request[castlev1.ResolveResumeRequest]) (*connect.Response[castlev1.ResolveResumeResponse], error) {
+	issuedAt, err := s.resumeRunControl(ctx, req.Msg.GetRunId(), req.Msg.GetSignal(), req.Msg.GetPayload())
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&castlev1.ResolveResumeResponse{IssuedAt: issuedAt}), nil
+}
+
+// resumeRunControl is the shared console resume path behind
+// ServerService.ResumeRun (plain unpause) and ConsoleService.ResolveResume
+// (decision delivery). signalPin is empty on the plain path; payload carries
+// the CRI-196 decision contract.
+func (s *ServerServer) resumeRunControl(ctx context.Context, runID, signalPin string, payload map[string]string) (*timestamppb.Timestamp, error) {
+	_, run, err := requireCallerOwnsRun(ctx, s.Store, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -518,7 +546,7 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 		// path for stopped runs — reattachment is for genuinely interrupted
 		// runs, and castle-side, ReattachRun answers CanResume=false for a
 		// parked run so a fresh agent registration never double-starts it.
-		if req.Msg.Signal != "" {
+		if signalPin != "" {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("stopped run has no pending signal"))
 		}
 		// A stopped run whose delivery never landed (assignment leased but the
@@ -537,7 +565,7 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 				s.Log.Error("resume accepted but requeueing unstarted run failed", "run_id", run.ID, "err", err)
 			}
 		}
-		msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Payload: req.Msg.Payload}}}
+		msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Payload: payload}}}
 		issuedAt, err := s.issueControlCommand(ctx, run, msg)
 		if err != nil {
 			// The agent must deliver the resume; until it is delivered the run
@@ -552,7 +580,7 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 		if err := s.Store.ClearRunStopped(ctx, run.ID); err != nil {
 			s.Log.Error("resume accepted but clearing run stopped state failed", "run_id", run.ID, "err", err)
 		}
-		return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
+		return issuedAt, nil
 	}
 	if run.Status != "paused" {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("run is not paused"))
@@ -564,10 +592,10 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 	// A console operator may pin the signal they intend to resume; if they
 	// send one it must match the run's pending signal (CRI-196 payload
 	// contract), so a stale console view cannot resume the wrong wait.
-	if req.Msg.Signal != "" && req.Msg.Signal != signal {
+	if signalPin != "" && signalPin != signal {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("signal does not match the run's pending signal"))
 	}
-	msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Signal: signal, Payload: req.Msg.Payload}}}
+	msg := &pb.ControlMessage{Command: &pb.ControlMessage_ResumeRun{ResumeRun: &pb.ResumeRun{RunId: run.ID, Signal: signal, Payload: payload}}}
 	issuedAt, err := s.issueControlCommand(ctx, run, msg)
 	if err != nil {
 		return nil, err
@@ -580,7 +608,7 @@ func (s *ServerServer) ResumeRun(ctx context.Context, req *connect.Request[pb.Re
 	if err := s.Store.ClearRunPaused(ctx, run.ID); err != nil {
 		s.Log.Error("resume accepted but clearing run pause state failed", "run_id", run.ID, "err", err)
 	}
-	return connect.NewResponse(&pb.ResumeRunResponse{IssuedAt: issuedAt}), nil
+	return issuedAt, nil
 }
 
 func (s *ServerServer) InspectRun(ctx context.Context, req *connect.Request[pb.InspectRunRequest]) (*connect.Response[pb.InspectRunResponse], error) {

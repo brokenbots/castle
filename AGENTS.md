@@ -19,9 +19,16 @@ This repository owns the Castle control-plane server and the Parapet web UI. Cri
 - Treat `github.com/brokenbots/criteria/sdk` as the Criteria wire-contract source of truth.
 - Do not add Overseer executor, workflow-engine, or adapter implementations to this repository.
 - Update protobuf sources before generated Go or TypeScript bindings.
-- Do not hand-edit generated files under `criteria-sdk/pb` or `parapet/packages/run-viewer/src/gen`.
+- Do not hand-edit generated files under `castle/gen` or `parapet/packages/run-viewer/src/gen`.
 - Keep Castle compatible with a single-replica SQLite deployment until an external-store project explicitly changes that constraint.
 
 ## Migration Baseline
 
 The extracted `overlord.v1` schema and `shared/sdk/overseer` package are temporary scaffolding. Replace them through reviewed Criteria compatibility work; do not extend them as a public API.
+
+## Castle-Owns (KB-102)
+
+Castle's wire surface is 100% `github.com/brokenbots/criteria/sdk` upstream;
+the in-repo `criteria-sdk/` fork is deleted. Castle-owned surfaces (human
+console login, CRI-195) live in `proto/castle/v1` and generate into
+`castle/gen` via `buf generate --template buf.gen.go.yaml`.

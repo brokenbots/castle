@@ -13,13 +13,6 @@ plugins:
     opt:
       - target=ts
   # Go bindings for castle-owned surfaces (castle.v1, e.g. the human console
-  # login service CRI-195). The criteria.v1 wire contract itself is generated
-  # upstream — castle consumes the published criteria/sdk module (KB-102).
-  - plugin: go
-    out: castle/gen
-    opt:
-      - paths=source_relative
-  - plugin: connect-go
-    out: castle/gen
-    opt:
-      - paths=source_relative
+  # login service CRI-195) live in buf.gen.go.yaml — the criteria.v1 wire
+  # contract itself is generated upstream and castle consumes the published
+  # criteria/sdk module instead (KB-102).

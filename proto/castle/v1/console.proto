@@ -7,6 +7,8 @@ syntax = "proto3";
 
 package castle.v1;
 
+import "google/protobuf/timestamp.proto";
+
 option go_package = "github.com/brokenbots/castle/castle/gen/castle/v1;castlev1";
 
 service ConsoleService {
@@ -26,6 +28,22 @@ service ConsoleService {
   // authorized for the read-only ServerService observation surface across
   // all runs and agents, and denied every write procedure.
   rpc Login(LoginRequest) returns (LoginResponse);
+
+  // ResolveResume delivers the console's explicit pending-signal decision —
+  // an approval decision (ApprovalCard) or a signal note — to a paused run
+  // (CRI-196). It mirrors the CRI-255 ResolveResume vocabulary while keeping
+  // delivery on castle's Control stream.
+  //
+  // The released criteria ServerService.ResumeRun accepts only a run_id:
+  // upstream does not ship an operator-side decision payload, so the CRI-196
+  // console contract is castle-owned and lives here instead. A plain
+  // unpause (no decision) must use ServerService.ResumeRun.
+  //
+  // Implementations MUST reject a request whose signal does not match the
+  // run's pending signal with FAILED_PRECONDITION, so a stale console view
+  // cannot resolve the wrong wait, and MUST deny non-console callers
+  // (agents and orchestrators) exactly as for other console writes.
+  rpc ResolveResume(ResolveResumeRequest) returns (ResolveResumeResponse);
 }
 
 message LoginRequest {
@@ -44,4 +62,23 @@ message LoginResponse {
   string session_token = 1;
   // username echoes the authenticated console user's login name.
   string username = 2;
+}
+
+message ResolveResumeRequest {
+  // run_id is the paused run to resolve.
+  string run_id = 1;
+  // signal optionally pins the pending signal the caller intends to resume.
+  // For wait nodes with signal=<name> this is that signal name; for approval
+  // nodes this is the approval node name. If set it must match the run's
+  // pending signal.
+  string signal = 2;
+  // payload carries optional key/value metadata (the CRI-196 decision
+  // contract): payload["decision"] = "approved" | "rejected",
+  // payload["actor"] = identity of approver (audit metadata).
+  map<string, string> payload = 3;
+}
+
+message ResolveResumeResponse {
+  // issued_at is the time the resume control command was accepted.
+  google.protobuf.Timestamp issued_at = 1;
 }

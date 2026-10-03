@@ -20,6 +20,8 @@ import (
 	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
+
+	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 )
 
 type recordedLog struct {
@@ -1167,9 +1169,13 @@ func TestResumeRunTerminalRun(t *testing.T) {
 	}
 }
 
-func TestResumeRunSignalMismatch(t *testing.T) {
+func TestResolveResumeSignalMismatch(t *testing.T) {
 	ts := newTestStack(t)
-	_, oClient, cClient := ts.startServer(t)
+	// The released ServerService.ResumeRun takes no signal (KB-102 re-home):
+	// the CRI-196 console decision signal check lives on the castle-owned
+	// ConsoleService.ResolveResume.
+	tsrv, oClient, _ := ts.startServer(t)
+	consoleCli := consoleClient(tsrv)
 	overseerID, _ := mustRegister(t, oClient)
 	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
@@ -1179,15 +1185,19 @@ func TestResumeRunSignalMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId, Signal: "approve"}))
+	_, err = consoleCli.ResolveResume(context.Background(), connect.NewRequest(&castlev1.ResolveResumeRequest{RunId: run.Msg.RunId, Signal: "approve"}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition for mismatched signal, got %v", err)
 	}
 }
 
-func TestResumeRunForwardsPayload(t *testing.T) {
+func TestResolveResumeForwardsPayload(t *testing.T) {
 	ts := newTestStack(t)
-	_, oClient, cClient := ts.startServer(t)
+	// The released ServerService.ResumeRun takes only run_id (KB-102): the
+	// CRI-196 console decision payload is delivered via the castle-owned
+	// ConsoleService.ResolveResume.
+	tsrv, oClient, _ := ts.startServer(t)
+	consoleCli := consoleClient(tsrv)
 	overseerID, _ := mustRegister(t, oClient)
 	run, err := oClient.CreateRun(context.Background(), connect.NewRequest(&pb.CreateRunRequest{CriteriaId: overseerID, WorkflowName: "wf"}))
 	if err != nil {
@@ -1201,7 +1211,7 @@ func TestResumeRunForwardsPayload(t *testing.T) {
 	defer ctrl.Close()
 
 	payload := map[string]string{"decision": "approve", "note": "looks good"}
-	_, err = cClient.ResumeRun(context.Background(), connect.NewRequest(&pb.ResumeRunRequest{RunId: run.Msg.RunId, Signal: "continue", Payload: payload}))
+	_, err = consoleCli.ResolveResume(context.Background(), connect.NewRequest(&castlev1.ResolveResumeRequest{RunId: run.Msg.RunId, Signal: "continue", Payload: payload}))
 	if err != nil {
 		t.Fatal(err)
 	}

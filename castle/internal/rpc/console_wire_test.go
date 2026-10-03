@@ -14,7 +14,6 @@ import (
 
 	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
-	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 )
 
 // consoleWireHarness starts the full HTTP stack with the auth interceptor in
@@ -312,15 +311,16 @@ func TestConsoleWire_RunControlWritesAccepted(t *testing.T) {
 		t.Fatalf("set run paused: %v", err)
 	}
 
-	// Console resume carries the payload contract (signal + payload map).
-	resumeReq := connect.NewRequest(&pb.ResumeRunRequest{
+	// Console resume carries the payload contract (signal + payload map)
+	// through the castle-owned ResolveResume decision surface (KB-102 re-home).
+	resumeReq := connect.NewRequest(&castlev1.ResolveResumeRequest{
 		RunId:   h.runID,
 		Signal:  "continue",
 		Payload: map[string]string{"decision": "approve"},
 	})
 	h.authHeader(resumeReq)
-	if _, err := h.cClient.ResumeRun(ctx, resumeReq); err != nil {
-		t.Fatalf("console ResumeRun: %v", err)
+	if _, err := h.consoleClient.ResolveResume(ctx, resumeReq); err != nil {
+		t.Fatalf("console ResolveResume: %v", err)
 	}
 	if !ctrl.Receive() {
 		t.Fatalf("expected ResumeRun control message, err=%v", ctrl.Err())
@@ -381,15 +381,17 @@ func TestConsoleWire_ApprovalResumeEndToEnd(t *testing.T) {
 		t.Fatalf("set run paused: %v", err)
 	}
 
-	// Console operator approves through ServerService.ResumeRun.
-	resumeReq := connect.NewRequest(&pb.ResumeRunRequest{
+	// Console operator approves through the castle-owned ConsoleService
+	// ResolveResume decision surface (released ServerService.ResumeRun is
+	// run_id-only; KB-102 re-homed the CRI-196 payload contract here).
+	resumeReq := connect.NewRequest(&castlev1.ResolveResumeRequest{
 		RunId:   h.runID,
 		Signal:  node,
 		Payload: map[string]string{"decision": "approved"},
 	})
 	h.authHeader(resumeReq)
-	if _, err := h.cClient.ResumeRun(ctx, resumeReq); err != nil {
-		t.Fatalf("console ResumeRun: %v", err)
+	if _, err := h.consoleClient.ResolveResume(ctx, resumeReq); err != nil {
+		t.Fatalf("console ResolveResume: %v", err)
 	}
 
 	// The control message reaches the owning agent with signal + payload.
@@ -422,10 +424,10 @@ func TestConsoleWire_ApprovalResumeEndToEnd(t *testing.T) {
 
 	// A stale console view retrying the same signal gets failed_precondition,
 	// which the console renders as an informational "signal already satisfied".
-	staleReq := connect.NewRequest(&pb.ResumeRunRequest{RunId: h.runID, Signal: node})
+	staleReq := connect.NewRequest(&castlev1.ResolveResumeRequest{RunId: h.runID, Signal: node})
 	h.authHeader(staleReq)
-	if _, err := h.cClient.ResumeRun(ctx, staleReq); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("stale console resume must be failed_precondition, got %v", err)
+	if _, err := h.consoleClient.ResolveResume(ctx, staleReq); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("stale console resolve must be failed_precondition, got %v", err)
 	}
 }
 

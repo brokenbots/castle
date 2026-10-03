@@ -1,0 +1,16 @@
+# Go-side generation template (KB-102): castle-owned surfaces only. The
+# criteria.v1 contract is generated upstream in the published criteria/sdk —
+# castle consumes the module rather than regenerating it locally.
+#
+# Run as:
+#   buf generate --template buf.gen.go.yaml --path castle/v1
+version: v1
+plugins:
+  - plugin: go
+    out: castle/gen
+    opt:
+      - paths=source_relative
+  - plugin: connect-go
+    out: castle/gen
+    opt:
+      - paths=source_relative
