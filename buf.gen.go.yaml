@@ -3,7 +3,7 @@
 # castle consumes the module rather than regenerating it locally.
 #
 # Run as:
-#   buf generate --template buf.gen.go.yaml --path castle/v1
+#   buf generate --template buf.gen.go.yaml --path proto/castle/v1
 version: v1
 plugins:
   - plugin: go
