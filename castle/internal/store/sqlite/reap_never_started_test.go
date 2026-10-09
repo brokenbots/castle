@@ -68,7 +68,7 @@ func TestReapNeverStartedRuns_Acceptance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if !slices.Equal(reaped, []string{"r-orphan"}) {
+	if !slices.Equal(reapedIDs(reaped), []string{"r-orphan"}) {
 		t.Fatalf("reaped = %v, want [r-orphan]", reaped)
 	}
 
@@ -127,7 +127,7 @@ func TestReapNeverStartedRuns_StatusMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if !slices.Equal(reaped, []string{"r-old-pending", "r-old-running-unstarted"}) {
+	if !slices.Equal(reapedIDs(reaped), []string{"r-old-pending", "r-old-running-unstarted"}) {
 		t.Fatalf("reaped = %v, want [r-old-pending r-old-running-unstarted]", reaped)
 	}
 
@@ -195,7 +195,7 @@ func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if !slices.Equal(reaped, []string{a.RunID}) {
+	if !slices.Equal(reapedIDs(reaped), []string{a.RunID}) {
 		t.Fatalf("reaped = %v, want [%s]", reaped, a.RunID)
 	}
 
@@ -264,7 +264,7 @@ func TestReapNeverStartedRuns_RequeueResetsWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap later: %v", err)
 	}
-	if !slices.Equal(reaped, []string{a.RunID}) {
+	if !slices.Equal(reapedIDs(reaped), []string{a.RunID}) {
 		t.Fatalf("reaped = %v, want [%s]", reaped, a.RunID)
 	}
 	if r := f.getRun(t, a.RunID); r.Status != "failed" || r.FailureReason != "created_never_started" {
@@ -303,7 +303,7 @@ func TestReapNeverStartedRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap with partially resolved candidates: %v", err)
 	}
-	if !slices.Equal(reaped, []string{"r-zombie-1", "r-zombie-2"}) {
+	if !slices.Equal(reapedIDs(reaped), []string{"r-zombie-1", "r-zombie-2"}) {
 		t.Fatalf("reaped = %v, want [r-zombie-1 r-zombie-2]", reaped)
 	}
 

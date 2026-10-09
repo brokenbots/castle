@@ -157,7 +157,7 @@ func TestReapStaleAgentRuns_IgnoresStopped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap after resume: %v", err)
 	}
-	if len(reaped) != 1 || reaped[0] != "r-stale-stopped" {
+	if got := reapedIDs(reaped); len(got) != 1 || got[0] != "r-stale-stopped" {
 		t.Fatalf("resumed run not reaped with unchanged semantics: %v", reaped)
 	}
 	r := f.getRun(t, "r-stale-stopped")

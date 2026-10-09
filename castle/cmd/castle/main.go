@@ -375,33 +375,48 @@ func main() {
 
 // reapStaleRunsOnce performs one CRI-142 heartbeat-staleness reaping pass:
 // runs in pending/running whose owning agent's heartbeat is older than
-// staleness are stamped failed with reason "agent heartbeat lost". Split out
+// staleness are classified from their own record and stamped (KB-226) — a
+// run whose engine parked at a human gate is reclassified to awaiting_human
+// with the reclassification reason logged, a run whose agent vanished
+// mid-flight is stamped failed with reason "agent heartbeat lost". Split out
 // of the ticker goroutine so the now/staleBefore derivation is unit-testable.
 func reapStaleRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, staleness time.Duration) {
 	now := time.Now().UTC()
-	ids, err := st.ReapStaleAgentRuns(ctx, now, now.Add(-staleness))
+	outcomes, err := st.ReapStaleAgentRuns(ctx, now, now.Add(-staleness))
 	if err != nil {
 		log.Error("run reaper", "err", err)
 		return
 	}
-	for _, id := range ids {
-		log.Info("reaped run with stale agent heartbeat", "run_id", id, "reason", "agent heartbeat lost")
-	}
+	logReapOutcomes(log, "reaped run with stale agent heartbeat", outcomes)
 }
 
 // reapNeverStartedRunsOnce performs one KB-233 rule-2 reaping pass: runs in
 // pending/running whose started_at is still unset and whose created_at is
-// older than window are stamped failed with reason "created_never_started".
-// Split out of the ticker goroutine so the now/createdBefore derivation is
-// unit-testable.
+// older than window are stamped failed with reason "created_never_started",
+// unless their record ends at a human gate — those park as awaiting_human
+// (KB-226) with the reclassification reason logged. Split out of the ticker
+// goroutine so the now/createdBefore derivation is unit-testable.
 func reapNeverStartedRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, window time.Duration) {
 	now := time.Now().UTC()
-	ids, err := st.ReapNeverStartedRuns(ctx, now, now.Add(-window))
+	outcomes, err := st.ReapNeverStartedRuns(ctx, now, now.Add(-window))
 	if err != nil {
 		log.Error("created_never_started reaper", "err", err)
 		return
 	}
-	for _, id := range ids {
-		log.Info("reaped run created but never started", "run_id", id, "reason", "created_never_started")
+	logReapOutcomes(log, "reaped run created but never started", outcomes)
+}
+
+// logReapOutcomes emits one log line per reaper verdict. Reaped runs carry
+// the verdict reason; parked runs (KB-226) carry the reclassification reason
+// and the status they were parked to, so an operator can trace why the reaper
+// left a heartbeat-stale run open instead of failing it.
+func logReapOutcomes(log *slog.Logger, reapedMsg string, outcomes []store.RunReapOutcome) {
+	for _, o := range outcomes {
+		if o.Parked {
+			log.Info("reaper skipped run parked at human gate",
+				"run_id", o.RunID, "reclassified_to", o.Status, "reason", o.Reason)
+			continue
+		}
+		log.Info(reapedMsg, "run_id", o.RunID, "reason", o.Reason)
 	}
 }
