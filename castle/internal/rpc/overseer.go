@@ -97,7 +97,7 @@ func (s *CriteriaServer) tokenVisible(ctx context.Context, created *store.Overse
 	if err != nil {
 		return false, fmt.Sprintf("writer commit not confirmed: %v", err)
 	}
-	if committed.TokenHash != created.TokenHash {
+	if committed == nil || committed.TokenHash != created.TokenHash {
 		return false, "writer commit not confirmed: token hash mismatch on stored row"
 	}
 	resolved, err := auth.ResolveToken(ctx, s.Store, token)

@@ -26,9 +26,10 @@ const (
 // succeeding while CreateRun rejects the fresh tokens as unauthenticated
 // (KB-10, observed 2026-09-25).
 type readerFreshness struct {
-	mu     sync.Mutex
-	newest time.Time // newest creation timestamp written via CreateOverseer
-	warned time.Time // last time the staleness warning was emitted
+	mu       sync.Mutex
+	newest   time.Time // newest creation timestamp written via CreateOverseer
+	warned   time.Time // last time the staleness warning was emitted
+	lastHeal time.Time // last time the heal notice was emitted (KB-223)
 	// behind records that the most recently audited reader view was missing a
 	// committed overseer write, or proved fresh after a gap. It gates the
 	// OverseerTokenHashPresent writer probe so failed-token traffic only ever
@@ -120,8 +121,8 @@ func (f *readerFreshness) healed(ctx context.Context, log *slog.Logger) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.behind = true
-	if f.warned.IsZero() || time.Since(f.warned) >= staleReaderWarnInterval {
-		f.warned = time.Now()
+	if f.lastHeal.IsZero() || time.Since(f.lastHeal) >= staleReaderWarnInterval {
+		f.lastHeal = time.Now()
 		log.WarnContext(ctx,
 			"sqlite: reader view was behind the writer; served the authoritative writer view for overseers (token resolution is unaffected, but investigate reader staleness)",
 			"newest_writer_overseer", f.newest.Format(tsLayout))

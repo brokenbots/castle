@@ -223,3 +223,183 @@ func TestReaderFreshness_Check(t *testing.T) {
 		}
 	})
 }
+
+// --- KB-223: reader-lag self-heal, freshness gating, and presence probe ---
+
+// TestReaderFreshness_NewerThan covers the heal trigger: the writer view is
+// authoritative whenever it has committed an overseer creation the read view
+// does not show yet.
+func TestReaderFreshness_NewerThan(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("no recorded writes never heals", func(t *testing.T) {
+		var f readerFreshness
+		if f.newerThan(time.Time{}) {
+			t.Fatal("newerThan true with no recorded writes")
+		}
+	})
+
+	t.Run("empty reader view counts as behind any write", func(t *testing.T) {
+		var f readerFreshness
+		f.recordWrite(now)
+		if !f.newerThan(time.Time{}) {
+			t.Fatal("newerThan false against a reader view with no overseers")
+		}
+	})
+
+	t.Run("agreement is not newer", func(t *testing.T) {
+		var f readerFreshness
+		f.recordWrite(now)
+		if f.newerThan(now) {
+			t.Fatal("newerThan true when reader and writer agree on the newest row")
+		}
+	})
+
+	t.Run("a newer committed write is newer", func(t *testing.T) {
+		var f readerFreshness
+		f.recordWrite(now.Add(time.Minute))
+		if !f.newerThan(now) {
+			t.Fatal("newerThan false while a newer committed write exists")
+		}
+	})
+}
+
+// TestReaderFreshness_BehindFlagTracksAudit covers the behind flag that gates
+// the OverseerTokenHashPresent writer probe off the hot path.
+func TestReaderFreshness_BehindFlagTracksAudit(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	t.Run("audit recording a gap marks behind", func(t *testing.T) {
+		var f readerFreshness
+		f.recordWrite(now.Add(2 * staleReaderGrace))
+		buf := &bytes.Buffer{}
+		if !f.check(ctx, now, newTestLogger(buf)) {
+			t.Fatal("check did not report the gap")
+		}
+		if !f.readerBehind() {
+			t.Fatal("behind flag not set while the reader view is behind the writer")
+		}
+	})
+
+	t.Run("fresh audit clears the flag", func(t *testing.T) {
+		var f readerFreshness
+		f.noteBehind(true)
+		buf := &bytes.Buffer{}
+		if f.check(ctx, now, newTestLogger(buf)) {
+			t.Fatal("check reported stale with no recorded writes")
+		}
+		if f.readerBehind() {
+			t.Fatal("behind flag not cleared by a fresh audit")
+		}
+	})
+}
+
+// TestListOverseers_HealsLaggingReaderView is the KB-223 self-heal: when the
+// store knows about a committed overseer write that the reader view cannot
+// show, ListOverseers re-reads through the authoritative writer handle so
+// token resolution cannot miss a registered token, and the gap is recorded so
+// a subsequent unresolvable token is reported as "not yet visible" by the
+// auth interceptor instead of a misleading "invalid token".
+func TestListOverseers_HealsLaggingReaderView(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	token := registerOverseer(t, s, "veteran", now)
+
+	// The read view lacks a committed write: freshness has it, the rows the
+	// reader can return do not.
+	s.freshness.recordWrite(now.Add(time.Hour))
+
+	buf := &bytes.Buffer{}
+	s.log = newTestLogger(buf)
+
+	got, err := s.ListOverseers(ctx)
+	if err != nil {
+		t.Fatalf("list overseers: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "veteran" {
+		t.Fatalf("ListOverseers served %d rows, want exactly veteran: %+v", len(got), got)
+	}
+	if !strings.Contains(buf.String(), "served the authoritative writer view") {
+		t.Fatalf("heal of the lagging reader view was not logged; log = %q", buf.String())
+	}
+	if !s.freshness.readerBehind() {
+		t.Fatal("audited gap must mark the reader behind the writer")
+	}
+
+	// The presence probe consumed by the auth interceptor sees the registered
+	// hash through the writer while the gap is suspected.
+	present, err := s.OverseerTokenHashPresent(ctx, auth.HashToken(token))
+	if err != nil {
+		t.Fatalf("presence probe: %v", err)
+	}
+	if !present {
+		t.Fatal("presence probe did not find the registered token hash in the writer view")
+	}
+}
+
+// TestListOverseers_NoSelfHealWhenReaderFresh pins the steady state: no heal
+// logging, no behind flag, and a gated-off presence probe that never touches
+// the writer.
+func TestListOverseers_NoSelfHealWhenReaderFresh(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	token := registerOverseer(t, s, "veteran", now)
+
+	buf := &bytes.Buffer{}
+	s.log = newTestLogger(buf)
+
+	got, err := s.ListOverseers(ctx)
+	if err != nil {
+		t.Fatalf("list overseers: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "veteran" {
+		t.Fatalf("ListOverseers served %d rows, want exactly veteran: %+v", len(got), got)
+	}
+	if strings.Contains(buf.String(), "served the authoritative writer view") {
+		t.Fatalf("heal fired with a fresh reader view; log = %q", buf.String())
+	}
+	if s.freshness.readerBehind() {
+		t.Fatal("fresh audit marked the reader behind the writer")
+	}
+
+	// Gated off: the probe reports not-present without consulting the writer,
+	// even though the hash is actually there — failed-token traffic must stay
+	// off the write path in the steady state.
+	present, err := s.OverseerTokenHashPresent(ctx, auth.HashToken(token))
+	if err != nil {
+		t.Fatalf("presence probe: %v", err)
+	}
+	if present {
+		t.Fatal("presence probe fired while the freshness gate was closed (steady-state traffic must not touch the writer)")
+	}
+}
+
+// TestOverseerTokenHashPresent_WriterBackedWhenSuspected covers the writer
+// query itself while the staleness gate is open.
+func TestOverseerTokenHashPresent_WriterBackedWhenSuspected(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	token := registerOverseer(t, s, "veteran", now)
+
+	// Simulate a suspected visibility gap so the probe is allowed.
+	s.freshness.noteBehind(true)
+
+	present, err := s.OverseerTokenHashPresent(ctx, auth.HashToken(token))
+	if err != nil {
+		t.Fatalf("presence probe: %v", err)
+	}
+	if !present {
+		t.Fatal("probe did not find the registered token hash")
+	}
+	present, err = s.OverseerTokenHashPresent(ctx, auth.HashToken("never-issued-token"))
+	if err != nil {
+		t.Fatalf("presence probe: %v", err)
+	}
+	if present {
+		t.Fatal("probe reported a token hash that was never registered")
+	}
+}
