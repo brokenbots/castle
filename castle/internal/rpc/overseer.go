@@ -66,9 +66,7 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 func (s *CriteriaServer) awaitTokenVisible(ctx context.Context, created *store.Overseer, token string) error {
 	const maxAttempts = 10
 	var reason string
-	var attempts int
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		attempts = attempt + 1
 		if attempt > 0 {
 			wait := min(time.Duration(1<<uint(attempt))*2*time.Millisecond, 64*time.Millisecond)
 			select {
@@ -87,7 +85,7 @@ func (s *CriteriaServer) awaitTokenVisible(ctx context.Context, created *store.O
 				"criteria_id", created.ID, "attempt", attempt+1, "reason", reason)
 		}
 	}
-	return fmt.Errorf("register ack withheld: overseer %s token not visible to read path after %d attempts (%s)", created.ID, attempts, reason)
+	return fmt.Errorf("register ack withheld: overseer %s token not visible to read path after %d attempts (%s)", created.ID, maxAttempts, reason)
 }
 
 // tokenVisible runs the two-legged read-back: writer commit evidence and
