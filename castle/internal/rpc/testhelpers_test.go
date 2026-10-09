@@ -49,6 +49,15 @@ func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	return newTestStackOnStore(t, s, log)
+}
+
+// newTestStackOnStore builds the wire-level server set on a caller-owned
+// store. Used by tests that reopen persistence (restart simulations) or wrap
+// the store to control visibility. The store must already be registered with
+// t.Cleanup for Close by the caller.
+func newTestStackOnStore(t *testing.T, s *sqlite.Store, log *slog.Logger) *testStack {
+	t.Helper()
 	h := hub.New()
 	controls := NewControlRegistry()
 	return &testStack{
