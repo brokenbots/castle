@@ -920,10 +920,10 @@ func stampReapVerdicts(ctx context.Context, tx *sql.Tx, now time.Time, reapReaso
 		if reason, ok := parked[id]; ok {
 			parkedIDs = append(parkedIDs, id)
 			outcomes = append(outcomes, store.RunReapOutcome{
-				RunID:   id,
-				Parked:  true,
-				Status:  store.RunStatusAwaitingHuman,
-				Reason:  reason,
+				RunID:  id,
+				Parked: true,
+				Status: store.RunStatusAwaitingHuman,
+				Reason: reason,
 			})
 			continue
 		}

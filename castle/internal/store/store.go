@@ -195,10 +195,10 @@ const ReapReasonAgentHeartbeatLost = "agent heartbeat lost"
 // "agent heartbeat lost" / "created_never_started" for reaped runs, the
 // human-gate reclassification reason for parked runs.
 type RunReapOutcome struct {
-	RunID   string
-	Parked  bool
-	Status  string
-	Reason  string
+	RunID  string
+	Parked bool
+	Status string
+	Reason string
 }
 
 // Store is the persistence contract.
