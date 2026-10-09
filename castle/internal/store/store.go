@@ -177,6 +177,30 @@ type Run struct {
 	FailureReason string
 }
 
+// RunStatusAwaitingHuman is the parked status of a run whose engine reached
+// the workflow terminal state awaiting_human (KB-226): the workflow work is
+// done and the run is held for a human decision, so it is no longer
+// executing and has no agent heartbeat by design. Parked runs are excluded
+// from reaping and from workflow-assignment dispatch eligibility.
+const RunStatusAwaitingHuman = "awaiting_human"
+
+// ReapReasonAgentHeartbeatLost is the failure reason stamped on runs reaped
+// for heartbeat staleness with no human-gate ending in their record (CRI-142).
+const ReapReasonAgentHeartbeatLost = "agent heartbeat lost"
+
+// RunReapOutcome is one deterministic reaper verdict for a candidate run
+// (KB-226): either the run was reaped terminal-failed (Parked false) or it
+// was reclassified to its real parked status instead of failing (Parked
+// true). Status always names the stamped status, and Reason names why —
+// "agent heartbeat lost" / "created_never_started" for reaped runs, the
+// human-gate reclassification reason for parked runs.
+type RunReapOutcome struct {
+	RunID  string
+	Parked bool
+	Status string
+	Reason string
+}
+
 // Store is the persistence contract.
 type Store interface {
 	// Overseers
@@ -236,15 +260,30 @@ type Store interface {
 	// values leave the existing column untouched.
 	SetRunMetadata(ctx context.Context, runID, ticket, repoURL, prURL string) error
 
-	// Reaping (CRI-142)
-	// ReapStaleAgentRuns stamps runs in status pending or running as failed
-	// with reason "agent heartbeat lost" when their owning agent's heartbeat
-	// is older than staleBefore. Runs without an owning agent (queued
-	// assignment work), paused runs and stopped runs (CRI-207: an operator
-	// parked run is reaper-exempt regardless of heartbeat age, because it has
-	// no live agent by design) are left alone. Each reaped run's workflow
-	// assignment is marked terminal. Returns the reaped run IDs.
-	ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error)
+	// Reaping (CRI-142, KB-226)
+	// ReapStaleAgentRuns classifies runs in status pending or running whose
+	// owning agent's heartbeat (overseers.last_seen_at) is older than
+	// staleBefore and stamps each re-validated run from its own record
+	// (CRI-142):
+	//
+	//   - A run whose engine reached a human gate — the awaiting_human
+	//     terminal state, or an approval / signal wait parked in its last
+	//     event — has no live heartbeat by design: it is parked, not failed
+	//     (KB-226). Its status is reclassified to RunStatusAwaitingHuman
+	//     with no EndedAt, no FailureReason and no workflow-assignment
+	//     change, and the outcome carries Parked true plus the
+	//     reclassification reason.
+	//   - A run still mid-flight (no human-gate ending in its record) is
+	//     stamped failed with reason ReapReasonAgentHeartbeatLost and its
+	//     workflow assignment is marked terminal so the dead-agent work is
+	//     never re-dispatched.
+	//
+	// Runs without an owning agent (queued assignment work), paused runs and
+	// stopped runs (CRI-207: an operator parked run is reaper-exempt
+	// regardless of heartbeat age, because it has no live agent by design)
+	// are left alone; terminal runs are never rewritten. Returns one
+	// RunReapOutcome per stamped run, in candidates order.
+	ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]RunReapOutcome, error)
 	// ReapNeverStartedRuns stamps runs in status pending or running as failed
 	// with reason "created_never_started" (KB-233 rule 2) when started_at is
 	// still NULL and created_at is older than createdBefore: a run that was
@@ -252,10 +291,12 @@ type Store interface {
 	// record alone — created_at and started_at — never from heartbeat or
 	// assignment heuristics. Paused and stopped runs (operator-parked,
 	// CRI-207) are reaper-exempt regardless of age, and terminal runs are
-	// never rewritten. Each reaped run's workflow assignment is marked
-	// terminal so the dead work is never re-dispatched. Returns the reaped
-	// run IDs.
-	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]string, error)
+	// never rewritten. A never-started candidate whose record ends at a human
+	// gate is parked instead of failed (KB-226), like the heartbeat reaper.
+	// Each reaped run's workflow assignment is marked terminal so the dead
+	// work is never re-dispatched. Returns one RunReapOutcome per stamped
+	// run.
+	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]RunReapOutcome, error)
 	// CancelRun stamps runID terminal as "cancelled" with the given reason
 	// (CRI-142). Terminal runs are never rewritten: an already terminal run
 	// returns ErrRunTerminal, an unknown id ErrNotFound. The cancelled run

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,3 +124,131 @@ func TestReapNeverStartedRunsOnce(t *testing.T) {
 type testWriter struct{}
 
 func (testWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// capturingWriter records everything the logger writes so tests can assert
+// on the operator-facing reaper log lines.
+type capturingWriter struct {
+	b []byte
+}
+
+func (w *capturingWriter) Write(p []byte) (int, error) {
+	w.b = append(w.b, p...)
+	return len(p), nil
+}
+
+func (w *capturingWriter) String() string { return string(w.b) }
+
+// TestReapStaleRunsOnce_ParkedRunLogsReclassification pins the KB-226
+// operator-visible contract: when a heartbeat-stale run's record ends at the
+// awaiting_human terminal completion, the pass does NOT emit "reaped run
+// with stale agent heartbeat" — it logs a reclassification naming the parked
+// status and the reason, past any threshold.
+func TestReapStaleRunsOnce_ParkedRunLogsReclassification(t *testing.T) {
+	s, err := sqlite.Open(t.TempDir() + "/castle.db")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	cw := &capturingWriter{}
+	log := slog.New(slog.NewTextHandler(cw, nil))
+
+	now := time.Now().UTC()
+	// The heartbeat went quiet 2h ago: stale past ANY 1h reap threshold.
+	staleSeen := now.Add(-120 * time.Minute)
+	if err := s.CreateOverseer(ctx, &store.Overseer{
+		ID: "agent-dead", Name: "runner", TokenHash: "x", Status: "online",
+		CreatedAt: staleSeen, LastSeenAt: staleSeen,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{
+		ID: "r-parked", OverseerID: "agent-dead", WorkflowName: "wf", Status: "running", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if _, inserted, err := s.AppendEvent(ctx, &store.Event{
+		SchemaVersion: store.EventSchemaVersion,
+		RunID:         "r-parked",
+		Type:          "run.completed",
+		Ts:            now,
+		CorrelationID: "corr-terminal",
+		Payload:       []byte(`{"finalState":"awaiting_human","success":false}`),
+	}); err != nil || !inserted {
+		t.Fatalf("append terminal event: err=%v inserted=%v", err, inserted)
+	}
+
+	// An hour past the threshold: parked, not failed, with the
+	// reclassification named in the log.
+	reapStaleRunsOnce(ctx, s, log, time.Hour)
+
+	got, err := s.GetRun(ctx, "r-parked")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.Status != store.RunStatusAwaitingHuman || got.FailureReason != "" || got.EndedAt != nil {
+		t.Fatalf("parked run: status=%q reason=%q ended=%v", got.Status, got.FailureReason, got.EndedAt)
+	}
+	logs := cw.String()
+	for _, want := range []string{
+		"msg=\"reaper skipped run parked at human gate\"",
+		"run_id=r-parked",
+		"reclassified_to=awaiting_human",
+		`reason="engine reached terminal human gate awaiting_human"`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("missing %q in log:\n%s", want, logs)
+		}
+	}
+	if strings.Contains(logs, "reaped run with stale agent heartbeat") {
+		t.Fatalf("parked run logged as reaped:\n%s", logs)
+	}
+}
+
+// TestReapStaleRunsOnce_MidFlightLogsReaped is the counterpart of the parked
+// log contract: a run whose agent vanished without reaching a human gate
+// still logs the legacy reaped line with the heartbeat-lost reason.
+func TestReapStaleRunsOnce_MidFlightLogsReaped(t *testing.T) {
+	s, err := sqlite.Open(t.TempDir() + "/castle.db")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	cw := &capturingWriter{}
+	log := slog.New(slog.NewTextHandler(cw, nil))
+
+	now := time.Now().UTC()
+	staleSeen := now.Add(-10 * time.Minute)
+	if err := s.CreateOverseer(ctx, &store.Overseer{
+		ID: "agent-dead", Name: "runner", TokenHash: "x", Status: "online",
+		CreatedAt: staleSeen, LastSeenAt: staleSeen,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+	if err := s.CreateRun(ctx, &store.Run{
+		ID: "r-dead", OverseerID: "agent-dead", WorkflowName: "wf", Status: "running", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	reapStaleRunsOnce(ctx, s, log, 60*time.Second)
+
+	got, err := s.GetRun(ctx, "r-dead")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.Status != "failed" || got.FailureReason != "agent heartbeat lost" || got.EndedAt == nil {
+		t.Fatalf("mid-flight stale run: status=%q reason=%q ended=%v", got.Status, got.FailureReason, got.EndedAt)
+	}
+	logs := cw.String()
+	for _, want := range []string{
+		"msg=\"reaped run with stale agent heartbeat\"",
+		"run_id=r-dead",
+		`reason="agent heartbeat lost"`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("missing %q in log:\n%s", want, logs)
+		}
+	}
+}

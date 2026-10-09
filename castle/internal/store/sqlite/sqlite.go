@@ -717,29 +717,37 @@ func (s *Store) MarkRunUnstarted(ctx context.Context, runID string, requeuedAt t
 	return err
 }
 
-// ReapStaleAgentRuns stamps runs in status pending or running as failed with
-// reason "agent heartbeat lost" when their owning criteria agent's heartbeat
-// (overseers.last_seen_at) is older than staleBefore (CRI-142). Runs without
-// an owning agent (queued assignment work), paused runs and stopped runs
-// (CRI-207: reaper-exempt regardless of heartbeat age) are left alone;
-// terminal runs are never rewritten. Each reaped run's workflow assignment is
-// marked terminal so dead-agent work is never re-dispatched. Returns the IDs
-// of the reaped runs.
+// ReapStaleAgentRuns classifies heartbeat-stale runs in status pending or
+// running (CRI-142) from each run's own record and stamps the verdict
+// (KB-226). A candidate whose engine reached a human gate — the
+// awaiting_human terminal completion, a human approval request, a human
+// pause or a signal-mode wait in its last persisted event — has no live
+// heartbeat by design: it is parked, not failed. Its status is reclassified
+// to RunStatusAwaitingHuman (no ended_at, no failure_reason, no
+// workflow-assignment change, stays resumable) and the outcome carries
+// Parked true plus the reclassification reason. A candidate with no
+// human-gate ending in its record — an agent vanishing mid-flight — is
+// stamped failed with reason ReapReasonAgentHeartbeatLost and its workflow
+// assignment is marked terminal so dead-agent work is never re-dispatched.
+// Runs without an owning agent (queued assignment work), paused runs and
+// stopped runs (CRI-207: reaper-exempt regardless of heartbeat age) are left
+// alone; terminal runs are never rewritten. Returns one RunReapOutcome per
+// stamped run.
 //
 // CRI-143: the staleness scan runs on the dedicated reader connection and the
 // writes go through one short transaction on the serialized writer pool, so a
 // reaper pass can never hold — or wedge — the connection RPC traffic shares.
 // Transient sqlite faults are retried with backoff (retry.go).
-func (s *Store) ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error) {
+func (s *Store) ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]store.RunReapOutcome, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	reaped, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]string, error) {
+	outcomes, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]store.RunReapOutcome, error) {
 		return s.reapStaleAgentRunsAttempt(ctx, now, staleBefore)
 	})
 	if isInterrupt(err) {
 		s.recoverWriter(ctx)
 	}
-	return reaped, err
+	return outcomes, err
 }
 
 // recoverWriter forces a health round-trip on the serialized writer pool
@@ -761,14 +769,14 @@ func (s *Store) recoverWriter(ctx context.Context) {
 // reapStaleAgentRunsAttempt performs one reaping pass. The candidate scan is a
 // plain read on the reader connection: with nothing to reap — the common case —
 // the writer connection is not touched at all.
-func (s *Store) reapStaleAgentRunsAttempt(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error) {
+func (s *Store) reapStaleAgentRunsAttempt(ctx context.Context, now time.Time, staleBefore time.Time) ([]store.RunReapOutcome, error) {
 	// Bound the pass so a wedged writer connection fails the tick instead of
 	// pinning the reaper goroutine (CRI-143). Each retry attempt gets a fresh
 	// budget.
 	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)
 	defer cancel()
 
-	const reapReason = "agent heartbeat lost"
+	const reapReason = store.ReapReasonAgentHeartbeatLost
 
 	// Stopped runs are deliberately absent from the scan (CRI-207): a run an
 	// operator parked as stopped has no live agent heartbeat by design and is
@@ -811,8 +819,10 @@ func (s *Store) reapStaleAgentRunsAttempt(ctx context.Context, now time.Time, st
 // the transaction re-validates staleness and reapability against current data:
 // runs whose agent heartbeated or reached a terminal state in between are
 // never clobbered (CRI-142 terminal invariants hold even under the
-// scan-then-write split).
-func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.Time, candidates []string, reapReason string) ([]string, error) {
+// scan-then-write split). Classification and stamping are delegated to the
+// shared verdict stage (KB-226), which reads the candidate's own record inside
+// this transaction.
+func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.Time, candidates []string, reapReason string) ([]store.RunReapOutcome, error) {
 	// Nothing to reap: return before opening the transaction. The candidate
 	// placeholder list cannot even be derived from zero ids, so an empty
 	// candidate list must not reach the query builders below.
@@ -868,17 +878,78 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 		return nil, nil
 	}
 
-	if err := stampReapedRunsTerminal(ctx, tx, now, reapReason, ids); err != nil {
+	outcomes, err := stampReapVerdicts(ctx, tx, now, reapReason, ids)
+	if err != nil {
 		return nil, err
 	}
-	return ids, tx.Commit()
+	return outcomes, tx.Commit()
 }
 
-// stampReapedRunsTerminal is the shared reaper write stage: the given ids were
-// re-validated on this transaction against the calling reaper's rule, so they
-// are stamped terminal-failed with (ended_at, failure_reason) and their still
-// queued or leased workflow assignments are marked terminal so reaped work is
-// never re-queued or redelivered. The placeholder lists are derived from the
+// stampReapVerdicts is the final write stage shared by both reapers. The ids
+// were already re-validated by the caller's transaction (heartbeat staleness
+// or the never-started rule), so this stage classifies each candidate from its
+// own record and stamps the verdict:
+//
+//   - Candidates whose latest persisted event parks at a human gate (KB-226)
+//     are reclassified to awaiting_human: the engine reached the gate, so
+//     stamping "agent heartbeat lost" would fail completed work. The
+//     reclassification touches nothing but status — no ended_at, no
+//     failure_reason, no workflow-assignment change — so the parked run stays
+//     resumable. Classification happens here, inside the write transaction,
+//     so a human-gate completion appended between the candidate scan and this
+//     write can never be reaped.
+//   - The remaining candidates are stamped terminal-failed with the calling
+//     reaper's verdict reason and their workflow assignments marked terminal
+//     (CRI-142).
+//
+// Returns one RunReapOutcome per stamped run, in the ids order.
+func stampReapVerdicts(ctx context.Context, tx *sql.Tx, now time.Time, reapReason string, ids []string) ([]store.RunReapOutcome, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	parked, err := humanGateParkedReasons(ctx, tx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	parkedIDs := make([]string, 0, len(parked))
+	reapedIDs := make([]string, 0, len(ids))
+	outcomes := make([]store.RunReapOutcome, 0, len(ids))
+	for _, id := range ids {
+		if reason, ok := parked[id]; ok {
+			parkedIDs = append(parkedIDs, id)
+			outcomes = append(outcomes, store.RunReapOutcome{
+				RunID:  id,
+				Parked: true,
+				Status: store.RunStatusAwaitingHuman,
+				Reason: reason,
+			})
+			continue
+		}
+		reapedIDs = append(reapedIDs, id)
+		outcomes = append(outcomes, store.RunReapOutcome{
+			RunID:  id,
+			Status: "failed",
+			Reason: reapReason,
+		})
+	}
+
+	if err := stampParkedRunsAwaitingHuman(ctx, tx, parkedIDs); err != nil {
+		return nil, err
+	}
+	if err := stampReapedRunsTerminal(ctx, tx, now, reapReason, reapedIDs); err != nil {
+		return nil, err
+	}
+	return outcomes, nil
+}
+
+// stampReapedRunsTerminal is the failed-stamp stage of the shared reaper
+// verdict pass: the given ids were re-validated on this transaction and carry
+// no human-gate ending, so they are stamped terminal-failed with
+// (ended_at, failure_reason) and their still queued or leased workflow
+// assignments are marked terminal so reaped work is never re-queued or
+// redelivered. The placeholder lists are derived from the
 // re-validated ids — never from earlier, larger candidate lists — keeping
 // placeholders and args in lockstep (CRI-143 regression: a stale placeholder
 // list failed the whole pass with "missing argument with index N" whenever
@@ -921,6 +992,159 @@ func stampReapedRunsTerminal(ctx context.Context, tx *sql.Tx, now time.Time, rea
 	return err
 }
 
+// Human-gate verdict reasons (KB-226): the reclassification reasons the
+// skipped-run log line and the RunReapOutcome carry for parked candidates.
+const (
+	awaitingHumanGateVerdictReason = "engine reached terminal human gate awaiting_human"
+	approvalGateVerdictReason      = "engine parked at human approval gate"
+	humanPauseGateVerdictReason    = "engine parked at human pause gate"
+	signalWaitGateVerdictReason    = "engine parked at human signal wait"
+)
+
+// Last-event type names the human-gate classifier keys on. The strings mirror
+// the criteria SDK event types (Envelope_RunCompleted -> "run.completed" and
+// friends); the store layer stays independent of the generated protobuf types,
+// so they are matched by name here.
+const (
+	evTypeRunCompleted      = "run.completed"
+	evTypeApprovalRequested = "approval.requested"
+	evTypeRunPaused         = "run.paused"
+	evTypeWaitEntered       = "wait.entered"
+)
+
+// humanGateEventPayload carries the fields the human-gate classifier may need
+// from a last event's payload. FinalState accepts both JSON spellings:
+// engine-originated payloads are protojson (finalState), while older rows may
+// carry snake_case.
+type humanGateEventPayload struct {
+	FinalState      string `json:"final_state"`
+	FinalStateCamel string `json:"finalState"`
+	Mode            string `json:"mode"`
+	Signal          string `json:"signal"`
+	Actor           string `json:"actor"`
+}
+
+// lastEventParksHumanGate classifies a run's most recent persisted event for
+// the KB-226 reaper verdict: some events mean the engine reached a human gate
+// — the awaiting_human terminal completion, a human approval request, a human
+// pause or a signal-mode wait — so the run is parked, not failed, however old
+// its heartbeat is. Returns the reclassification reason when the event parks
+// the run.
+//
+// A event whose verdict depends on a payload field that is missing or
+// undecodable never parks: the conservative choice keeps the legacy CRI-142
+// verdict ("agent heartbeat lost") for rows this classifier cannot read. An
+// approval request is the exception — its type alone carries the verdict.
+func lastEventParksHumanGate(evType string, payload []byte) (bool, string) {
+	switch evType {
+	case evTypeRunCompleted:
+		var p humanGateEventPayload
+		if json.Unmarshal(payload, &p) != nil {
+			return false, ""
+		}
+		if firstNonEmpty(p.FinalState, p.FinalStateCamel) == store.RunStatusAwaitingHuman {
+			return true, awaitingHumanGateVerdictReason
+		}
+		return false, ""
+	case evTypeApprovalRequested:
+		return true, approvalGateVerdictReason
+	case evTypeRunPaused:
+		var p humanGateEventPayload
+		if json.Unmarshal(payload, &p) != nil {
+			return false, ""
+		}
+		// A duration pause at a wait node resumes on its own — a dead agent
+		// waiting out a timer is genuinely dead, so it stays reapable. Signal
+		// and external pauses park for a human or a control surface.
+		if p.Mode == "signal" || p.Mode == "external" || p.Actor != "" {
+			return true, humanPauseGateVerdictReason
+		}
+		return false, ""
+	case evTypeWaitEntered:
+		var p humanGateEventPayload
+		if json.Unmarshal(payload, &p) != nil {
+			return false, ""
+		}
+		// A duration wait resumes on its own; a signal wait parks until a
+		// human fires the signal.
+		if p.Mode == "signal" || p.Signal != "" {
+			return true, signalWaitGateVerdictReason
+		}
+		return false, ""
+	}
+	return false, ""
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// humanGateParkedReasons classifies the re-validated candidates inside the
+// write transaction: the latest persisted event per run decides whether the
+// run parks at a human gate (KB-226). Runs without events are absent from the
+// result and follow the legacy reap path.
+func humanGateParkedReasons(ctx context.Context, tx *sql.Tx, ids []string) (map[string]string, error) {
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT e.run_id, e.type, e.payload
+		FROM events e
+		JOIN (SELECT run_id, MAX(seq) AS seq FROM events WHERE run_id IN (`+placeholders+`) GROUP BY run_id) l
+		  ON l.run_id = e.run_id AND l.seq = e.seq`,
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	parked := make(map[string]string, len(ids))
+	for rows.Next() {
+		var runID, evType string
+		var payload []byte
+		if err := rows.Scan(&runID, &evType, &payload); err != nil {
+			return nil, err
+		}
+		if isParked, reason := lastEventParksHumanGate(evType, payload); isParked {
+			parked[runID] = reason
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return parked, nil
+}
+
+// stampParkedRunsAwaitingHuman reclassifies human-gate-parked candidates to
+// the parked status (KB-226). The status guard keeps the write from
+// clobbering a competing transition on this transaction's snapshot: only
+// still-active runs move to awaiting_human, and the stamp touches nothing
+// else — no ended_at, no failure_reason, no workflow-assignment change — so
+// the parked run stays resumable.
+func stampParkedRunsAwaitingHuman(ctx context.Context, tx *sql.Tx, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, store.RunStatusAwaitingHuman)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	_, err := tx.ExecContext(ctx,
+		`UPDATE runs
+		 SET status=?
+		 WHERE id IN (`+placeholders+`) AND status IN ('pending', 'running')`,
+		args...)
+	return err
+}
+
 // createdNeverStartedReason names the KB-233 rule-2 verdict: the run was
 // created but execution never began. It is both the run's failure_reason and
 // the workflow assignment's terminal_reason.
@@ -935,28 +1159,31 @@ const createdNeverStartedReason = "created_never_started"
 // verdict is derivable from the run record alone; no heartbeat or assignment
 // heuristics participate. Paused and stopped runs (operator-parked, CRI-207)
 // are reaper-exempt regardless of age, and terminal runs are never rewritten.
-// Each reaped run's workflow assignment is marked terminal so the dead work is
-// never re-dispatched. Returns the IDs of the reaped runs.
+// A never-started candidate whose record ends at a human gate is parked
+// instead of failed (KB-226), with the same reclassification semantics as
+// ReapStaleAgentRuns: execution demonstrably ran, so only the status stamp was
+// lost. Each reaped run's workflow assignment is marked terminal so the dead
+// work is never re-dispatched. Returns one RunReapOutcome per stamped run.
 //
 // Like ReapStaleAgentRuns (CRI-143), the scan runs on the dedicated reader
 // connection and the writes go through one short transaction on the serialized
 // writer pool; transient sqlite faults are retried with backoff (retry.go).
-func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]string, error) {
+func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]store.RunReapOutcome, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	reaped, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]string, error) {
+	outcomes, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]store.RunReapOutcome, error) {
 		return s.reapNeverStartedRunsAttempt(ctx, now, createdBefore)
 	})
 	if isInterrupt(err) {
 		s.recoverWriter(ctx)
 	}
-	return reaped, err
+	return outcomes, err
 }
 
 // reapNeverStartedRunsAttempt performs one rule-2 reaping pass. The candidate
 // scan is a plain read on the reader connection: with nothing to reap — the
 // common case — the writer connection is not touched at all.
-func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore time.Time) ([]string, error) {
+func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore time.Time) ([]store.RunReapOutcome, error) {
 	// Bound the pass so a wedged writer connection fails the tick instead of
 	// pinning the reaper goroutine (CRI-143). Each retry attempt gets a fresh
 	// budget.
@@ -1001,8 +1228,10 @@ func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, 
 // pool. The candidates were picked from a reader snapshot that may already be
 // stale, so the transaction re-validates never-started reapability against
 // current data: runs that reached RunStarted or a terminal state between the
-// scan and the write are never clobbered.
-func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore time.Time, candidates []string) ([]string, error) {
+// scan and the write are never clobbered. Classification and stamping are
+// delegated to the shared verdict stage (KB-226), which reads the candidate's
+// own record inside this transaction.
+func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore time.Time, candidates []string) ([]store.RunReapOutcome, error) {
 	// Nothing to reap: return before opening the transaction. An empty
 	// candidate list must not reach the query builders below.
 	if len(candidates) == 0 {
@@ -1055,10 +1284,11 @@ func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, creat
 		return nil, nil
 	}
 
-	if err := stampReapedRunsTerminal(ctx, tx, now, createdNeverStartedReason, ids); err != nil {
+	outcomes, err := stampReapVerdicts(ctx, tx, now, createdNeverStartedReason, ids)
+	if err != nil {
 		return nil, err
 	}
-	return ids, tx.Commit()
+	return outcomes, tx.Commit()
 }
 
 // CancelRun stamps runID terminal as "cancelled" with the given reason
@@ -1685,7 +1915,10 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 	// path must never lease an assignment whose run the operator parked as
 	// stopped, or whose run already reached a terminal state — only an
 	// explicit ResumeRun moves a stopped run back to running (and back into
-	// this scan), so parked work is delivered only through resume.
+	// this scan), so parked work is delivered only through resume. Runs
+	// parked at a human gate (awaiting_human, KB-226) are not executable
+	// work either: the engine already completed them for a human decision,
+	// so re-dispatching would re-run finished work.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
 		       a.idempotency_key, a.created_at, a.updated_at, l.key, l.value
@@ -1693,7 +1926,7 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		JOIN runs r ON r.id = a.run_id
 		LEFT JOIN workflow_assignment_labels l ON l.assignment_id = a.id
 		WHERE a.state = ?
-		  AND r.status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped')
+		  AND r.status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped', '`+store.RunStatusAwaitingHuman+`')
 		ORDER BY a.created_at ASC, a.id ASC`,
 		store.WorkflowAssignmentStateQueued)
 	if err != nil {

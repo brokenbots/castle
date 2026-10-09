@@ -68,7 +68,7 @@ func TestReapNeverStartedRuns_Acceptance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if !slices.Equal(reaped, []string{"r-orphan"}) {
+	if !slices.Equal(reapedIDs(reaped), []string{"r-orphan"}) {
 		t.Fatalf("reaped = %v, want [r-orphan]", reaped)
 	}
 
@@ -127,7 +127,7 @@ func TestReapNeverStartedRuns_StatusMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if !slices.Equal(reaped, []string{"r-old-pending", "r-old-running-unstarted"}) {
+	if !slices.Equal(reapedIDs(reaped), []string{"r-old-pending", "r-old-running-unstarted"}) {
 		t.Fatalf("reaped = %v, want [r-old-pending r-old-running-unstarted]", reaped)
 	}
 
@@ -195,7 +195,7 @@ func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if !slices.Equal(reaped, []string{a.RunID}) {
+	if !slices.Equal(reapedIDs(reaped), []string{a.RunID}) {
 		t.Fatalf("reaped = %v, want [%s]", reaped, a.RunID)
 	}
 
@@ -264,7 +264,7 @@ func TestReapNeverStartedRuns_RequeueResetsWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap later: %v", err)
 	}
-	if !slices.Equal(reaped, []string{a.RunID}) {
+	if !slices.Equal(reapedIDs(reaped), []string{a.RunID}) {
 		t.Fatalf("reaped = %v, want [%s]", reaped, a.RunID)
 	}
 	if r := f.getRun(t, a.RunID); r.Status != "failed" || r.FailureReason != "created_never_started" {
@@ -303,7 +303,7 @@ func TestReapNeverStartedRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap with partially resolved candidates: %v", err)
 	}
-	if !slices.Equal(reaped, []string{"r-zombie-1", "r-zombie-2"}) {
+	if !slices.Equal(reapedIDs(reaped), []string{"r-zombie-1", "r-zombie-2"}) {
 		t.Fatalf("reaped = %v, want [r-zombie-1 r-zombie-2]", reaped)
 	}
 
@@ -345,5 +345,49 @@ func TestReapNeverStartedRuns_GetUnknownRunIsNotFound(t *testing.T) {
 	}
 	if _, err := f.s.GetRun(f.ctx, "does-not-exist"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("get unknown run: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestReapNeverStartedRuns_AwaitingHumanParksNotFails extends the KB-226
+// reclassification to the rule-2 reaper: a run whose status stamp was lost but
+// whose event log ends at run.completed with final_state awaiting_human
+// demonstrably ran to the gate — "created_never_started" would be a false
+// verdict. It is parked to awaiting_human instead of failed, with no
+// ended_at, no failure_reason and no workflow-assignment change.
+func TestReapNeverStartedRuns_AwaitingHumanParksNotFails(t *testing.T) {
+	f := newNeverStartedFixture(t)
+
+	f.createRunAt(t, "r-gated-never", "agent-stale", "pending", f.createdBefore.Add(-time.Minute))
+	f.appendRunEvent(t, "r-gated-never", "run.completed",
+		`{"finalState":"awaiting_human","success":false}`)
+
+	outcomes, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore)
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("want exactly one verdict, got %v", outcomes)
+	}
+	o := outcomes[0]
+	if o.RunID != "r-gated-never" || !o.Parked || o.Status != store.RunStatusAwaitingHuman {
+		t.Fatalf("parked verdict: %+v", o)
+	}
+	if o.Reason != awaitingHumanGateVerdictReason {
+		t.Fatalf("reclassification reason = %q, want %q", o.Reason, awaitingHumanGateVerdictReason)
+	}
+
+	r := f.getRun(t, "r-gated-never")
+	if r.Status != store.RunStatusAwaitingHuman || r.FailureReason != "" || r.EndedAt != nil {
+		t.Fatalf("parked never-started run: status=%q reason=%q ended=%v", r.Status, r.FailureReason, r.EndedAt)
+	}
+
+	// Parked runs leave the rule-2 scan: a later pass stamps nothing.
+	later := f.now.Add(time.Hour)
+	outcomes, err = f.s.ReapNeverStartedRuns(f.ctx, later, later.Add(-10*time.Minute))
+	if err != nil {
+		t.Fatalf("later reap: %v", err)
+	}
+	if len(outcomes) != 0 {
+		t.Fatalf("later pass stamped anything: %v", outcomes)
 	}
 }

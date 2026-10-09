@@ -33,6 +33,19 @@ func mustRun(t *testing.T, s *Store, ctx context.Context, id string) *store.Run 
 	return r
 }
 
+// reapedIDs reduces reaper verdicts to the reaped (non-parked) run ids in
+// stamped order, keeping the reaped-path comparisons terse. Asserting on
+// parked verdicts is done on the outcome list directly.
+func reapedIDs(outcomes []store.RunReapOutcome) []string {
+	ids := make([]string, 0, len(outcomes))
+	for _, o := range outcomes {
+		if !o.Parked {
+			ids = append(ids, o.RunID)
+		}
+	}
+	return ids
+}
+
 func newReapFixture(t *testing.T) *reapFixture {
 	t.Helper()
 	s := tempStore(t)
@@ -177,7 +190,7 @@ func TestReapStaleAgentRuns_MarksAssignmentTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap leased: %v", err)
 	}
-	if len(reaped) != 1 || reaped[0] != a.RunID {
+	if gotIDs := reapedIDs(reaped); len(gotIDs) != 1 || gotIDs[0] != a.RunID {
 		t.Fatalf("want [%s], got %v", a.RunID, reaped)
 	}
 	if r := f.getRun(t, a.RunID); r.Status != "failed" || r.FailureReason != "agent heartbeat lost" {
@@ -249,7 +262,7 @@ func TestReapStaleAgentRuns_AgentHeartbeatLostMidRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap after expiry: %v", err)
 	}
-	if len(reaped) != 1 || reaped[0] != "r-zombie" {
+	if gotIDs := reapedIDs(reaped); len(gotIDs) != 1 || gotIDs[0] != "r-zombie" {
 		t.Fatalf("want [r-zombie], got %v", reaped)
 	}
 	r := mustRun(t, s, ctx, "r-zombie")
@@ -341,21 +354,21 @@ func TestReapStaleAgentRuns_ScanRunsWhileWriterBusy(t *testing.T) {
 	defer func() { _ = wtx.Rollback() }()
 
 	type result struct {
-		ids []string
-		err error
+		outcomes []store.RunReapOutcome
+		err      error
 	}
 	done := make(chan result, 1)
 	go func() {
-		ids, err := f.s.ReapStaleAgentRuns(f.ctx, time.Now().UTC(), time.Now().UTC().Add(-time.Minute))
-		done <- result{ids, err}
+		outcomes, err := f.s.ReapStaleAgentRuns(f.ctx, time.Now().UTC(), time.Now().UTC().Add(-time.Minute))
+		done <- result{outcomes, err}
 	}()
 	select {
 	case res := <-done:
 		if res.err != nil {
 			t.Fatalf("reap with busy writer: %v", res.err)
 		}
-		if len(res.ids) != 0 {
-			t.Fatalf("empty store reaped runs: %v", res.ids)
+		if len(res.outcomes) != 0 {
+			t.Fatalf("empty store reaped runs: %v", res.outcomes)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("reaper scan blocked on the busy writer connection: the scan must run on the reader pool (CRI-143)")
@@ -534,13 +547,13 @@ func TestReapRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 
 	candidates := []string{"r-zombie-live", "r-zombie-live-2", "r-resolved", "r-heartbeated"}
 	reason := "agent heartbeat lost"
-	reaped, err := f.s.reapRunIDs(ctx, f.now, f.staleBefore, candidates, reason)
+	outcomes, err := f.s.reapRunIDs(ctx, f.now, f.staleBefore, candidates, reason)
 	if err != nil {
 		t.Fatalf("reap with partially resolved candidates: %v", err)
 	}
 	wantReaped := []string{"r-zombie-live", "r-zombie-live-2"}
-	if !slices.Equal(reaped, wantReaped) {
-		t.Fatalf("reaped = %v, want %v", reaped, wantReaped)
+	if got := reapedIDs(outcomes); !slices.Equal(got, wantReaped) {
+		t.Fatalf("reaped = %v, want %v", got, wantReaped)
 	}
 
 	for _, id := range wantReaped {

@@ -257,7 +257,7 @@ func TestReapStaleAgentRunsSanitizesContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReapStaleAgentRuns on cancelled context: %v", err)
 	}
-	if len(reaped) != 1 || reaped[0] != "run1" {
+	if got := reapedIDs(reaped); len(got) != 1 || got[0] != "run1" {
 		t.Fatalf("ReapStaleAgentRuns reaped %v, want exactly [run1]", reaped)
 	}
 }
