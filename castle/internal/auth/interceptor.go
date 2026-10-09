@@ -339,9 +339,37 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 		return ctx, connect.NewError(connect.CodeInternal, err)
 	}
 	if sess == nil {
-		return ctx, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token"))
+		return ctx, i.unauthenticatedTokenError(ctx, tok)
 	}
 	return context.WithValue(ctx, callerConsoleUserIDKey{}, sess.UserID), nil
+}
+
+// overseerTokenPresenceChecker is implemented (optionally) by stores that can
+// report overseer token presence from the authoritative writer view.
+type overseerTokenPresenceChecker interface {
+	OverseerTokenHashPresent(ctx context.Context, tokenHash string) (bool, error)
+}
+
+// unauthenticatedTokenError builds the rejection for a presented token that
+// resolved to nothing across all token spaces (KB-223): a token the store's
+// writer view has registered is surfaced as "token not yet visible" (retryable,
+// Unavailable) instead of the misleading generic "invalid token", while a
+// token that exists nowhere stays a plain invalid token. The presence probe
+// only fires while the store itself suspects reader staleness, so normal
+// failed-token traffic never touches the write path.
+func (i *AuthInterceptor) unauthenticatedTokenError(ctx context.Context, tok string) error {
+	checker, ok := i.store.(overseerTokenPresenceChecker)
+	if ok {
+		present, err := checker.OverseerTokenHashPresent(ctx, HashToken(tok))
+		switch {
+		case err != nil:
+			return connect.NewError(connect.CodeInternal, err)
+		case present:
+			return connect.NewError(connect.CodeUnavailable,
+				errors.New("token not yet visible: identity is registered in the store write view but token resolution did not observe it yet; retry shortly"))
+		}
+	}
+	return connect.NewError(connect.CodeUnauthenticated, errors.New("invalid token"))
 }
 
 // handleRegister enforces the bootstrap-token gate for the Register RPC, and

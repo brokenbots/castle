@@ -163,7 +163,49 @@ func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, er
 func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	rows, err := s.reader.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
+	out, err := s.scanOverseers(ctx, s.reader)
+	if err != nil {
+		return nil, err
+	}
+	// KB-223: if the reader view lacks an overseer write the writer already
+	// committed, re-read through the authoritative writer handle instead of
+	// serving a possibly-pinned WAL snapshot to the auth token resolution
+	// path. In the steady state the reader is fresh and this costs nothing;
+	// while a visibility gap exists it restores correctness in-line.
+	readerNewest := newestOverseerCreatedAt(out)
+	if s.freshness.newerThan(readerNewest) {
+		authoritative, err := s.scanOverseers(ctx, s.db)
+		if err != nil {
+			// Keep the reader rows; the staleness audit below reports the gap.
+			s.log.WarnContext(ctx, "sqlite: authoritative overseer fallback read failed", "error", err.Error())
+		} else {
+			out = authoritative
+			readerNewest = newestOverseerCreatedAt(out)
+			s.freshness.healed(ctx, s.log)
+		}
+	}
+	// Audit the reader view against the writer's newest write (KB-10): a
+	// reader snapshot pinned before the latest registration is the symptom
+	// that left fresh agent tokens rejected as unauthenticated.
+	s.freshness.check(ctx, readerNewest, s.log)
+	return out, nil
+}
+
+// newestOverseerCreatedAt returns the newest created_at in the view, or zero
+// when the view is empty. Callers order scans by created_at DESC, so it is
+// simply the first row's timestamp.
+func newestOverseerCreatedAt(list []*store.Overseer) time.Time {
+	if len(list) == 0 {
+		return time.Time{}
+	}
+	return list[0].CreatedAt
+}
+
+// scanOverseers runs the overseers table scan over the given pool handle.
+// ListOverseers services the auth token resolution path through the reader;
+// the KB-223 staleness fallback re-runs it through the writer handle.
+func (s *Store) scanOverseers(ctx context.Context, db *sql.DB) ([]*store.Overseer, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -181,18 +223,7 @@ func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
 		o.Labels = unmarshalLabels(labels.String)
 		out = append(out, &o)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	// Audit the reader view against the writer's newest write (KB-10): a
-	// reader snapshot pinned before the latest registration is the symptom
-	// that left fresh agent tokens rejected as unauthenticated.
-	var readerNewest time.Time
-	if len(out) > 0 {
-		readerNewest = out[0].CreatedAt // ordered by created_at DESC
-	}
-	s.freshness.check(ctx, readerNewest, s.log)
-	return out, nil
+	return out, rows.Err()
 }
 
 func (s *Store) UpdateOverseerSeen(ctx context.Context, id string, ts time.Time) error {
@@ -214,6 +245,31 @@ func (s *Store) MarkOfflineBefore(ctx context.Context, before time.Time) error {
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE overseers SET status='offline' WHERE last_seen_at < ? AND status='online'`, before.Format(tsLayout))
 	return err
+}
+
+// OverseerTokenHashPresent reports whether an overseer whose persisted token
+// hash equals tokenHash exists in the authoritative writer view, independent
+// of the reader handle's WAL snapshot state. The auth interceptor consults it
+// only when a presented token resolved to nothing (KB-223), so a registered
+// identity whose row the read path cannot see yet is surfaced as "token not
+// yet visible" instead of the misleading generic "invalid token".
+//
+// The probe is gated on reader-freshness suspicion (staleness.go): in the
+// steady state it reports not-present without touching the single serialized
+// writer connection, keeping failed-token traffic off the write path — and an
+// attacker cannot force the gate open, because only successful CreateOverseer
+// calls move the freshness state.
+func (s *Store) OverseerTokenHashPresent(ctx context.Context, tokenHash string) (bool, error) {
+	if !s.freshness.readerBehind() {
+		return false, nil
+	}
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM overseers WHERE token_hash = ?`, tokenHash).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // UpsertOrchestrator inserts or replaces an orchestrator identity (CRI-133).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strconv"
@@ -41,7 +42,75 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 	if err := s.Store.CreateOverseer(ctx, o); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// Durable-before-ack (KB-223): do not hand back a token the CreateRun
+	// auth path may not resolve yet. The 2026-09-21 incident had engines burn
+	// their restart budget on "unauthenticated: invalid token" 1-2ms after a
+	// successful Register while the row was invisible to token resolution.
+	if err := s.awaitTokenVisible(ctx, o, token); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	return connect.NewResponse(&pb.RegisterResponse{CriteriaId: criteriaID, Token: token}), nil
+}
+
+// awaitTokenVisible verifies, before Register acknowledges success, that
+//   1. the overseer row and token hash are committed on the writer handle
+//      (writer is synchronous=FULL in WAL mode, so this is fsync-durable), and
+//   2. the fresh token resolves through the same reader-backed path the
+//      CreateRun auth interceptor uses (auth.ResolveToken), and the resolved
+//      row is the overseer just written.
+//
+// If the read-back cannot confirm within the bounded retry window, Register
+// withholds the ack and returns an error, so a client either gets a token the
+// subsequent CreateRun will accept or no token at all — never a token that
+// deterministically fails authentication.
+func (s *CriteriaServer) awaitTokenVisible(ctx context.Context, created *store.Overseer, token string) error {
+	const maxAttempts = 10
+	var reason string
+	var attempts int
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		attempts = attempt + 1
+		if attempt > 0 {
+			wait := min(time.Duration(1<<uint(attempt))*2*time.Millisecond, 64*time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("register ack withheld: overseer %s token not visible to read path; context canceled (%v)", created.ID, ctx.Err())
+			case <-time.After(wait):
+			}
+		}
+		var visible bool
+		visible, reason = s.tokenVisible(ctx, created, token)
+		if visible {
+			return nil
+		}
+		if s.Log != nil {
+			s.Log.Warn("register token not yet visible to read path; retrying before ack",
+				"criteria_id", created.ID, "attempt", attempt+1, "reason", reason)
+		}
+	}
+	return fmt.Errorf("register ack withheld: overseer %s token not visible to read path after %d attempts (%s)", created.ID, attempts, reason)
+}
+
+// tokenVisible runs the two-legged read-back: writer commit evidence and
+// reader-backed token resolution. It reports a human-readable reason on miss.
+func (s *CriteriaServer) tokenVisible(ctx context.Context, created *store.Overseer, token string) (bool, string) {
+	committed, err := s.Store.GetOverseer(ctx, created.ID)
+	if err != nil {
+		return false, fmt.Sprintf("writer commit not confirmed: %v", err)
+	}
+	if committed.TokenHash != created.TokenHash {
+		return false, "writer commit not confirmed: token hash mismatch on stored row"
+	}
+	resolved, err := auth.ResolveToken(ctx, s.Store, token)
+	if err != nil {
+		return false, fmt.Sprintf("read-path resolution failed: %v", err)
+	}
+	if resolved == nil {
+		return false, "read-path resolution missed the freshly registered token"
+	}
+	if resolved.ID != created.ID {
+		return false, "read-path resolution matched a different overseer row"
+	}
+	return true, ""
 }
 
 func (s *CriteriaServer) Heartbeat(ctx context.Context, req *connect.Request[pb.HeartbeatRequest]) (*connect.Response[pb.HeartbeatResponse], error) {
