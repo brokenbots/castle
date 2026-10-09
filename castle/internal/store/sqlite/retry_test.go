@@ -109,6 +109,29 @@ func TestIsTransientCode(t *testing.T) {
 	}
 }
 
+// TestIsInterrupt pins classification for the reaper's pool-recovery path
+// (KB-222): only SQLITE_INTERRUPT (raw code, extended code, or the surfaced
+// message form) counts; busy/locked contention and ordinary failure must not
+// trigger a connection reset.
+func TestIsInterrupt(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"message interrupted", errors.New("interrupted (9)"), true},
+		{"wrapped message interrupted", fmt.Errorf("reap: %w", errors.New("interrupted (9)")), true},
+		{"message busy", errors.New("database is locked (5) (SQLITE_BUSY)"), false},
+		{"context canceled", context.Canceled, false},
+	}
+	for _, tc := range cases {
+		if got := isInterrupt(tc.err); got != tc.want {
+			t.Errorf("%s: isInterrupt = %v, want %v (err=%v)", tc.name, got, tc.want, tc.err)
+		}
+	}
+}
+
 func TestRetryOnTransient(t *testing.T) {
 	t.Run("retries transient errors until success", func(t *testing.T) {
 		var attempts int
