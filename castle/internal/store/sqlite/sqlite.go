@@ -697,15 +697,23 @@ func (s *Store) ClearRunStopped(ctx context.Context, runID string) error {
 // the dispatch redelivery scan and the lease-expiry scan — both of which apply
 // only to pending runs — can deliver its work again; a resumed record left as
 // status running with started_at NULL would qualify for neither and sit
-// undelivered forever. started_at is explicitly kept NULL ("unstarted"). One
-// conditional UPDATE guarded to status='stopped', the same pattern as the
-// pause and stopped guards, so it cannot race a competing transition, rewrite
-// a terminal or paused run, or resurrect a run that left the parked state.
-func (s *Store) MarkRunUnstarted(ctx context.Context, runID string) error {
+// undelivered forever. started_at is explicitly kept NULL ("unstarted").
+//
+// requeuedAt refreshes created_at (KB-233 rule 2): the operator-issued re-queue
+// is a fresh pending incarnation, and the created_never_started reaper derives
+// its window from created_at, so the resumed run must get a fresh window —
+// otherwise the next reaper tick would fail a run the operator just resumed
+// before the redelivery can land. A re-queued run that still cannot be started
+// within that window correctly dies as created_never_started. One conditional
+// UPDATE guarded to status='stopped', the same pattern as the pause and
+// stopped guards, so it cannot race a competing transition, rewrite a terminal
+// or paused run, or resurrect a run that left the parked state.
+func (s *Store) MarkRunUnstarted(ctx context.Context, runID string, requeuedAt time.Time) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status='pending', started_at=NULL WHERE id=? AND status='stopped'`, runID)
+		`UPDATE runs SET status='pending', started_at=NULL, created_at=? WHERE id=? AND status='stopped'`,
+		requeuedAt.Format(tsLayout), runID)
 	return err
 }
 
@@ -860,12 +868,27 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 		return nil, nil
 	}
 
-	// The surviving set can be a strict subset of the scanned candidates, so
-	// the UPDATE placeholder lists are derived from the re-validated ids —
-	// never reused from the candidates — keeping placeholders and args in
-	// lockstep (CRI-143 regression: a stale placeholder list failed the whole
-	// pass with "missing argument with index N" whenever re-validation dropped
-	// a candidate).
+	if err := stampReapedRunsTerminal(ctx, tx, now, reapReason, ids); err != nil {
+		return nil, err
+	}
+	return ids, tx.Commit()
+}
+
+// stampReapedRunsTerminal is the shared reaper write stage: the given ids were
+// re-validated on this transaction against the calling reaper's rule, so they
+// are stamped terminal-failed with (ended_at, failure_reason) and their still
+// queued or leased workflow assignments are marked terminal so reaped work is
+// never re-queued or redelivered. The placeholder lists are derived from the
+// re-validated ids — never from earlier, larger candidate lists — keeping
+// placeholders and args in lockstep (CRI-143 regression: a stale placeholder
+// list failed the whole pass with "missing argument with index N" whenever
+// re-validation dropped a candidate). The status guard is defense in depth:
+// terminal runs are never rewritten, even if a concurrent writer committed
+// between the tx snapshot and the UPDATE.
+func stampReapedRunsTerminal(ctx context.Context, tx *sql.Tx, now time.Time, reapReason string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
 	idPlaceholders := strings.Repeat("?,", len(ids))
 	idPlaceholders = idPlaceholders[:len(idPlaceholders)-1]
 
@@ -874,19 +897,14 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	// The status guard is defense in depth: terminal runs are never rewritten,
-	// even if a concurrent writer committed between the tx snapshot and the
-	// UPDATE.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE runs
 		 SET status='failed', ended_at=?, failure_reason=?
 		 WHERE id IN (`+idPlaceholders+`) AND status IN ('pending', 'running')`,
 		args...); err != nil {
-		return nil, err
+		return err
 	}
 
-	// Mark queued or leased assignments for the reaped runs terminal so the
-	// dead agent's work is never re-queued or redelivered.
 	asgArgs := make([]any, 0, len(ids)+5)
 	asgArgs = append(asgArgs,
 		store.WorkflowAssignmentStateTerminal, reapReason, now.Format(tsLayout))
@@ -895,11 +913,149 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 	}
 	asgArgs = append(asgArgs,
 		store.WorkflowAssignmentStateQueued, store.WorkflowAssignmentStateLeased)
-	if _, err := tx.ExecContext(ctx,
+	_, err := tx.ExecContext(ctx,
 		`UPDATE workflow_assignments
 		 SET state=?, terminal_reason=?, updated_at=?
 		 WHERE run_id IN (`+idPlaceholders+`) AND state IN (?, ?)`,
-		asgArgs...); err != nil {
+		asgArgs...)
+	return err
+}
+
+// createdNeverStartedReason names the KB-233 rule-2 verdict: the run was
+// created but execution never began. It is both the run's failure_reason and
+// the workflow assignment's terminal_reason.
+const createdNeverStartedReason = "created_never_started"
+
+// ReapNeverStartedRuns stamps runs in status pending or running as failed with
+// reason "created_never_started" (KB-233 rule 2) when started_at is still NULL
+// and created_at is older than createdBefore: a run record that was minted but
+// whose execution never began — an orphan-job run minted after a card closed,
+// a queued assignment nobody ever leased, or a lease that claimed its run and
+// then died before RunStarted. Unlike the CRI-142 heartbeat reaper, the
+// verdict is derivable from the run record alone; no heartbeat or assignment
+// heuristics participate. Paused and stopped runs (operator-parked, CRI-207)
+// are reaper-exempt regardless of age, and terminal runs are never rewritten.
+// Each reaped run's workflow assignment is marked terminal so the dead work is
+// never re-dispatched. Returns the IDs of the reaped runs.
+//
+// Like ReapStaleAgentRuns (CRI-143), the scan runs on the dedicated reader
+// connection and the writes go through one short transaction on the serialized
+// writer pool; transient sqlite faults are retried with backoff (retry.go).
+func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	reaped, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]string, error) {
+		return s.reapNeverStartedRunsAttempt(ctx, now, createdBefore)
+	})
+	if isInterrupt(err) {
+		s.recoverWriter(ctx)
+	}
+	return reaped, err
+}
+
+// reapNeverStartedRunsAttempt performs one rule-2 reaping pass. The candidate
+// scan is a plain read on the reader connection: with nothing to reap — the
+// common case — the writer connection is not touched at all.
+func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore time.Time) ([]string, error) {
+	// Bound the pass so a wedged writer connection fails the tick instead of
+	// pinning the reaper goroutine (CRI-143). Each retry attempt gets a fresh
+	// budget.
+	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)
+	defer cancel()
+
+	// Paused and stopped runs are deliberately absent: a run an operator or
+	// agent parked is reaper-exempt regardless of age, because park states
+	// have no live execution by design (CRI-207) and stay resumable.
+	rows, err := s.reader.QueryContext(ctx, `
+		SELECT id
+		FROM runs
+		WHERE status IN ('pending', 'running') AND started_at IS NULL AND created_at < ?
+		ORDER BY created_at ASC, id ASC`,
+		createdBefore.Format(tsLayout))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	return s.reapNeverStartedRunIDs(ctx, now, createdBefore, ids)
+}
+
+// reapNeverStartedRunIDs stamps the rule-2 candidates on the serialized writer
+// pool. The candidates were picked from a reader snapshot that may already be
+// stale, so the transaction re-validates never-started reapability against
+// current data: runs that reached RunStarted or a terminal state between the
+// scan and the write are never clobbered.
+func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore time.Time, candidates []string) ([]string, error) {
+	// Nothing to reap: return before opening the transaction. An empty
+	// candidate list must not reach the query builders below.
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	placeholders := strings.Repeat("?,", len(candidates))
+	placeholders = placeholders[:len(placeholders)-1]
+
+	// Re-validate inside the write transaction against the same criteria as
+	// the scan: only still-unstarted, still-active runs older than
+	// createdBefore survive into the UPDATE.
+	revalidateArgs := make([]any, 0, len(candidates)+1)
+	revalidateArgs = append(revalidateArgs, createdBefore.Format(tsLayout))
+	for _, id := range candidates {
+		revalidateArgs = append(revalidateArgs, id)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id
+		FROM runs
+		WHERE status IN ('pending', 'running') AND started_at IS NULL AND created_at < ?
+		AND id IN (`+placeholders+`)
+		ORDER BY created_at ASC, id ASC`,
+		revalidateArgs...)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		_ = tx.Rollback()
+		return nil, nil
+	}
+
+	if err := stampReapedRunsTerminal(ctx, tx, now, createdNeverStartedReason, ids); err != nil {
 		return nil, err
 	}
 	return ids, tx.Commit()

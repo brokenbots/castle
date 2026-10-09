@@ -68,6 +68,58 @@ func TestReapStaleRunsOnce(t *testing.T) {
 	}
 }
 
+// TestReapNeverStartedRunsOnce pins the main.go wiring for the KB-233 rule-2
+// reaper: the window configured by the operator selects exactly the old
+// never-started records — and leaves in-window and started runs alone.
+func TestReapNeverStartedRunsOnce(t *testing.T) {
+	s, err := sqlite.Open(t.TempDir() + "/castle.db")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(testWriter{}, nil))
+
+	now := time.Now().UTC()
+	old := now.Add(-15 * time.Minute)
+	if err := s.CreateOverseer(ctx, &store.Overseer{
+		ID: "agent-x", Name: "agent-x", TokenHash: "x", Status: "online",
+		CreatedAt: old, LastSeenAt: old,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+	for _, r := range []struct {
+		id        string
+		createdAt time.Time
+	}{
+		{"r-never-started", old},
+		{"r-created-recently", now},
+	} {
+		if err := s.CreateRun(ctx, &store.Run{
+			ID: r.id, OverseerID: "agent-x", WorkflowName: "wf", Status: "pending", CreatedAt: r.createdAt,
+		}); err != nil {
+			t.Fatalf("create run %s: %v", r.id, err)
+		}
+	}
+
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute)
+
+	orphan, err := s.GetRun(ctx, "r-never-started")
+	if err != nil {
+		t.Fatalf("get orphan: %v", err)
+	}
+	if orphan.Status != "failed" || orphan.FailureReason != "created_never_started" || orphan.EndedAt == nil {
+		t.Fatalf("orphan not reaped: status=%q reason=%q ended=%v", orphan.Status, orphan.FailureReason, orphan.EndedAt)
+	}
+	recent, err := s.GetRun(ctx, "r-created-recently")
+	if err != nil {
+		t.Fatalf("get recent: %v", err)
+	}
+	if recent.Status != "pending" || recent.FailureReason != "" {
+		t.Fatalf("in-window run reaped: status=%q reason=%q", recent.Status, recent.FailureReason)
+	}
+}
+
 type testWriter struct{}
 
 func (testWriter) Write(p []byte) (int, error) { return len(p), nil }

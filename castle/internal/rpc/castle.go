@@ -561,7 +561,7 @@ func (s *ServerServer) resumeRunControl(ctx context.Context, runID, signalPin st
 		// paths from here. Runs that already started keep their delivered
 		// workflow: their resume re-enters the parked execution below.
 		if run.StartedAt == nil {
-			if err := s.Store.MarkRunUnstarted(ctx, run.ID); err != nil {
+			if err := s.Store.MarkRunUnstarted(ctx, run.ID, time.Now().UTC()); err != nil {
 				s.Log.Error("resume accepted but requeueing unstarted run failed", "run_id", run.ID, "err", err)
 			}
 		}

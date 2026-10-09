@@ -245,6 +245,17 @@ type Store interface {
 	// no live agent by design) are left alone. Each reaped run's workflow
 	// assignment is marked terminal. Returns the reaped run IDs.
 	ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error)
+	// ReapNeverStartedRuns stamps runs in status pending or running as failed
+	// with reason "created_never_started" (KB-233 rule 2) when started_at is
+	// still NULL and created_at is older than createdBefore: a run that was
+	// minted but never began executing. The verdict is derivable from the run
+	// record alone — created_at and started_at — never from heartbeat or
+	// assignment heuristics. Paused and stopped runs (operator-parked,
+	// CRI-207) are reaper-exempt regardless of age, and terminal runs are
+	// never rewritten. Each reaped run's workflow assignment is marked
+	// terminal so the dead work is never re-dispatched. Returns the reaped
+	// run IDs.
+	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]string, error)
 	// CancelRun stamps runID terminal as "cancelled" with the given reason
 	// (CRI-142). Terminal runs are never rewritten: an already terminal run
 	// returns ErrRunTerminal, an unknown id ErrNotFound. The cancelled run
@@ -313,8 +324,11 @@ type Store interface {
 	// MarkRunUnstarted returns a never-started stopped run to the leasable
 	// pending bucket (CRI-207 resume path): status='pending' and
 	// started_at=NULL, so the dispatch redelivery and lease-expiry paths
-	// apply to it again. Only runs currently in status stopped are affected.
-	MarkRunUnstarted(ctx context.Context, runID string) error
+	// apply to it again. requeuedAt refreshes created_at: the re-queue is a
+	// fresh pending incarnation, giving the KB-233 created_never_started
+	// reaper window a restart so a just-resumed run is not killed before its
+	// redelivery can land.
+	MarkRunUnstarted(ctx context.Context, runID string, requeuedAt time.Time) error
 
 	// Workflow assignments
 	// CreateWorkflowAssignment atomically creates the queued run and assignment
