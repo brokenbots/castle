@@ -307,7 +307,7 @@ func TestMarkRunUnstartedReturnsToLeasableBucket(t *testing.T) {
 		t.Fatalf("parked run redelivered while stopped: %d assignments", len(active))
 	}
 
-	if err := s.MarkRunUnstarted(ctx, a.RunID); err != nil {
+	if err := s.MarkRunUnstarted(ctx, a.RunID, now.Add(time.Second)); err != nil {
 		t.Fatalf("mark unstarted: %v", err)
 	}
 	r, err := s.GetRun(ctx, a.RunID)
@@ -316,6 +316,12 @@ func TestMarkRunUnstartedReturnsToLeasableBucket(t *testing.T) {
 	}
 	if r.Status != "pending" || r.StartedAt != nil || r.EndedAt != nil {
 		t.Fatalf("run after mark: status=%q started_at=%v ended_at=%v, want pending with started_at NULL", r.Status, r.StartedAt, r.EndedAt)
+	}
+	// The re-queue refreshes created_at (KB-233 rule 2): the created_never_started
+	// reaper derives its window from created_at, so the resumed run must get a
+	// fresh window before redelivery is counted as failing.
+	if !r.CreatedAt.Equal(now.Add(time.Second)) {
+		t.Fatalf("run after mark: created_at = %v, want requeuedAt %v", r.CreatedAt, now.Add(time.Second))
 	}
 
 	// The redelivery scan now serves the held lease to the leasing agent —
@@ -340,7 +346,7 @@ func TestMarkRunUnstartedReturnsToLeasableBucket(t *testing.T) {
 	if err := s.UpdateRun(ctx, r); err != nil {
 		t.Fatalf("stamp terminal: %v", err)
 	}
-	if err := s.MarkRunUnstarted(ctx, a.RunID); err != nil {
+	if err := s.MarkRunUnstarted(ctx, a.RunID, now.Add(2*time.Second)); err != nil {
 		t.Fatalf("mark unstarted on terminal run: %v", err)
 	}
 	got, err := s.GetRun(ctx, a.RunID)

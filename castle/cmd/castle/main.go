@@ -112,6 +112,7 @@ func main() {
 	eventBufferCapacity := flag.Int("event-buffer-capacity", envOrDefaultInt("CASTLE_EVENT_BUFFER_CAPACITY", hub.DefaultEventBufferCapacity), "in-memory events retained per run for WatchRun replay")
 	agentHeartbeatInterval := flag.Duration("agent-heartbeat-interval", envOrDefaultDuration("CASTLE_AGENT_HEARTBEAT_INTERVAL", 10*time.Second), "nominal criteria agent heartbeat cadence (or CASTLE_AGENT_HEARTBEAT_INTERVAL); the run reaper multiplies this to derive staleness")
 	runReapMultiplier := flag.Int("run-reap-multiplier", envOrDefaultInt("CASTLE_RUN_REAP_MULTIPLIER", 6), "reap pending/running runs whose agent heartbeat is older than this multiple of the heartbeat interval (or CASTLE_RUN_REAP_MULTIPLIER); 0 disables run reaping")
+	createdNeverStartedWindow := flag.Duration("created-never-started-window", envOrDefaultDuration("CASTLE_CREATED_NEVER_STARTED_WINDOW", 10*time.Minute), "reap pending/running runs whose started_at is still unset this long after created_at (KB-233 rule 2: CreateRun that never reached RunStarted, reason created_never_started) (or CASTLE_CREATED_NEVER_STARTED_WINDOW); 0 disables created_never_started reaping")
 	flag.Parse()
 
 	tlsEnabled := *tlsCert != "" || *tlsKey != ""
@@ -134,6 +135,10 @@ func main() {
 	}
 	if *runReapMultiplier < 0 {
 		log.Error("invalid run reap multiplier", "run_reap_multiplier", *runReapMultiplier)
+		os.Exit(1)
+	}
+	if *createdNeverStartedWindow < 0 {
+		log.Error("invalid created never-started window", "created_never_started_window", *createdNeverStartedWindow)
 		os.Exit(1)
 	}
 
@@ -325,6 +330,28 @@ func main() {
 		}()
 	}
 
+	// Background: reap never-started runs (KB-233 rule 2). Pending/running
+	// runs created more than the window ago whose started_at is still unset —
+	// CreateRun without a RunStarted — are stamped failed with reason
+	// "created_never_started" so unstartable and orphan-minted runs die by
+	// timer instead of sitting pending forever. Independent of the heartbeat
+	// reaper: the verdict is derivable from the run record alone.
+	if *createdNeverStartedWindow > 0 {
+		log.Info("created_never_started reaper enabled", "created_never_started_window", *createdNeverStartedWindow)
+		go func() {
+			t := time.NewTicker(15 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					reapNeverStartedRunsOnce(context.Background(), st, log, *createdNeverStartedWindow)
+				}
+			}
+		}()
+	}
+
 	go func() {
 		log.Info("castle listening", "addr", *addr, "db", *dbPath, "tls", tlsCfg != nil, "event_buffer_capacity", *eventBufferCapacity)
 		var err error
@@ -359,5 +386,22 @@ func reapStaleRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, st
 	}
 	for _, id := range ids {
 		log.Info("reaped run with stale agent heartbeat", "run_id", id, "reason", "agent heartbeat lost")
+	}
+}
+
+// reapNeverStartedRunsOnce performs one KB-233 rule-2 reaping pass: runs in
+// pending/running whose started_at is still unset and whose created_at is
+// older than window are stamped failed with reason "created_never_started".
+// Split out of the ticker goroutine so the now/createdBefore derivation is
+// unit-testable.
+func reapNeverStartedRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, window time.Duration) {
+	now := time.Now().UTC()
+	ids, err := st.ReapNeverStartedRuns(ctx, now, now.Add(-window))
+	if err != nil {
+		log.Error("created_never_started reaper", "err", err)
+		return
+	}
+	for _, id := range ids {
+		log.Info("reaped run created but never started", "run_id", id, "reason", "created_never_started")
 	}
 }
