@@ -282,7 +282,7 @@ type Store interface {
 	// stopped runs (CRI-207: an operator parked run is reaper-exempt
 	// regardless of heartbeat age, because it has no live agent by design)
 	// are left alone; terminal runs are never rewritten. Returns one
-	// RunReapOutcome per stamped run, grouped by id.
+	// RunReapOutcome per stamped run, in candidates order.
 	ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]RunReapOutcome, error)
 	// ReapNeverStartedRuns stamps runs in status pending or running as failed
 	// with reason "created_never_started" (KB-233 rule 2) when started_at is
