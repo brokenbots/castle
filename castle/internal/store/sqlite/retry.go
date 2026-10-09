@@ -57,6 +57,22 @@ func isTransient(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
+// isInterrupt reports whether err is specifically SQLITE_INTERRUPT, the
+// driver's response to sqlite3_interrupt (KB-222). Distinct from isTransient:
+// an interrupt that still fires after retries have run means the shared
+// writer connection itself is in a suspect state, not that the fault is
+// merely contention.
+func isInterrupt(err error) bool {
+	if err == nil {
+		return false
+	}
+	var serr *sqlite.Error
+	if errors.As(err, &serr) {
+		return serr.Code()&0xff == sqliteInterrupt
+	}
+	return strings.Contains(err.Error(), "interrupted (")
+}
+
 // isTransientCode reports whether a raw sqlite result code is transient.
 // modernc.org/sqlite enables extended result codes during connection setup,
 // so the code can be an extended one (SQLITE_BUSY_SNAPSHOT 517,

@@ -98,6 +98,27 @@ func (s *Store) Close() error {
 // scans can never queue behind RPC traffic (CRI-143).
 func (s *Store) SetMaxOpenConns(n int) { s.db.SetMaxOpenConns(n) }
 
+// storeOpTimeout bounds each store operation executed on a detached context.
+// It sits far above the 5s busy_timeout so ordinary writer contention never
+// trips it; it only ever caps work that would otherwise run forever because
+// its caller is gone.
+const storeOpTimeout = 30 * time.Second
+
+// opCtx detaches ctx from its creator (KB-222) before any statement is
+// executed. Every public store method funnels its context through this: a
+// cancelled gRPC stream (an expired SubmitEvents deadline, a gone client)
+// must never reach the driver, because the driver's context watcher responds
+// to cancellation by firing sqlite3_interrupt on the WHOLE connection — and
+// the writer pool is one serialized connection shared by every RPC
+// (CRI-78/CRI-143). A single interrupt landing there historically failed
+// every DB-backed call for tens of minutes (KB-222 incident, 2026-09-21).
+// Values (request identity, loggers) are preserved; cancellation and
+// deadlines are replaced by the local storeOpTimeout bound so detached work
+// still terminates. Nested through public->public calls it is idempotent.
+func (s *Store) opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), storeOpTimeout)
+}
+
 const (
 	tsLayout               = time.RFC3339Nano
 	ListEventsDefaultLimit = 500
@@ -105,6 +126,8 @@ const (
 )
 
 func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	labels, err := marshalLabels(o.Labels)
 	if err != nil {
 		return err
@@ -119,6 +142,8 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 }
 
 func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers WHERE id=?`, id)
 	var o store.Overseer
 	var created, seen string
@@ -136,6 +161,8 @@ func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, er
 }
 
 func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	rows, err := s.reader.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -169,16 +196,22 @@ func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
 }
 
 func (s *Store) UpdateOverseerSeen(ctx context.Context, id string, ts time.Time) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE overseers SET last_seen_at=?, status='online' WHERE id=?`, ts.Format(tsLayout), id)
 	return err
 }
 
 func (s *Store) UpdateOverseerStatus(ctx context.Context, id, status string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE overseers SET status=? WHERE id=?`, status, id)
 	return err
 }
 
 func (s *Store) MarkOfflineBefore(ctx context.Context, before time.Time) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `UPDATE overseers SET status='offline' WHERE last_seen_at < ? AND status='online'`, before.Format(tsLayout))
 	return err
 }
@@ -187,6 +220,8 @@ func (s *Store) MarkOfflineBefore(ctx context.Context, before time.Time) error {
 // On conflict, name and token_hash are replaced — rotating the token
 // invalidates previously issued accept tokens — and created_at is preserved.
 func (s *Store) UpsertOrchestrator(ctx context.Context, o *store.Orchestrator) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO orchestrators(id,name,token_hash,created_at) VALUES(?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, token_hash=excluded.token_hash`,
@@ -195,6 +230,8 @@ func (s *Store) UpsertOrchestrator(ctx context.Context, o *store.Orchestrator) e
 }
 
 func (s *Store) ListOrchestrators(ctx context.Context) ([]*store.Orchestrator, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	rows, err := s.reader.QueryContext(ctx, `SELECT id,name,token_hash,created_at FROM orchestrators ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -216,6 +253,8 @@ func (s *Store) ListOrchestrators(ctx context.Context) ([]*store.Orchestrator, e
 // DeleteOrchestrator removes the orchestrator identity, revoking its accept
 // token (CRI-133). Deleting an unknown ID is a no-op.
 func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM orchestrators WHERE id = ?`, id)
 	return err
 }
@@ -224,6 +263,8 @@ func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
 // conflict, username and password_hash are replaced — rotating the seeded
 // credentials — and created_at is preserved.
 func (s *Store) UpsertConsoleUser(ctx context.Context, u *store.ConsoleUser) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO console_users(id,username,password_hash,created_at,updated_at) VALUES(?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET username=excluded.username, password_hash=excluded.password_hash, updated_at=excluded.updated_at`,
@@ -232,6 +273,8 @@ func (s *Store) UpsertConsoleUser(ctx context.Context, u *store.ConsoleUser) err
 }
 
 func (s *Store) GetConsoleUser(ctx context.Context, username string) (*store.ConsoleUser, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id,username,password_hash,created_at,updated_at FROM console_users WHERE username=?`, username)
 	var u store.ConsoleUser
@@ -250,11 +293,15 @@ func (s *Store) GetConsoleUser(ctx context.Context, username string) (*store.Con
 // DeleteConsoleUsers removes every console user; the ON DELETE CASCADE on
 // console_sessions revokes their sessions with them (CRI-195).
 func (s *Store) DeleteConsoleUsers(ctx context.Context) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM console_users`)
 	return err
 }
 
 func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSession) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO console_sessions(id,user_id,token_hash,created_at) VALUES(?,?,?,?)`,
 		sess.ID, sess.UserID, sess.TokenHash, sess.CreatedAt.Format(tsLayout))
@@ -262,6 +309,8 @@ func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSes
 }
 
 func (s *Store) ListConsoleSessions(ctx context.Context) ([]*store.ConsoleSession, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	rows, err := s.reader.QueryContext(ctx, `SELECT id,user_id,token_hash,created_at FROM console_sessions ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -281,6 +330,8 @@ func (s *Store) ListConsoleSessions(ctx context.Context) ([]*store.ConsoleSessio
 }
 
 func (s *Store) DeleteConsoleSessions(ctx context.Context) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM console_sessions`)
 	return err
 }
@@ -288,6 +339,8 @@ func (s *Store) DeleteConsoleSessions(ctx context.Context) error {
 // DeleteConsoleSessionsByUser revokes every session of one console user,
 // e.g. when the seeded password is rotated (CRI-195).
 func (s *Store) DeleteConsoleSessionsByUser(ctx context.Context, userID string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM console_sessions WHERE user_id = ?`, userID)
 	return err
 }
@@ -297,6 +350,8 @@ func (s *Store) DeleteConsoleSessionsByUser(ctx context.Context, userID string) 
 const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	var started any
 	if r.StartedAt != nil {
 		started = r.StartedAt.Format(tsLayout)
@@ -309,6 +364,8 @@ func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 }
 
 func (s *Store) GetRun(ctx context.Context, id string) (*store.Run, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id)
 	return scanRun(row.Scan)
 }
@@ -350,6 +407,8 @@ func decodeRunCursor(token string) (created, id string, err error) {
 // limit <= 0 returns every matching row with no token. The cursor predicate
 // mirrors the ORDER BY, so a token stays valid across intervening inserts.
 func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	q := `SELECT ` + runColumns + ` FROM runs WHERE 1=1`
 	args := []any{}
 	if overseerID != "" {
@@ -460,6 +519,8 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 }
 
 func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	var ended any
 	if r.EndedAt != nil {
 		ended = r.EndedAt.Format(tsLayout)
@@ -479,6 +540,8 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 // untouched so partial updates from later run.metadata events never clear
 // earlier metadata. Unknown run ids are a no-op.
 func (s *Store) SetRunMetadata(ctx context.Context, runID, ticket, repoURL, prURL string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET ticket=COALESCE(NULLIF(?, ''), ticket), repo_url=COALESCE(NULLIF(?, ''), repo_url), pr_url=COALESCE(NULLIF(?, ''), pr_url) WHERE id=?`,
 		ticket, repoURL, prURL, runID)
@@ -496,6 +559,8 @@ func nonEmpty(s string) any {
 
 // SetRunVariableScope persists a JSON-encoded variable scope snapshot (W04).
 func (s *Store) SetRunVariableScope(ctx context.Context, runID, scope string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET variable_scope=? WHERE id=?`, scope, runID)
 	return err
@@ -504,6 +569,8 @@ func (s *Store) SetRunVariableScope(ctx context.Context, runID, scope string) er
 // GetRunVariableScope returns the stored variable scope JSON for runID.
 // Returns ("", nil) when the run exists but has no scope yet (NULL column).
 func (s *Store) GetRunVariableScope(ctx context.Context, runID string) (string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	var scope sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT variable_scope FROM runs WHERE id=?`, runID).Scan(&scope)
 	if err != nil {
@@ -523,6 +590,8 @@ func (s *Store) GetRunVariableScope(ctx context.Context, runID string) (string, 
 // event-driven pause on a run an operator already parked must not flip it out
 // of stopped, and terminal runs are never rewritten.
 func (s *Store) SetRunPaused(ctx context.Context, runID, pendingSignal string, pausedAt time.Time) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status='paused', pending_signal=?, paused_at=? WHERE id=? AND status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped')`,
 		pendingSignal, pausedAt.Format(tsLayout), runID)
@@ -533,6 +602,8 @@ func (s *Store) SetRunPaused(ctx context.Context, runID, pendingSignal string, p
 // Guarded to paused runs only (CRI-197): a terminal run's pause state is stale
 // history, and a late resume must not resurrect it.
 func (s *Store) ClearRunPaused(ctx context.Context, runID string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status='running', pending_signal=NULL, paused_at=NULL WHERE id=? AND status='paused'`, runID)
 	return err
@@ -544,6 +615,8 @@ func (s *Store) ClearRunPaused(ctx context.Context, runID string) error {
 // neither paused nor waiting on a signal. Guarded like CancelRun so terminal
 // runs are never rewritten.
 func (s *Store) SetRunStopped(ctx context.Context, runID string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status='stopped', pending_signal=NULL, paused_at=NULL WHERE id=? AND status NOT IN ('succeeded', 'failed', 'cancelled')`,
 		runID)
@@ -555,6 +628,8 @@ func (s *Store) SetRunStopped(ctx context.Context, runID string) error {
 // checkpoint-owner; castle only points at it). Guarded to stopped runs so the
 // operator resume can never clobber a concurrent transition or a terminal run.
 func (s *Store) ClearRunStopped(ctx context.Context, runID string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status='running', pending_signal=NULL, paused_at=NULL WHERE id=? AND status='stopped'`, runID)
 	return err
@@ -571,6 +646,8 @@ func (s *Store) ClearRunStopped(ctx context.Context, runID string) error {
 // pause and stopped guards, so it cannot race a competing transition, rewrite
 // a terminal or paused run, or resurrect a run that left the parked state.
 func (s *Store) MarkRunUnstarted(ctx context.Context, runID string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status='pending', started_at=NULL WHERE id=? AND status='stopped'`, runID)
 	return err
@@ -590,9 +667,31 @@ func (s *Store) MarkRunUnstarted(ctx context.Context, runID string) error {
 // reaper pass can never hold — or wedge — the connection RPC traffic shares.
 // Transient sqlite faults are retried with backoff (retry.go).
 func (s *Store) ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]string, error) {
-	return retryOnTransient(ctx, reapRetryPolicy, func() ([]string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	reaped, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]string, error) {
 		return s.reapStaleAgentRunsAttempt(ctx, now, staleBefore)
 	})
+	if isInterrupt(err) {
+		s.recoverWriter(ctx)
+	}
+	return reaped, err
+}
+
+// recoverWriter forces a health round-trip on the serialized writer pool
+// (KB-222). During the 2026-09-21 incident retries alone surfaced
+// interrupted (9) for the entire outage window: with every writer sharing one
+// pooled connection, only a connection reset clears driver-level corruption,
+// and Ping makes database/sql discard any connection the driver judges
+// unusable and build a fresh one. Best-effort by design — correctness does
+// not depend on it: opCtx keeps stream cancellation from ever reaching
+// sqlite3_interrupt, and the driver additionally clears stray interrupt flags
+// at statement prepare. Bounded so a wedged pool fails the reaper tick
+// instead of pinning it.
+func (s *Store) recoverWriter(ctx context.Context) {
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_ = s.db.PingContext(pingCtx)
 }
 
 // reapStaleAgentRunsAttempt performs one reaping pass. The candidate scan is a
@@ -757,6 +856,8 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 // ErrNotFound; a run already terminal returns ErrRunTerminal. The updated run
 // record is returned on success.
 func (s *Store) CancelRun(ctx context.Context, runID, reason string, now time.Time) (*store.Run, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE runs
 		 SET status='cancelled', ended_at=?, failure_reason=COALESCE(NULLIF(?, ''), failure_reason)
@@ -779,6 +880,8 @@ func (s *Store) CancelRun(ctx context.Context, runID, reason string, now time.Ti
 }
 
 func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if ev == nil {
 		return 0, false, errors.New("nil event")
 	}
@@ -844,6 +947,8 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 }
 
 func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*store.Event, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	normalized, err := normalizeListLimit(limit)
 	if err != nil {
 		return nil, err
@@ -859,6 +964,8 @@ func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limi
 }
 
 func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*store.Event, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	normalized, err := normalizeListLimit(limit)
 	if err != nil {
 		return nil, err
@@ -877,6 +984,8 @@ func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint
 }
 
 func (s *Store) UpsertSubscriberCursor(ctx context.Context, subscriberID, runID string, lastSeq uint64) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if subscriberID == "" {
 		return errors.New("subscriber_id required")
 	}
@@ -901,6 +1010,8 @@ func (s *Store) UpsertSubscriberCursor(ctx context.Context, subscriberID, runID 
 }
 
 func (s *Store) GetSubscriberCursor(ctx context.Context, subscriberID, runID string) (uint64, bool, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if subscriberID == "" {
 		return 0, false, errors.New("subscriber_id required")
 	}
@@ -920,6 +1031,8 @@ func (s *Store) GetSubscriberCursor(ctx context.Context, subscriberID, runID str
 }
 
 func (s *Store) RecordAttemptStart(ctx context.Context, ra *store.RunAttempt) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if ra.RunID == "" || ra.Step == "" || ra.Attempt <= 0 {
 		return errors.New("run_id, step, and attempt > 0 required")
 	}
@@ -932,6 +1045,8 @@ func (s *Store) RecordAttemptStart(ctx context.Context, ra *store.RunAttempt) er
 }
 
 func (s *Store) RecordAttemptComplete(ctx context.Context, runID, step string, attempt int, outcome string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if runID == "" || step == "" || attempt <= 0 {
 		return errors.New("run_id, step, and attempt > 0 required")
 	}
@@ -944,6 +1059,8 @@ func (s *Store) RecordAttemptComplete(ctx context.Context, runID, step string, a
 }
 
 func (s *Store) GetLatestAttempt(ctx context.Context, runID, step string) (*store.RunAttempt, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if runID == "" || step == "" {
 		return nil, errors.New("run_id and step required")
 	}
@@ -1033,6 +1150,8 @@ func scanEventRow(row *sql.Row, runID string) (*store.Event, error) {
 }
 
 func (s *Store) GetLatestEvent(ctx context.Context, runID string) (*store.Event, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx,
 		`SELECT seq,type,ts,correlation_id,payload FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 1`,
 		runID)
@@ -1040,6 +1159,8 @@ func (s *Store) GetLatestEvent(ctx context.Context, runID string) (*store.Event,
 }
 
 func (s *Store) GetLatestStepEnteredEvent(ctx context.Context, runID string) (*store.Event, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	row := s.db.QueryRowContext(ctx,
 		`SELECT seq,type,ts,correlation_id,payload FROM events WHERE run_id=? AND type='step.entered' ORDER BY seq DESC LIMIT 1`,
 		runID)
@@ -1069,6 +1190,8 @@ func unmarshalLabels(s string) map[string]string {
 }
 
 func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowAssignment) (*store.WorkflowAssignment, bool, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if a == nil {
 		return nil, false, errors.New("nil assignment")
 	}
@@ -1159,6 +1282,8 @@ func (s *Store) insertAssignmentLabelsTx(ctx context.Context, tx *sql.Tx, assign
 }
 
 func (s *Store) GetWorkflowAssignment(ctx context.Context, id string) (*store.WorkflowAssignment, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if id == "" {
 		return nil, errors.New("id required")
 	}
@@ -1170,6 +1295,8 @@ func (s *Store) GetWorkflowAssignment(ctx context.Context, id string) (*store.Wo
 }
 
 func (s *Store) GetWorkflowAssignmentByRunID(ctx context.Context, runID string) (*store.WorkflowAssignment, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if runID == "" {
 		return nil, errors.New("run_id required")
 	}
@@ -1274,6 +1401,8 @@ func (s *Store) loadAssignmentLabels(ctx context.Context, assignmentID string) (
 // first attempt is recorded in workflow_assignment_attempts. The associated
 // run's overseer_id is updated to criteriaID.
 func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*store.WorkflowAssignment, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if criteriaID == "" {
 		return nil, errors.New("criteria_id required")
 	}
@@ -1488,6 +1617,8 @@ func mustParseTime(s string) time.Time {
 // associated run's overseer_id so the assignment can be safely redispatched to
 // a new agent. The returned IDs can be used by callers to redispatch the work.
 func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Time) ([]string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -1564,6 +1695,8 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 // leased to criteriaID whose run has not yet started. These are in-flight
 // leases that should be redelivered to the agent after a Castle restart.
 func (s *Store) ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, criteriaID string) ([]*store.WorkflowAssignment, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if criteriaID == "" {
 		return nil, errors.New("criteria_id required")
 	}
@@ -1640,6 +1773,8 @@ func (s *Store) ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, cr
 }
 
 func (s *Store) RecordWorkflowAssignmentLease(ctx context.Context, lease *store.WorkflowAssignmentLease) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if lease == nil || lease.AssignmentID == "" || lease.CriteriaID == "" {
 		return errors.New("assignment_id and criteria_id required")
 	}
@@ -1654,6 +1789,8 @@ func (s *Store) RecordWorkflowAssignmentLease(ctx context.Context, lease *store.
 }
 
 func (s *Store) RecordWorkflowAssignmentAttempt(ctx context.Context, attempt *store.WorkflowAssignmentAttempt) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if attempt == nil || attempt.AssignmentID == "" || attempt.Attempt <= 0 {
 		return errors.New("assignment_id and attempt > 0 required")
 	}
@@ -1665,6 +1802,8 @@ func (s *Store) RecordWorkflowAssignmentAttempt(ctx context.Context, attempt *st
 }
 
 func (s *Store) CompleteWorkflowAssignmentAttempt(ctx context.Context, assignmentID string, attempt int, outcome string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if assignmentID == "" || attempt <= 0 {
 		return errors.New("assignment_id and attempt > 0 required")
 	}
@@ -1677,6 +1816,8 @@ func (s *Store) CompleteWorkflowAssignmentAttempt(ctx context.Context, assignmen
 }
 
 func (s *Store) MarkWorkflowAssignmentTerminal(ctx context.Context, runID, reason string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
 	if runID == "" {
 		return errors.New("run_id required")
 	}
