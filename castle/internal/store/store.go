@@ -178,10 +178,13 @@ type Run struct {
 }
 
 // RunStatusAwaitingHuman is the parked status of a run whose engine reached
-// the workflow terminal state awaiting_human (KB-226): the workflow work is
+// the workflow terminal human gate (KB-226): the workflow work is
 // done and the run is held for a human decision, so it is no longer
 // executing and has no agent heartbeat by design. Parked runs are excluded
-// from reaping and from workflow-assignment dispatch eligibility.
+// from reaping and from workflow-assignment dispatch eligibility. This is
+// castle's own STATUS name: the engine's final_state label was renamed from
+// awaiting_human to need_assistance (KB-270, card 269) and both spellings
+// reclassify to this status.
 const RunStatusAwaitingHuman = "awaiting_human"
 
 // ReapReasonAgentHeartbeatLost is the failure reason stamped on runs reaped

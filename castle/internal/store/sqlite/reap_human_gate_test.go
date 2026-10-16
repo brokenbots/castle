@@ -174,6 +174,63 @@ func TestReapStaleAgentRuns_ParkedRunKeepsResumableShape(t *testing.T) {
 	}
 }
 
+// TestReapStaleAgentRuns_NeedAssistanceFinalStateParks is the KB-270
+// transition-window regression: the engine renamed its human-gate final_state
+// label from awaiting_human to need_assistance (card 269) and tree pins roll
+// forward per deployment, so an event log can carry either spelling. A
+// run.completed ending at the renamed label must classify exactly like the
+// legacy name — parked to awaiting_human, not failed — otherwise card 269's
+// rollout would silently end the KB-226/227 park discipline (failed stamp,
+// discarded checkpoints, released fleet). The legacy spelling must keep the
+// identical verdict: both runs share one reaper pass here.
+func TestReapStaleAgentRuns_NeedAssistanceFinalStateParks(t *testing.T) {
+	f := newReapFixture(t)
+
+	f.createRun(t, "r-legacy", "agent-stale", "running")
+	f.appendRunEvent(t, "r-legacy", "run.completed",
+		`{"finalState":"awaiting_human","success":false}`)
+	f.createRun(t, "r-rename", "agent-stale", "running")
+	f.appendRunEvent(t, "r-rename", "run.completed",
+		`{"finalState":"need_assistance","success":false}`)
+
+	outcomes := f.reapAt(t, f.now.Add(101*time.Second), 60*time.Second)
+	if got := reapRunIDsParked(t, outcomes); !slices.Equal(got, []string{"r-legacy", "r-rename"}) {
+		t.Fatalf("parked = %v, want [r-legacy r-rename]", got)
+	}
+	if got := reapedIDs(outcomes); len(got) != 0 {
+		t.Fatalf("reaped = %v, want none", got)
+	}
+	for _, o := range outcomes {
+		if o.Status != store.RunStatusAwaitingHuman {
+			t.Fatalf("%s classified as %q, want awaiting_human", o.RunID, o.Status)
+		}
+		if o.Reason != awaitingHumanGateVerdictReason {
+			t.Fatalf("%s reason = %q, want %q", o.RunID, o.Reason, awaitingHumanGateVerdictReason)
+		}
+	}
+
+	// The parked shape: no failed stamp, no ended_at, no failure_reason —
+	// either spelling of the engine label must leave the run resumable.
+	for _, id := range []string{"r-legacy", "r-rename"} {
+		r := f.getRun(t, id)
+		if r.Status != store.RunStatusAwaitingHuman {
+			t.Fatalf("%s status = %q, want awaiting_human", id, r.Status)
+		}
+		if r.FailureReason != "" {
+			t.Fatalf("%s failure_reason = %q, want empty", id, r.FailureReason)
+		}
+		if r.EndedAt != nil {
+			t.Fatalf("%s ended_at stamped on a parked run: %v", id, r.EndedAt)
+		}
+	}
+
+	// Past ANY threshold a parked run stays parked: a pass an hour later
+	// changes nothing.
+	if got := f.reapAt(t, f.now.Add(time.Hour), 60*time.Second); len(got) != 0 {
+		t.Fatalf("second pass stamped anything: %v", got)
+	}
+}
+
 func errIsNotFound(err error) bool {
 	return errors.Is(err, store.ErrNotFound)
 }
@@ -251,6 +308,20 @@ func TestLastEventParksHumanGate(t *testing.T) {
 			name:       "run.completed awaiting_human only success true",
 			evType:     "run.completed",
 			payload:    `{"finalState":"awaiting_human","success":true}`,
+			wantParked: true,
+			wantReason: awaitingHumanGateVerdictReason,
+		},
+		{
+			name:       "run.completed need_assistance camelCase (KB-270 rename)",
+			evType:     "run.completed",
+			payload:    `{"finalState":"need_assistance","success":false}`,
+			wantParked: true,
+			wantReason: awaitingHumanGateVerdictReason,
+		},
+		{
+			name:       "run.completed need_assistance snake_case (KB-270 rename)",
+			evType:     "run.completed",
+			payload:    `{"final_state":"need_assistance","success":false}`,
 			wantParked: true,
 			wantReason: awaitingHumanGateVerdictReason,
 		},

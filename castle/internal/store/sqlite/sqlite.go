@@ -720,9 +720,10 @@ func (s *Store) MarkRunUnstarted(ctx context.Context, runID string, requeuedAt t
 // ReapStaleAgentRuns classifies heartbeat-stale runs in status pending or
 // running (CRI-142) from each run's own record and stamps the verdict
 // (KB-226). A candidate whose engine reached a human gate — the
-// awaiting_human terminal completion, a human approval request, a human
-// pause or a signal-mode wait in its last persisted event — has no live
-// heartbeat by design: it is parked, not failed. Its status is reclassified
+// awaiting_human (or, post-rename, need_assistance — KB-270) terminal
+// completion, a human approval request, a human pause or a signal-mode wait
+// in its last persisted event — has no live heartbeat by design: it is
+// parked, not failed. Its status is reclassified
 // to RunStatusAwaitingHuman (no ended_at, no failure_reason, no
 // workflow-assignment change, stays resumable) and the outcome carries
 // Parked true plus the reclassification reason. A candidate with no
@@ -1012,6 +1013,19 @@ const (
 	evTypeWaitEntered       = "wait.entered"
 )
 
+// needAssistanceFinalStates are the engine-side FinalState values a
+// run.completed carries when the workflow parked at a human gate (KB-270).
+// The engine renamed its awaiting_human label to need_assistance (card 269);
+// tree pins move independently of castle's release, so during the transition
+// window either spelling can land in the event log and both classify
+// identically. This is the engine-side label only: the run STATUS castle
+// stamps stays RunStatusAwaitingHuman — that name is castle's own vocabulary
+// (Parapet consumers, reaper exclusion, run watchers).
+var needAssistanceFinalStates = map[string]struct{}{
+	store.RunStatusAwaitingHuman: {},
+	"need_assistance":            {},
+}
+
 // humanGateEventPayload carries the fields the human-gate classifier may need
 // from a last event's payload. FinalState accepts both JSON spellings:
 // engine-originated payloads are protojson (finalState), while older rows may
@@ -1026,10 +1040,10 @@ type humanGateEventPayload struct {
 
 // lastEventParksHumanGate classifies a run's most recent persisted event for
 // the KB-226 reaper verdict: some events mean the engine reached a human gate
-// — the awaiting_human terminal completion, a human approval request, a human
-// pause or a signal-mode wait — so the run is parked, not failed, however old
-// its heartbeat is. Returns the reclassification reason when the event parks
-// the run.
+// — the awaiting_human (or, post-rename, need_assistance — KB-270) terminal
+// completion, a human approval request, a human pause or a signal-mode wait —
+// so the run is parked, not failed, however old its heartbeat is. Returns the
+// reclassification reason when the event parks the run.
 //
 // A event whose verdict depends on a payload field that is missing or
 // undecodable never parks: the conservative choice keeps the legacy CRI-142
@@ -1042,7 +1056,7 @@ func lastEventParksHumanGate(evType string, payload []byte) (bool, string) {
 		if json.Unmarshal(payload, &p) != nil {
 			return false, ""
 		}
-		if firstNonEmpty(p.FinalState, p.FinalStateCamel) == store.RunStatusAwaitingHuman {
+		if _, ok := needAssistanceFinalStates[firstNonEmpty(p.FinalState, p.FinalStateCamel)]; ok {
 			return true, awaitingHumanGateVerdictReason
 		}
 		return false, ""
