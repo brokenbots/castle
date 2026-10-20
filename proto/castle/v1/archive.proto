@@ -1,0 +1,149 @@
+// RunArchiveService — castle-owned run-archive surface (KB-308). Before CR
+// retention deletes terminal CriteriaRuns, the operator archives each run's
+// final record here so history outlives the CR. The record schema is
+// documented in docs/plans/KB-308-operator-archive.md; Castle persists and
+// serves it opaquely (schema evolution is criteria-k8s-owned).
+syntax = "proto3";
+
+package castle.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/brokenbots/castle/castle/gen/castle/v1;castlev1";
+
+service RunArchiveService {
+  // ArchiveRun stores one terminal run's pre-retention archive record
+  // (KB-308, scope items 1-2). Called by the criteria-k8s operator on every
+  // CR terminal transition, BEFORE the run's finalizer is removed; archives
+  // for the same run_id are idempotent-overwrite (latest wins) so a retried
+  // archive never duplicates data, and the archive leg never blocks CR
+  // deletion (retention is castle's own #309 control).
+  //
+  // Auth: operator token (CASTLE_TOKEN) — the same criteria token path the
+  // podstate feed uses, not anon.
+  rpc ArchiveRun(ArchiveRunRequest) returns (ArchiveRunResponse);
+
+  // GetRunArchive returns one stored archive record by run id (KB-308 scope
+  // item 2, plus the #309 spot-check round-trip: "for N deleted CRs, castle
+  // archive records exist and round-trip").
+  rpc GetRunArchive(GetRunArchiveRequest) returns (GetRunArchiveResponse);
+
+  // ListRunArchives pages over stored archive records newest-first so the
+  // operator's backfill leg can verify coverage and the Parapet console can
+  // browse pre-retention history.
+  rpc ListRunArchives(ListRunArchivesRequest) returns (ListRunArchivesResponse);
+}
+
+// ArchiveRecord is the compact terminal-run summary the operator writes.
+// It mirrors the CriteriaRun status at terminal + the launch manifest identity
+// (workstream scope item 1); unknown strings stay empty rather than being
+// invented.
+message ArchiveRecord {
+  // Archive record schema version; 1 in this revision.
+  int32 schema_version = 1;
+  // Castle overseer run id for the agent session; "" when the terminal CR
+  // had no castle run (e.g. a run that died pre-register).
+  string run_id = 2;
+  // Runner job name; "" when the job never reached a name-bearing state.
+  string job_name = 3;
+  // External ticket identifier the run was attached to.
+  string ticket = 4;
+  // Repository the run operated on.
+  string repo = 5;
+  // Workflow name; ref; tree digest — the launch manifest identity.
+  string workflow_name = 6;
+  string workflow_ref = 7;
+  string tree_digest = 8;
+  // Binding / project ConfigMap checksums (launch manifest, castle-observed).
+  string binding_configmap_checksum = 9;
+  string project_configmap_checksum = 10;
+  // criteria-k8s operator version that wrote the record.
+  string operator_version = 11;
+  // Final CR phase (e.g. Succeeded / Failed).
+  string final_phase = 12;
+  // Final CR conditions (StallWatchdog / BaseImageMismatch /
+  // ConfigRenderDrift / TerminalCleanup / final state).
+  repeated ArchiveCondition conditions = 13;
+  // failure_reason carries the workflow verdict text when the run failed.
+  string failure_reason = 14;
+  // Steps the run visited with their outcomes.
+  repeated ArchiveStep steps = 15;
+  // Job/pod lifecycle summary.
+  int32 restarts = 16;
+  int32 backoff_evictions = 17;
+  string terminal_cleanup = 18;
+  // Run start/end timestamps; empty when unavailable.
+  string started_at = 19;
+  string ended_at = 20;
+}
+
+message ArchiveCondition {
+  string type = 1;
+  string status = 2;
+  string reason = 3;
+  string message = 4;
+  string last_transition_time = 5;
+}
+
+message ArchiveStep {
+  string name = 1;
+  string outcome = 2;
+}
+
+message ArchiveRunRequest {
+  // record is the archive record to store (latest wins per run_id).
+  ArchiveRecord record = 1;
+}
+
+message ArchiveRunResponse {
+  // archive_id is the stored record's identity
+  // ("run-archive/<run_id>"); the criteria-k8s operator stamps it into the
+  // CR status for log-provable confirmation that the pre-retention leg ran
+  // before finalizer removal.
+  string archive_id = 1;
+  // archived_at is the server-side stamp of when the record landed.
+  google.protobuf.Timestamp archived_at = 2;
+  // created is true when this call inserted a new archive row and false
+  // when it overwrote an existing record for the same run_id.
+  bool created = 3;
+}
+
+message GetRunArchiveRequest {
+  string run_id = 1;
+}
+
+message GetRunArchiveResponse {
+  string run_id = 1;
+  // record holds the archived record; struct_json_encoded, schema-evolvable
+  // on the criteria-k8s side.
+  google.protobuf.Struct record = 2;
+  google.protobuf.Timestamp archived_at = 3;
+  string operator_id = 4;
+}
+
+message ListRunArchivesRequest {
+  // run_id_prefix optionally narrows the listing to records whose run_id
+  // starts with the given prefix.
+  string run_id_prefix = 1;
+  // limit bounds the page size; server default 100, max 1000.
+  int32 limit = 2;
+  // cursor continues a previous page; empty starts from the newest.
+  string cursor = 3;
+}
+
+message ListRunArchivesResponse {
+  repeated ArchiveSummary archives = 1;
+  // next_cursor continues the listing; empty means the listing is complete.
+  string next_cursor = 2;
+}
+
+message ArchiveSummary {
+  string run_id = 1;
+  string archive_id = 2;
+  string job_name = 3;
+  string final_phase = 4;
+  string ticket = 5;
+  google.protobuf.Timestamp archived_at = 6;
+  string operator_id = 7;
+}
