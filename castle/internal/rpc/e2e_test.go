@@ -180,12 +180,12 @@ watchLoop:
 // pinned reader made the fresh registration invisible to token resolution
 // and CreateRun rejected it with 401 "unauthenticated: invalid token".
 func TestE2ERegisterThenCreateRunAfterReaderPin(t *testing.T) {
-	st, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	dir := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(dir, "castle.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
-	ts := newTestStackWithStore(t, st)
+	ts := newTestStackWithStore(t, st, filepath.Join(dir, "castle.db"))
 
 	opts := []connect.HandlerOption{connect.WithInterceptors(
 		auth.NewInterceptor(ts.store, false, auth.WithAnonRegister()),

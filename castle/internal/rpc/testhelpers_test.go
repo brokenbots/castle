@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -44,18 +45,69 @@ func newTestStack(t *testing.T) *testStack {
 
 func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 	t.Helper()
-	s, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	dir := t.TempDir()
+	s, err := sqlite.Open(filepath.Join(dir, "castle.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.Close() })
-	return newTestStackOnStore(t, s, log)
+	ts := newTestStackOnStore(t, s, log)
+	t.Cleanup(func() {
+		// Ordered teardown (drain → close → sweep) as one cleanup so the
+		// ordering is deterministic; Go's own TempDir cleanup runs after
+		// this and finds an already-swept directory.
+		if err := teardownStack(ts, s, dir); err != nil {
+			t.Logf("test stack teardown: %v", err)
+		}
+	})
+	return ts
+}
+
+// teardownStack performs the ordered teardown every store-backed test stack
+// must run before the surrounding t.TempDir is removed:
+//  1. drain debounced persistence writers (stop the variable-scope
+//     coalescer's pending timers and flush what is queued), so no write can
+//     race the store close — the cursor writers started by WatchRun are
+//     stopped by their owning handlers, which the httptest.Server.Close waits
+//     for before returning;
+//  2. close the store;
+//  3. sweep the store directory with bounded retries — the WAL driver
+//     creates castle.db-wal/-shm sidecars lazily when a fresh connection is
+//     opened, so a connection opened moments before Close can still recreate
+//     a sidecar while the TempDir cleanup walks the directory, which fails
+//     the run with "directory not empty".
+//
+// The returned error is for direct callers that want to assert teardown
+// cleanliness; cleanup wrappers only log.
+func teardownStack(ts *testStack, s *sqlite.Store, dir string) error {
+	ts.criteria.DrainBackgroundWriters()
+	closeErr := s.Close()
+	if err := sweepStoreDir(dir, 5, 20*time.Millisecond); err != nil {
+		return err
+	}
+	return closeErr
+}
+
+// sweepStoreDir removes dir with bounded retries, tolerating the lazy
+// recreation of SQLite WAL sidecars by straggler connections.
+func sweepStoreDir(dir string, attempts int, backoff time.Duration) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = os.RemoveAll(dir); err == nil {
+			return nil
+		}
+		if i < attempts-1 {
+			time.Sleep(backoff)
+		}
+	}
+	return err
 }
 
 // newTestStackOnStore builds the wire-level server set on a caller-owned
 // store. Used by tests that reopen persistence (restart simulations) or wrap
-// the store to control visibility. The store must already be registered with
-// t.Cleanup for Close by the caller.
+// the store to control visibility. The caller owns teardown: it must combine
+// draining the stack's debounced writers with the store close and a
+// sweepStoreDir of the store directory under one t.Cleanup (see
+// newTestStackWithStore and newCursorSpyStack).
 func newTestStackOnStore(t *testing.T, s *sqlite.Store, log *slog.Logger) *testStack {
 	t.Helper()
 	h := hub.New()

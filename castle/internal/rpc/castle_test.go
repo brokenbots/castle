@@ -91,11 +91,11 @@ func (s *cursorSpyStore) UpsertCount() int {
 
 func newCursorSpyStack(t *testing.T) (*testStack, *cursorSpyStore) {
 	t.Helper()
-	baseStore, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	dir := t.TempDir()
+	baseStore, err := sqlite.Open(filepath.Join(dir, "castle.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = baseStore.Close() })
 
 	wrapped := newCursorSpyStore(baseStore)
 	h := hub.New()
@@ -108,6 +108,11 @@ func newCursorSpyStack(t *testing.T) (*testStack, *cursorSpyStore) {
 		criteria: NewCriteriaServer(wrapped, h, log, controls),
 		server:   NewServerServer(wrapped, h, log, controls),
 	}
+	t.Cleanup(func() {
+		if err := teardownStack(stack, baseStore, dir); err != nil {
+			t.Logf("test stack teardown: %v", err)
+		}
+	})
 	return stack, wrapped
 }
 

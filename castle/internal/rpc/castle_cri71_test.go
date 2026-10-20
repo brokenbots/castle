@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -88,7 +89,7 @@ func TestAppendEvent_DeduplicationSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h1 := newTestStackWithStore(t, s1)
+	h1 := newTestStackWithStore(t, s1, dbPath)
 	_, oClient1, _ := h1.startServer(t)
 	overseerID, token := mustRegister(t, oClient1)
 
@@ -127,7 +128,7 @@ func TestAppendEvent_DeduplicationSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	// s2 will be closed by t.Cleanup registered inside newTestStackWithStore.
-	h2 := newTestStackWithStore(t, s2)
+	h2 := newTestStackWithStore(t, s2, dbPath)
 	_, oClient2, _ := h2.startServer(t)
 
 	// Re-submit the same correlation id from the new process.
@@ -260,19 +261,26 @@ func TestWatchRun_HistoricalReplayThenLiveNoGapOrDuplicate(t *testing.T) {
 	}
 }
 
-// newTestStackWithStore builds a testStack using the supplied store. The store
-// is closed on test cleanup.
-func newTestStackWithStore(t *testing.T, st *sqlite.Store) *testStack {
+// newTestStackWithStore builds a testStack using the supplied store. The
+// store's directory is swept on test cleanup after the debounced writers are
+// drained and the store is closed (dbPath is only used to locate that
+// directory for the sweep).
+func newTestStackWithStore(t *testing.T, st *sqlite.Store, dbPath string) *testStack {
 	t.Helper()
-	t.Cleanup(func() { _ = st.Close() })
 	h := hub.New()
 	controls := NewControlRegistry()
 	log := slog.New(slog.NewTextHandler(testWriter{t: t}, nil))
-	return &testStack{
+	ts := &testStack{
 		store:    st,
 		hub:      h,
 		controls: controls,
 		criteria: NewCriteriaServer(st, h, log, controls),
 		server:   NewServerServer(st, h, log, controls),
 	}
+	t.Cleanup(func() {
+		if err := teardownStack(ts, st, filepath.Dir(dbPath)); err != nil {
+			t.Logf("test stack teardown: %v", err)
+		}
+	})
+	return ts
 }

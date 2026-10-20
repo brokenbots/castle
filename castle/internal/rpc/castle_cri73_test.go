@@ -344,11 +344,20 @@ func TestCRI73_CastleRestartRestoresLeases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen db: %v", err)
 	}
-	defer st2.Close()
 	h2 := hub.New()
 	controls2 := NewControlRegistry()
 	criteriaServer2 := NewCriteriaServer(st2, h2, discardLogger(), controls2)
 	serverServer2 := NewServerServer(st2, h2, discardLogger(), controls2)
+	// Drain debounced writers, close the store, then sweep the directory:
+	// the cursor writers belong to handlers still owned by srv2 (closed
+	// later, LIFO), and any late WAL sidecar must not fail TempDir removal.
+	defer func() {
+		criteriaServer2.DrainBackgroundWriters()
+		if err := sweepStoreDir(filepath.Dir(dbPath), 5, 20*time.Millisecond); err != nil {
+			t.Logf("store dir sweep after restart leg: %v", err)
+		}
+		_ = st2.Close()
+	}()
 
 	mux2 := http.NewServeMux()
 	oPath2, oHandler2 := criteriav1connect.NewCriteriaServiceHandler(criteriaServer2,
