@@ -300,12 +300,17 @@ func (c *scopeCoalescer) FlushNow(ctx context.Context, runID string) {
 	}
 	mutations := c.pending[runID]
 	delete(c.pending, runID)
+	// Add under mu so Stop's mu-guarded Wait cannot race an Add at zero:
+	// any flush that Adds either releases mu before Stop's critical section
+	// (Add happens-before Wait) or returns without Adding (stopped check).
+	if len(mutations) > 0 {
+		c.appliedInflight.Add(1)
+	}
 	c.mu.Unlock()
 
 	if len(mutations) == 0 {
 		return
 	}
-	c.appliedInflight.Add(1)
 	defer c.appliedInflight.Done()
 	c.applyMutations(ctx, runID, mutations)
 }
@@ -319,12 +324,14 @@ func (c *scopeCoalescer) flush(runID string) {
 	mutations := c.pending[runID]
 	delete(c.pending, runID)
 	delete(c.timers, runID)
+	if len(mutations) > 0 {
+		c.appliedInflight.Add(1)
+	}
 	c.mu.Unlock()
 
 	if len(mutations) == 0 {
 		return
 	}
-	c.appliedInflight.Add(1)
 	defer c.appliedInflight.Done()
 	c.applyMutations(context.Background(), runID, mutations)
 }
