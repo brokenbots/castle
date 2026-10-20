@@ -29,9 +29,9 @@ service RunArchiveService {
   // archive records exist and round-trip").
   rpc GetRunArchive(GetRunArchiveRequest) returns (GetRunArchiveResponse);
 
-  // ListRunArchives pages over stored archive records newest-first so the
-  // operator's backfill leg can verify coverage and the Parapet console can
-  // browse pre-retention history.
+  // ListRunArchives pages over stored archive records in ascending run-id
+  // order so the operator's backfill leg can verify coverage and the
+  // Parapet console can browse pre-retention history.
   rpc ListRunArchives(ListRunArchivesRequest) returns (ListRunArchivesResponse);
 }
 
@@ -128,7 +128,7 @@ message ListRunArchivesRequest {
   string run_id_prefix = 1;
   // limit bounds the page size; server default 100, max 1000.
   int32 limit = 2;
-  // cursor continues a previous page; empty starts from the newest.
+  // cursor continues a previous page; empty starts from the first run id.
   string cursor = 3;
 }
 
