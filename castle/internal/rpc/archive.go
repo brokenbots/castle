@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -48,6 +49,13 @@ func archiveCallerID(ctx context.Context) string {
 	return ""
 }
 
+// syntheticArchiveKeyPrefix is the documented namespace for archive keys
+// that name no castle run (terminal CRs archived before the castle overseer
+// run registered): "cr-uid/<CR metadata.uid>", derived from the CR identity
+// the operator owns. Restricting agent-minted synthetic keys to it keeps
+// bare run ids from becoming squat-able archive keys.
+const syntheticArchiveKeyPrefix = "cr-uid/"
+
 // ArchiveRun stores one terminal run's pre-retention archive record (KB-308).
 // Idempotent: archiving the same archive key again overwrites the record
 // (latest wins), so the operator's retry-with-backoff leg can never
@@ -55,13 +63,19 @@ func archiveCallerID(ctx context.Context) string {
 // stamps into the CR status as log-provable proof the archive landed before
 // finalizer removal.
 //
-// Authorization (KB-308 scope item 2): a record backed by a castle run may
-// only be written by the caller that owns that run — unknown run ids are
-// rejected with not_found, another identity's run with permission_denied,
-// so history cannot be attributed to a run the caller never owned. Records
-// keyed only by an explicit archive_key (terminal CRs with no castle run)
-// cannot claim a run; their history attribution is protected by the store's
-// first-writer-wins provenance gate.
+// Authorization (KB-308 scope item 2), for agent identities: ownership
+// resolves against the EFFECTIVE key — archive_key when set, else run_id —
+// because that is the key the store row hangs off. A key naming an existing
+// castle run must be owned by the caller (unknown: not_found; another
+// identity's run: permission_denied), so history cannot be attributed to a
+// run the caller never owned. run_id and archive_key must agree when both
+// are set (invalid_argument otherwise): validating one run while keying
+// another is refused regardless of ownership of either. A run-id-less
+// record must keep the documented CR-derived "cr-uid/" namespace, so run
+// ids cannot be minted as squat-able keys. Orchestrator and console
+// identities keep today's behavior: their records are run-id-less
+// synthetic-keyed and protected by the store's first-writer-wins
+// provenance gate.
 func (s *ServerServer) ArchiveRun(ctx context.Context, req *connect.Request[castlev1.ArchiveRunRequest]) (*connect.Response[castlev1.ArchiveRunResponse], error) {
 	r := req.Msg.GetRecord()
 	if r == nil {
@@ -78,9 +92,38 @@ func (s *ServerServer) ArchiveRun(ctx context.Context, req *connect.Request[cast
 	if key == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("record.run_id or record.archive_key required"))
 	}
-	if callerID := auth.CallerCriteriaID(ctx); callerID != "" && r.GetRunId() != "" {
-		if _, _, err := requireCallerOwnsRun(ctx, s.Store, r.GetRunId()); err != nil {
-			return nil, err
+	if callerID := auth.CallerCriteriaID(ctx); callerID != "" {
+		// Gate on the effective key, never on run_id alone: keying is what
+		// the store row and provenance stamp follow, so an ownership check
+		// on run_id would let a caller validate its own run while storing
+		// under another identity's key (forged history), or skip the gate
+		// entirely with run_id unset (a key squat that permanently denies
+		// the legitimate owner — the archive leg retries rather than skips,
+		// so a squatted key is unarchivable run history before #309
+		// retention deletes the CR).
+		run, err := s.Store.GetRun(ctx, key)
+		if err == nil {
+			// Run-backed effective key: the caller must own THAT run.
+			if callerID != run.OverseerID {
+				return nil, connect.NewError(connect.CodePermissionDenied, errors.New("caller does not own this run"))
+			}
+		} else if errors.Is(err, store.ErrNotFound) {
+			// Key names no castle run. run_id must agree with archive_key
+			// when both are set; a run-backed run_id that does not resolve
+			// keeps the run-backed error semantics (not_found); a pure
+			// archive_key record must stay in the CR-derived namespace.
+			if ka, ki := r.GetArchiveKey(), r.GetRunId(); ka != "" && ki != "" && ka != ki {
+				return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("record.run_id and record.archive_key disagree; a record with both set must key exactly on its run id"))
+			}
+			if r.GetRunId() != "" {
+				if _, _, err := requireCallerOwnsRun(ctx, s.Store, r.GetRunId()); err != nil {
+					return nil, err
+				}
+			} else if !strings.HasPrefix(key, syntheticArchiveKeyPrefix) {
+				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("record.archive_key for a record without a castle run must start with %q", syntheticArchiveKeyPrefix))
+			}
+		} else {
+			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 	}
 	body, err := archiveRecordJSON(r)

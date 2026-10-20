@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -464,7 +465,11 @@ func archiveAuthed(token string, rec *castlev1.ArchiveRecord) *connect.Request[c
 
 // newArchiveOwnershipStack wires the archive surface behind the real auth
 // interceptor with two registered agents; agent A (token A) owns castle run
-// "run-owned". Returns the owner's criteria id too, for provenance asserts.
+// "run-owned", agent B (token B) owns castle run "run-owned-b" — both needed
+// because the effective-archive-key ownership gate resolves against the key
+// each caller names, so an adversarial request must name a run the caller
+// DOES own to prove the gate follows the key and not run_id. Returns the
+// owner's criteria id too, for provenance asserts.
 func newArchiveOwnershipStack(t *testing.T) (castlev1connect.RunArchiveServiceClient, *testStack, string, string, string) {
 	t.Helper()
 	ts := newTestStack(t)
@@ -472,12 +477,17 @@ func newArchiveOwnershipStack(t *testing.T) (castlev1connect.RunArchiveServiceCl
 	tsrv := archiveOnlyServer(t, ts, true, false, opts)
 	client := archiveClient(tsrv)
 	agentA, tokenA := criteriaRegisterAgent(t, tsrv, "agent-a")
-	_, tokenB := criteriaRegisterAgent(t, tsrv, "agent-b")
+	agentB, tokenB := criteriaRegisterAgent(t, tsrv, "agent-b")
 
 	if err := ts.store.CreateRun(context.Background(), &store.Run{
 		ID: "run-owned", OverseerID: agentA, Status: "failed", CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("seed owned run: %v", err)
+	}
+	if err := ts.store.CreateRun(context.Background(), &store.Run{
+		ID: "run-owned-b", OverseerID: agentB, Status: "failed", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed second agent's run: %v", err)
 	}
 	return client, ts, tokenA, tokenB, agentA
 }
@@ -546,6 +556,83 @@ func TestArchiveRunSyntheticKeyProvenanceEnforced(t *testing.T) {
 	if replay.Msg.GetCreated() {
 		t.Fatal("same-identity replay must report created=false")
 	}
+}
+
+// TestArchiveRunArchiveKeyCannotBypassOwnership pins the effective-key
+// ownership gate (security review round 3, HIGH): the store row hangs off
+// the EFFECTIVE key — archive_key when set, else run_id — so an ownership
+// gate on run_id alone is bypassable. Before the fix: (a) a caller
+// validating its own run while keying the record after another identity's
+// run stored forged history under that run's key, and (b) a caller with
+// run_id empty skipped the gate and squatted the key — turning the store's
+// first-writer-wins provenance gate into a permanent denial of the
+// legitimate owner's archive leg (archive failure retries and never skips,
+// so #309 retention would delete that run's history unrecoverably). After
+// the fix: key-vs-run_id mismatches are InvalidArgument, keys naming
+// another identity's run are PermissionDenied, the squatted key stays
+// unwritten (verified by absence), and the owner still lands its archive.
+func TestArchiveRunArchiveKeyCannotBypassOwnership(t *testing.T) {
+	client, ts, tokenA, tokenB, agentA := newArchiveOwnershipStack(t)
+	ctx := context.Background()
+
+	expectNoRow := func(key, label string) {
+		t.Helper()
+		if _, err := ts.store.GetRunArchiveRecord(ctx, key); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("%s: expected no archive row under %q, got %v", label, key, err)
+		}
+	}
+	expectNoRow("run-owned", "pre-state")
+
+	// (a) Agent B validates its OWN run but keys the record after agent A's
+	// run: the effective key names a run B never owns → PermissionDenied,
+	// and no history is stored under A's run id.
+	_, err := client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordProto("run-owned-b", "run-owned")))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("own run keyed after another run's id = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	expectNoRow("run-owned", "shape (a)")
+
+	// (b) run_id empty with archive_key naming A's run: the ownership gate
+	// must still fire on the effective key → PermissionDenied, no row.
+	_, err = client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordProto("", "run-owned")))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("run-id-less key naming another run = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	expectNoRow("run-owned", "shape (b)")
+
+	// Squat-then-owner (DoS regression): after B's refused squats the
+	// legitimate owner STILL lands its archive under its own run id — the
+	// squat wrote nothing, so no first-writer-wins stamp blocks it.
+	resp, err := client.ArchiveRun(ctx, archiveAuthed(tokenA, archiveRecordProto("run-owned", "")))
+	if err != nil {
+		t.Fatalf("owner archive after refused squats: %v", err)
+	}
+	if !resp.Msg.GetCreated() {
+		t.Fatal("owner's first archive must be created after refused squats")
+	}
+	row := requireStoredRow(t, ts.store, "run-owned")
+	if row.OperatorID != "criteria/"+agentA {
+		t.Fatalf("owner provenance stamp = %q want criteria/%s", row.OperatorID, agentA)
+	}
+
+	// Mismatch: run_id and archive_key both set and different →
+	// InvalidArgument even when the caller owns the run_id side (aliasing
+	// an owned run onto an arbitrary archive_key is also refused), and no
+	// key is minted.
+	_, err = client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordProto("run-owned-b", "cr-uid/mismatch-key")))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("run_id/archive_key mismatch = %v want InvalidArgument", connect.CodeOf(err))
+	}
+	expectNoRow("cr-uid/mismatch-key", "mismatch")
+
+	// Namespace: a run-id-less synthetic key outside the documented
+	// CR-derived namespace is InvalidArgument, so bare names cannot become
+	// squat-able record keys.
+	_, err = client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordNoRun("forge-me-a-key")))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("non-namespaced synthetic key = %v want InvalidArgument", connect.CodeOf(err))
+	}
+	expectNoRow("forge-me-a-key", "namespace")
 }
 
 // archiveAuthHarness carries the seeded identities for the interceptor-level
