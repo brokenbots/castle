@@ -30,23 +30,37 @@ Top-level fields:
 | terminal_cleanup      | string   | "deferred"/"cleared"/"" from the TerminalCleanup condition |
 | started_at            | string   | RFC3339; "" when the run never started                  |
 | ended_at              | string   | RFC3339; "" when not terminal (never today)             |
-| archived_at           | string   | RFC3339 instant of the archive (castle stamp)           |
+| archive_key           | string   | explicit CR-derived record key (e.g. "cr-uid/<uid>") for records with NO castle run; "" for run-backed records |
+
+One record per ARCHIVE KEY: the effective key is archive_key when set, else
+run_id (both empty are rejected). Records with a castle run key on
+`run_id`; run-id-less terminal CRs archive under `archive_key` so a terminal
+CR is never unarchivable. `archived_at` is NOT an operator field: castle
+stamps it server-side and returns it in `ArchiveRunResponse`/`GetRunArchiveResponse`
+(and per-row in `ArchiveSummary`). Wire bodies are protojson lowerCamelCase
+(e.g. `schemaVersion`, `bindingCmChecksum`); the table above uses the field
+names for reference.
 
 ## Storage design
 
-`run_archive` table: `run_id TEXT PRIMARY KEY` (the natural key: one record per
-castle run; the operator re-archives to UPDATE, never to duplicate), payload TEXT
-(marshalled proto), operator info text fields, archived_at.
+`run_archive` table: `archive_key TEXT PRIMARY KEY` — the effective archive
+key ("run-archive/<run_id>" for run-backed records, the explicit CR key for
+run-id-less records); `run_id` is a plain column ("" for run-id-less records).
+Re-archiving the same key UPDATEs in place (latest wins, never duplicates);
+the first non-empty writer identity locks the row's `operator_id`
+(`store.ErrArchiveOperatorConflict` → permission_denied for other identities).
 
 Store API (interface + sqlite impl):
 - `PutRunArchiveRecord(ctx, rec *RunArchiveRecord) (created bool, err error)`
-  idempotent PUT.
-- `GetRunArchiveRecord(ctx, runID) (*RunArchiveRecord, error)`
-- `ListRunArchives(ctx, before, limit) ([]RunArchiveRecord, pageToken, error)`
+  idempotent PUT keyed on rec.Key; rec.Key and rec.Record are required; a
+  cross-identity overwrite fails with `ErrArchiveOperatorConflict`.
+- `GetRunArchiveRecord(ctx, key) (*RunArchiveRecord, error)`
+- `ListRunArchives(ctx, keyPrefix, afterKey string, limit int, pageToken string) ([]*RunArchiveRecord, string, error)`
+  ascending archive_key keyset pages (default page 100, max 1000).
 
 ## Wire (proto)
 
-`proto/castle/v1/archive.proto` — package castle.v1, new service `CastleRunArchiveService`
+`proto/castle/v1/archive.proto` — package castle.v1, new service `RunArchiveService`
 with `ArchiveRun`, `GetRunArchive`, `ListRunArchives`. Generated Go goes under
 castle/gen/castle/v1. TS generation for the console is not needed in this card:
 the run-viewer UI is not part of this leg; castle-side TS bindings regenerate anyway
@@ -58,8 +72,13 @@ Operator uses its existing token: the criteria agent token (CASTLE_TOKEN) — th
 podstate feed's exact token path (SubmitEvents with a criteria agent token). The
 operator's CriteriaRun controller already authenticates this way for per-run event
 ingest and per-run status stamps. The service handler reads the same
-auth.CallerCriteriaID identity; the operator may write a record only for a run whose
-overseer (agent identity) it is. This follows the criteria-k8s identity model:
+auth.CallerCriteriaID identity; the operator may write a record only for a run
+whose overseer (agent identity) it is — enforced end-to-end: a run-backed record
+(run_id set) requires the run to resolve and be owned by the caller (unknown run:
+not_found; another identity's run: permission_denied); a record keyed only on
+archive_key cannot claim a run, so cross-writer protection is castle's
+first-writer-wins provenance gate (permission_denied to a second identity).
+This follows the criteria-k8s identity model:
 the operator already owns a criteria identity (podstate feed), and every other
 operator→castle write in this codebase (SubmitEvents, run.metadata stamps) uses it.
 
@@ -82,7 +101,7 @@ operator→castle write in this codebase (SubmitEvents, run.metadata stamps) use
 - [x] store surface + sqlite impl + tests
 - [x] RPC service + handlers + tests
 - [x] main.go wiring
-- [ ] full `make ci` green
+- [x] full `make ci` green
 
 ## What is deliberately NOT in this leg
 
