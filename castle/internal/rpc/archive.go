@@ -49,25 +49,46 @@ func archiveCallerID(ctx context.Context) string {
 }
 
 // ArchiveRun stores one terminal run's pre-retention archive record (KB-308).
-// Idempotent: archiving the same run_id again overwrites the record (latest
-// wins), so the operator's retry-with-backoff leg can never duplicate
-// history. The response's archive_id is the handle the operator stamps into
-// the CR status as log-provable proof the archive landed before finalizer
-// removal.
+// Idempotent: archiving the same archive key again overwrites the record
+// (latest wins), so the operator's retry-with-backoff leg can never
+// duplicate history. The response's archive_id is the handle the operator
+// stamps into the CR status as log-provable proof the archive landed before
+// finalizer removal.
+//
+// Authorization (KB-308 scope item 2): a record backed by a castle run may
+// only be written by the caller that owns that run — unknown run ids are
+// rejected with not_found, another identity's run with permission_denied,
+// so history cannot be attributed to a run the caller never owned. Records
+// keyed only by an explicit archive_key (terminal CRs with no castle run)
+// cannot claim a run; their history attribution is protected by the store's
+// first-writer-wins provenance gate.
 func (s *ServerServer) ArchiveRun(ctx context.Context, req *connect.Request[castlev1.ArchiveRunRequest]) (*connect.Response[castlev1.ArchiveRunResponse], error) {
 	r := req.Msg.GetRecord()
 	if r == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("record required"))
 	}
-	if r.GetRunId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("record.run_id required"))
+	// Effective archive key (KB-308 archive_key contract): the explicit
+	// CR-derived archive_key for run-id-less records, else the castle
+	// overseer run id. Store rows and the operator-stamped archive_id hang
+	// off this key, so a terminal CR is never unarchivable.
+	key := r.GetArchiveKey()
+	if key == "" {
+		key = r.GetRunId()
+	}
+	if key == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("record.run_id or record.archive_key required"))
+	}
+	if callerID := auth.CallerCriteriaID(ctx); callerID != "" && r.GetRunId() != "" {
+		if _, _, err := requireCallerOwnsRun(ctx, s.Store, r.GetRunId()); err != nil {
+			return nil, err
+		}
 	}
 	body, err := archiveRecordJSON(r)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	archiveID := store.ArchiveID(r.GetRunId())
 	rec := &store.RunArchiveRecord{
+		Key:        key,
 		RunID:      r.GetRunId(),
 		JobName:    r.GetJobName(),
 		FinalPhase: r.GetFinalPhase(),
@@ -78,8 +99,12 @@ func (s *ServerServer) ArchiveRun(ctx context.Context, req *connect.Request[cast
 	}
 	created, err := s.Store.PutRunArchiveRecord(ctx, rec)
 	if err != nil {
+		if errors.Is(err, store.ErrArchiveOperatorConflict) {
+			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("archive record for this key was already archived by another identity: %w", err))
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	archiveID := store.ArchiveID(key)
 	if s.Log != nil {
 		// Log-provable gate (workstream ACCEPTANCE): one line per landed
 		// archive, carrying the ids the operator stamps. Record content is
@@ -87,6 +112,7 @@ func (s *ServerServer) ArchiveRun(ctx context.Context, req *connect.Request[cast
 		// did not clear for castle logs).
 		s.Log.Info("run archive stored",
 			"run_id", rec.RunID,
+			"archive_key", key,
 			"archive_id", archiveID,
 			"operator_id", rec.OperatorID,
 			"created", created,
@@ -99,17 +125,18 @@ func (s *ServerServer) ArchiveRun(ctx context.Context, req *connect.Request[cast
 	}), nil
 }
 
-// GetRunArchive returns one stored archive record by run id — the round-trip
-// check #309's retention spot-check reads ("for N deleted CRs, castle
-// archive records exist and round-trip").
+// GetRunArchive returns one stored archive record by archive key — the
+// round-trip check #309's retention spot-check reads ("for N deleted CRs,
+// castle archive records exist and round-trip"). Run-backed records are
+// keyed by run id, run-id-less records by their explicit archive_key.
 func (s *ServerServer) GetRunArchive(ctx context.Context, req *connect.Request[castlev1.GetRunArchiveRequest]) (*connect.Response[castlev1.GetRunArchiveResponse], error) {
-	if req.Msg.GetRunId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
+	if req.Msg.GetKey() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("key required"))
 	}
-	rec, err := s.Store.GetRunArchiveRecord(ctx, req.Msg.GetRunId())
+	rec, err := s.Store.GetRunArchiveRecord(ctx, req.Msg.GetKey())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("no archive record for this run id"))
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("no archive record for this key"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -126,14 +153,14 @@ func (s *ServerServer) GetRunArchive(ctx context.Context, req *connect.Request[c
 	}), nil
 }
 
-// ListRunArchives pages stored archive records in ascending run-id order so
-// the backfill coverage check can be walked deterministically.
+// ListRunArchives pages stored archive records in ascending archive-key
+// order so the backfill coverage check can be walked deterministically.
 func (s *ServerServer) ListRunArchives(ctx context.Context, req *connect.Request[castlev1.ListRunArchivesRequest]) (*connect.Response[castlev1.ListRunArchivesResponse], error) {
 	limit := int(req.Msg.GetLimit())
 	if limit <= 0 {
 		limit = sqlite.ListRunArchivesDefaultLimit
 	}
-	all, next, err := s.Store.ListRunArchives(ctx, req.Msg.GetRunIdPrefix(), "", limit, req.Msg.GetCursor())
+	all, next, err := s.Store.ListRunArchives(ctx, req.Msg.GetKeyPrefix(), "", limit, req.Msg.GetCursor())
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidCursor) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -144,7 +171,7 @@ func (s *ServerServer) ListRunArchives(ctx context.Context, req *connect.Request
 	for _, rec := range all {
 		summaries = append(summaries, &castlev1.ArchiveSummary{
 			RunId:      rec.RunID,
-			ArchiveId:  store.ArchiveID(rec.RunID),
+			ArchiveId:  store.ArchiveID(rec.Key),
 			JobName:    rec.JobName,
 			FinalPhase: rec.FinalPhase,
 			Ticket:     rec.Ticket,

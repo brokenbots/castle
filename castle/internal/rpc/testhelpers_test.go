@@ -149,6 +149,27 @@ func mustRegister(t *testing.T, client criteriav1connect.CriteriaServiceClient) 
 	return resp.Msg.CriteriaId, resp.Msg.Token
 }
 
+// criteriaRegisterAgent mints a fresh agent identity through the real
+// Register flow and returns (criteriaID, token). Service-scoped wire tests
+// that cannot use the shared all-services mount use this to exercise the
+// same podstate-feed token path.
+func criteriaRegisterAgent(t *testing.T, srv *httptest.Server, name string) (string, string) {
+	t.Helper()
+	client := criteriav1connect.NewCriteriaServiceClient(h2cClient(), srv.URL)
+	resp, err := client.Register(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: name}))
+	if err != nil {
+		t.Fatalf("register agent %q: %v", name, err)
+	}
+	return resp.Msg.GetCriteriaId(), resp.Msg.GetToken()
+}
+
+// mountCriteriaHandler mounts the criteria service handler on a custom mux,
+// for service-scoped wire servers that need the Register flow mounted.
+func mountCriteriaHandler(mux *http.ServeMux, ts *testStack, opts ...connect.HandlerOption) {
+	path, handler := criteriav1connect.NewCriteriaServiceHandler(ts.criteria, opts...)
+	mux.Handle(path, handler)
+}
+
 // mustStoreEvent converts a wire envelope into the storage-neutral Event used
 // by the store layer. It fails the test on codec errors. Test code that seeds
 // persisted events directly can use this rather than duplicating the RPC codec.

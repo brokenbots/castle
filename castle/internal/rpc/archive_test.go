@@ -20,8 +20,6 @@ import (
 	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
-	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 )
 
 // archiveStartedAt is the fixed record timestamp so round-trip comparisons
@@ -35,8 +33,8 @@ func archiveOnlyServer(t *testing.T, ts *testStack, withAuth, allowAnonReads boo
 	t.Helper()
 	mux := http.NewServeMux()
 	if withAuth {
-		regPath, regHandler := criteriav1connect.NewCriteriaServiceHandler(ts.criteria, opts...)
-		mux.Handle(regPath, regHandler)
+		// The Register flow (shared helper): real agent tokens, not fixtures.
+		mountCriteriaHandler(mux, ts, opts...)
 	}
 	path, handler := castlev1connect.NewRunArchiveServiceHandler(ts.server, opts...)
 	mux.Handle(path, handler)
@@ -57,11 +55,13 @@ const archiveRunID = "run-matrix"
 
 // archiveRecordProto builds a full KB-308 archive record: workflow identity,
 // checksums, operator version, every monitored condition, a failure verdict,
-// the visited-step summary, lifecycle totals, timestamps and run ids.
-func archiveRecordProto(runID string) *castlev1.ArchiveRecord {
+// the visited-step summary, lifecycle totals, timestamps and run ids. The
+// second argument sets the record's archive_key ("" for run-backed records).
+func archiveRecordProto(runID, archiveKey string) *castlev1.ArchiveRecord {
 	rec := &castlev1.ArchiveRecord{
 		SchemaVersion:            1,
 		RunId:                    runID,
+		ArchiveKey:               archiveKey,
 		JobName:                  "wf-ticket-42-7fb2c9",
 		Ticket:                   "KB-42",
 		Repo:                     "git@github.com:brokenbots/workflow-example.git",
@@ -93,13 +93,20 @@ func archiveRunReq(rec *castlev1.ArchiveRecord) *connect.Request[castlev1.Archiv
 	return connect.NewRequest(&castlev1.ArchiveRunRequest{Record: rec})
 }
 
-func requireStoredRow(t *testing.T, st store.Store, runID string) *store.RunArchiveRecord {
+func requireStoredRow(t *testing.T, st store.Store, key string) *store.RunArchiveRecord {
 	t.Helper()
-	rec, err := st.GetRunArchiveRecord(context.Background(), runID)
+	rec, err := st.GetRunArchiveRecord(context.Background(), key)
 	if err != nil {
-		t.Fatalf("stored row for %s: %v", runID, err)
+		t.Fatalf("stored row for %s: %v", key, err)
 	}
 	return rec
+}
+
+// archiveRecordNoRun builds the same full record for a terminal CR with no
+// castle overseer run (KB-308 archive_key contract): the explicit
+// CR-derived archive_key carries the identity and run_id stays empty.
+func archiveRecordNoRun(key string) *castlev1.ArchiveRecord {
+	return archiveRecordProto("", key)
 }
 
 // redecodeRecord re-serializes the structpb.Struct body served by
@@ -125,7 +132,7 @@ func TestArchiveRunStoresAndRoundTrips(t *testing.T) {
 	client := archiveClient(archiveOnlyServer(t, ts, false, false))
 	runID := "run-roundtrip"
 
-	resp, err := client.ArchiveRun(context.Background(), archiveRunReq(archiveRecordProto(runID)))
+	resp, err := client.ArchiveRun(context.Background(), archiveRunReq(archiveRecordProto(runID, "")))
 	if err != nil {
 		t.Fatalf("archive run: %v", err)
 	}
@@ -172,14 +179,14 @@ func TestArchiveRunStoresAndRoundTrips(t *testing.T) {
 	}
 
 	// The full record round-trips through the stored JSON exactly.
-	got, err := client.GetRunArchive(context.Background(), connect.NewRequest(&castlev1.GetRunArchiveRequest{RunId: runID}))
+	got, err := client.GetRunArchive(context.Background(), connect.NewRequest(&castlev1.GetRunArchiveRequest{Key: runID}))
 	if err != nil {
 		t.Fatalf("get run archive: %v", err)
 	}
 	if got.Msg.GetRunId() != runID || got.Msg.GetArchivedAt() == nil {
 		t.Fatalf("response metadata lost: %+v", got.Msg)
 	}
-	if !proto.Equal(redecodeRecord(t, got.Msg.GetRecord()), archiveRecordProto(runID)) {
+	if !proto.Equal(redecodeRecord(t, got.Msg.GetRecord()), archiveRecordProto(runID, "")) {
 		t.Fatal("record did not round-trip through storage")
 	}
 }
@@ -189,7 +196,7 @@ func TestArchiveRunReplayOverwrites(t *testing.T) {
 	client := archiveClient(archiveOnlyServer(t, ts, false, false))
 	runID := "run-replay"
 
-	r1, err := client.ArchiveRun(context.Background(), archiveRunReq(archiveRecordProto(runID)))
+	r1, err := client.ArchiveRun(context.Background(), archiveRunReq(archiveRecordProto(runID, "")))
 	if err != nil {
 		t.Fatalf("first archive: %v", err)
 	}
@@ -199,7 +206,7 @@ func TestArchiveRunReplayOverwrites(t *testing.T) {
 
 	// The operator's retry-with-backoff leg replays; latest body wins and no
 	// duplicate history row may appear.
-	retry := archiveRecordProto(runID)
+	retry := archiveRecordProto(runID, "")
 	retry.FinalPhase = "Succeeded"
 	retry.FailureReason = ""
 	r2, err := client.ArchiveRun(context.Background(), archiveRunReq(retry))
@@ -218,7 +225,7 @@ func TestArchiveRunReplayOverwrites(t *testing.T) {
 		t.Fatalf("list records = %d, want exactly 1", len(list.Msg.GetArchives()))
 	}
 
-	got, err := client.GetRunArchive(context.Background(), connect.NewRequest(&castlev1.GetRunArchiveRequest{RunId: runID}))
+	got, err := client.GetRunArchive(context.Background(), connect.NewRequest(&castlev1.GetRunArchiveRequest{Key: runID}))
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -233,7 +240,10 @@ func TestArchiveRunInvalidArguments(t *testing.T) {
 
 	cases := map[string]*connect.Request[castlev1.ArchiveRunRequest]{
 		"nil record": connect.NewRequest(&castlev1.ArchiveRunRequest{Record: nil}),
-		"empty run_id": archiveRunReq(&castlev1.ArchiveRecord{
+		// Both ids empty: no run id, no explicit archive key — the CR would
+		// have no stable identity to archive under (KB-308 archive_key
+		// contract).
+		"no run id and no archive key": archiveRunReq(&castlev1.ArchiveRecord{
 			SchemaVersion: 1, FinalPhase: "Failed",
 		}),
 	}
@@ -251,7 +261,7 @@ func TestArchiveRunInvalidArguments(t *testing.T) {
 func TestGetRunArchiveNotFound(t *testing.T) {
 	ts := newTestStack(t)
 	client := archiveClient(archiveOnlyServer(t, ts, false, false))
-	resp, err := client.GetRunArchive(context.Background(), connect.NewRequest(&castlev1.GetRunArchiveRequest{RunId: "run-unknown"}))
+	resp, err := client.GetRunArchive(context.Background(), connect.NewRequest(&castlev1.GetRunArchiveRequest{Key: "run-unknown"}))
 	if resp != nil || err == nil {
 		t.Fatalf("expected NotFound, got resp=%v err=%v", resp, err)
 	}
@@ -266,7 +276,7 @@ func TestListRunArchivesWirePaging(t *testing.T) {
 	ts := newTestStack(t)
 	client := archiveClient(archiveOnlyServer(t, ts, false, false))
 	for i := 1; i <= 4; i++ {
-		if _, err := client.ArchiveRun(context.Background(), archiveRunReq(archiveRecordProto(wireRunID(i)))); err != nil {
+		if _, err := client.ArchiveRun(context.Background(), archiveRunReq(archiveRecordProto(wireRunID(i), ""))); err != nil {
 			t.Fatalf("archive %d: %v", i, err)
 		}
 	}
@@ -319,13 +329,33 @@ func TestListRunArchivesWirePaging(t *testing.T) {
 		t.Fatalf("walk must end with an empty cursor, got %q", page2.Msg.GetNextCursor())
 	}
 
-	// Prefix filter narrows without paging surprises.
-	pl, err := client.ListRunArchives(context.Background(), connect.NewRequest(&castlev1.ListRunArchivesRequest{RunIdPrefix: "run-000", Limit: 2}))
+	// Prefix filter narrows without paging surprises...
+	pl, err := client.ListRunArchives(context.Background(), connect.NewRequest(&castlev1.ListRunArchivesRequest{KeyPrefix: "run-000", Limit: 2}))
 	if err != nil {
 		t.Fatalf("prefix list: %v", err)
 	}
 	if n := len(pl.Msg.GetArchives()); n != 2 {
 		t.Fatalf("prefix page = %d records, want 2 of 4", n)
+	}
+	if pl.Msg.GetArchives()[0].GetArchiveId() != store.ArchiveID(wireRunID(1)) {
+		t.Fatalf("prefix summary archive id: %q", pl.Msg.GetArchives()[0].GetArchiveId())
+	}
+
+	// Prefix AND cursor in one request: the prefix page walk honors the
+	// cursor boundary and stays inside the prefix space.
+	pc, err := client.ListRunArchives(context.Background(), connect.NewRequest(&castlev1.ListRunArchivesRequest{KeyPrefix: "run-000", Limit: 2}))
+	if err != nil {
+		t.Fatalf("prefix+cursor page 1: %v", err)
+	}
+	if pc.Msg.GetNextCursor() == "" {
+		t.Fatal("prefix+cursor page 1 must carry a cursor")
+	}
+	pc2, err := client.ListRunArchives(context.Background(), connect.NewRequest(&castlev1.ListRunArchivesRequest{KeyPrefix: "run-000", Limit: 2, Cursor: pc.Msg.GetNextCursor()}))
+	if err != nil {
+		t.Fatalf("prefix+cursor page 2: %v", err)
+	}
+	if n := len(pc2.Msg.GetArchives()); n != 2 || pc2.Msg.GetArchives()[0].GetRunId() != wireRunID(3) || pc2.Msg.GetNextCursor() != "" {
+		t.Fatalf("prefix+cursor page 2 incomplete: n=%d next=%q", n, pc2.Msg.GetNextCursor())
 	}
 }
 
@@ -341,6 +371,183 @@ func TestListRunArchivesInvalidCursor(t *testing.T) {
 	}
 }
 
+func TestGetRunArchiveRequiresKey(t *testing.T) {
+	ts := newTestStack(t)
+	client := archiveClient(archiveOnlyServer(t, ts, false, false))
+	_, err := client.GetRunArchive(context.Background(), connect.NewRequest(&castlev1.GetRunArchiveRequest{}))
+	if err == nil {
+		t.Fatal("expected InvalidArgument for empty key")
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("code = %s want InvalidArgument", connect.CodeOf(err))
+	}
+}
+
+func TestArchiveRunWithoutCastleRunID(t *testing.T) {
+	// Terminal CRs with no castle overseer run (run that died pre-register)
+	// archive under their explicit CR-derived archive_key (KB-308
+	// archive_key contract) — the run-id-less record class can never be
+	// unarchivable, or the archive-before-finalizer leg would block forever.
+	key := "cr-uid/0f31e9a2-7d4c-4b8e-9f01-2a6b5c8d7e10"
+	logHandler := &recordingSlogHandler{}
+	ts := newTestStackWithLog(t, slog.New(logHandler))
+	client := archiveClient(archiveOnlyServer(t, ts, false, false))
+
+	resp, err := client.ArchiveRun(context.Background(), archiveRunReq(archiveRecordNoRun(key)))
+	if err != nil {
+		t.Fatalf("archive run-id-less record: %v", err)
+	}
+	if want := store.ArchiveID(key); resp.Msg.GetArchiveId() != want {
+		t.Fatalf("archive id = %q want %q", resp.Msg.GetArchiveId(), want)
+	}
+	if !resp.Msg.GetCreated() {
+		t.Fatal("first archive must report created=true")
+	}
+
+	// Wire round-trip by key.
+	got, err := client.GetRunArchive(context.Background(), connect.NewRequest(&castlev1.GetRunArchiveRequest{Key: key}))
+	if err != nil {
+		t.Fatalf("get by archive key: %v", err)
+	}
+	if got.Msg.GetRunId() != "" {
+		t.Fatalf("run-id-less record must keep run_id empty, got %q", got.Msg.GetRunId())
+	}
+	roundTripped := redecodeRecord(t, got.Msg.GetRecord())
+	if !proto.Equal(roundTripped, archiveRecordNoRun(key)) {
+		t.Fatal("run-id-less record did not round-trip through storage")
+	}
+	if roundTripped.GetArchiveKey() != key {
+		t.Fatalf("archive_key must survive the round trip, got %q", roundTripped.GetArchiveKey())
+	}
+
+	// Replay of the same key: created=false, exactly one history row.
+	replay, err := client.ArchiveRun(context.Background(), archiveRunReq(archiveRecordNoRun(key)))
+	if err != nil {
+		t.Fatalf("replay archive: %v", err)
+	}
+	if replay.Msg.GetCreated() {
+		t.Fatal("replay of the same key must report created=false")
+	}
+	list, err := client.ListRunArchives(context.Background(), connect.NewRequest(&castlev1.ListRunArchivesRequest{KeyPrefix: "cr-uid/"}))
+	if err != nil {
+		t.Fatalf("list by prefix: %v", err)
+	}
+	if len(list.Msg.GetArchives()) != 1 || list.Msg.GetArchives()[0].GetRunId() != "" {
+		t.Fatalf("run-id-less replay duplicated history: %+v", list.Msg.GetArchives())
+	}
+
+	// Log-provable: the key and archive id are logged, never the body.
+	found := false
+	for _, entry := range logHandler.snapshot() {
+		if entry.Message != "run archive stored" {
+			continue
+		}
+		found = true
+		if entry.Attrs["archive_key"] != key || entry.Attrs["run_id"] != "" {
+			t.Errorf("log identity attrs = %v/%v want run_id empty", entry.Attrs["archive_key"], entry.Attrs["run_id"])
+		}
+		if _, hasBody := entry.Attrs["record"]; hasBody {
+			t.Error("record body must never appear in castle logs")
+		}
+	}
+	if !found {
+		t.Fatal(`expected a "run archive stored" log line`)
+	}
+}
+
+// archiveAuthed builds an archive request bearing the given bearer token.
+func archiveAuthed(token string, rec *castlev1.ArchiveRecord) *connect.Request[castlev1.ArchiveRunRequest] {
+	req := archiveRunReq(rec)
+	req.Header().Set("Authorization", "Bearer "+token)
+	return req
+}
+
+// newArchiveOwnershipStack wires the archive surface behind the real auth
+// interceptor with two registered agents; agent A (token A) owns castle run
+// "run-owned". Returns the owner's criteria id too, for provenance asserts.
+func newArchiveOwnershipStack(t *testing.T) (castlev1connect.RunArchiveServiceClient, *testStack, string, string, string) {
+	t.Helper()
+	ts := newTestStack(t)
+	opts := connect.WithInterceptors(auth.NewInterceptor(ts.store, false, auth.WithAnonRegister()))
+	tsrv := archiveOnlyServer(t, ts, true, false, opts)
+	client := archiveClient(tsrv)
+	agentA, tokenA := criteriaRegisterAgent(t, tsrv, "agent-a")
+	_, tokenB := criteriaRegisterAgent(t, tsrv, "agent-b")
+
+	if err := ts.store.CreateRun(context.Background(), &store.Run{
+		ID: "run-owned", OverseerID: agentA, Status: "failed", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed owned run: %v", err)
+	}
+	return client, ts, tokenA, tokenB, agentA
+}
+
+func TestArchiveRunOwnershipEnforced(t *testing.T) {
+	client, ts, tokenA, tokenB, agentA := newArchiveOwnershipStack(t)
+	ctx := context.Background()
+
+	// The owning agent archives its run and replays safely.
+	resp, err := client.ArchiveRun(ctx, archiveAuthed(tokenA, archiveRecordProto("run-owned", "")))
+	if err != nil {
+		t.Fatalf("owner archive: %v", err)
+	}
+	if !resp.Msg.GetCreated() {
+		t.Fatal("owner first archive must be created")
+	}
+	retry, err := client.ArchiveRun(ctx, archiveAuthed(tokenA, archiveRecordProto("run-owned", "")))
+	if err != nil {
+		t.Fatalf("owner replay: %v", err)
+	}
+	if retry.Msg.GetCreated() {
+		t.Fatal("owner replay must report created=false")
+	}
+
+	// A second agent's token CANNOT forge history for a run it never owned.
+	_, err = client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordProto("run-owned", "")))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("cross-agent archive of an owned run = %v want PermissionDenied", err)
+	}
+	// The attempted forgery must not have touched the stored history.
+	row := requireStoredRow(t, ts.store, "run-owned")
+	if row.OperatorID != "criteria/"+agentA {
+		t.Fatalf("refused overwrite changed ownership stamp: got %q want criteria/%s", row.OperatorID, agentA)
+	}
+
+	// Unknown run ids (with the interceptor wired) are NotFound, not a
+	// silent synthetic archive.
+	_, err = client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordProto("run-never-existed", "")))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("unknown run archive code = %s want NotFound (err=%v)", connect.CodeOf(err), err)
+	}
+}
+
+func TestArchiveRunSyntheticKeyProvenanceEnforced(t *testing.T) {
+	// Records with no castle run have no owner identity to look up, so
+	// cross-writer protection rides the store's first-writer-wins
+	// provenance gate: agent B mints its key, agent A cannot overwrite it.
+	client, _, tokenA, tokenB, _ := newArchiveOwnershipStack(t)
+	ctx := context.Background()
+
+	key := "cr-uid/bbbb"
+	if _, err := client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordNoRun(key))); err != nil {
+		t.Fatalf("agent B mints its own synthetic-key record: %v", err)
+	}
+
+	_, err := client.ArchiveRun(ctx, archiveAuthed(tokenA, archiveRecordNoRun(key)))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("cross-agent overwrite of a synthetic-key record = %v want PermissionDenied", err)
+	}
+
+	// The writer itself still replays idempotently.
+	replay, err := client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordNoRun(key)))
+	if err != nil {
+		t.Fatalf("agent B replay: %v", err)
+	}
+	if replay.Msg.GetCreated() {
+		t.Fatal("same-identity replay must report created=false")
+	}
+}
+
 // archiveAuthHarness carries the seeded identities for the interceptor-level
 // archive authorization matrix. The agent token is minted through the real
 // Register flow (the podstate feed token path); console and orchestrator
@@ -348,7 +555,6 @@ func TestListRunArchivesInvalidCursor(t *testing.T) {
 type archiveAuthHarness struct {
 	ts         *testStack
 	client     castlev1connect.RunArchiveServiceClient
-	oClient    criteriav1connect.CriteriaServiceClient
 	agentID    string
 	agentToken string
 	orchToken  string
@@ -361,15 +567,10 @@ func newArchiveAuthHarness(t *testing.T, allowAnonReads bool) *archiveAuthHarnes
 	opts := connect.WithInterceptors(auth.NewInterceptor(ts.store, allowAnonReads, auth.WithAnonRegister()))
 	tsrv := archiveOnlyServer(t, ts, true, allowAnonReads, opts)
 	h := &archiveAuthHarness{
-		ts:      ts,
-		client:  archiveClient(tsrv),
-		oClient: criteriav1connect.NewCriteriaServiceClient(h2cClient(), tsrv.URL),
+		ts:     ts,
+		client: archiveClient(tsrv),
 	}
-	reg, err := h.oClient.Register(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: "agent"}))
-	if err != nil {
-		t.Fatalf("register agent: %v", err)
-	}
-	h.agentID, h.agentToken = reg.Msg.GetCriteriaId(), reg.Msg.GetToken()
+	h.agentID, h.agentToken = criteriaRegisterAgent(t, tsrv, "agent")
 
 	provisionOrchestratorIdentity(t, ts.store, "orch-1", "orch-token-1")
 	h.orchToken = "orch-token-1"
@@ -395,16 +596,28 @@ func newArchiveAuthHarness(t *testing.T, allowAnonReads bool) *archiveAuthHarnes
 	}
 	h.consoleTok = sessTok
 
-	// Seed one archive record directly in the store so read-allowed matrix
+	// Seed the castle run behind the matrix record under the registered
+	// agent's ownership so the agent matrix row satisfies the per-run
+	// ownership gate (KB-308 ArchiveRun authorization); other identities
+	// are already token-class-denied before the gate.
+	if err := ts.store.CreateRun(context.Background(), &store.Run{
+		ID: archiveRunID, OverseerID: h.agentID, Status: "failed",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed matrix run: %v", err)
+	}
+
+	// Seed one archive record directly in the store — identity-less, so the
+	// identity-bearing matrix writes adopt it — so read-allowed matrix
 	// rows assert their authorization verdict against real data (denied
 	// callers get PermissionDenied/Unauthenticated, allowed ones reach the
 	// handler and find the row).
-	body, err := protojson.Marshal(archiveRecordProto(archiveRunID))
+	body, err := protojson.Marshal(archiveRecordProto(archiveRunID, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.store.PutRunArchiveRecord(context.Background(), &store.RunArchiveRecord{
-		RunID: archiveRunID, JobName: "wf-ticket-42-7fb2c9", FinalPhase: "Failed", Ticket: "KB-42",
+		Key: archiveRunID, RunID: archiveRunID, JobName: "wf-ticket-42-7fb2c9", FinalPhase: "Failed", Ticket: "KB-42",
 		Record: string(body), ArchivedAt: now,
 	}); err != nil {
 		t.Fatalf("seed archive row: %v", err)
@@ -423,11 +636,11 @@ func archiveCall(ctx context.Context, client castlev1connect.RunArchiveServiceCl
 	var err error
 	switch method {
 	case "archive":
-		req := archiveRunReq(archiveRecordProto(archiveRunID))
+		req := archiveRunReq(archiveRecordProto(archiveRunID, ""))
 		setToken(req.Header())
 		_, err = client.ArchiveRun(ctx, req)
 	case "get":
-		req := connect.NewRequest(&castlev1.GetRunArchiveRequest{RunId: archiveRunID})
+		req := connect.NewRequest(&castlev1.GetRunArchiveRequest{Key: archiveRunID})
 		setToken(req.Header())
 		_, err = client.GetRunArchive(ctx, req)
 	case "list":
@@ -492,7 +705,7 @@ func TestArchiveRunAuthMatrix(t *testing.T) {
 		}
 		// Provenance stamp: the agent's criteria id is recorded for the
 		// CR-side archive-id audit.
-		stampReq := connect.NewRequest(&castlev1.ListRunArchivesRequest{RunIdPrefix: archiveRunID})
+		stampReq := connect.NewRequest(&castlev1.ListRunArchivesRequest{KeyPrefix: archiveRunID})
 		stampReq.Header().Set("Authorization", "Bearer "+h.agentToken)
 		list, err := h.client.ListRunArchives(ctx, stampReq)
 		if err != nil {
