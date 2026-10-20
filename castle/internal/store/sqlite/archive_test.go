@@ -14,14 +14,23 @@ import (
 
 // archiveRec builds a store.RunArchiveRecord for tests: seq varies the
 // record body and archived_at so paging and overwrite tests can observe
-// which version landed.
-func archiveRec(runID string, seq int) *store.RunArchiveRecord {
+// which version landed. The key is the run id (run-backed archive).
+func archiveRec(key string, seq int) *store.RunArchiveRecord {
+	rec := archiveSyntheticRec(key, seq)
+	rec.RunID = key
+	return rec
+}
+
+// archiveSyntheticRec builds a record keyed by an explicit archive key with
+// no castle run (run_id empty) — the run-id-less terminal-CR shape (KB-308
+// archive_key contract).
+func archiveSyntheticRec(key string, seq int) *store.RunArchiveRecord {
 	return &store.RunArchiveRecord{
-		RunID:      runID,
-		JobName:    "job-" + runID,
+		Key:        key,
+		JobName:    "job-" + key,
 		FinalPhase: "succeeded",
 		Ticket:     "ticket-42",
-		Record:     fmt.Sprintf(`{"runId":%q,"schemaVersion":1,"seq":%d}`, runID, seq),
+		Record:     fmt.Sprintf(`{"runId":%q,"schemaVersion":1,"seq":%d}`, key, seq),
 		OperatorID: "criteria/agent-1",
 		ArchivedAt: time.Unix(1_700_000_000+int64(seq)*10, 0).UTC(),
 	}
@@ -40,11 +49,11 @@ func TestPutRunArchiveRecord_RoundTrip(t *testing.T) {
 		t.Fatal("first archive of a run must report created=true")
 	}
 
-	got, err := s.GetRunArchiveRecord(ctx, rec.RunID)
+	got, err := s.GetRunArchiveRecord(ctx, rec.Key)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.RunID != rec.RunID || got.JobName != rec.JobName ||
+	if got.Key != rec.Key || got.RunID != rec.RunID || got.JobName != rec.JobName ||
 		got.FinalPhase != rec.FinalPhase || got.Ticket != rec.Ticket ||
 		got.OperatorID != rec.OperatorID {
 		t.Fatalf("column round-trip mismatch: got %+v", got)
@@ -107,8 +116,8 @@ func TestPutRunArchiveRecord_Validation(t *testing.T) {
 	ctx := context.Background()
 
 	for _, rec := range []*store.RunArchiveRecord{
-		{Record: "{}"},
-		{RunID: "run-x"},
+		{Record: "{}"}, // no archive key
+		{Key: "run-x"}, // no record body
 	} {
 		if _, err := s.PutRunArchiveRecord(ctx, rec); err == nil {
 			t.Errorf("expected error for %+v", rec)
@@ -116,6 +125,116 @@ func TestPutRunArchiveRecord_Validation(t *testing.T) {
 	}
 	if _, err := s.GetRunArchiveRecord(ctx, "run-x"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("rejected records must not be stored, got %v", err)
+	}
+}
+
+func TestPutRunArchiveRecord_SyntheticKeyRoundTrip(t *testing.T) {
+	// Run-id-less terminal CRs (no castle overseer run) archive under their
+	// explicit CR-derived archive_key (KB-308 archive_key contract) and
+	// round-trip by that key alone.
+	s := tempStore(t)
+	ctx := context.Background()
+
+	rec := archiveSyntheticRec("cr-uid/abc-123", 7)
+	created, err := s.PutRunArchiveRecord(ctx, rec)
+	if err != nil {
+		t.Fatalf("put synthetic-key record: %v", err)
+	}
+	if !created {
+		t.Fatal("first archive of a key must report created=true")
+	}
+
+	got, err := s.GetRunArchiveRecord(ctx, rec.Key)
+	if err != nil {
+		t.Fatalf("get by synthetic key: %v", err)
+	}
+	if got.Key != rec.Key || got.RunID != "" {
+		t.Fatalf("synthetic-key row mismatch: got %+v", got)
+	}
+	if got.Record != rec.Record {
+		t.Fatalf("record body round-trip mismatch:\nwant %s\ngot  %s", rec.Record, got.Record)
+	}
+
+	// Replay of the same key overwrites in place: created=false, one row.
+	created, err = s.PutRunArchiveRecord(ctx, archiveSyntheticRec(rec.Key, 8))
+	if err != nil {
+		t.Fatalf("replay put: %v", err)
+	}
+	if created {
+		t.Fatal("second archive of the same key must report created=false")
+	}
+	recs, _, err := s.ListRunArchives(ctx, "", "", 0, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 1 || recs[0].Record != archiveSyntheticRec(rec.Key, 8).Record {
+		t.Fatalf("replay must overwrite in place, got %d records", len(recs))
+	}
+}
+
+func TestPutRunArchiveRecord_CrossIdentityOverwriteRefused(t *testing.T) {
+	// Archive history attribution is first-writer-wins per identity
+	// (KB-308): a different identity than the one that first archived a key
+	// may not overwrite it — history forgery/corruption must fail.
+	s := tempStore(t)
+	ctx := context.Background()
+
+	first := archiveRec("run-abc", 1)
+	if _, err := s.PutRunArchiveRecord(ctx, first); err != nil {
+		t.Fatalf("first put: %v", err)
+	}
+
+	imposter := archiveRec("run-abc", 2)
+	imposter.OperatorID = "criteria/agent-2"
+	imposter.ArchivedAt = time.Unix(1_700_001_111, 0).UTC()
+	_, err := s.PutRunArchiveRecord(ctx, imposter)
+	if !errors.Is(err, store.ErrArchiveOperatorConflict) {
+		t.Fatalf("expected ErrArchiveOperatorConflict for cross-identity overwrite, got %v", err)
+	}
+
+	// The refused write must not have touched the stored history.
+	got, err := s.GetRunArchiveRecord(ctx, imposter.Key)
+	if err != nil {
+		t.Fatalf("get after refused overwrite: %v", err)
+	}
+	if got.Record != first.Record || got.OperatorID != first.OperatorID || got.RunID != first.RunID {
+		t.Fatalf("refused overwrite mutated history: got %+v", got)
+	}
+}
+
+func TestPutRunArchiveRecord_UnstampedRowAdoptsNextIdentity(t *testing.T) {
+	// Rows archived without any identity (direct-store writers) can be
+	// adopted — stamped — by the first identity-bearing re-archive; after
+	// that the provenance is locked against other identities.
+	s := tempStore(t)
+	ctx := context.Background()
+
+	unstamped := archiveRec("run-def", 1)
+	unstamped.OperatorID = ""
+	if _, err := s.PutRunArchiveRecord(ctx, unstamped); err != nil {
+		t.Fatalf("first put: %v", err)
+	}
+
+	claimed := archiveRec("run-def", 2) // same agent-1 identity
+	created, err := s.PutRunArchiveRecord(ctx, claimed)
+	if err != nil {
+		t.Fatalf("identity-bearing replay on unstamped row: %v", err)
+	}
+	if created {
+		t.Fatal("adoption of an unstamped row is an overwrite")
+	}
+	got, err := s.GetRunArchiveRecord(ctx, claimed.Key)
+	if err != nil {
+		t.Fatalf("get after adoption: %v", err)
+	}
+	if got.OperatorID != claimed.OperatorID {
+		t.Fatalf("adoption must stamp the new writer identity: got %q want %q", got.OperatorID, claimed.OperatorID)
+	}
+
+	locked := archiveRec("run-def", 3)
+	locked.OperatorID = "criteria/agent-2"
+	if _, err := s.PutRunArchiveRecord(ctx, locked); !errors.Is(err, store.ErrArchiveOperatorConflict) {
+		t.Fatalf("adopted row must lock provenance, got %v", err)
 	}
 }
 

@@ -1,8 +1,10 @@
 // RunArchiveService — castle-owned run-archive surface (KB-308). Before CR
 // retention deletes terminal CriteriaRuns, the operator archives each run's
-// final record here so history outlives the CR. The record schema is
-// documented in docs/plans/KB-308-operator-archive.md; Castle persists and
-// serves it opaquely (schema evolution is criteria-k8s-owned).
+// final record here so history outlives the CR. One record per archive key
+// (the castle overseer run id, or an explicit CR-derived archive_key when
+// the CR had no castle run — see ArchiveRecord.archive_key). The record
+// schema is documented in docs/plans/KB-308-operator-archive.md; Castle
+// persists and serves it opaquely (schema evolution is criteria-k8s-owned).
 syntax = "proto3";
 
 package castle.v1;
@@ -16,22 +18,30 @@ service RunArchiveService {
   // ArchiveRun stores one terminal run's pre-retention archive record
   // (KB-308, scope items 1-2). Called by the criteria-k8s operator on every
   // CR terminal transition, BEFORE the run's finalizer is removed; archives
-  // for the same run_id are idempotent-overwrite (latest wins) so a retried
-  // archive never duplicates data, and the archive leg never blocks CR
-  // deletion (retention is castle's own #309 control).
+  // for the same archive key are idempotent-overwrite (latest wins) so a
+  // retried archive never duplicates data, and the archive leg never blocks
+  // CR deletion (retention is castle's own #309 control).
   //
   // Auth: operator token (CASTLE_TOKEN) — the same criteria token path the
-  // podstate feed uses, not anon.
+  // podstate feed uses, not anon. Ownership is enforced per record:
+  // a record whose run_id resolves to a castle run may only be written by
+  // the token that owns that run (unknown run: not_found; known run owned
+  // by another identity: permission_denied), and no record key may be
+  // overwritten by a different identity than the one that first archived it
+  // (permission_denied) — first writer wins on keys that do not resolve to
+  // a castle run, so any agent can mint exactly its own history.
   rpc ArchiveRun(ArchiveRunRequest) returns (ArchiveRunResponse);
 
-  // GetRunArchive returns one stored archive record by run id (KB-308 scope
-  // item 2, plus the #309 spot-check round-trip: "for N deleted CRs, castle
-  // archive records exist and round-trip").
+  // GetRunArchive returns one stored archive record by archive key (KB-308
+  // scope item 2, plus the #309 spot-check round-trip: "for N deleted CRs,
+  // castle archive records exist and round-trip"). Run-backed records are
+  // keyed by their castle run id; records for CRs with no castle run use
+  // their explicit archive_key instead.
   rpc GetRunArchive(GetRunArchiveRequest) returns (GetRunArchiveResponse);
 
-  // ListRunArchives pages over stored archive records in ascending run-id
-  // order so the operator's backfill leg can verify coverage and the
-  // Parapet console can browse pre-retention history.
+  // ListRunArchives pages over stored archive records in ascending
+  // archive-key order so the operator's backfill leg can verify coverage
+  // and the Parapet console can browse pre-retention history.
   rpc ListRunArchives(ListRunArchivesRequest) returns (ListRunArchivesResponse);
 }
 
@@ -43,7 +53,11 @@ message ArchiveRecord {
   // Archive record schema version; 1 in this revision.
   int32 schema_version = 1;
   // Castle overseer run id for the agent session; "" when the terminal CR
-  // had no castle run (e.g. a run that died pre-register).
+  // had no castle run (e.g. a run that died pre-register). Non-empty values
+  // must resolve to an existing castle run owned by the caller's token:
+  // unknown runs are rejected (not_found) and other identities' runs are
+  // rejected (permission_denied), so history cannot be attributed to a run
+  // the caller never owned.
   string run_id = 2;
   // Runner job name; "" when the job never reached a name-bearing state.
   string job_name = 3;
@@ -76,6 +90,14 @@ message ArchiveRecord {
   // Run start/end timestamps; empty when unavailable.
   string started_at = 19;
   string ended_at = 20;
+  // Explicit archive key for records that are NOT keyed by a castle run
+  // id: a terminal CR with no castle run (run_id "") is unarchivable as
+  // "run-archive/<run_id>", so the operator supplies a stable CR-derived
+  // id here (e.g. "cr-uid/<metadata.uid>") and archives under it. The
+  // effective key is archive_key when set, else run_id; a record with
+  // neither is rejected. Run-backed records leave it empty and archive
+  // under run-archive/<run_id>.
+  string archive_key = 21;
 }
 
 message ArchiveCondition {
@@ -92,15 +114,15 @@ message ArchiveStep {
 }
 
 message ArchiveRunRequest {
-  // record is the archive record to store (latest wins per run_id).
+  // record is the archive record to store (latest wins per archive key).
   ArchiveRecord record = 1;
 }
 
 message ArchiveRunResponse {
   // archive_id is the stored record's identity
-  // ("run-archive/<run_id>"); the criteria-k8s operator stamps it into the
-  // CR status for log-provable confirmation that the pre-retention leg ran
-  // before finalizer removal.
+  // ("run-archive/<archive_key>") — the criteria-k8s operator stamps it
+  // into the CR status for log-provable confirmation that the pre-retention
+  // leg ran before finalizer removal.
   string archive_id = 1;
   // archived_at is the server-side stamp of when the record landed.
   google.protobuf.Timestamp archived_at = 2;
@@ -110,7 +132,9 @@ message ArchiveRunResponse {
 }
 
 message GetRunArchiveRequest {
-  string run_id = 1;
+  // key is the record's archive key: the castle run id for run-backed
+  // records, the explicit archive_key for records with no castle run.
+  string key = 1;
 }
 
 message GetRunArchiveResponse {
@@ -123,9 +147,9 @@ message GetRunArchiveResponse {
 }
 
 message ListRunArchivesRequest {
-  // run_id_prefix optionally narrows the listing to records whose run_id
+  // key_prefix optionally narrows the listing to records whose archive key
   // starts with the given prefix.
-  string run_id_prefix = 1;
+  string key_prefix = 1;
   // limit bounds the page size; server default 100, max 1000.
   int32 limit = 2;
   // cursor continues a previous page; empty starts from the first run id.
@@ -139,6 +163,8 @@ message ListRunArchivesResponse {
 }
 
 message ArchiveSummary {
+  // run_id is the record's castle overseer run id; "" for records with no
+  // castle run, whose identity lives in archive_id alone.
   string run_id = 1;
   string archive_id = 2;
   string job_name = 3;

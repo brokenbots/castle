@@ -21,6 +21,13 @@ var ErrInvalidCursor = errors.New("invalid page token")
 // (CRI-142 CancelRun) targets a run that is already in a terminal state.
 var ErrRunTerminal = errors.New("run is terminal")
 
+// ErrArchiveOperatorConflict is returned when an archive record would be
+// overwritten by a different identity than the one that first archived it
+// (KB-308): archive history is first-writer-wins per identity, so records
+// cannot be re-attributed after the fact. The rpc layer maps this to
+// PermissionDenied.
+var ErrArchiveOperatorConflict = errors.New("archive record owned by another identity")
+
 // EventSchemaVersion is the current persisted event schema version. It tracks
 // the criteria.v1 envelope major version and is stored in the events table for
 // forward compatibility checks.
@@ -39,12 +46,18 @@ type RunAttempt struct {
 // RunArchiveRecord is the pre-retention terminal-run archive the
 // criteria-k8s operator writes on every CriteriaRun terminal transition
 // (KB-308): run history must outlive the CR because #309 retention deletes
-// terminal runs. One record per run id — re-archiving overwrites (latest
-// wins) so a retried archive leg never duplicates data, and the archive leg
-// never blocks CR deletion.
+// terminal runs. One record per archive key — re-archiving overwrites
+// (latest wins) so a retried archive leg never duplicates data, and the
+// archive leg never blocks CR deletion. A cross-identity overwrite is
+// refused (ErrArchiveOperatorConflict).
 type RunArchiveRecord struct {
-	// RunID is the castle overseer run id the record belongs to and the
-	// archive's primary key.
+	// Key is the archive's primary key: rec.RunID when the terminal CR had
+	// a castle overseer run ("run-archive/<run_id>" records), or an
+	// explicit CR-derived archive key ("archive_key", e.g. "cr-uid/<uid>")
+	// when it did not. Non-empty and stable per CR.
+	Key string
+	// RunID is the castle overseer run id the record belongs to; "" for
+	// records with no castle run, which are keyed on Key alone.
 	RunID string
 	// JobName / FinalPhase / Ticket are the summary columns the archive
 	// listing serves without parsing the record body.
@@ -61,11 +74,11 @@ type RunArchiveRecord struct {
 	ArchivedAt time.Time
 }
 
-// ArchiveID renders the archive identifier for a run id: the id the
+// ArchiveID renders the archive identifier for an archive key: the id the
 // criteria-k8s operator stamps into the CR status after a successful
 // archive (log-provable archive-before-finalizer gate, KB-308).
-func ArchiveID(runID string) string {
-	return "run-archive/" + runID
+func ArchiveID(key string) string {
+	return "run-archive/" + key
 }
 
 // Event is a storage-neutral representation of a persisted envelope. It
@@ -407,20 +420,24 @@ type Store interface {
 	MarkRunUnstarted(ctx context.Context, runID string, requeuedAt time.Time) error
 
 	// Run archives (KB-308)
-	// PutRunArchiveRecord upserts the terminal-run archive for rec.RunID
-	// (latest wins: an existing row for the same run id is overwritten in
+	// PutRunArchiveRecord upserts the terminal-run archive for rec.Key
+	// (latest wins: an existing row for the same key is overwritten in
 	// place). It returns created=true when this call inserted a new record
-	// and false when it overwrote an existing one; rec.ArchivedAt is carried
-	// through as the persisted stamp.
+	// and false when it overwrote an existing one; rec.ArchivedAt is
+	// carried through as the persisted stamp. Overwriting a record that a
+	// different, non-empty identity previously archived is refused with
+	// ErrArchiveOperatorConflict (first writer wins per identity);
+	// overwriting an identity-less row stamps rec.OperatorID.
 	PutRunArchiveRecord(ctx context.Context, rec *RunArchiveRecord) (created bool, err error)
-	// GetRunArchiveRecord returns the stored archive record for runID.
-	// Returns ErrNotFound when the run has no archive record yet.
-	GetRunArchiveRecord(ctx context.Context, runID string) (*RunArchiveRecord, error)
-	// ListRunArchives returns stored archive records with run_id >
-	// afterRunID in ascending run-id order (stable keyset pages over the
-	// primary key), filtered to run ids with the given prefix when non-empty.
-	// A page contains at most limit rows; limit <= 0 returns maxArchivePageSize.
-	ListRunArchives(ctx context.Context, runIDPrefix, afterRunID string, limit int, pageToken string) ([]*RunArchiveRecord, string, error)
+	// GetRunArchiveRecord returns the stored archive record for key.
+	// Returns ErrNotFound when the key has no archive record yet.
+	GetRunArchiveRecord(ctx context.Context, key string) (*RunArchiveRecord, error)
+	// ListRunArchives returns stored archive records with archive keys >
+	// afterKey in ascending key order (stable keyset pages over the
+	// primary key), filtered to keys with the given prefix when non-empty.
+	// A page contains at most limit rows; limit <= 0 returns the default
+	// page size of 100.
+	ListRunArchives(ctx context.Context, keyPrefix, afterKey string, limit int, pageToken string) ([]*RunArchiveRecord, string, error)
 
 	// Workflow assignments
 	// CreateWorkflowAssignment atomically creates the queued run and assignment
