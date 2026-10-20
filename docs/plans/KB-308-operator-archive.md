@@ -33,9 +33,11 @@ Top-level fields:
 | archive_key           | string   | explicit CR-derived record key (e.g. "cr-uid/<uid>") for records with NO castle run; "" for run-backed records |
 
 One record per ARCHIVE KEY: the effective key is archive_key when set, else
-run_id (both empty are rejected). Records with a castle run key on
-`run_id`; run-id-less terminal CRs archive under `archive_key` so a terminal
-CR is never unarchivable. `archived_at` is NOT an operator field: castle
+run_id (both empty are rejected). Records with a castle run key on that
+run_id; run-id-less terminal CRs archive under an explicit CR-derived
+`archive_key` (e.g. "cr-uid/<metadata.uid>", the only namespace agents may
+use) so a terminal CR is never unarchivable. `archived_at` is NOT an
+operator field: castle
 stamps it server-side and returns it in `ArchiveRunResponse`/`GetRunArchiveResponse`
 (and per-row in `ArchiveSummary`). Wire bodies are protojson lowerCamelCase
 (e.g. `schemaVersion`, `bindingCmChecksum`); the table above uses the field
@@ -73,11 +75,17 @@ podstate feed's exact token path (SubmitEvents with a criteria agent token). The
 operator's CriteriaRun controller already authenticates this way for per-run event
 ingest and per-run status stamps. The service handler reads the same
 auth.CallerCriteriaID identity; the operator may write a record only for a run
-whose overseer (agent identity) it is — enforced end-to-end: a run-backed record
-(run_id set) requires the run to resolve and be owned by the caller (unknown run:
-not_found; another identity's run: permission_denied); a record keyed only on
-archive_key cannot claim a run, so cross-writer protection is castle's
-first-writer-wins provenance gate (permission_denied to a second identity).
+whose overseer (agent identity) it is — enforced end-to-end against the
+EFFECTIVE key (the key the stored row hangs off: archive_key when set, else
+run_id), because validating one run while keying another would let a caller
+forge run-attributed history or squat a key the legitimate owner can never
+archive to. A key naming an existing castle run requires the run to resolve
+and be owned by the caller (unknown run: not_found; another identity's run:
+permission_denied); run_id and archive_key must agree when both are set
+(invalid_argument); a run-id-less record must keep the CR-derived "cr-uid/"
+namespace (invalid_argument otherwise). Cross-writer protection for keys no
+castle run backs is castle's first-writer-wins provenance gate
+(permission_denied to a second identity) on top of that namespace rule.
 This follows the criteria-k8s identity model:
 the operator already owns a criteria identity (podstate feed), and every other
 operator→castle write in this codebase (SubmitEvents, run.metadata stamps) uses it.
