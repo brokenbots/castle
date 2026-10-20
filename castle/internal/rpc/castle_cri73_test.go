@@ -353,10 +353,10 @@ func TestCRI73_CastleRestartRestoresLeases(t *testing.T) {
 	// later, LIFO), and any late WAL sidecar must not fail TempDir removal.
 	defer func() {
 		criteriaServer2.DrainBackgroundWriters()
+		_ = st2.Close()
 		if err := sweepStoreDir(filepath.Dir(dbPath), 5, 20*time.Millisecond); err != nil {
 			t.Logf("store dir sweep after restart leg: %v", err)
 		}
-		_ = st2.Close()
 	}()
 
 	mux2 := http.NewServeMux()
