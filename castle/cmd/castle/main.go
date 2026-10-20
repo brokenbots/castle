@@ -376,6 +376,10 @@ func main() {
 	shutdownCtx, sc := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sc()
 	_ = srv.Shutdown(shutdownCtx)
+	// Stop debounced persistence writers the server started (variable-scope
+	// mutation coalescer) before the store closes, so a pending timer cannot
+	// open a fresh pool connection or recreate WAL sidecars after teardown.
+	criteriaRPC.DrainBackgroundWriters()
 }
 
 // reapStaleRunsOnce performs one CRI-142 heartbeat-staleness reaping pass:

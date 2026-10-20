@@ -222,6 +222,12 @@ func (s *CriteriaServer) LeaseDuration() time.Duration {
 	return s.leaseDuration()
 }
 
+// DrainBackgroundWriters stops and flushes the server's debounced
+// persistence writers (the variable-scope coalescer). Called on the graceful
+// shutdown path before the store closes, so no scheduled write races the DB
+// teardown; tests use it during stack teardown for the same reason.
+func (s *CriteriaServer) DrainBackgroundWriters() { s.scope.Stop() }
+
 // LeaseDuration returns the currently configured assignment lease duration.
 func (s *ServerServer) LeaseDuration() time.Duration {
 	return s.leaseDuration()
@@ -234,6 +240,7 @@ func (s *ServerServer) LeaseDuration() time.Duration {
 // pattern and prevents hot-path SQLite writes on every VariableSet event.
 type scopeCoalescer struct {
 	mu      sync.Mutex
+	stopped bool
 	pending map[string][]func(map[string]interface{})
 	timers  map[string]*time.Timer
 	store   store.Store
@@ -258,6 +265,10 @@ func newScopeCoalescer(st store.Store, log *slog.Logger) *scopeCoalescer {
 // scopeFlushInterval so bursts of events produce a single DB write.
 func (c *scopeCoalescer) Enqueue(runID string, mutate func(map[string]interface{})) {
 	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
 	c.pending[runID] = append(c.pending[runID], mutate)
 	if t, ok := c.timers[runID]; ok {
 		// Reset the existing timer rather than adding a second one.
@@ -299,6 +310,28 @@ func (c *scopeCoalescer) flush(runID string) {
 		return
 	}
 	c.applyMutations(context.Background(), runID, mutations)
+}
+
+// Stop halts the coalescer deterministically. All pending per-run timers are
+// stopped (so no debounced write can race Store.Close during shutdown or test
+// teardown) and any mutations already queued are applied once before Stop
+// returns. Enqueue after Stop is ignored. Stop is idempotent.
+func (c *scopeCoalescer) Stop() {
+	c.mu.Lock()
+	for runID, t := range c.timers {
+		if t != nil {
+			t.Stop()
+		}
+		delete(c.timers, runID)
+	}
+	c.stopped = true
+	pending := c.pending
+	c.pending = make(map[string][]func(map[string]interface{}))
+	c.mu.Unlock()
+
+	for runID, mutations := range pending {
+		c.applyMutations(context.Background(), runID, mutations)
+	}
 }
 
 func (c *scopeCoalescer) applyMutations(ctx context.Context, runID string, mutations []func(map[string]interface{})) {
