@@ -344,11 +344,28 @@ func TestCRI73_CastleRestartRestoresLeases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen db: %v", err)
 	}
-	defer st2.Close()
 	h2 := hub.New()
 	controls2 := NewControlRegistry()
 	criteriaServer2 := NewCriteriaServer(st2, h2, discardLogger(), controls2)
 	serverServer2 := NewServerServer(st2, h2, discardLogger(), controls2)
+	// Drain debounced writers, close the store, detect leaked sidecars, then
+	// sweep the directory: the cursor writers belong to handlers still owned
+	// by srv2 (closed later, LIFO), and any late WAL sidecar must not fail
+	// TempDir removal.
+	defer func() {
+		criteriaServer2.DrainBackgroundWriters()
+		_ = st2.Close()
+		// Surviving sidecars are a diagnostic here, consistent with
+		// teardownStack (see testhelpers_test.go): driver-internal removal
+		// is asynchronous under load, and the sweep below removes whatever
+		// remains so it cannot fail TempDir deletion.
+		if leaked := waitForSidecarDrain(filepath.Dir(dbPath), filepath.Base(dbPath), sidecarGraceWindow); len(leaked) > 0 {
+			t.Logf("restart leg: WAL sidecar(s) %v survived the %s grace window after store close; the sweep below removes them", leaked, sidecarGraceWindow)
+		}
+		if err := sweepStoreDir(filepath.Dir(dbPath), sidecarSweepAttempts, sidecarSweepBackoff); err != nil {
+			t.Logf("store dir sweep after restart leg: %v", err)
+		}
+	}()
 
 	mux2 := http.NewServeMux()
 	oPath2, oHandler2 := criteriav1connect.NewCriteriaServiceHandler(criteriaServer2,

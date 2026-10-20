@@ -233,16 +233,21 @@ func main() {
 	// Console login is castle-owned (CRI-195): served on its own
 	// /castle.v1.ConsoleService/ prefix; upstream criteria does not ship it.
 	consolePath, consoleHandler := castlev1connect.NewConsoleServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
+	// Run archive is castle-owned (KB-308): the operator archives terminal
+	// run records here before CR retention deletes them.
+	runArchivePath, runArchiveHandler := castlev1connect.NewRunArchiveServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
 	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
 		criteria.ServiceName,
 		criteriav1connect.ServerServiceName,
 		criteriav1connect.OrchestratorServiceName,
 		castlev1connect.ConsoleServiceName,
+		castlev1connect.RunArchiveServiceName,
 	))
 	mux.Handle(critPath, critHandler)
 	mux.Handle(serverPath, serverHandler)
 	mux.Handle(orchestratorPath, orchestratorHandler)
 	mux.Handle(consolePath, consoleHandler)
+	mux.Handle(runArchivePath, runArchiveHandler)
 	mux.Handle(healthPath, healthHandler)
 
 	if *grpcReflection {
@@ -370,7 +375,13 @@ func main() {
 	log.Info("shutting down")
 	shutdownCtx, sc := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sc()
-	_ = srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		// A shutdown timeout leaves in-flight handlers mid-request; their
+		// scope mutations are dropped (logged by the coalescer), so surface
+		// why instead of ignoring it.
+		log.Warn("graceful shutdown timed out or failed", "err", err)
+	}
+	criteriaRPC.DrainBackgroundWriters()
 }
 
 // reapStaleRunsOnce performs one CRI-142 heartbeat-staleness reaping pass:

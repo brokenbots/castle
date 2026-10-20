@@ -127,6 +127,14 @@ func (s *ServerServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 		}
 	}
 
+	// Subscribe before replay so events published while replaying persisted
+	// rows are queued for the subsequent buffer/live phases.
+	sub := s.Hub.Subscribe(runID)
+	defer s.Hub.Unsubscribe(sub)
+
+	lastSent := effectiveSince
+	terminalInReplay := false
+
 	var (
 		updateCursor func(uint64)
 		writer       cursorWriter
@@ -135,17 +143,10 @@ func (s *ServerServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 	if subscriberID != "" {
 		writer = s.startCursorWriter(ctx, subscriberID, runID)
 		updateCursor = writer.update
-	}
-
-	// Subscribe before replay so events published while replaying persisted rows
-	// are queued for the subsequent buffer/live phases.
-	sub := s.Hub.Subscribe(runID)
-	defer s.Hub.Unsubscribe(sub)
-
-	lastSent := effectiveSince
-	terminalInReplay := false
-
-	if subscriberID != "" {
+		// Register the finalize defer immediately after the writer starts so
+		// it is reachable on every path out of this handler (including client
+		// aborts): a cursor writer that survived its handler would keep
+		// writing into the store after the test/process tears it down.
 		defer func() {
 			// Ensure the highest sequence actually delivered to the client is
 			// durably flushed before the writer stops. This closes the race

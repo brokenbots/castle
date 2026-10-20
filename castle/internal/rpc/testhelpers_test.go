@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,6 +36,9 @@ type testStack struct {
 	criteria     *CriteriaServer
 	server       *ServerServer
 	orchestrator *OrchestratorServer
+	// dbDir is the directory holding the store database and its WAL
+	// sidecars; teardown checks and reopen tests use it.
+	dbDir string
 }
 
 func newTestStack(t *testing.T) *testStack {
@@ -44,18 +48,132 @@ func newTestStack(t *testing.T) *testStack {
 
 func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 	t.Helper()
-	s, err := sqlite.Open(filepath.Join(t.TempDir(), "castle.db"))
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "castle.db")
+	s, err := sqlite.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.Close() })
-	return newTestStackOnStore(t, s, log)
+	ts := newTestStackOnStore(t, s, log)
+	ts.dbDir = dir
+	t.Cleanup(func() {
+		// Ordered teardown (drain → close → sidecar-leak check → sweep) as
+		// one cleanup so the ordering is deterministic; Go's own TempDir
+		// cleanup runs after this and finds an already-swept directory.
+		if err := teardownStack(t, ts, s, dbPath); err != nil {
+			t.Errorf("test stack teardown: %v", err)
+		}
+	})
+	return ts
+}
+
+// teardownStack performs the ordered teardown every store-backed test stack
+// must run before the surrounding t.TempDir is removed:
+//  1. drain debounced persistence writers (stop the variable-scope
+//     coalescer's pending timers and flush what is queued, so no write can
+//     race the store close — the cursor writers started by WatchRun are
+//     stopped by their owning handlers, which the httptest.Server.Close
+//     waits for before returning);
+//  2. close the store;
+//  3. log any -wal/-shm sidecar that outlives the grace window as a
+//     diagnostic — the driver deletes them asynchronously under load (a
+//     fixed wall-clock bound cannot be made deterministic on a busy -race
+//     runner), so a surviving sidecar must not fail the run;
+//  4. sweep the store directory with bounded retries so no sidecar can fail
+//     the TempDir removal with "directory not empty". This is the step that
+//     is allowed to fail the test: only an un-removable directory (a sidecar
+//     still being written) or a failed store close is an error.
+//
+// The returned error is for direct callers that want to assert teardown
+// cleanliness; the cleanup wrappers use t.Errorf on it.
+func teardownStack(t testing.TB, ts *testStack, s *sqlite.Store, dbPath string) error {
+	closeErr := teardownStackStop(ts, s)
+	dir := filepath.Dir(dbPath)
+	if leaked := waitForSidecarDrain(dir, filepath.Base(dbPath), sidecarGraceWindow); len(leaked) > 0 {
+		t.Logf("test stack teardown: WAL sidecar(s) %v survived the %s grace window after store close (driver removal is asynchronous); the sweep below removes them",
+			leaked, sidecarGraceWindow)
+	}
+	if sweepErr := sweepStoreDir(dir, sidecarSweepAttempts, sidecarSweepBackoff); sweepErr != nil {
+		if closeErr != nil {
+			return closeErr
+		}
+		return sweepErr
+	}
+	return closeErr
+}
+
+// Sidecar lifecycle knobs shared by the stack teardown and the explicit
+// teardown stages in teardown_test.go / castle_cri73_test.go. The grace
+// window is generous because driver-internal sidecar deletion can lag a
+// close by far more than the ~50 ms seen on idle runners; the sweep budget
+// then removes whatever is left so Go's TempDir deletion cannot race it.
+const (
+	sidecarGraceWindow   = 3 * time.Second
+	sidecarSweepAttempts = 20
+	sidecarSweepBackoff  = 50 * time.Millisecond
+)
+
+// teardownStackStop is teardownStack without any directory side effects:
+// drains debounced writers, then closes the store (idempotent). Callers that
+// still want to read the store after teardown reopen it on the same path.
+func teardownStackStop(ts *testStack, s *sqlite.Store) error {
+	ts.criteria.DrainBackgroundWriters()
+	return s.Close()
+}
+
+// leakedStoreSidecars lists SQLite sidecar files ("<db>-wal", "<db>-shm")
+// that still exist next to dbName in root. The driver deletes them when its
+// last connection closes, but that deletion is not always synchronous with
+// sql.DB.Close returning, so callers must poll through the grace window
+// (waitForSidecarDrain) before treating a sighting as a leaked connection.
+func leakedStoreSidecars(root, dbName string) []string {
+	suffixes := []string{"-wal", "-shm"}
+	var leaked []string
+	for _, suf := range suffixes {
+		if _, err := os.Stat(filepath.Join(root, dbName+suf)); err == nil {
+			leaked = append(leaked, dbName+suf)
+		}
+	}
+	return leaked
+}
+
+// waitForSidecarDrain polls leakedStoreSidecars until the sidecars are gone
+// or the wait budget expires, and returns the set still present. Sidecars
+// surviving the budget are not necessarily a straggler — driver-internal
+// deletion is asynchronous and slows under load — so callers treat the
+// result as a diagnostic (log) unless a policy needs a hard failure.
+func waitForSidecarDrain(root, dbName string, wait time.Duration) []string {
+	deadline := time.Now().Add(wait)
+	for {
+		leaked := leakedStoreSidecars(root, dbName)
+		if len(leaked) == 0 || time.Now().After(deadline) {
+			return leaked
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// sweepStoreDir removes dir with bounded retries, tolerating the lazy
+// recreation of SQLite WAL sidecars by straggler connections.
+func sweepStoreDir(dir string, attempts int, backoff time.Duration) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = os.RemoveAll(dir); err == nil {
+			return nil
+		}
+		if i < attempts-1 {
+			time.Sleep(backoff)
+		}
+	}
+	return err
 }
 
 // newTestStackOnStore builds the wire-level server set on a caller-owned
 // store. Used by tests that reopen persistence (restart simulations) or wrap
-// the store to control visibility. The store must already be registered with
-// t.Cleanup for Close by the caller.
+// the store to control visibility. The caller owns teardown: it must combine
+// draining the stack's debounced writers with the store close and a
+// sweepStoreDir of the store directory under one t.Cleanup (see
+// newTestStackWithStore and newCursorSpyStack).
 func newTestStackOnStore(t *testing.T, s *sqlite.Store, log *slog.Logger) *testStack {
 	t.Helper()
 	h := hub.New()
@@ -147,6 +265,27 @@ func mustRegister(t *testing.T, client criteriav1connect.CriteriaServiceClient) 
 		t.Fatal(err)
 	}
 	return resp.Msg.CriteriaId, resp.Msg.Token
+}
+
+// criteriaRegisterAgent mints a fresh agent identity through the real
+// Register flow and returns (criteriaID, token). Service-scoped wire tests
+// that cannot use the shared all-services mount use this to exercise the
+// same podstate-feed token path.
+func criteriaRegisterAgent(t *testing.T, srv *httptest.Server, name string) (string, string) {
+	t.Helper()
+	client := criteriav1connect.NewCriteriaServiceClient(h2cClient(), srv.URL)
+	resp, err := client.Register(context.Background(), connect.NewRequest(&pb.RegisterRequest{Name: name}))
+	if err != nil {
+		t.Fatalf("register agent %q: %v", name, err)
+	}
+	return resp.Msg.GetCriteriaId(), resp.Msg.GetToken()
+}
+
+// mountCriteriaHandler mounts the criteria service handler on a custom mux,
+// for service-scoped wire servers that need the Register flow mounted.
+func mountCriteriaHandler(mux *http.ServeMux, ts *testStack, opts ...connect.HandlerOption) {
+	path, handler := criteriav1connect.NewCriteriaServiceHandler(ts.criteria, opts...)
+	mux.Handle(path, handler)
 }
 
 // mustStoreEvent converts a wire envelope into the storage-neutral Event used

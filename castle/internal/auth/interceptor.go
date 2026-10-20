@@ -68,6 +68,16 @@ var orchestratorWriteProcedures = map[string]struct{}{
 	criteriav1connect.OrchestratorServiceCancelRunProcedure: {},
 }
 
+// runArchiveReadProcedures are the RunArchiveService read RPCs (KB-308): the
+// pre-retention archive record store the operator writes before CR retention
+// deletes a terminal run. Reads are observation surfaces (console identities
+// and dev-mode anonymous reads reach them like the ServerService reads); the
+// write (ArchiveRun) is never exempt and stays denied for console identities.
+var runArchiveReadProcedures = map[string]struct{}{
+	castlev1connect.RunArchiveServiceGetRunArchiveProcedure:   {},
+	castlev1connect.RunArchiveServiceListRunArchivesProcedure: {},
+}
+
 // isOrchestratorAllowed reports whether an orchestrator identity may invoke
 // the procedure (CRI-133). Orchestrators get the read-only ServerService
 // surface, OrchestratorService (including CRI-142 CancelRun), and nothing
@@ -81,6 +91,9 @@ func isOrchestratorAllowed(procedure string) bool {
 		return true
 	}
 	if _, ok := readOnlyServerProcedures[procedure]; ok {
+		return true
+	}
+	if _, ok := runArchiveReadProcedures[procedure]; ok {
 		return true
 	}
 	return false
@@ -117,6 +130,9 @@ var consoleRunControlProcedures = map[string]struct{}{
 // (CancelRun), Register — is denied.
 func isConsoleAllowed(procedure string) bool {
 	if _, ok := readOnlyServerProcedures[procedure]; ok {
+		return true
+	}
+	if _, ok := runArchiveReadProcedures[procedure]; ok {
 		return true
 	}
 	_, ok := consoleRunControlProcedures[procedure]
@@ -269,7 +285,10 @@ func anonReadableProcedure(procedure string) bool {
 	if _, ok := readOnlyServerProcedures[procedure]; ok {
 		return true
 	}
-	_, ok := orchestratorProcedures[procedure]
+	if _, ok := orchestratorProcedures[procedure]; ok {
+		return true
+	}
+	_, ok := runArchiveReadProcedures[procedure]
 	return ok
 }
 
@@ -418,6 +437,9 @@ func (i *AuthInterceptor) isExempt(procedure string) bool {
 			return true
 		}
 		if _, ok := orchestratorProcedures[procedure]; ok {
+			return true
+		}
+		if _, ok := runArchiveReadProcedures[procedure]; ok {
 			return true
 		}
 	}
