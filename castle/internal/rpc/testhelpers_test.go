@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -46,17 +47,18 @@ func newTestStack(t *testing.T) *testStack {
 func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := sqlite.Open(filepath.Join(dir, "castle.db"))
+	dbPath := filepath.Join(dir, "castle.db")
+	s, err := sqlite.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ts := newTestStackOnStore(t, s, log)
 	t.Cleanup(func() {
-		// Ordered teardown (drain → close → sweep) as one cleanup so the
-		// ordering is deterministic; Go's own TempDir cleanup runs after
-		// this and finds an already-swept directory.
-		if err := teardownStack(ts, s, dir); err != nil {
-			t.Logf("test stack teardown: %v", err)
+		// Ordered teardown (drain → close → sidecar-leak check → sweep) as
+		// one cleanup so the ordering is deterministic; Go's own TempDir
+		// cleanup runs after this and finds an already-swept directory.
+		if err := teardownStack(ts, s, dbPath); err != nil {
+			t.Errorf("test stack teardown: %v", err)
 		}
 	})
 	return ts
@@ -65,26 +67,54 @@ func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 // teardownStack performs the ordered teardown every store-backed test stack
 // must run before the surrounding t.TempDir is removed:
 //  1. drain debounced persistence writers (stop the variable-scope
-//     coalescer's pending timers and flush what is queued), so no write can
+//     coalescer's pending timers and flush what is queued, so no write can
 //     race the store close — the cursor writers started by WatchRun are
-//     stopped by their owning handlers, which the httptest.Server.Close waits
-//     for before returning;
+//     stopped by their owning handlers, which the httptest.Server.Close
+//     waits for before returning);
 //  2. close the store;
-//  3. sweep the store directory with bounded retries — the WAL driver
-//     creates castle.db-wal/-shm sidecars lazily when a fresh connection is
-//     opened, so a connection opened moments before Close can still recreate
-//     a sidecar while the TempDir cleanup walks the directory, which fails
-//     the run with "directory not empty".
+//  3. detect leaks: after a clean close the SQLite driver deletes the
+//     castle.db-wal/-shm sidecars, so one still present means a straggler
+//     connection outlived the close — reported rather than swept silently;
+//  4. sweep the store directory with bounded retries so no sidecar can fail
+//     the TempDir removal with "directory not empty".
 //
 // The returned error is for direct callers that want to assert teardown
-// cleanliness; cleanup wrappers only log.
-func teardownStack(ts *testStack, s *sqlite.Store, dir string) error {
-	ts.criteria.DrainBackgroundWriters()
-	closeErr := s.Close()
-	if err := sweepStoreDir(dir, 5, 20*time.Millisecond); err != nil {
-		return err
+// cleanliness; the cleanup wrappers use t.Errorf on it.
+func teardownStack(ts *testStack, s *sqlite.Store, dbPath string) error {
+	closeErr := teardownStackStop(ts, s)
+	dir := filepath.Dir(dbPath)
+	if leaked := leakedStoreSidecars(dir, filepath.Base(dbPath)); len(leaked) > 0 {
+		return fmt.Errorf("leaked WAL sidecars after store close: %v", leaked)
+	}
+	if sweepErr := sweepStoreDir(dir, 5, 20*time.Millisecond); sweepErr != nil {
+		if closeErr != nil {
+			return closeErr
+		}
+		return sweepErr
 	}
 	return closeErr
+}
+
+// teardownStackStop is teardownStack without any directory side effects:
+// drains debounced writers, then closes the store (idempotent). Callers that
+// still want to read the store after teardown reopen it on the same path.
+func teardownStackStop(ts *testStack, s *sqlite.Store) error {
+	ts.criteria.DrainBackgroundWriters()
+	return s.Close()
+}
+
+// leakedStoreSidecars lists SQLite sidecar files ("<db>-wal", "<db>-shm")
+// that still exist next to dbName in root: they are absent after a clean
+// close (or when the DB was never written), so any hit is a leaked writer.
+func leakedStoreSidecars(root, dbName string) []string {
+	suffixes := []string{"-wal", "-shm"}
+	var leaked []string
+	for _, suf := range suffixes {
+		if _, err := os.Stat(filepath.Join(root, dbName+suf)); err == nil {
+			leaked = append(leaked, dbName+suf)
+		}
+	}
+	return leaked
 }
 
 // sweepStoreDir removes dir with bounded retries, tolerating the lazy

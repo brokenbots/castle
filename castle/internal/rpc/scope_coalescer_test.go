@@ -211,3 +211,128 @@ func TestScopeCoalescer_WriteCountReduction(t *testing.T) {
 		t.Errorf("SetRunVariableScope called %d times for %d mutations; want 1 (coalesced)", got, mutations)
 	}
 }
+
+// TestScopeCoalescer_StopAppliesPending asserts Stop's drain contract: every
+// mutation queued before Stop is applied exactly once, and the result is
+// readable from the store when Stop returns.
+func TestScopeCoalescer_StopAppliesPending(t *testing.T) {
+	st := newScopeTestStore(t)
+	ctx := context.Background()
+	mustCreateScopeOverseer(t, st, ctx)
+	mustCreateScopeRun(t, st, ctx, "run-stop-a")
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := newScopeCoalescer(st, log)
+
+	var applied atomic.Int64
+	c.Enqueue("run-stop-a", func(scope map[string]interface{}) {
+		applied.Add(1)
+		scope["var"] = map[string]interface{}{"stop": "pending"}
+	})
+	c.Stop()
+
+	if got := applied.Load(); got != 1 {
+		t.Fatalf("mutation applied %d times; want exactly 1 after Stop", got)
+	}
+	got, err := st.GetRunVariableScope(ctx, "run-stop-a")
+	if err != nil {
+		t.Fatalf("GetRunVariableScope: %v", err)
+	}
+	if !containsAll(got, `"stop":"pending"`) {
+		t.Errorf("scope = %q; want stop=pending persisted by Stop", got)
+	}
+}
+
+// TestScopeCoalescer_StopPreventsTimedFlush asserts that a debounce timer
+// scheduled before Stop does not apply the mutations a second time after
+// Stop returns: the timers are stopped and drained, and waiting past the
+// flush interval neither rewrites the scope nor re-runs the mutation.
+func TestScopeCoalescer_StopPreventsTimedFlush(t *testing.T) {
+	spy := &countingStore{Store: newScopeTestStore(t)}
+	ctx := context.Background()
+	mustCreateScopeOverseer(t, spy, ctx)
+	mustCreateScopeRun(t, spy, ctx, "run-stop-b")
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := newScopeCoalescer(spy, log)
+
+	var applied atomic.Int64
+	c.Enqueue("run-stop-b", func(scope map[string]interface{}) {
+		applied.Add(1)
+		vm, _ := scope["var"].(map[string]interface{})
+		if vm == nil {
+			vm = map[string]interface{}{}
+		}
+		vm["k"] = "v"
+		scope["var"] = vm
+	})
+	c.Stop()
+
+	// Wait well past the debounce window a stopped timer would have used.
+	time.Sleep(scopeFlushInterval + 200*time.Millisecond)
+
+	if got := applied.Load(); got != 1 {
+		t.Fatalf("mutation applied %d times after Stop+wait; want exactly 1", got)
+	}
+	if got := spy.writes.Load(); got != 1 {
+		t.Fatalf("SetRunVariableScope called %d times after Stop+wait; want 1", got)
+	}
+}
+
+// TestScopeCoalescer_StopIgnoresLaterEnqueue asserts that Enqueue after Stop
+// is ignored: even after the flush interval elapses, nothing is persisted
+// and no timer is rescheduled.
+func TestScopeCoalescer_StopIgnoresLaterEnqueue(t *testing.T) {
+	st := newScopeTestStore(t)
+	ctx := context.Background()
+	mustCreateScopeOverseer(t, st, ctx)
+	mustCreateScopeRun(t, st, ctx, "run-stop-c")
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := newScopeCoalescer(st, log)
+	c.Stop()
+
+	c.Enqueue("run-stop-c", func(scope map[string]interface{}) {
+		scope["var"] = map[string]interface{}{"late": "true"}
+	})
+
+	// Wait past the debounce window: a rescheduled timer would flush here.
+	time.Sleep(scopeFlushInterval + 200*time.Millisecond)
+
+	// Nothing persisted: the run row exists but its scope stays NULL.
+	got, err := st.GetRunVariableScope(ctx, "run-stop-c")
+	if err != nil {
+		t.Fatalf("GetRunVariableScope: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("scope = %q after post-Stop Enqueue; want empty (nothing persisted)", got)
+	}
+}
+
+// TestScopeCoalescer_StopIdempotent asserts Stop is idempotent: a second
+// call returns without panic, applies nothing, and writes nothing.
+func TestScopeCoalescer_StopIdempotent(t *testing.T) {
+	spy := &countingStore{Store: newScopeTestStore(t)}
+	ctx := context.Background()
+	mustCreateScopeOverseer(t, spy, ctx)
+	mustCreateScopeRun(t, spy, ctx, "run-stop-d")
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := newScopeCoalescer(spy, log)
+
+	var applied atomic.Int64
+	c.Enqueue("run-stop-d", func(scope map[string]interface{}) {
+		applied.Add(1)
+		scope["var"] = map[string]interface{}{"k": "v"}
+	})
+
+	c.Stop()
+	c.Stop() // must neither panic nor re-apply
+
+	if got := applied.Load(); got != 1 {
+		t.Fatalf("mutation applied %d times after two Stops; want exactly 1", got)
+	}
+	if got := spy.writes.Load(); got != 1 {
+		t.Fatalf("SetRunVariableScope called %d times after two Stops; want 1", got)
+	}
+}

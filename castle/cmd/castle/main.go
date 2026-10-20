@@ -375,10 +375,12 @@ func main() {
 	log.Info("shutting down")
 	shutdownCtx, sc := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sc()
-	_ = srv.Shutdown(shutdownCtx)
-	// Stop debounced persistence writers the server started (variable-scope
-	// mutation coalescer) before the store closes, so a pending timer cannot
-	// open a fresh pool connection or recreate WAL sidecars after teardown.
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		// A shutdown timeout leaves in-flight handlers mid-request; their
+		// scope mutations are dropped (logged by the coalescer), so surface
+		// why instead of ignoring it.
+		log.Warn("graceful shutdown timed out or failed", "err", err)
+	}
 	criteriaRPC.DrainBackgroundWriters()
 }
 

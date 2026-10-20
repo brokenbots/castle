@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -278,8 +277,8 @@ func newTestStackWithStore(t *testing.T, st *sqlite.Store, dbPath string) *testS
 		server:   NewServerServer(st, h, log, controls),
 	}
 	t.Cleanup(func() {
-		if err := teardownStack(ts, st, filepath.Dir(dbPath)); err != nil {
-			t.Logf("test stack teardown: %v", err)
+		if err := teardownStack(ts, st, dbPath); err != nil {
+			t.Errorf("test stack teardown: %v", err)
 		}
 	})
 	return ts

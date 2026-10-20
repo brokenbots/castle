@@ -348,12 +348,16 @@ func TestCRI73_CastleRestartRestoresLeases(t *testing.T) {
 	controls2 := NewControlRegistry()
 	criteriaServer2 := NewCriteriaServer(st2, h2, discardLogger(), controls2)
 	serverServer2 := NewServerServer(st2, h2, discardLogger(), controls2)
-	// Drain debounced writers, close the store, then sweep the directory:
-	// the cursor writers belong to handlers still owned by srv2 (closed
-	// later, LIFO), and any late WAL sidecar must not fail TempDir removal.
+	// Drain debounced writers, close the store, detect leaked sidecars, then
+	// sweep the directory: the cursor writers belong to handlers still owned
+	// by srv2 (closed later, LIFO), and any late WAL sidecar must not fail
+	// TempDir removal.
 	defer func() {
 		criteriaServer2.DrainBackgroundWriters()
 		_ = st2.Close()
+		if leaked := leakedStoreSidecars(filepath.Dir(dbPath), filepath.Base(dbPath)); len(leaked) > 0 {
+			t.Errorf("restart leg: leaked WAL sidecars after store close: %v", leaked)
+		}
 		if err := sweepStoreDir(filepath.Dir(dbPath), 5, 20*time.Millisecond); err != nil {
 			t.Logf("store dir sweep after restart leg: %v", err)
 		}
