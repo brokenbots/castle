@@ -615,6 +615,28 @@ func TestArchiveRunArchiveKeyCannotBypassOwnership(t *testing.T) {
 		t.Fatalf("owner provenance stamp = %q want criteria/%s", row.OperatorID, agentA)
 	}
 
+	// Run-backed body forgery (review round 4, R1): archive_key names a run
+	// the caller DOES own — the ownership gate passes — so the record's
+	// run_id side must be validated independently of whether the effective
+	// key resolves. B keying after its own run while claiming A's run id,
+	// a ghost id, or nothing (empty run_id under a run key) is the same
+	// forged-attribution property, and none of these may write.
+	_, err = client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordProto("run-owned", "run-owned-b")))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("own run key claiming another run's id = %v want InvalidArgument", connect.CodeOf(err))
+	}
+	expectNoRow("run-owned-b", "run-backed forgery (foreign run_id)")
+	_, err = client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordProto("run-ghost-not-a-run", "run-owned-b")))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("own run key claiming a ghost run id = %v want InvalidArgument", connect.CodeOf(err))
+	}
+	expectNoRow("run-owned-b", "run-backed forgery (ghost run_id)")
+	_, err = client.ArchiveRun(ctx, archiveAuthed(tokenB, archiveRecordProto("", "run-owned-b")))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty run_id under a run key = %v want InvalidArgument", connect.CodeOf(err))
+	}
+	expectNoRow("run-owned-b", "run-backed forgery (empty run_id)")
+
 	// Mismatch: run_id and archive_key both set and different →
 	// InvalidArgument even when the caller owns the run_id side (aliasing
 	// an owned run onto an arbitrary archive_key is also refused), and no

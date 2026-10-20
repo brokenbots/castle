@@ -80,8 +80,10 @@ EFFECTIVE key (the key the stored row hangs off: archive_key when set, else
 run_id), because validating one run while keying another would let a caller
 forge run-attributed history or squat a key the legitimate owner can never
 archive to. A key naming an existing castle run requires the run to resolve
-and be owned by the caller (unknown run: not_found; another identity's run:
-permission_denied); run_id and archive_key must agree when both are set
+and be owned by the caller AND the record's run_id to equal that key
+(unknown run: not_found; another identity's run: permission_denied; keying
+after an owned run with a foreign/ghost/empty run_id in the body:
+invalid_argument); run_id and archive_key must agree when both are set
 (invalid_argument); a run-id-less record must keep the CR-derived "cr-uid/"
 namespace (invalid_argument otherwise). Cross-writer protection for keys no
 castle run backs is castle's first-writer-wins provenance gate

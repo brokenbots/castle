@@ -84,10 +84,11 @@ type ArchiveRecord struct {
 	// effective key is archive_key when set, else run_id; a record with
 	// neither is rejected. Ownership resolves against this effective key
 	// (the key the stored record hangs off): when the key names an
-	// existing castle run, the caller must own that run; when both
-	// run_id and archive_key are set they must be equal
-	// (invalid_argument otherwise); and a run-id-less record must keep
-	// the CR-derived "cr-uid/" namespace (invalid_argument otherwise).
+	// existing castle run, the caller must own that run and record.run_id
+	// must equal it (invalid_argument otherwise); when both run_id and
+	// archive_key are set they must be equal (invalid_argument otherwise);
+	// and a run-id-less record must keep the CR-derived "cr-uid/"
+	// namespace (invalid_argument otherwise).
 	// Run-backed records leave it empty and archive under
 	// run-archive/<run_id>.
 	ArchiveKey    string `protobuf:"bytes,21,opt,name=archive_key,json=archiveKey,proto3" json:"archive_key,omitempty"`

@@ -69,8 +69,10 @@ const syntheticArchiveKeyPrefix = "cr-uid/"
 // castle run must be owned by the caller (unknown: not_found; another
 // identity's run: permission_denied), so history cannot be attributed to a
 // run the caller never owned. run_id and archive_key must agree when both
-// are set (invalid_argument otherwise): validating one run while keying
-// another is refused regardless of ownership of either. A run-id-less
+// are set (invalid_argument otherwise) — the run-backed form of that rule
+// is unconditional: a record keyed on an existing castle run must set
+// run_id to that run id, so no caller can key after a run it owns while
+// claiming another identity's run (or a ghost id) in the body. A run-id-less
 // record must keep the documented CR-derived "cr-uid/" namespace, so run
 // ids cannot be minted as squat-able keys. Orchestrator and console
 // identities keep today's behavior: their records are run-id-less
@@ -103,9 +105,19 @@ func (s *ServerServer) ArchiveRun(ctx context.Context, req *connect.Request[cast
 		// retention deletes the CR).
 		run, err := s.Store.GetRun(ctx, key)
 		if err == nil {
-			// Run-backed effective key: the caller must own THAT run.
+			// Run-backed effective key: the caller must own THAT run, and
+			// the record must claim it too — a record keyed on an existing
+			// castle run whose run_id names a different run (or a ghost id,
+			// or nothing) would let a caller key after its own run while
+			// forging run-attributed history for a run it never owned.
+			// This also makes run_id and archive_key agree whenever both
+			// are set: keying follows archive_key here, so a disagreement
+			// can only appear as run_id != key.
 			if callerID != run.OverseerID {
 				return nil, connect.NewError(connect.CodePermissionDenied, errors.New("caller does not own this run"))
+			}
+			if ki := r.GetRunId(); ki != key {
+				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("record keyed on castle run %q must set record.run_id to that run id", key))
 			}
 		} else if errors.Is(err, store.ErrNotFound) {
 			// Key names no castle run. run_id must agree with archive_key
