@@ -277,7 +277,7 @@ func newTestStackWithStore(t *testing.T, st *sqlite.Store, dbPath string) *testS
 		server:   NewServerServer(st, h, log, controls),
 	}
 	t.Cleanup(func() {
-		if err := teardownStack(ts, st, dbPath); err != nil {
+		if err := teardownStack(t, ts, st, dbPath); err != nil {
 			t.Errorf("test stack teardown: %v", err)
 		}
 	})

@@ -110,7 +110,7 @@ func newCursorSpyStack(t *testing.T) (*testStack, *cursorSpyStore) {
 		server:   NewServerServer(wrapped, h, log, controls),
 	}
 	t.Cleanup(func() {
-		if err := teardownStack(stack, baseStore, dbPath); err != nil {
+		if err := teardownStack(t, stack, baseStore, dbPath); err != nil {
 			t.Errorf("test stack teardown: %v", err)
 		}
 	})
