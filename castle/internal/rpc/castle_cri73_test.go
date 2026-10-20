@@ -355,7 +355,7 @@ func TestCRI73_CastleRestartRestoresLeases(t *testing.T) {
 	defer func() {
 		criteriaServer2.DrainBackgroundWriters()
 		_ = st2.Close()
-		if leaked := leakedStoreSidecars(filepath.Dir(dbPath), filepath.Base(dbPath)); len(leaked) > 0 {
+		if leaked := waitForSidecarDrain(filepath.Dir(dbPath), filepath.Base(dbPath), 400*time.Millisecond); len(leaked) > 0 {
 			t.Errorf("restart leg: leaked WAL sidecars after store close: %v", leaked)
 		}
 		if err := sweepStoreDir(filepath.Dir(dbPath), 5, 20*time.Millisecond); err != nil {

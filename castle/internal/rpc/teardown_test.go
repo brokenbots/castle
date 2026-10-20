@@ -90,8 +90,10 @@ func TestStackTeardownAbandonedWatchRun(t *testing.T) {
 		t.Fatalf("drain and close: %v", err)
 	}
 	// Stage 2: no leaked WAL sidecars — after a clean close the driver
-	// deletes castle.db-wal/-shm, so a straggler writer shows up here.
-	if leaked := leakedStoreSidecars(dir, filepath.Base(dbPath)); len(leaked) > 0 {
+	// deletes castle.db-wal/-shm, so a straggler writer shows up here. The
+	// driver's deletion is not always synchronous with Close returning, so
+	// poll through a short grace window before declaring a leak.
+	if leaked := waitForSidecarDrain(dir, filepath.Base(dbPath), 400*time.Millisecond); len(leaked) > 0 {
 		t.Fatalf("leaked WAL sidecars after store close: %v", leaked)
 	}
 	// Stage 3: the drained coalescer mutation must be persisted to the store

@@ -37,6 +37,9 @@ type testStack struct {
 	criteria     *CriteriaServer
 	server       *ServerServer
 	orchestrator *OrchestratorServer
+	// dbDir is the directory holding the store database and its WAL
+	// sidecars; teardown checks and reopen tests use it.
+	dbDir string
 }
 
 func newTestStack(t *testing.T) *testStack {
@@ -53,6 +56,7 @@ func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 		t.Fatal(err)
 	}
 	ts := newTestStackOnStore(t, s, log)
+	ts.dbDir = dir
 	t.Cleanup(func() {
 		// Ordered teardown (drain → close → sidecar-leak check → sweep) as
 		// one cleanup so the ordering is deterministic; Go's own TempDir
@@ -83,7 +87,7 @@ func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 func teardownStack(ts *testStack, s *sqlite.Store, dbPath string) error {
 	closeErr := teardownStackStop(ts, s)
 	dir := filepath.Dir(dbPath)
-	if leaked := leakedStoreSidecars(dir, filepath.Base(dbPath)); len(leaked) > 0 {
+	if leaked := waitForSidecarDrain(dir, filepath.Base(dbPath), 400*time.Millisecond); len(leaked) > 0 {
 		return fmt.Errorf("leaked WAL sidecars after store close: %v", leaked)
 	}
 	if sweepErr := sweepStoreDir(dir, 5, 20*time.Millisecond); sweepErr != nil {
@@ -104,8 +108,10 @@ func teardownStackStop(ts *testStack, s *sqlite.Store) error {
 }
 
 // leakedStoreSidecars lists SQLite sidecar files ("<db>-wal", "<db>-shm")
-// that still exist next to dbName in root: they are absent after a clean
-// close (or when the DB was never written), so any hit is a leaked writer.
+// that still exist next to dbName in root. The driver deletes them when its
+// last connection closes, but that deletion is not always synchronous with
+// sql.DB.Close returning, so callers must poll through the grace window
+// (waitForSidecarDrain) before treating a sighting as a leaked connection.
 func leakedStoreSidecars(root, dbName string) []string {
 	suffixes := []string{"-wal", "-shm"}
 	var leaked []string
@@ -115,6 +121,21 @@ func leakedStoreSidecars(root, dbName string) []string {
 		}
 	}
 	return leaked
+}
+
+// waitForSidecarDrain polls leakedStoreSidecars until the sidecars are gone
+// or the wait budget expires, and returns the set still present. A clean
+// close deletes the sidecars within this window; a straggler connection
+// that outlived the close keeps them alive past it.
+func waitForSidecarDrain(root, dbName string, wait time.Duration) []string {
+	deadline := time.Now().Add(wait)
+	for {
+		leaked := leakedStoreSidecars(root, dbName)
+		if len(leaked) == 0 || time.Now().After(deadline) {
+			return leaked
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // sweepStoreDir removes dir with bounded retries, tolerating the lazy
