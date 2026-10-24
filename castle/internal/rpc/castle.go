@@ -14,7 +14,6 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 
@@ -82,10 +81,10 @@ func (s *ServerServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRu
 func (s *ServerServer) ListRunEvents(ctx context.Context, req *connect.Request[pb.ListRunEventsRequest]) (*connect.Response[pb.ListRunEventsResponse], error) {
 	limit := int(req.Msg.Limit)
 	if limit <= 0 {
-		limit = sqlite.ListEventsDefaultLimit
+		limit = store.ListEventsDefaultLimit
 	}
-	if limit > sqlite.ListEventsMaxLimit {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("limit %d exceeds maximum %d; page using since_seq", limit, sqlite.ListEventsMaxLimit))
+	if limit > store.ListEventsMaxLimit {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("limit %d exceeds maximum %d; page using since_seq", limit, store.ListEventsMaxLimit))
 	}
 
 	all, err := s.Store.ListEvents(ctx, req.Msg.RunId, req.Msg.SinceSeq, limit)
@@ -778,7 +777,17 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 // and redispatches the requeued assignments to connected eligible agents.
 func (s *ServerServer) ExpireLeasesNow(ctx context.Context) error {
 	now := time.Now().UTC()
-	ids, err := s.Store.ExpireWorkflowAssignmentLeases(ctx, now)
+	// Expiry, like leasing, mutates lease state; hold the lease mutex so it
+	// cannot interleave with dispatchAssignment's atomic lease acquisition
+	// below. Release BEFORE the dispatch loop: the mutex is not reentrant and
+	// dispatchAssignment takes it for the re-lease it performs. The unlock is
+	// deferred to the close of a closure wrapping only the store call, so a
+	// panic inside it cannot leave the lease mutex held process-wide.
+	ids, err := func() ([]string, error) {
+		s.controls.LeaseLock()
+		defer s.controls.LeaseUnlock()
+		return s.Store.ExpireWorkflowAssignmentLeases(ctx, now)
+	}()
 	if err != nil {
 		return err
 	}

@@ -514,14 +514,13 @@ func (a *agent) reattachRuns(ctx context.Context) {
 			continue
 		}
 		a.log.Info("reattaching run", "run_id", rs.RunID, "status", rs.Status)
-		req := connect.NewRequest(&pb.ReattachRunRequest{RunId: rs.RunID})
-		req.Header().Set("Authorization", "Bearer "+a.token())
-		resp, err := a.client.ReattachRun(ctx, req)
-		if err != nil {
-			a.log.Warn("reattach failed", "run_id", rs.RunID, "err", err)
+		resp, ok := a.retryReattach(ctx, rs.RunID)
+		switch {
+		case !ok:
+			// The context ended, or the run reached a terminal status while
+			// the reattach was retrying; nothing left to resume here.
 			continue
-		}
-		if !resp.Msg.CanResume {
+		case !resp.Msg.CanResume:
 			a.log.Info("run not resumable", "run_id", rs.RunID, "status", resp.Msg.Status)
 			rs.Status = resp.Msg.Status
 			a.setRunState(rs)
@@ -537,6 +536,45 @@ func (a *agent) reattachRuns(ctx context.Context) {
 		// Replace any active executor with a fresh one so event submission uses
 		// a new SubmitEvents stream after a Castle outage.
 		a.restartRunGoroutine(ctx, rs)
+	}
+}
+
+// retryReattach dials ReattachRun with bounded backoff until it succeeds,
+// the run goes terminal locally, or ctx is done. A Castle restart briefly
+// rebinds the port it serves on, so the first reattach call can legitimately
+// land in the unbound window and fail with "connection refused"; a single
+// failed attempt must not abandon the run. Returns the server response, or
+// nil (with false) when there is nothing left to resume.
+func (a *agent) retryReattach(ctx context.Context, runID string) (*connect.Response[pb.ReattachRunResponse], bool) {
+	const (
+		firstBackoff = 250 * time.Millisecond
+		maxBackoff   = 2 * time.Second
+	)
+	backoff := firstBackoff
+	req := connect.NewRequest(&pb.ReattachRunRequest{RunId: runID})
+	req.Header().Set("Authorization", "Bearer "+a.token())
+	for {
+		resp, err := a.client.ReattachRun(ctx, req)
+		if err == nil {
+			return resp, true
+		}
+		a.log.Warn("reattach failed", "run_id", runID, "err", err, "retry_in", backoff)
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+		a.mu.Lock()
+		stored, ok := a.state.Runs[runID]
+		terminal := !ok || isTerminal(stored.Status)
+		a.mu.Unlock()
+		if terminal {
+			return nil, false
+		}
 	}
 }
 
@@ -568,9 +606,16 @@ func (a *agent) executeRun(ctx context.Context, rs *runState, gen int64) {
 		return ctx.Err() != nil || !a.isCurrentExecutor(rs.RunID, gen)
 	}
 
-	// send is a wrapper around sendEvent that treats stream errors as fatal
-	// only while this executor remains current. A superseded executor (e.g.
-	// one whose stream broke during a Castle restart) must not fail the run.
+	// send is a wrapper around sendEvent that treats stream errors as
+	// transport loss, never as an execution outcome: a broken SubmitEvents
+	// stream (EOF, connection refused, unexpected ack — all shapes a Castle
+	// restart produces) must leave the run non-terminal and resumable, and a
+	// later control-stream reconnect resumes it from its persisted
+	// checkpoint. Replays after a resume are idempotent (deterministic
+	// correlation ids dedup on the server), so the run loses nothing.
+	// Failing the run here would delete its agent-side state before the
+	// reconnect and strand the server-side run. Genuine execution failures
+	// are emitted explicitly via failRun below.
 	send := func(env *criteria.Envelope) bool {
 		if abort() {
 			return false
@@ -579,7 +624,7 @@ func (a *agent) executeRun(ctx context.Context, rs *runState, gen int64) {
 			if abort() {
 				return false
 			}
-			a.logErrorAndFail(ctx, stream, rs, gen, "send event", err)
+			a.log.Warn("send event failed; leaving run resumable for reattach", "run_id", rs.RunID, "err", err)
 			return false
 		}
 		return true
@@ -771,21 +816,18 @@ func (a *agent) failRun(ctx context.Context, stream *connect.BidiStreamForClient
 	if err := a.sendEvent(stream, rs, criteria.NewEnvelope(rs.RunID, &pb.RunFailed{
 		Reason: reason,
 	})); err != nil {
-		a.log.Error("failed to emit run failed", "run_id", rs.RunID, "err", err)
+		// The terminal envelope could not be delivered (typically a broken
+		// SubmitEvents stream). Keep the run in the state map so a later
+		// reattach re-enters the executor, re-derives the failure on the
+		// live stream, and delivers the terminal event; deleting the state
+		// here would strand the server-side run after a Castle restart.
+		a.log.Error("failed to emit run failed; leaving run resumable for reattach", "run_id", rs.RunID, "err", err)
+		return
 	}
 	rs.Status = "failed"
 	rs.FailureReason = reason
 	a.setRunState(rs)
 	a.deleteRunState(rs.RunID)
-}
-
-func (a *agent) logErrorAndFail(ctx context.Context, stream *connect.BidiStreamForClient[criteria.Envelope, pb.Ack], rs *runState, gen int64, msg string, err error) {
-	a.log.Error(msg, "run_id", rs.RunID, "err", err)
-	if ctx.Err() != nil || !a.isCurrentExecutor(rs.RunID, gen) {
-		a.log.Info("aborting logErrorAndFail for superseded executor", "run_id", rs.RunID)
-		return
-	}
-	a.failRun(ctx, stream, rs, gen, fmt.Sprintf("%s: %v", msg, err))
 }
 
 func isTerminal(status string) bool {

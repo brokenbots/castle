@@ -91,7 +91,20 @@ type Event struct {
 	Type          string // discriminator, e.g. "run.started"
 	Ts            time.Time
 	CorrelationID string
-	Payload       []byte // protojson of the concrete payload message
+	// Payload is the protojson of the concrete payload message. The pg
+	// profile stores it in a JSONB column, so pg normalizes the document on
+	// write (number formatting, duplicate keys dropped, invalid UTF-8
+	// replaced with U+FFFD), while sqlite stores the exact protojson text:
+	// payloads must be compared semantically across engines, not
+	// byte-for-byte. Control characters: protojson escapes them (a NUL
+	// becomes the 6-byte escape \u0000), but JSONB cannot represent U+0000
+	// (PostgreSQL rejects the \u0000 escape with SQLSTATE 22P05 "unsupported
+	// Unicode escape sequence"), so both drivers replace every NUL in the
+	// payload with U+FFFD at the write boundary
+	// (store.NormalizeEventPayload) — the decoded payload is then identical
+	// across engines, and pg additionally normalizes the document text;
+	// compare semantically.
+	Payload []byte
 }
 
 const (

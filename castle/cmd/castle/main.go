@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,12 +24,30 @@ import (
 	"github.com/brokenbots/castle/castle/internal/hub"
 	"github.com/brokenbots/castle/castle/internal/rpc"
 	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/pg"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
 
 	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 )
+
+// openStoreProfile opens the store for the requested profile. The pg profile
+// (KB-317) runs against Postgres through the same store.Store surface; sqlite
+// remains the local/dev default.
+func openStoreProfile(profile, dbPath, pgDSN string) (store.Store, error) {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "", "sqlite":
+		return sqlite.Open(dbPath)
+	case "pg":
+		if strings.TrimSpace(pgDSN) == "" {
+			return nil, errors.New("--store pg requires --pg-dsn (or CASTLE_PG_DSN)")
+		}
+		return pg.Open(pgDSN)
+	default:
+		return nil, fmt.Errorf("unknown --store profile %q (want sqlite or pg)", profile)
+	}
+}
 
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -95,6 +115,8 @@ func buildInterceptorOpts(bootstrapToken string, allowAnonRegister bool) []auth.
 func main() {
 	addr := flag.String("addr", envOrDefault("CASTLE_ADDR", ":8080"), "listen address (or CASTLE_ADDR)")
 	dbPath := flag.String("db", envOrDefault("CASTLE_DB_PATH", "./castle.db"), "sqlite database path (or CASTLE_DB_PATH)")
+	storeProfile := flag.String("store", envOrDefault("CASTLE_STORE", "sqlite"), "storage engine profile: sqlite (local/dev) or pg (server, KB-317) (or CASTLE_STORE)")
+	pgDSN := flag.String("pg-dsn", envOrDefault("CASTLE_PG_DSN", ""), "Postgres DSN for --store pg (or CASTLE_PG_DSN)")
 	tlsCert := flag.String("tls-cert", envOrDefault("CASTLE_TLS_CERT", ""), "TLS certificate path (or CASTLE_TLS_CERT)")
 	tlsKey := flag.String("tls-key", envOrDefault("CASTLE_TLS_KEY", ""), "TLS key path (or CASTLE_TLS_KEY)")
 	tlsCA := flag.String("tls-ca", envOrDefault("CASTLE_TLS_CA", ""), "TLS CA bundle path (or CASTLE_TLS_CA)")
@@ -153,9 +175,13 @@ func main() {
 		log.Warn("dev-mode default: --grpc-reflection=true; this default will be flipped to false in a future release")
 	}
 
-	st, err := sqlite.Open(*dbPath)
+	var st store.Store
+	var err error
+	// Profile selection: pg requires an explicit DSN; sqlite keeps the
+	// historical --db path (KB-317: local/dev stays sqlite, server opts in).
+	st, err = openStoreProfile(*storeProfile, *dbPath, *pgDSN)
 	if err != nil {
-		log.Error("open db", "err", err)
+		log.Error("open store", "err", err)
 		os.Exit(1)
 	}
 	defer st.Close()

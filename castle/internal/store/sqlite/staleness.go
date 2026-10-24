@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/brokenbots/castle/castle/internal/store"
 )
 
 const (
@@ -96,8 +98,8 @@ func (f *readerFreshness) audit(ctx context.Context, readerNewest time.Time, log
 		f.warned = time.Now()
 		log.WarnContext(ctx,
 			"sqlite: reader handle is serving a stale WAL snapshot; recently registered agents may fail CreateRun authentication until the reader unpins",
-			"newest_writer_overseer", f.newest.Format(tsLayout),
-			"newest_reader_overseer", readerNewest.Format(tsLayout))
+			"newest_writer_overseer", f.newest.Format(store.TimestampLayout),
+			"newest_reader_overseer", readerNewest.Format(store.TimestampLayout))
 	}
 	return true
 }
@@ -125,6 +127,6 @@ func (f *readerFreshness) healed(ctx context.Context, log *slog.Logger) {
 		f.lastHeal = time.Now()
 		log.WarnContext(ctx,
 			"sqlite: reader view was behind the writer; served the authoritative writer view for overseers (token resolution is unaffected, but investigate reader staleness)",
-			"newest_writer_overseer", f.newest.Format(tsLayout))
+			"newest_writer_overseer", f.newest.Format(store.TimestampLayout))
 	}
 }

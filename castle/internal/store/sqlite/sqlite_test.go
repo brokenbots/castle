@@ -812,7 +812,7 @@ func TestListEvents_HonorsLimit(t *testing.T) {
 
 func TestListEvents_RejectsOversizedLimit(t *testing.T) {
 	s := tempStore(t)
-	_, err := s.ListEvents(context.Background(), "r-missing", 0, ListEventsMaxLimit+1)
+	_, err := s.ListEvents(context.Background(), "r-missing", 0, store.ListEventsMaxLimit+1)
 	if err == nil {
 		t.Fatal("expected oversize limit error")
 	}
@@ -843,8 +843,8 @@ func TestListEvents_DefaultOnZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != ListEventsDefaultLimit {
-		t.Fatalf("events=%d want default %d", len(got), ListEventsDefaultLimit)
+	if len(got) != store.ListEventsDefaultLimit {
+		t.Fatalf("events=%d want default %d", len(got), store.ListEventsDefaultLimit)
 	}
 }
 
@@ -872,7 +872,7 @@ func TestListEvents_Pagination_OrderPreserved(t *testing.T) {
 		lastSeq uint64
 	)
 	for {
-		page, err := s.ListEvents(ctx, "r-page", since, ListEventsMaxLimit)
+		page, err := s.ListEvents(ctx, "r-page", since, store.ListEventsMaxLimit)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -887,7 +887,7 @@ func TestListEvents_Pagination_OrderPreserved(t *testing.T) {
 			seen++
 		}
 		since = page[len(page)-1].Seq
-		if len(page) < ListEventsMaxLimit {
+		if len(page) < store.ListEventsMaxLimit {
 			break
 		}
 	}

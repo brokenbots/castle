@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/reap"
 )
 
 // The KB-226 regression suite: a run whose engine reached a human gate keeps
@@ -89,8 +90,8 @@ func TestReapStaleAgentRuns_AwaitingHumanParksNotFails(t *testing.T) {
 	if o.Status != store.RunStatusAwaitingHuman {
 		t.Fatalf("parked status = %q, want awaiting_human", o.Status)
 	}
-	if o.Reason != awaitingHumanGateVerdictReason {
-		t.Fatalf("reclassification reason = %q, want %q", o.Reason, awaitingHumanGateVerdictReason)
+	if o.Reason != reap.AwaitingHumanGateVerdictReason {
+		t.Fatalf("reclassification reason = %q, want %q", o.Reason, reap.AwaitingHumanGateVerdictReason)
 	}
 
 	r := f.getRun(t, "r-parked")
@@ -204,8 +205,8 @@ func TestReapStaleAgentRuns_NeedAssistanceFinalStateParks(t *testing.T) {
 		if o.Status != store.RunStatusAwaitingHuman {
 			t.Fatalf("%s classified as %q, want awaiting_human", o.RunID, o.Status)
 		}
-		if o.Reason != awaitingHumanGateVerdictReason {
-			t.Fatalf("%s reason = %q, want %q", o.RunID, o.Reason, awaitingHumanGateVerdictReason)
+		if o.Reason != reap.AwaitingHumanGateVerdictReason {
+			t.Fatalf("%s reason = %q, want %q", o.RunID, o.Reason, reap.AwaitingHumanGateVerdictReason)
 		}
 	}
 
@@ -275,159 +276,6 @@ func TestReapStaleAgentRuns_NoEventsMidFlightStillReaped(t *testing.T) {
 	outcomes := f.reapAt(t, f.now.Add(61*time.Second), 60*time.Second)
 	if got := reapedIDs(outcomes); !slices.Equal(got, []string{"r-silent"}) {
 		t.Fatalf("reaped = %v, want [r-silent]", reapedIDs(outcomes))
-	}
-}
-
-// TestLastEventParksHumanGate is the classifier's contract table: exactly
-// these last-event shapes park a run at a human gate, and everything else —
-// including terminal completions that are not human gates and the duration
-// variants — stays reapable with the legacy verdict.
-func TestLastEventParksHumanGate(t *testing.T) {
-	cases := []struct {
-		name       string
-		evType     string
-		payload    string
-		wantParked bool
-		wantReason string
-	}{
-		{
-			name:       "run.completed awaiting_human camelCase",
-			evType:     "run.completed",
-			payload:    `{"finalState":"awaiting_human","success":false}`,
-			wantParked: true,
-			wantReason: awaitingHumanGateVerdictReason,
-		},
-		{
-			name:       "run.completed awaiting_human snake_case",
-			evType:     "run.completed",
-			payload:    `{"final_state":"awaiting_human","success":false}`,
-			wantParked: true,
-			wantReason: awaitingHumanGateVerdictReason,
-		},
-		{
-			name:       "run.completed awaiting_human only success true",
-			evType:     "run.completed",
-			payload:    `{"finalState":"awaiting_human","success":true}`,
-			wantParked: true,
-			wantReason: awaitingHumanGateVerdictReason,
-		},
-		{
-			name:       "run.completed need_assistance camelCase (KB-270 rename)",
-			evType:     "run.completed",
-			payload:    `{"finalState":"need_assistance","success":false}`,
-			wantParked: true,
-			wantReason: awaitingHumanGateVerdictReason,
-		},
-		{
-			name:       "run.completed need_assistance snake_case (KB-270 rename)",
-			evType:     "run.completed",
-			payload:    `{"final_state":"need_assistance","success":false}`,
-			wantParked: true,
-			wantReason: awaitingHumanGateVerdictReason,
-		},
-		{
-			name:    "run.completed succeeded does not park",
-			evType:  "run.completed",
-			payload: `{"finalState":"succeeded","success":true}`,
-		},
-		{
-			name:    "run.completed failed does not park",
-			evType:  "run.completed",
-			payload: `{"finalState":"failed","success":false}`,
-		},
-		{
-			name:    "run.completed undecodable payload does not park",
-			evType:  "run.completed",
-			payload: `not json`,
-		},
-		{
-			name:       "approval.requested parks on type",
-			evType:     "approval.requested",
-			payload:    `{"node":"ship","approvers":["dave"],"reason":"go/no-go"}`,
-			wantParked: true,
-			wantReason: approvalGateVerdictReason,
-		},
-		{
-			name:       "approval.requested parks with empty payload",
-			evType:     "approval.requested",
-			payload:    `{}`,
-			wantParked: true,
-			wantReason: approvalGateVerdictReason,
-		},
-		{
-			name:       "run.paused signal parks",
-			evType:     "run.paused",
-			payload:    `{"mode":"signal","signal":"resume_signal"}`,
-			wantParked: true,
-			wantReason: humanPauseGateVerdictReason,
-		},
-		{
-			name:       "run.paused external (actor) parks",
-			evType:     "run.paused",
-			payload:    `{"mode":"external","actor":"console"}`,
-			wantParked: true,
-			wantReason: humanPauseGateVerdictReason,
-		},
-		{
-			name:    "run.paused duration does not park",
-			evType:  "run.paused",
-			payload: `{"mode":"duration"}`,
-		},
-		{
-			name:    "run.paused undecodable payload does not park",
-			evType:  "run.paused",
-			payload: `not json`,
-		},
-		{
-			name:       "wait.entered signal parks via mode",
-			evType:     "wait.entered",
-			payload:    `{"node":"watch_deploy","mode":"signal","signal":"deploy_done"}`,
-			wantParked: true,
-			wantReason: signalWaitGateVerdictReason,
-		},
-		{
-			name:       "wait.entered parks via signal without mode",
-			evType:     "wait.entered",
-			payload:    `{"node":"watch_deploy","signal":"deploy_done"}`,
-			wantParked: true,
-			wantReason: signalWaitGateVerdictReason,
-		},
-		{
-			name:    "wait.entered duration does not park",
-			evType:  "wait.entered",
-			payload: `{"node":"sleepy","mode":"duration","duration":30}`,
-		},
-		{
-			name:    "wait.entered undecodable payload does not park",
-			evType:  "wait.entered",
-			payload: `not json`,
-		},
-		{
-			name:    "mid-flight step event does not park",
-			evType:  "step.outcome",
-			payload: `{"step":"s1","outcome":"ok"}`,
-		},
-		{
-			name:    "run.failed does not park",
-			evType:  "run.failed",
-			payload: `{"reason":"boom","step":"s1"}`,
-		},
-		{
-			name:    "unknown type does not park",
-			evType:  "run.metadata",
-			payload: `{"ticket":"CRI-104"}`,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			parked, reason := lastEventParksHumanGate(tc.evType, []byte(tc.payload))
-			if parked != tc.wantParked {
-				t.Fatalf("parked = %v (reason %q), want %v", parked, reason, tc.wantParked)
-			}
-			if tc.wantParked && reason != tc.wantReason {
-				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
-			}
-		})
 	}
 }
 

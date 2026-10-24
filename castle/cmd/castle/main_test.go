@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/pg/pgtest"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 )
 
@@ -250,5 +252,55 @@ func TestReapStaleRunsOnce_MidFlightLogsReaped(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("missing %q in log:\n%s", want, logs)
 		}
+	}
+}
+
+// TestOpenStoreProfile pins the --store profile wiring (KB-317): sqlite stays
+// the default local/dev profile, pg requires an explicit DSN, unknown
+// profiles are rejected, and profile parsing is case-insensitive.
+func TestOpenStoreProfile_SQLite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "castle.db")
+	st, err := openStoreProfile("sqlite", dbPath, "")
+	if err != nil {
+		t.Fatalf("openStoreProfile(sqlite): %v", err)
+	}
+	if st == nil {
+		t.Fatal("nil store")
+	}
+	st.Close()
+
+	// Empty profile falls back to the sqlite default.
+	st, err = openStoreProfile("", dbPath, "")
+	if err != nil {
+		t.Fatalf("openStoreProfile(\"\"): %v", err)
+	}
+	defer st.Close()
+}
+
+func TestOpenStoreProfile_Pg(t *testing.T) {
+	dsn := pgtest.DSN(t)
+	st, err := openStoreProfile("pg", "", dsn)
+	if err != nil {
+		t.Fatalf("openStoreProfile(pg): %v", err)
+	}
+	if st == nil {
+		t.Fatal("nil store")
+	}
+	st.Close()
+
+	// Profile parsing tolerates case and surrounding whitespace.
+	st, err = openStoreProfile("  PG  ", "", dsn)
+	if err != nil {
+		t.Fatalf("openStoreProfile(PG padded): %v", err)
+	}
+	defer st.Close()
+}
+
+func TestOpenStoreProfile_Rejects(t *testing.T) {
+	if _, err := openStoreProfile("pg", "unused.db", ""); err == nil {
+		t.Fatal("pg profile without DSN: want error, got nil")
+	}
+	if _, err := openStoreProfile("mysql", "unused.db", ""); err == nil {
+		t.Fatal("unknown profile: want error, got nil")
 	}
 }

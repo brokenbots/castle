@@ -53,11 +53,11 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 }
 
 // awaitTokenVisible verifies, before Register acknowledges success, that
-//   1. the overseer row and token hash are committed on the writer handle
-//      (writer is synchronous=FULL in WAL mode, so this is fsync-durable), and
-//   2. the fresh token resolves through the same reader-backed path the
-//      CreateRun auth interceptor uses (auth.ResolveToken), and the resolved
-//      row is the overseer just written.
+//  1. the overseer row and token hash are committed on the writer handle
+//     (writer is synchronous=FULL in WAL mode, so this is fsync-durable), and
+//  2. the fresh token resolves through the same reader-backed path the
+//     CreateRun auth interceptor uses (auth.ResolveToken), and the resolved
+//     row is the overseer just written.
 //
 // If the read-back cannot confirm within the bounded retry window, Register
 // withholds the ack and returns an error, so a client either gets a token the
