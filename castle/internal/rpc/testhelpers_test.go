@@ -195,10 +195,12 @@ func (s *testStack) startServer(t *testing.T, opts ...connect.HandlerOption) (*h
 	cPath, cHandler := criteriav1connect.NewServerServiceHandler(s.server, opts...)
 	orchPath, orchHandler := criteriav1connect.NewOrchestratorServiceHandler(s.orchestrator, opts...)
 	consolePath, consoleHandler := castlev1connect.NewConsoleServiceHandler(s.server, opts...)
+	pPath, pHandler := castlev1connect.NewProjectServiceHandler(s.server, opts...)
 	mux.Handle(oPath, oHandler)
 	mux.Handle(cPath, cHandler)
 	mux.Handle(orchPath, orchHandler)
 	mux.Handle(consolePath, consoleHandler)
+	mux.Handle(pPath, pHandler)
 
 	// Mount reflection so e2e tests can assert the endpoint is reachable
 	// and exempt from auth.
@@ -232,6 +234,12 @@ func orchestratorClient(tsrv *httptest.Server) criteriav1connect.OrchestratorSer
 // server returned by startServer (CRI-195 login surface).
 func consoleClient(tsrv *httptest.Server) castlev1connect.ConsoleServiceClient {
 	return castlev1connect.NewConsoleServiceClient(h2cClient(), tsrv.URL)
+}
+
+// projectClient builds a castle-owned ProjectServiceClient against the test
+// server returned by startServer (KB-318 project surface).
+func projectClient(tsrv *httptest.Server) castlev1connect.ProjectServiceClient {
+	return castlev1connect.NewProjectServiceClient(h2cClient(), tsrv.URL)
 }
 
 // provisionOrchestratorIdentity stores an orchestrator accept-token identity

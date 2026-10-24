@@ -28,6 +28,18 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 	for k, v := range req.Msg.Labels {
 		labels[k] = v
 	}
+	// KB-318: registration joins a project when the agent presented project
+	// metadata (x-criteria-agent-project, parsed by the auth interceptor).
+	// The join happens BEFORE the overseer row is created so a rejected join
+	// leaves no orphan agent behind; OPEN policy self-joins, CLOSED policy
+	// refuses. Dispatch stays restricted to the project's member set while
+	// labels partition within the pool.
+	identity := auth.AgentIdentityFromContext(ctx)
+	if projectID := auth.RegisterProjectIDFromContext(ctx); projectID != "" {
+		if err := s.Store.JoinProject(ctx, projectID, criteriaID, store.ProjectMemberKindAI, now); err != nil {
+			return nil, registrationJoinError(err)
+		}
+	}
 	o := &store.Overseer{
 		ID:         criteriaID,
 		Name:       req.Msg.Name,
@@ -36,6 +48,7 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 		TokenHash:  auth.HashToken(token),
 		Status:     "online",
 		Labels:     labels,
+		Identity:   identity,
 		CreatedAt:  now,
 		LastSeenAt: now,
 	}
@@ -50,6 +63,22 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&pb.RegisterResponse{CriteriaId: criteriaID, Token: token}), nil
+}
+
+// registrationJoinError maps store errors from the registration self-join
+// onto wire codes: a missing project or a closed policy are agent-visible
+// conditions (4xx), anything else is server-side.
+func registrationJoinError(err error) error {
+	switch {
+	case errors.Is(err, store.ErrInvalidProjectID):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, store.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("project does not exist: %w", err))
+	case errors.Is(err, store.ErrProjectClosed):
+		return connect.NewError(connect.CodePermissionDenied, errors.New("project does not accept self-joins"))
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 // awaitTokenVisible verifies, before Register acknowledges success, that

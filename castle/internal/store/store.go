@@ -107,8 +107,8 @@ type Project struct {
 	// Queues lists the project-owned queue names.
 	Queues []string
 	// Settings and Info are opaque, shape-validated project maps.
-	Settings map[string]string
-	Info     map[string]string
+	Settings  map[string]string
+	Info      map[string]string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

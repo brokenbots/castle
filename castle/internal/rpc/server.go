@@ -46,6 +46,38 @@ func (r *ControlRegistry) LeaseUnlock() {
 	r.leaseMu.Unlock()
 }
 
+// Assignment delivery conventions (KB-318, workflow-generic): project/owner
+// conventions are stored structured on the assignment row (input_values,
+// target_metadata) and delivered to the executing agent by merging them into
+// the control message's labels under reserved key prefixes:
+//
+//	criteria.input.<name>    <- assignment input_values
+//	criteria.target.<key>    <- assignment target_metadata (env hints such as
+//	                            adapter.<kind>.image; castle never interprets
+//	                            target values)
+//
+// PROXY PRINCIPLE: the operator owns the run lifecycle. Castle dispatches
+// assignments and records events, but run pods talk to the OPERATOR, never to
+// castle — the control message merely carries the workflow and its
+// conventions; everything the run needs must travel inside this message or
+// live with the operator's own endpoints.
+//
+// Reserved keys overwrite an agent-provided label of the same name on the
+// delivered message only; the stored labels row is untouched.
+func mergeAssignmentConventions(labels map[string]string, a *store.WorkflowAssignment) map[string]string {
+	out := make(map[string]string, len(labels)+len(a.InputValues)+len(a.TargetMetadata))
+	for k, v := range labels {
+		out[k] = v
+	}
+	for name, value := range a.InputValues {
+		out["criteria.input."+name] = value
+	}
+	for key, value := range a.TargetMetadata {
+		out["criteria.target."+key] = value
+	}
+	return out
+}
+
 // enqueueWorkflowAssignment pushes a WorkflowAssignment control message to the
 // connected agent identified by criteriaID. It re-reads the assignment from
 // the store immediately before sending so an assignment whose lease just
@@ -63,7 +95,7 @@ func enqueueWorkflowAssignment(st store.Store, controls *ControlRegistry, criter
 		WorkflowName:   fresh.WorkflowName,
 		WorkflowSource: fresh.WorkflowSource,
 		LockfileSource: fresh.LockfileSource,
-		Labels:         fresh.Labels,
+		Labels:         mergeAssignmentConventions(fresh.Labels, fresh),
 	}}})
 }
 
