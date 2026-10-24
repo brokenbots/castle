@@ -297,6 +297,11 @@ type WorkflowAssignment struct {
 	// delivers verbatim but never interprets.
 	InputValues    map[string]string
 	TargetMetadata map[string]string
+	// Attempt lineage for refired runs (KB-321): RefireRootRunID is the
+	// run id of the family's original attempt (originals carry ''), and
+	// RefireAttempt is the family attempt number (originals carry 1).
+	RefireRootRunID string
+	RefireAttempt   int
 }
 
 // WorkflowAssignmentLease records a single lease grant to an agent.
@@ -386,6 +391,66 @@ type RunReapOutcome struct {
 	Parked bool
 	Status string
 	Reason string
+}
+
+// Refire policy disposition vocabulary (KB-321): the policy engine's
+// decision for a terminal-failed run family attempt. "refire" requeues a
+// successor attempt under the attempt/backoff limits, "park" holds the run
+// for a human decision in the KB-226 parked shape, "cosmetic" leaves a
+// known-benign failure without taking action, "none" is an unclassified
+// failure (fail-safe: no action), and the "skipped" flavors record why the
+// scan skipped a candidate that otherwise matched.
+const (
+	RefireDispositionRefire    = "refire"
+	RefireDispositionPark      = "park"
+	RefireDispositionCosmetic  = "cosmetic"
+	RefireDispositionNone      = "none"
+	RefireDispositionDeferred  = "deferred"
+	RefireDispositionExhausted = "exhausted"
+	RefireDispositionSkipped   = "skipped"
+)
+
+// RefirePolicyRow is one policy-as-data row (KB-321): the policy document is
+// stored verbatim as JSON and resolved per (project_id, route), with (”, ”)
+// the global default, (project_id, ”) the per-project assignment default,
+// (”, route) a cross-project route override, and (project_id, route) a
+// per-route override.
+type RefirePolicyRow struct {
+	ProjectID string
+	Route     string
+	Policy    string // verbatim refire.MarshalPolicy JSON
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// RefireCandidate is one terminal-failed assignment the scan offers to the
+// policy engine (KB-321): the newest failed attempt of its refire family.
+type RefireCandidate struct {
+	Assignment *WorkflowAssignment
+	// FailureReason is the run's failure_reason ("" when none was stamped).
+	FailureReason string
+	// EndedAt is the run's ended_at (the backoff clock's reference point,
+	// nil while the run has not ended).
+	EndedAt *time.Time
+	// Attempt is the family attempt number; 1 is the original attempt.
+	Attempt int
+	// RootRunID is the family root's run id (the original attempt), which
+	// equals the candidate's own run id for originals.
+	RootRunID string
+}
+
+// RefireOutcome is one deterministic policy-engine verdict for a candidate
+// (KB-321), mirroring RunReapOutcome. Disposition is one of the
+// RefireDisposition* constants; RefireAttempt is the family attempt number
+// that was evaluated; RefireRunID/RefireAssignmentID name the successor run
+// and queued assignment for RefireDispositionRefire outcomes.
+type RefireOutcome struct {
+	Disposition        string
+	RunID              string
+	Reason             string
+	RefireAttempt      int
+	RefireRunID        string
+	RefireAssignmentID string
 }
 
 // Store is the persistence contract.
@@ -500,6 +565,34 @@ type Store interface {
 	// returns ErrRunTerminal, an unknown id ErrNotFound. The cancelled run
 	// record is returned on success.
 	CancelRun(ctx context.Context, runID, reason string, now time.Time) (*Run, error)
+
+	// Refire policy engine (KB-321)
+	// UpsertRefirePolicy stores the verbatim policy JSON for (projectID,
+	// route), replacing the whole row (Created/Updated stamps are managed by
+	// the store). An empty projectID or route means the default slot; ('',
+	// '') is the global default row.
+	UpsertRefirePolicy(ctx context.Context, projectID, route, policyJSON string, now time.Time) error
+	// ListRefirePolicies returns every policy row, or nil when none exist.
+	ListRefirePolicies(ctx context.Context) ([]RefirePolicyRow, error)
+	// DeleteRefirePolicy removes the policy row for (projectID, route).
+	// Deleting an unknown key is a no-op.
+	DeleteRefirePolicy(ctx context.Context, projectID, route string) error
+	// ListRefireCandidates returns the newest failed attempt of every
+	// refire family whose ending is policy-engine-eligible ("run failed",
+	// "run completed", "agent heartbeat lost", "created_never_started"),
+	// oldest failure first, up to limit (0 = no limit). Parked, cancelled,
+	// stopped and succeeded runs, rejected assignments, and families with a
+	// newer surviving attempt are never candidates.
+	ListRefireCandidates(ctx context.Context, limit int) ([]RefireCandidate, error)
+	// RefireFailedRuns evaluates the refire policy for every candidate (see
+	// ListRefireCandidates, up to limit) and takes the resolved verdicts in
+	// one transaction: transient failures requeue a successor attempt under
+	// the policy's attempt/backoff limits, designed-park endings are
+	// reclassified to the KB-226 parked shape (never refired without a
+	// human ack), cosmetic and unclassified failures are left alone.
+	// now is the evaluation instant (drives backoff); returns one
+	// RefireOutcome per evaluated candidate.
+	RefireFailedRuns(ctx context.Context, now time.Time, limit int) ([]RefireOutcome, error)
 
 	// Events
 	// AppendEvent persists ev and returns the assigned seq. When ev has a

@@ -1545,7 +1545,8 @@ func (s *Store) insertAssignmentLabelsTx(ctx context.Context, tx *sql.Tx, assign
 // migration that last altered the workflow_assignments table.
 const assignmentColumns = `id, owner_criteria_id, run_id, workflow_name, workflow_source,
 	lockfile_source, idempotency_key, state, terminal_reason, leased_criteria_id,
-	lease_expires_at, created_at, updated_at, project_id, input_values, target_metadata`
+	lease_expires_at, created_at, updated_at, project_id, input_values, target_metadata,
+	refire_root_run_id, refire_attempt`
 
 func (s *Store) GetWorkflowAssignment(ctx context.Context, id string) (*store.WorkflowAssignment, error) {
 	ctx, cancel := s.opCtx(ctx)
@@ -1594,7 +1595,8 @@ func (s *Store) scanAssignment(ctx context.Context, row *sql.Row) (*store.Workfl
 	err := row.Scan(
 		&a.ID, &a.OwnerCriteriaID, &a.RunID, &a.WorkflowName, &a.WorkflowSource, &lockfile,
 		&a.IdempotencyKey, &a.State, &terminalReason, &leasedID, &expires,
-		&created, &updated, &projectID, &inputValues, &targetMetadata)
+		&created, &updated, &projectID, &inputValues, &targetMetadata,
+		&a.RefireRootRunID, &a.RefireAttempt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -1634,7 +1636,8 @@ func scanAssignmentTx(ctx context.Context, tx *sql.Tx, query string, args ...any
 	err := row.Scan(
 		&a.ID, &a.OwnerCriteriaID, &a.RunID, &a.WorkflowName, &a.WorkflowSource, &lockfile,
 		&a.IdempotencyKey, &a.State, &terminalReason, &leasedID, &expires,
-		&created, &updated, &projectID, &inputValues, &targetMetadata)
+		&created, &updated, &projectID, &inputValues, &targetMetadata,
+		&a.RefireRootRunID, &a.RefireAttempt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
