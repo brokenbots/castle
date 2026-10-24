@@ -95,8 +95,8 @@ var Tables = []table{
 	},
 	{
 		name: "run_subscriptions",
-		key: []string{"subscriber_id", "run_id"},
-		pk:  []string{"subscriber_id", "run_id"},
+		key:  []string{"subscriber_id", "run_id"},
+		pk:   []string{"subscriber_id", "run_id"},
 		cols: []column{
 			{"subscriber_id", KindText, false}, {"run_id", KindText, false},
 			{"last_seq", KindInt, false}, {"updated_at", KindTS, false},
@@ -104,8 +104,8 @@ var Tables = []table{
 	},
 	{
 		name: "run_attempts",
-		key: []string{"run_id", "step", "attempt"},
-		pk:  []string{"run_id", "step", "attempt"},
+		key:  []string{"run_id", "step", "attempt"},
+		pk:   []string{"run_id", "step", "attempt"},
 		cols: []column{
 			{"run_id", KindText, false}, {"step", KindText, false}, {"attempt", KindInt, false},
 			{"started_at", KindTS, false}, {"completed_at", KindTS, true}, {"outcome", KindText, true},
@@ -113,7 +113,7 @@ var Tables = []table{
 	},
 	{
 		name: "events",
-		key: []string{"run_id", "seq"},
+		key:  []string{"run_id", "seq"},
 		// pg's events PK also carries ts; sqlite's is (run_id, seq).
 		pk: []string{"run_id", "seq", "ts"},
 		cols: []column{
@@ -136,7 +136,7 @@ var Tables = []table{
 	},
 	{
 		name: "workflow_assignment_labels",
-		pk: []string{"assignment_id", "key"},
+		pk:   []string{"assignment_id", "key"},
 		cols: []column{
 			{"assignment_id", KindText, false}, {"key", KindText, false}, {"value", KindText, false},
 		},
@@ -152,8 +152,8 @@ var Tables = []table{
 	},
 	{
 		name: "workflow_assignment_attempts",
-		key: []string{"assignment_id", "attempt"},
-		pk:  []string{"assignment_id", "attempt"},
+		key:  []string{"assignment_id", "attempt"},
+		pk:   []string{"assignment_id", "attempt"},
 		cols: []column{
 			{"assignment_id", KindText, false}, {"attempt", KindInt, false},
 			{"criteria_id", KindText, true}, {"created_at", KindTS, false},
@@ -162,8 +162,8 @@ var Tables = []table{
 	},
 	{
 		name: "orchestrators",
-		key: []string{"id"},
-		pk:  []string{"id"},
+		key:  []string{"id"},
+		pk:   []string{"id"},
 		cols: []column{
 			{"id", KindText, false}, {"name", KindText, false},
 			{"token_hash", KindText, false}, {"created_at", KindTS, false},
@@ -171,8 +171,8 @@ var Tables = []table{
 	},
 	{
 		name: "console_users",
-		key: []string{"id"},
-		pk:  []string{"id"},
+		key:  []string{"id"},
+		pk:   []string{"id"},
 		cols: []column{
 			{"id", KindText, false}, {"username", KindText, false}, {"password_hash", KindText, false},
 			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
@@ -180,8 +180,8 @@ var Tables = []table{
 	},
 	{
 		name: "console_sessions",
-		key: []string{"id"},
-		pk:  []string{"id"},
+		key:  []string{"id"},
+		pk:   []string{"id"},
 		cols: []column{
 			{"id", KindText, false}, {"user_id", KindText, false},
 			{"token_hash", KindText, false}, {"created_at", KindTS, false},
