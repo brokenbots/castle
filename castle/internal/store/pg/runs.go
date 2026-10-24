@@ -114,7 +114,7 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit i
 // (KB-324 S1); the predicate mirrors the project_members EXISTS clause the
 // assignment lease scan consults. See the sqlite implementation for the
 // contract documentation.
-func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	p := &plf{}
@@ -124,6 +124,9 @@ func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, status string
 		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = ` + p.next(criteriaID) + `)
 		OR EXISTS (SELECT 1 FROM project_members pm
 		           WHERE pm.project_id = runs.project_id AND pm.member_id = ` + p.next(criteriaID) + `))`
+	if overseerID != "" {
+		q += " AND overseer_id=" + p.next(overseerID)
+	}
 	if status != "" {
 		q += " AND status=" + p.next(status)
 	}

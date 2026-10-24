@@ -820,7 +820,7 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit i
 // contains it — the same project_members EXISTS clause the assignment lease
 // scan consults. Unscoped runs (project_id NULL) are never returned here;
 // they stay console-operator-visible.
-func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	q := `SELECT ` + runColumns + ` FROM runs WHERE (
@@ -831,6 +831,10 @@ func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, status string
 		           WHERE pm.project_id = runs.project_id AND pm.member_id = ?)
 	)`
 	args := []any{criteriaID, criteriaID, criteriaID}
+	if overseerID != "" {
+		q += ` AND overseer_id=?`
+		args = append(args, overseerID)
+	}
 	if status != "" {
 		q += ` AND status=?`
 		args = append(args, status)

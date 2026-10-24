@@ -534,9 +534,11 @@ type Store interface {
 	//     EXISTS predicate the assignment lease scan consults).
 	//
 	// Unscoped runs (project_id NULL) are not returned to criteria callers;
-	// they stay console-operator-visible through ListRuns. Paging, ordering
+	// they stay console-operator-visible through ListRuns. An optional
+	// criteriaID ("" = any) narrows the page to that overseer's runs, e.g.
+	// an agent asking for its own slice of its visible set. Paging, ordering
 	// and cursor semantics match ListRuns exactly.
-	ListRunsVisibleTo(ctx context.Context, criteriaID, status string, limit int, pageToken string) ([]*Run, string, error)
+	ListRunsVisibleTo(ctx context.Context, criteriaID, overseerID, status string, limit int, pageToken string) ([]*Run, string, error)
 	// IsRunVisibleTo reports whether the criteria caller C may read the run
 	// under the membership read scope above. An invisible or missing run is
 	// (false, nil) — callers surface that as ErrNotFound so denied runs do

@@ -62,7 +62,7 @@ func TestRunVisibilityScope(t *testing.T) {
 		})
 
 		t.Run("member sees membership run and own ownership", func(t *testing.T) {
-			runs, _, err := s.ListRunsVisibleTo(ctx, "agent-member", "", 0, "")
+			runs, _, err := s.ListRunsVisibleTo(ctx, "agent-member", "", "", 0, "")
 			if err != nil {
 				t.Fatalf("ListRunsVisibleTo: %v", err)
 			}
@@ -108,15 +108,15 @@ func TestRunVisibilityScope(t *testing.T) {
 		})
 
 		t.Run("status and paging mirror ListRuns", func(t *testing.T) {
-			runs, _, err := s.ListRunsVisibleTo(ctx, "agent-owner", "running", 0, "")
+			runs, _, err := s.ListRunsVisibleTo(ctx, "agent-owner", "", "running", 0, "")
 			if err != nil || len(runs) != 1 || runs[0].ID != "run-leased" {
 				t.Fatalf("status filter: runs=%v err=%v", runs, err)
 			}
-			page1, next, err := s.ListRunsVisibleTo(ctx, "agent-member", "", 1, "")
+			page1, next, err := s.ListRunsVisibleTo(ctx, "agent-member", "", "", 1, "")
 			if err != nil || len(page1) != 1 || next == "" {
 				t.Fatalf("page1: %v next=%q err=%v", page1, next, err)
 			}
-			page2, next2, err := s.ListRunsVisibleTo(ctx, "agent-member", "", 1, next)
+			page2, next2, err := s.ListRunsVisibleTo(ctx, "agent-member", "", "", 1, next)
 			if err != nil || len(page2) != 1 || next2 != "" {
 				t.Fatalf("page2: %v next=%q err=%v", page2, next2, err)
 			}
