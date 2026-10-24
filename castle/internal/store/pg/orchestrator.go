@@ -14,7 +14,7 @@ func (s *Store) UpsertOrchestrator(ctx context.Context, o *store.Orchestrator) e
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO orchestrators(id,name,token_hash,created_at) VALUES(?,?,?,?)
+		`INSERT INTO orchestrators(id,name,token_hash,created_at) VALUES($1,$2,$3,$4)
 		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, token_hash=excluded.token_hash`,
 		o.ID, o.Name, o.TokenHash, us(o.CreatedAt))
 	return err
@@ -55,7 +55,7 @@ func (s *Store) UpsertConsoleUser(ctx context.Context, u *store.ConsoleUser) err
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO console_users(id,username,password_hash,created_at,updated_at) VALUES(?,?,?,?,?)
+		`INSERT INTO console_users(id,username,password_hash,created_at,updated_at) VALUES($1,$2,$3,$4,$5)
 		 ON CONFLICT(id) DO UPDATE SET username=excluded.username, password_hash=excluded.password_hash, updated_at=excluded.updated_at`,
 		u.ID, u.Username, u.PasswordHash, us(u.CreatedAt), us(u.UpdatedAt))
 	return err
@@ -89,7 +89,7 @@ func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSes
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO console_sessions(id,user_id,token_hash,created_at) VALUES(?,?,?,?)`,
+		`INSERT INTO console_sessions(id,user_id,token_hash,created_at) VALUES($1,$2,$3,$4)`,
 		sess.ID, sess.UserID, sess.TokenHash, us(sess.CreatedAt))
 	return err
 }

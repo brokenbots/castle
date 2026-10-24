@@ -10,5 +10,5 @@ CREATE TABLE IF NOT EXISTS run_attempts (
     PRIMARY KEY (run_id, step, attempt)
 );
 
-CREATE INDEX IF NOT EXISTS idx_run_attempts_progress
-    ON run_attempts(run_id, step, attempt, completed_at IS NOT NULL, started_at);
+CREATE INDEX IF NOT EXISTS idx_run_attempts_run_step
+    ON run_attempts(run_id, step);

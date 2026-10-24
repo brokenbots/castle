@@ -17,7 +17,7 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, us(o.CreatedAt), us(o.LastSeenAt))
 	if err == nil {
 		s.freshness.recordWrite(o.CreatedAt)
