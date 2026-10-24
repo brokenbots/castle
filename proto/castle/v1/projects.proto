@@ -47,6 +47,28 @@ service ProjectService {
   // input_values and target_metadata are workflow-generic conventions:
   // values are shape-validated only and NEVER interpreted by the server.
   rpc SubmitProjectAssignment(SubmitProjectAssignmentRequest) returns (SubmitProjectAssignmentResponse);
+
+  // GetProjectSettings returns the project's ONE settings doc
+  // (convention-keyed JSON entries) plus the doc's content-addressed etag.
+  // The etag is what SetProjectSettings reconciles against.
+  rpc GetProjectSettings(GetProjectSettingsRequest) returns (GetProjectSettingsResponse);
+
+  // SetProjectSettings swaps the whole settings doc under optimistic etag
+  // semantics: expected_etag must be the etag the caller last read, or ""
+  // exactly when the doc is still unset. A writer whose expectation no
+  // longer holds is rejected without clobbering; the response carries the
+  // new etag to chain further swaps.
+  rpc SetProjectSettings(SetProjectSettingsRequest) returns (SetProjectSettingsResponse);
+
+  // GetRefirePolicy returns the policy row for (project_id, route) — the
+  // exact key, not the engine's resolution ladder. The project-scoped
+  // default row uses an empty route; the global default uses empty
+  // project_id and route.
+  rpc GetRefirePolicy(GetRefirePolicyRequest) returns (GetRefirePolicyResponse);
+
+  // SetRefirePolicy upserts the policy row for (project_id, route) with
+  // the same strict validation the policy file loader applies.
+  rpc SetRefirePolicy(SetRefirePolicyRequest) returns (SetRefirePolicyResponse);
 }
 
 enum ProjectMembershipPolicy {
@@ -189,4 +211,72 @@ message SubmitProjectAssignmentResponse {
   // When state == LEASED or TERMINAL, the criteria ID of the agent that
   // leased the assignment, if known.
   string leased_criteria_id = 5;
+}
+
+// RefirePolicy is the wire shape of the refire/classification policy
+// document (KB-321): attempt budget, retry backoff floor, and the
+// classification vocabularies (substring groups matched case-insensitively).
+// max_attempts counts the original attempt (1 never refires; 0 disables
+// refiring); backoff_seconds is the minimum delay between a failed
+// attempt's end and the next family attempt.
+message RefirePolicy {
+  int32 max_attempts = 1;
+  int32 backoff_seconds = 2;
+  // transient are failure-reason substrings classifying the ending as a
+  // recoverable stall: refired under the attempt/backoff limits.
+  repeated string transient = 3;
+  // parks are designed-park spellings: the parked run never refires and
+  // waits for a human decision.
+  repeated string parks = 4;
+  // cosmetics are known-benign endings: stay terminal-failed, no action.
+  repeated string cosmetics = 5;
+}
+
+message GetProjectSettingsRequest {
+  string project_id = 1;
+}
+
+message GetProjectSettingsResponse {
+  // settings is the convention-keyed settings doc; empty entries list means
+  // the doc is unset.
+  map<string, string> settings = 1;
+  // etag is the doc's content-addressed etag (empty when the doc is
+  // unset).
+  string etag = 2;
+}
+
+message SetProjectSettingsRequest {
+  string project_id = 1;
+  // settings is the complete replacement doc — settings are swapped whole,
+  // never merged.
+  map<string, string> settings = 2;
+  // expected_etag is the etag the caller last read: the current etag, or ""
+  // exactly when the doc is still unset.
+  string expected_etag = 3;
+}
+
+message SetProjectSettingsResponse {
+  string etag = 1;
+}
+
+message GetRefirePolicyRequest {
+  // project_id of the policy row ("" selects the global default slot).
+  string project_id = 1;
+  // route of the policy row ("" selects the project-scoped default).
+  string route = 2;
+}
+
+message GetRefirePolicyResponse {
+  RefirePolicy policy = 1;
+  google.protobuf.Timestamp updated_at = 2;
+}
+
+message SetRefirePolicyRequest {
+  string project_id = 1;
+  string route = 2;
+  RefirePolicy policy = 3;
+}
+
+message SetRefirePolicyResponse {
+  google.protobuf.Timestamp updated_at = 1;
 }

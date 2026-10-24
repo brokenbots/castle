@@ -62,6 +62,18 @@ const (
 	// ProjectServiceSubmitProjectAssignmentProcedure is the fully-qualified name of the
 	// ProjectService's SubmitProjectAssignment RPC.
 	ProjectServiceSubmitProjectAssignmentProcedure = "/castle.v1.ProjectService/SubmitProjectAssignment"
+	// ProjectServiceGetProjectSettingsProcedure is the fully-qualified name of the ProjectService's
+	// GetProjectSettings RPC.
+	ProjectServiceGetProjectSettingsProcedure = "/castle.v1.ProjectService/GetProjectSettings"
+	// ProjectServiceSetProjectSettingsProcedure is the fully-qualified name of the ProjectService's
+	// SetProjectSettings RPC.
+	ProjectServiceSetProjectSettingsProcedure = "/castle.v1.ProjectService/SetProjectSettings"
+	// ProjectServiceGetRefirePolicyProcedure is the fully-qualified name of the ProjectService's
+	// GetRefirePolicy RPC.
+	ProjectServiceGetRefirePolicyProcedure = "/castle.v1.ProjectService/GetRefirePolicy"
+	// ProjectServiceSetRefirePolicyProcedure is the fully-qualified name of the ProjectService's
+	// SetRefirePolicy RPC.
+	ProjectServiceSetRefirePolicyProcedure = "/castle.v1.ProjectService/SetRefirePolicy"
 )
 
 // ProjectServiceClient is a client for the castle.v1.ProjectService service.
@@ -92,6 +104,24 @@ type ProjectServiceClient interface {
 	// input_values and target_metadata are workflow-generic conventions:
 	// values are shape-validated only and NEVER interpreted by the server.
 	SubmitProjectAssignment(context.Context, *connect.Request[v1.SubmitProjectAssignmentRequest]) (*connect.Response[v1.SubmitProjectAssignmentResponse], error)
+	// GetProjectSettings returns the project's ONE settings doc
+	// (convention-keyed JSON entries) plus the doc's content-addressed etag.
+	// The etag is what SetProjectSettings reconciles against.
+	GetProjectSettings(context.Context, *connect.Request[v1.GetProjectSettingsRequest]) (*connect.Response[v1.GetProjectSettingsResponse], error)
+	// SetProjectSettings swaps the whole settings doc under optimistic etag
+	// semantics: expected_etag must be the etag the caller last read, or ""
+	// exactly when the doc is still unset. A writer whose expectation no
+	// longer holds is rejected without clobbering; the response carries the
+	// new etag to chain further swaps.
+	SetProjectSettings(context.Context, *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error)
+	// GetRefirePolicy returns the policy row for (project_id, route) — the
+	// exact key, not the engine's resolution ladder. The project-scoped
+	// default row uses an empty route; the global default uses empty
+	// project_id and route.
+	GetRefirePolicy(context.Context, *connect.Request[v1.GetRefirePolicyRequest]) (*connect.Response[v1.GetRefirePolicyResponse], error)
+	// SetRefirePolicy upserts the policy row for (project_id, route) with
+	// the same strict validation the policy file loader applies.
+	SetRefirePolicy(context.Context, *connect.Request[v1.SetRefirePolicyRequest]) (*connect.Response[v1.SetRefirePolicyResponse], error)
 }
 
 // NewProjectServiceClient constructs a client for the castle.v1.ProjectService service. By default,
@@ -147,6 +177,30 @@ func NewProjectServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(projectServiceMethods.ByName("SubmitProjectAssignment")),
 			connect.WithClientOptions(opts...),
 		),
+		getProjectSettings: connect.NewClient[v1.GetProjectSettingsRequest, v1.GetProjectSettingsResponse](
+			httpClient,
+			baseURL+ProjectServiceGetProjectSettingsProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("GetProjectSettings")),
+			connect.WithClientOptions(opts...),
+		),
+		setProjectSettings: connect.NewClient[v1.SetProjectSettingsRequest, v1.SetProjectSettingsResponse](
+			httpClient,
+			baseURL+ProjectServiceSetProjectSettingsProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("SetProjectSettings")),
+			connect.WithClientOptions(opts...),
+		),
+		getRefirePolicy: connect.NewClient[v1.GetRefirePolicyRequest, v1.GetRefirePolicyResponse](
+			httpClient,
+			baseURL+ProjectServiceGetRefirePolicyProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("GetRefirePolicy")),
+			connect.WithClientOptions(opts...),
+		),
+		setRefirePolicy: connect.NewClient[v1.SetRefirePolicyRequest, v1.SetRefirePolicyResponse](
+			httpClient,
+			baseURL+ProjectServiceSetRefirePolicyProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("SetRefirePolicy")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -159,6 +213,10 @@ type projectServiceClient struct {
 	removeProjectMember     *connect.Client[v1.RemoveProjectMemberRequest, v1.RemoveProjectMemberResponse]
 	listProjectMembers      *connect.Client[v1.ListProjectMembersRequest, v1.ListProjectMembersResponse]
 	submitProjectAssignment *connect.Client[v1.SubmitProjectAssignmentRequest, v1.SubmitProjectAssignmentResponse]
+	getProjectSettings      *connect.Client[v1.GetProjectSettingsRequest, v1.GetProjectSettingsResponse]
+	setProjectSettings      *connect.Client[v1.SetProjectSettingsRequest, v1.SetProjectSettingsResponse]
+	getRefirePolicy         *connect.Client[v1.GetRefirePolicyRequest, v1.GetRefirePolicyResponse]
+	setRefirePolicy         *connect.Client[v1.SetRefirePolicyRequest, v1.SetRefirePolicyResponse]
 }
 
 // CreateProject calls castle.v1.ProjectService.CreateProject.
@@ -196,6 +254,26 @@ func (c *projectServiceClient) SubmitProjectAssignment(ctx context.Context, req 
 	return c.submitProjectAssignment.CallUnary(ctx, req)
 }
 
+// GetProjectSettings calls castle.v1.ProjectService.GetProjectSettings.
+func (c *projectServiceClient) GetProjectSettings(ctx context.Context, req *connect.Request[v1.GetProjectSettingsRequest]) (*connect.Response[v1.GetProjectSettingsResponse], error) {
+	return c.getProjectSettings.CallUnary(ctx, req)
+}
+
+// SetProjectSettings calls castle.v1.ProjectService.SetProjectSettings.
+func (c *projectServiceClient) SetProjectSettings(ctx context.Context, req *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error) {
+	return c.setProjectSettings.CallUnary(ctx, req)
+}
+
+// GetRefirePolicy calls castle.v1.ProjectService.GetRefirePolicy.
+func (c *projectServiceClient) GetRefirePolicy(ctx context.Context, req *connect.Request[v1.GetRefirePolicyRequest]) (*connect.Response[v1.GetRefirePolicyResponse], error) {
+	return c.getRefirePolicy.CallUnary(ctx, req)
+}
+
+// SetRefirePolicy calls castle.v1.ProjectService.SetRefirePolicy.
+func (c *projectServiceClient) SetRefirePolicy(ctx context.Context, req *connect.Request[v1.SetRefirePolicyRequest]) (*connect.Response[v1.SetRefirePolicyResponse], error) {
+	return c.setRefirePolicy.CallUnary(ctx, req)
+}
+
 // ProjectServiceHandler is an implementation of the castle.v1.ProjectService service.
 type ProjectServiceHandler interface {
 	// CreateProject registers a new project. IDs are lowercase slugs; the
@@ -224,6 +302,24 @@ type ProjectServiceHandler interface {
 	// input_values and target_metadata are workflow-generic conventions:
 	// values are shape-validated only and NEVER interpreted by the server.
 	SubmitProjectAssignment(context.Context, *connect.Request[v1.SubmitProjectAssignmentRequest]) (*connect.Response[v1.SubmitProjectAssignmentResponse], error)
+	// GetProjectSettings returns the project's ONE settings doc
+	// (convention-keyed JSON entries) plus the doc's content-addressed etag.
+	// The etag is what SetProjectSettings reconciles against.
+	GetProjectSettings(context.Context, *connect.Request[v1.GetProjectSettingsRequest]) (*connect.Response[v1.GetProjectSettingsResponse], error)
+	// SetProjectSettings swaps the whole settings doc under optimistic etag
+	// semantics: expected_etag must be the etag the caller last read, or ""
+	// exactly when the doc is still unset. A writer whose expectation no
+	// longer holds is rejected without clobbering; the response carries the
+	// new etag to chain further swaps.
+	SetProjectSettings(context.Context, *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error)
+	// GetRefirePolicy returns the policy row for (project_id, route) — the
+	// exact key, not the engine's resolution ladder. The project-scoped
+	// default row uses an empty route; the global default uses empty
+	// project_id and route.
+	GetRefirePolicy(context.Context, *connect.Request[v1.GetRefirePolicyRequest]) (*connect.Response[v1.GetRefirePolicyResponse], error)
+	// SetRefirePolicy upserts the policy row for (project_id, route) with
+	// the same strict validation the policy file loader applies.
+	SetRefirePolicy(context.Context, *connect.Request[v1.SetRefirePolicyRequest]) (*connect.Response[v1.SetRefirePolicyResponse], error)
 }
 
 // NewProjectServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -275,6 +371,30 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 		connect.WithSchema(projectServiceMethods.ByName("SubmitProjectAssignment")),
 		connect.WithHandlerOptions(opts...),
 	)
+	projectServiceGetProjectSettingsHandler := connect.NewUnaryHandler(
+		ProjectServiceGetProjectSettingsProcedure,
+		svc.GetProjectSettings,
+		connect.WithSchema(projectServiceMethods.ByName("GetProjectSettings")),
+		connect.WithHandlerOptions(opts...),
+	)
+	projectServiceSetProjectSettingsHandler := connect.NewUnaryHandler(
+		ProjectServiceSetProjectSettingsProcedure,
+		svc.SetProjectSettings,
+		connect.WithSchema(projectServiceMethods.ByName("SetProjectSettings")),
+		connect.WithHandlerOptions(opts...),
+	)
+	projectServiceGetRefirePolicyHandler := connect.NewUnaryHandler(
+		ProjectServiceGetRefirePolicyProcedure,
+		svc.GetRefirePolicy,
+		connect.WithSchema(projectServiceMethods.ByName("GetRefirePolicy")),
+		connect.WithHandlerOptions(opts...),
+	)
+	projectServiceSetRefirePolicyHandler := connect.NewUnaryHandler(
+		ProjectServiceSetRefirePolicyProcedure,
+		svc.SetRefirePolicy,
+		connect.WithSchema(projectServiceMethods.ByName("SetRefirePolicy")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/castle.v1.ProjectService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ProjectServiceCreateProjectProcedure:
@@ -291,6 +411,14 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 			projectServiceListProjectMembersHandler.ServeHTTP(w, r)
 		case ProjectServiceSubmitProjectAssignmentProcedure:
 			projectServiceSubmitProjectAssignmentHandler.ServeHTTP(w, r)
+		case ProjectServiceGetProjectSettingsProcedure:
+			projectServiceGetProjectSettingsHandler.ServeHTTP(w, r)
+		case ProjectServiceSetProjectSettingsProcedure:
+			projectServiceSetProjectSettingsHandler.ServeHTTP(w, r)
+		case ProjectServiceGetRefirePolicyProcedure:
+			projectServiceGetRefirePolicyHandler.ServeHTTP(w, r)
+		case ProjectServiceSetRefirePolicyProcedure:
+			projectServiceSetRefirePolicyHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -326,4 +454,20 @@ func (UnimplementedProjectServiceHandler) ListProjectMembers(context.Context, *c
 
 func (UnimplementedProjectServiceHandler) SubmitProjectAssignment(context.Context, *connect.Request[v1.SubmitProjectAssignmentRequest]) (*connect.Response[v1.SubmitProjectAssignmentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.SubmitProjectAssignment is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) GetProjectSettings(context.Context, *connect.Request[v1.GetProjectSettingsRequest]) (*connect.Response[v1.GetProjectSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.GetProjectSettings is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) SetProjectSettings(context.Context, *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.SetProjectSettings is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) GetRefirePolicy(context.Context, *connect.Request[v1.GetRefirePolicyRequest]) (*connect.Response[v1.GetRefirePolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.GetRefirePolicy is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) SetRefirePolicy(context.Context, *connect.Request[v1.SetRefirePolicyRequest]) (*connect.Response[v1.SetRefirePolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.SetRefirePolicy is not implemented"))
 }

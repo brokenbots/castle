@@ -364,6 +364,12 @@ type Run struct {
 	// assignment lease time (and directly at CreateRun for agent-owned
 	// runs) for exact-build traceability. Empty when unknown.
 	AgentIdentity string
+	// ProjectID names the project the run belongs to (KB-324 S1), stamped
+	// at CreateRun: assignment-dispatched runs inherit the assignment's
+	// project, standalone runs stay unscoped (empty) and remain
+	// console-operator-visible only. Read visibility consults the same
+	// project_members membership predicate the lease scan uses.
+	ProjectID string
 }
 
 // RunStatusAwaitingHuman is the parked status of a run whose engine reached
@@ -518,6 +524,28 @@ type Store interface {
 	// returned token is "" when no further page exists. A non-empty token
 	// that cannot be decoded fails with ErrInvalidCursor.
 	ListRuns(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*Run, string, error)
+	// ListRunsVisibleTo pages runs under the membership read scope (KB-324
+	// S1): the criteria caller C (agent id / overseer id) may read
+	//
+	//   - runs it leases (runs.overseer_id = C),
+	//   - runs it owns via a workflow assignment (the assignment that minted
+	//     the run carries owner_criteria_id = C), and
+	//   - runs whose project lists C as a member (the same project_members
+	//     EXISTS predicate the assignment lease scan consults).
+	//
+	// The owned/leased arms include standalone runs (project_id NULL): a
+	// caller observes the work it owns. Any other unscoped run (project_id
+	// NULL, neither leased nor owned by C) stays invisible to criteria
+	// callers and remains console-operator-visible through ListRuns. An
+	// optional criteriaID ("" = any) narrows the page to that overseer's
+	// runs, e.g. an agent asking for its own slice of its visible set.
+	// Paging, ordering and cursor semantics match ListRuns exactly.
+	ListRunsVisibleTo(ctx context.Context, criteriaID, overseerID, status string, limit int, pageToken string) ([]*Run, string, error)
+	// IsRunVisibleTo reports whether the criteria caller C may read the run
+	// under the membership read scope above. An invisible or missing run is
+	// (false, nil) — callers surface that as ErrNotFound so denied runs do
+	// not leak their existence through error classes.
+	IsRunVisibleTo(ctx context.Context, runID, criteriaID string) (bool, error)
 	UpdateRun(ctx context.Context, r *Run) error
 	// SetRunMetadata promotes non-empty metadata values (ticket, repo_url,
 	// pr_url) onto the run record without touching run status (CRI-131). Empty
@@ -754,6 +782,23 @@ type Store interface {
 	// IsProjectMember reports whether memberID belongs to projectID's
 	// member set. A project that does not exist yields false.
 	IsProjectMember(ctx context.Context, projectID, memberID string) (bool, error)
+
+	// Project settings (KB-324 S1)
+	// GetProjectSettings returns the project's ONE settings doc — the
+	// convention-keyed (per-convention-key JSON entry) map castle persists
+	// verbatim and never interprets — plus the doc's content-addressed
+	// etag (store.SettingsETag). ErrNotFound when the project does not
+	// exist. A fresh project reads as an empty doc with an empty etag.
+	GetProjectSettings(ctx context.Context, projectID string) (map[string]string, string, error)
+	// SetProjectSettings atomically swaps the whole settings doc when the
+	// caller has seen the current one: expectedETag must equal the doc's
+	// current etag, or the empty etag exactly when the project's doc is
+	// still unset (never written, or emptied again). On success it returns
+	// the new etag; any concurrent writer between the caller's read and
+	// this swap fails with ErrSettingsConflict. ErrNotFound when the
+	// project does not exist. Bounds and per-entry JSON validity are the
+	// rpc layer's contract; the store persists the doc verbatim.
+	SetProjectSettings(ctx context.Context, projectID string, settings map[string]string, expectedETag string) (string, error)
 
 	Close() error
 }

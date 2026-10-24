@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/refire"
 
 	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
@@ -21,18 +23,11 @@ import (
 // handler interfaces, and SubmitProjectAssignment reuses the same dispatch
 // machinery as SubmitWorkflowAssignment.
 //
-// Authorization posture (pre-user-auth): ProjectService procedures accept
-// agent identities only. The auth interceptor denies console and orchestrator
-// callers for these procedures (they are in neither allow set); the handlers
-// below re-check CallerCriteriaID as defense in depth. Full API auth by
-// project arrives with users (deferred by the KB-318 design).
-//
-// Member management is strictly self-service at this layer: a caller may
-// add only itself, and only to OPEN projects (closed admission is
-// operator-managed and has no self-service join), and may remove only
-// itself. Registered callers may create projects and read the project
-// registry. Human-kind membership and administrator roles arrive with
-// authenticated operators.
+// Authorization posture (KB-324): rights are membership-scoped and the
+// write shape is the credential class — protocol tokens (agent identities)
+// carry the assignment/run writes, console sessions carry the settings,
+// refire-policy and membership writes. Kind gates and label-fallback auth
+// are banned: authorization never branches on kind_ai vs kind_human.
 
 var _ castlev1connect.ProjectServiceHandler = (*ServerServer)(nil)
 
@@ -61,6 +56,14 @@ func (s *ServerServer) CreateProject(ctx context.Context, req *connect.Request[c
 	if err != nil {
 		return nil, err
 	}
+	// KB-324 write shape: the settings doc is a console-session write, so
+	// only console sessions (or the unwired direct-call path) may seed
+	// settings at creation. The registry write itself stays
+	// protocol-token-owned — only the settings seed is restricted.
+	if len(settings) > 0 &&
+		(auth.CallerCriteriaID(ctx) != "" || auth.CallerOrchestratorID(ctx) != "") {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("protocol tokens cannot seed the project settings doc; use SetProjectSettings from a console session"))
+	}
 	info, err := shapeValidateStringMap("info", p.GetInfo())
 	if err != nil {
 		return nil, err
@@ -87,7 +90,7 @@ func (s *ServerServer) CreateProject(ctx context.Context, req *connect.Request[c
 }
 
 func (s *ServerServer) GetProject(ctx context.Context, req *connect.Request[castlev1.GetProjectRequest]) (*connect.Response[castlev1.GetProjectResponse], error) {
-	if err := requireProjectCaller(ctx); err != nil {
+	if err := requireProjectReader(ctx); err != nil {
 		return nil, err
 	}
 	row, err := s.Store.GetProject(ctx, req.Msg.GetProjectId())
@@ -98,7 +101,7 @@ func (s *ServerServer) GetProject(ctx context.Context, req *connect.Request[cast
 }
 
 func (s *ServerServer) ListProjects(ctx context.Context, req *connect.Request[castlev1.ListProjectsRequest]) (*connect.Response[castlev1.ListProjectsResponse], error) {
-	if err := requireProjectCaller(ctx); err != nil {
+	if err := requireProjectReader(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := s.Store.ListProjects(ctx)
@@ -113,66 +116,65 @@ func (s *ServerServer) ListProjects(ctx context.Context, req *connect.Request[ca
 }
 
 func (s *ServerServer) AddProjectMember(ctx context.Context, req *connect.Request[castlev1.AddProjectMemberRequest]) (*connect.Response[castlev1.AddProjectMemberResponse], error) {
-	if err := requireProjectCaller(ctx); err != nil {
+	// KB-324 write shape: membership is a console-session write — the
+	// operator admits AI and human operators into any project regardless of
+	// the join policy. Agents self-join at registration time (the
+	// registration header path), never over this RPC.
+	if err := requireProjectAdminCaller(ctx); err != nil {
 		return nil, err
 	}
-	// Membership is operator-managed for closed projects and self-service
-	// otherwise: a caller may only register itself, never other identities
-	// (admission tooling for closed projects and human-kind management
-	// arrives with authenticated operators). This is the wire-level mirror
-	// of the registration self-join, rejected identically.
-	callerID := auth.CallerCriteriaID(ctx)
+	projectID := req.Msg.GetProjectId()
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id required"))
+	}
+	if err := store.ValidateProjectID(projectID); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	memberID := req.Msg.GetMemberId()
 	if memberID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("member_id required"))
 	}
-	if memberID != callerID {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("members may only join themselves"))
-	}
-	if req.Msg.GetKind() == castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_HUMAN {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("human-kind membership is operator-managed"))
-	}
-	policy, err := s.projectMembershipPolicy(ctx, req.Msg.GetProjectId())
-	if err != nil {
-		return nil, err
-	}
-	if policy == store.ProjectMembershipClosed {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("closed project admission is operator-managed"))
+	if req.Msg.GetKind() == castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_UNSPECIFIED {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("kind required"))
 	}
 	m := &store.ProjectMember{
-		ProjectID: req.Msg.GetProjectId(),
+		ProjectID: projectID,
 		MemberID:  memberID,
-		Kind:      store.ProjectMemberKindAI,
+		Kind:      projectKindFromPB(req.Msg.GetKind()),
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := s.Store.JoinProject(ctx, req.Msg.GetProjectId(), memberID, store.ProjectMemberKindAI, m.CreatedAt); err != nil {
+	if err := s.Store.AddProjectMember(ctx, m); err != nil {
 		return nil, projectStoreError(err)
 	}
 	return connect.NewResponse(&castlev1.AddProjectMemberResponse{Member: mapMember(m)}), nil
 }
 
 func (s *ServerServer) RemoveProjectMember(ctx context.Context, req *connect.Request[castlev1.RemoveProjectMemberRequest]) (*connect.Response[castlev1.RemoveProjectMemberResponse], error) {
-	if err := requireProjectCaller(ctx); err != nil {
+	// KB-324 write shape: membership is a console-session write. Eviction is
+	// idempotent (removing an unknown member is a no-op) and the project id
+	// is validated the same way admits are.
+	if err := requireProjectAdminCaller(ctx); err != nil {
 		return nil, err
 	}
-	// No administrator role exists yet (user auth arrives later), so the
-	// only permitted member eviction is self-leave; the deny is decided on
-	// caller identity alone, without disclosing whether the target exists.
+	projectID := req.Msg.GetProjectId()
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id required"))
+	}
+	if err := store.ValidateProjectID(projectID); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	memberID := req.Msg.GetMemberId()
 	if memberID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("member_id required"))
 	}
-	if memberID != auth.CallerCriteriaID(ctx) {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("members may only leave projects themselves"))
-	}
-	if err := s.Store.RemoveProjectMember(ctx, req.Msg.GetProjectId(), memberID); err != nil {
+	if err := s.Store.RemoveProjectMember(ctx, projectID, memberID); err != nil {
 		return nil, projectStoreError(err)
 	}
 	return connect.NewResponse(&castlev1.RemoveProjectMemberResponse{}), nil
 }
 
 func (s *ServerServer) ListProjectMembers(ctx context.Context, req *connect.Request[castlev1.ListProjectMembersRequest]) (*connect.Response[castlev1.ListProjectMembersResponse], error) {
-	if err := requireProjectCaller(ctx); err != nil {
+	if err := requireProjectReader(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := s.Store.ListProjectMembers(ctx, req.Msg.GetProjectId())
@@ -254,19 +256,60 @@ func (s *ServerServer) SubmitProjectAssignment(ctx context.Context, req *connect
 	return connect.NewResponse(resp), nil
 }
 
-// requireProjectCaller enforces the agent-identity-only posture for the
-// project surface: console and orchestrator identities reaching a handler
-// despite interceptor policy are rejected here (defense in depth). Trigger
-// identities are rejected explicitly with PermissionDenied (KB-320): they
-// hold exactly one project surface call — SubmitProjectAssignment, which
-// resolves its own caller above — and must never administer projects or
-// membership.
+// requireProjectCaller enforces CreateProject's caller posture: the registry
+// write stays protocol-token-owned (agent bootstrap) and console sessions
+// are admitted as well, because KB-324 makes the settings seed a
+// console-session write — which caller may carry that seed is enforced in
+// the handler where the settings map is shaped. Reader postures use
+// requireProjectReader; the other KB-324 writes use requireProjectAdminCaller.
+// Trigger identities are rejected explicitly with PermissionDenied (KB-320).
 func requireProjectCaller(ctx context.Context) error {
 	if auth.CallerTriggerID(ctx) != "" {
 		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))
 	}
-	if auth.CallerCriteriaID(ctx) == "" {
+	if auth.CallerCriteriaID(ctx) == "" && auth.CallerConsoleUserID(ctx) == "" {
 		return connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
+	}
+	return nil
+}
+
+// requireProjectReader is the KB-324 reader posture shared by the project
+// surfaces a console operator administers: agent identities (the registered
+// project surface callers) and console-session identities (the operator UI)
+// may read; trigger and orchestrator identities may not. With no identity at
+// all the auth interceptor is not wired (direct handler calls in tests), so
+// the check passes through like requireCaller does.
+func requireProjectReader(ctx context.Context) error {
+	if auth.CallerTriggerID(ctx) != "" {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))
+	}
+	if auth.CallerOrchestratorID(ctx) != "" {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("orchestrator identities cannot invoke this project surface"))
+	}
+	if auth.CallerCriteriaID(ctx) == "" && auth.CallerConsoleUserID(ctx) == "" {
+		// Not wired (direct-call path in tests).
+		return nil
+	}
+	return nil
+}
+
+// requireProjectAdminCaller is the KB-324 write shape for project
+// administration: settings, refire policies and membership are
+// console-session writes. Protocol tokens — agent and orchestrator
+// identities, and trigger identities (submit-only, KB-320) — are rejected
+// regardless of any membership claim. With no identity at all the auth
+// interceptor is not wired (direct handler calls in tests), so the check
+// passes through like requireCaller does.
+func requireProjectAdminCaller(ctx context.Context) error {
+	if auth.CallerTriggerID(ctx) != "" {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project admin surface"))
+	}
+	if auth.CallerCriteriaID(ctx) != "" || auth.CallerOrchestratorID(ctx) != "" {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("protocol tokens cannot write project settings, policies or membership; this surface is a console-session write"))
+	}
+	if auth.CallerConsoleUserID(ctx) == "" {
+		// Not wired (direct-call path in tests).
+		return nil
 	}
 	return nil
 }
@@ -279,6 +322,11 @@ func projectStoreError(err error) error {
 		return nil
 	case errors.Is(err, store.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, store.ErrSettingsConflict):
+		// The caller's etag did not match the doc it now races against
+		// (KB-324): not a permanent InvalidArgument, only a precondition
+		// the writer must satisfy by re-reading first.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, store.ErrProjectExists):
 		return connect.NewError(connect.CodeAlreadyExists, err)
 	case errors.Is(err, store.ErrInvalidProjectID),
@@ -310,16 +358,6 @@ func projectPolicyToPB(v string) castlev1.ProjectMembershipPolicy {
 	default:
 		return castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_UNSPECIFIED
 	}
-}
-
-// projectMembershipPolicy resolves a project's policy, mapping store errors
-// onto wire codes (unknown project → NotFound).
-func (s *ServerServer) projectMembershipPolicy(ctx context.Context, projectID string) (string, error) {
-	row, err := s.Store.GetProject(ctx, projectID)
-	if err != nil {
-		return "", projectStoreError(err)
-	}
-	return row.MembershipPolicy, nil
 }
 
 func projectKindToPB(v string) castlev1.ProjectMemberKind {
@@ -391,4 +429,228 @@ func shapeValidateStringMap(name string, m map[string]string) (map[string]string
 		}
 	}
 	return m, nil
+}
+
+// GetProjectSettings is the KB-324 settings read: the project's ONE
+// convention-keyed settings doc plus its content-addressed etag — the etag
+// a SetProjectSettings swap reconciles against.
+func (s *ServerServer) GetProjectSettings(ctx context.Context, req *connect.Request[castlev1.GetProjectSettingsRequest]) (*connect.Response[castlev1.GetProjectSettingsResponse], error) {
+	if err := requireProjectReader(ctx); err != nil {
+		return nil, err
+	}
+	projectID := req.Msg.GetProjectId()
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id required"))
+	}
+	if err := store.ValidateProjectID(projectID); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	settings, etag, err := s.Store.GetProjectSettings(ctx, projectID)
+	if err != nil {
+		return nil, projectStoreError(err)
+	}
+	return connect.NewResponse(&castlev1.GetProjectSettingsResponse{
+		Settings: settings,
+		Etag:     etag,
+	}), nil
+}
+
+// SetProjectSettings is the KB-324 settings write: the whole doc swaps under
+// optimistic etag semantics. Values are convention-keyed JSON: shape-validated
+// for bounded entries/keys and parsed for JSON validity, never interpreted.
+// A stale expectation fails with FailedPrecondition so the writer re-reads
+// and refires; a concurrent writer never clobbers.
+func (s *ServerServer) SetProjectSettings(ctx context.Context, req *connect.Request[castlev1.SetProjectSettingsRequest]) (*connect.Response[castlev1.SetProjectSettingsResponse], error) {
+	if err := requireProjectAdminCaller(ctx); err != nil {
+		return nil, err
+	}
+	projectID := req.Msg.GetProjectId()
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id required"))
+	}
+	if err := store.ValidateProjectID(projectID); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	settings, err := shapeValidateStringMap("settings", req.Msg.GetSettings())
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range settings {
+		if v == "" {
+			continue // an empty value is the "entry absent" convention
+		}
+		if !json.Valid([]byte(v)) {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				errors.New("settings["+strconv.Quote(k)+"] must be valid JSON"))
+		}
+	}
+	etag, err := s.Store.SetProjectSettings(ctx, projectID, settings, req.Msg.GetExpectedEtag())
+	if err != nil {
+		return nil, projectStoreError(err)
+	}
+	return connect.NewResponse(&castlev1.SetProjectSettingsResponse{Etag: etag}), nil
+}
+
+// GetRefirePolicy reads the exact policy row (project_id, route) — not the
+// engine's resolution ladder; an absent row is NotFound.
+func (s *ServerServer) GetRefirePolicy(ctx context.Context, req *connect.Request[castlev1.GetRefirePolicyRequest]) (*connect.Response[castlev1.GetRefirePolicyResponse], error) {
+	if err := requireProjectReader(ctx); err != nil {
+		return nil, err
+	}
+	projectID, route := req.Msg.GetProjectId(), req.Msg.GetRoute()
+	if projectID != "" {
+		if err := store.ValidateProjectID(projectID); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+	route, err := validateRefireRoute(route)
+	if err != nil {
+		return nil, err
+	}
+	row, err := s.refirePolicyRow(ctx, projectID, route)
+	if err != nil {
+		return nil, projectStoreError(err)
+	}
+	policy, err := refire.ParsePolicy(row.Policy)
+	if err != nil {
+		// Policy rows only enter the store through MarshalPolicy-shaped
+		// documents; a stale/corrupt row surfaces as Internal, not a
+		// request failure the caller could retry meaningfully.
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	resp := &castlev1.GetRefirePolicyResponse{
+		Policy:    mapRefirePolicy(&policy),
+		UpdatedAt: timestamppb.New(row.UpdatedAt),
+	}
+	if row.UpdatedAt.IsZero() {
+		resp.UpdatedAt = nil
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// SetRefirePolicy upserts the policy row with the same strict validation the
+// policy file loader applies: non-negative budgets and bounded vocabularies,
+// the whole row replaced.
+func (s *ServerServer) SetRefirePolicy(ctx context.Context, req *connect.Request[castlev1.SetRefirePolicyRequest]) (*connect.Response[castlev1.SetRefirePolicyResponse], error) {
+	if err := requireProjectAdminCaller(ctx); err != nil {
+		return nil, err
+	}
+	projectID, route := req.Msg.GetProjectId(), req.Msg.GetRoute()
+	if projectID != "" {
+		if err := store.ValidateProjectID(projectID); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		// A policy row keys to a project; rejecting unknown projects here
+		// keeps a typo from minting policy rows for nonexistent projects.
+		// The empty project id plants the global default and skips this.
+		if _, err := s.Store.GetProject(ctx, projectID); err != nil {
+			return nil, projectStoreError(err)
+		}
+	}
+	route, err := validateRefireRoute(route)
+	if err != nil {
+		return nil, err
+	}
+	wp := req.Msg.GetPolicy()
+	if wp == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("policy required"))
+	}
+	if wp.GetMaxAttempts() < 0 || wp.GetBackoffSeconds() < 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("max_attempts and backoff_seconds must be non-negative"))
+	}
+	if err := shapeValidateRefireVocabulary("transient", wp.GetTransient()); err != nil {
+		return nil, err
+	}
+	if err := shapeValidateRefireVocabulary("parks", wp.GetParks()); err != nil {
+		return nil, err
+	}
+	if err := shapeValidateRefireVocabulary("cosmetics", wp.GetCosmetics()); err != nil {
+		return nil, err
+	}
+	p := refire.Policy{
+		MaxAttempts: int(wp.GetMaxAttempts()),
+		Backoff:     time.Duration(wp.GetBackoffSeconds()) * time.Second,
+		Transient:   wp.GetTransient(),
+		Parks:       wp.GetParks(),
+		Cosmetics:   wp.GetCosmetics(),
+	}
+	// Round-trip through the store's own parser with MarshalPolicy so the
+	// row written is exactly the document ParsePolicy would read back: the
+	// same strictness the refire policy file loader runs at boot.
+	if _, err := refire.ParsePolicy(refire.MustMarshalPolicy(p)); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	doc, err := refire.MarshalPolicy(p)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	now := time.Now().UTC()
+	if err := s.Store.UpsertRefirePolicy(ctx, projectID, route, doc, now); err != nil {
+		return nil, projectStoreError(err)
+	}
+	return connect.NewResponse(&castlev1.SetRefirePolicyResponse{UpdatedAt: timestamppb.New(now)}), nil
+}
+
+// refirePolicyRow scans the policy rows for the exact (projectID, route)
+// key — the engine-side resolution already covers reads through the store's
+// existing methods, so no new store surface is minted for one key.
+func (s *ServerServer) refirePolicyRow(ctx context.Context, projectID, route string) (*store.RefirePolicyRow, error) {
+	rows, err := s.Store.ListRefirePolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		if rows[i].ProjectID == projectID && rows[i].Route == route {
+			return &rows[i], nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
+// validateRefireRoute bounds the route key (the vocabulary the engine and
+// policy files key on); routes are opaque strings.
+func validateRefireRoute(route string) (string, error) {
+	if len(route) > conventionMaxKeyBytes {
+		return "", connect.NewError(connect.CodeInvalidArgument,
+			errors.New("route length exceeds "+strconv.Itoa(conventionMaxKeyBytes)+" bytes"))
+	}
+	return route, nil
+}
+
+// shapeValidateRefireVocabulary bounds one classification vocabulary: the
+// entry-count and per-value limits match the convention maps.
+func shapeValidateRefireVocabulary(name string, values []string) error {
+	if len(values) > conventionMaxEntries {
+		return connect.NewError(connect.CodeInvalidArgument,
+			errors.New(name+" exceeds "+strconv.Itoa(conventionMaxEntries)+" entries"))
+	}
+	for _, v := range values {
+		if len(v) == 0 || len(v) > conventionMaxValueByte {
+			return connect.NewError(connect.CodeInvalidArgument,
+				errors.New(name+" value length must be 1.."+strconv.Itoa(conventionMaxValueByte)+" bytes"))
+		}
+	}
+	return nil
+}
+
+func mapRefirePolicy(p *refire.Policy) *castlev1.RefirePolicy {
+	if p == nil {
+		return nil
+	}
+	return &castlev1.RefirePolicy{
+		MaxAttempts:    int32(p.MaxAttempts),
+		BackoffSeconds: int32(p.Backoff / time.Second),
+		Transient:      p.Transient,
+		Parks:          p.Parks,
+		Cosmetics:      p.Cosmetics,
+	}
+}
+
+// projectKindFromPB maps the wire kind onto the store vocabulary; the
+// unspecified kind is rejected by the caller before mapping.
+func projectKindFromPB(v castlev1.ProjectMemberKind) string {
+	if v == castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_HUMAN {
+		return store.ProjectMemberKindHuman
+	}
+	return store.ProjectMemberKindAI
 }

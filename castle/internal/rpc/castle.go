@@ -56,6 +56,27 @@ func (s *ServerServer) ListRuns(ctx context.Context, req *connect.Request[pb.Lis
 		// limit<=0 contract is internal-only).
 		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrInvalidLimit)
 	}
+	// KB-324 membership read scope: a protocol-token caller (agent, or a
+	// trigger observing its board mirror) reads only its membership's runs —
+	// the store consults the same project_members predicate the lease scan
+	// uses. Console and orchestrator identities, and the direct-call path
+	// (no interceptor), read across the membership space as before.
+	if scopedID, scoped := membershipScopedCaller(ctx); scoped {
+		filter := req.Msg.CriteriaId
+		if filter != "" && filter != scopedID {
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				errors.New("caller does not own target criteria agent"))
+		}
+		list, next, err := s.Store.ListRunsVisibleTo(ctx, scopedID, filter, req.Msg.Status, int(req.Msg.Limit), req.Msg.PageToken)
+		if err != nil {
+			return nil, mapListRunsError(err)
+		}
+		out := make([]*pb.Run, 0, len(list))
+		for _, r := range list {
+			out = append(out, mapRun(r))
+		}
+		return connect.NewResponse(&pb.ListRunsResponse{Runs: out, NextPageToken: next}), nil
+	}
 	list, next, err := s.Store.ListRuns(ctx, req.Msg.CriteriaId, req.Msg.Status, int(req.Msg.Limit), req.Msg.PageToken)
 	if err != nil {
 		return nil, mapListRunsError(err)
@@ -68,14 +89,48 @@ func (s *ServerServer) ListRuns(ctx context.Context, req *connect.Request[pb.Lis
 }
 
 func (s *ServerServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {
-	r, err := s.Store.GetRun(ctx, req.Msg.RunId)
+	r, err := s.runVisibleToCaller(ctx, req.Msg.RunId)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(mapRun(r)), nil
+}
+
+// membershipScopedCaller returns the identity a run read is scoped to under
+// KB-324: protocol-token callers (agent and trigger identities) read only
+// their membership's runs. Console and orchestrator identities observe the
+// whole space; the no-interceptor direct-call path is unscoped too.
+func membershipScopedCaller(ctx context.Context) (string, bool) {
+	if id := auth.CallerCriteriaID(ctx); id != "" {
+		return id, true
+	}
+	if id := auth.CallerTriggerID(ctx); id != "" {
+		return id, true
+	}
+	return "", false
+}
+
+// runVisibleToCaller fetches the run and enforces the membership read scope
+// (KB-324): an invisible run answers NotFound like a missing one so denied
+// runs do not leak their existence through the error class.
+func (s *ServerServer) runVisibleToCaller(ctx context.Context, runID string) (*store.Run, error) {
+	run, err := s.Store.GetRun(ctx, runID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, err)
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("run not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(mapRun(r)), nil
+	if scopedID, scoped := membershipScopedCaller(ctx); scoped {
+		visible, err := s.Store.IsRunVisibleTo(ctx, run.ID, scopedID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if !visible {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("run not found"))
+		}
+	}
+	return run, nil
 }
 
 func (s *ServerServer) ListRunEvents(ctx context.Context, req *connect.Request[pb.ListRunEventsRequest]) (*connect.Response[pb.ListRunEventsResponse], error) {
@@ -85,6 +140,11 @@ func (s *ServerServer) ListRunEvents(ctx context.Context, req *connect.Request[p
 	}
 	if limit > store.ListEventsMaxLimit {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("limit %d exceeds maximum %d; page using since_seq", limit, store.ListEventsMaxLimit))
+	}
+	// KB-324 membership read scope: event history is run data, so the same
+	// visibility rule as GetRun applies here.
+	if _, err := s.runVisibleToCaller(ctx, req.Msg.RunId); err != nil {
+		return nil, err
 	}
 
 	all, err := s.Store.ListEvents(ctx, req.Msg.RunId, req.Msg.SinceSeq, limit)
@@ -115,6 +175,11 @@ func (s *ServerServer) WatchRun(ctx context.Context, req *connect.Request[pb.Wat
 	runID := req.Msg.RunId
 	if runID == "" {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("run_id required"))
+	}
+	// KB-324 membership read scope: the event stream is gated by the same
+	// visibility rule as GetRun before any replay or subscription work.
+	if _, err := s.runVisibleToCaller(ctx, runID); err != nil {
+		return err
 	}
 	subscriberID := req.Msg.SubscriberId
 	effectiveSince := req.Msg.SinceSeq

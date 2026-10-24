@@ -870,3 +870,433 @@ export class SubmitProjectAssignmentResponse extends Message<SubmitProjectAssign
   }
 }
 
+/**
+ * RefirePolicy is the wire shape of the refire/classification policy
+ * document (KB-321): attempt budget, retry backoff floor, and the
+ * classification vocabularies (substring groups matched case-insensitively).
+ * max_attempts counts the original attempt (1 never refires; 0 disables
+ * refiring); backoff_seconds is the minimum delay between a failed
+ * attempt's end and the next family attempt.
+ *
+ * @generated from message castle.v1.RefirePolicy
+ */
+export class RefirePolicy extends Message<RefirePolicy> {
+  /**
+   * @generated from field: int32 max_attempts = 1;
+   */
+  maxAttempts = 0;
+
+  /**
+   * @generated from field: int32 backoff_seconds = 2;
+   */
+  backoffSeconds = 0;
+
+  /**
+   * transient are failure-reason substrings classifying the ending as a
+   * recoverable stall: refired under the attempt/backoff limits.
+   *
+   * @generated from field: repeated string transient = 3;
+   */
+  transient: string[] = [];
+
+  /**
+   * parks are designed-park spellings: the parked run never refires and
+   * waits for a human decision.
+   *
+   * @generated from field: repeated string parks = 4;
+   */
+  parks: string[] = [];
+
+  /**
+   * cosmetics are known-benign endings: stay terminal-failed, no action.
+   *
+   * @generated from field: repeated string cosmetics = 5;
+   */
+  cosmetics: string[] = [];
+
+  constructor(data?: PartialMessage<RefirePolicy>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.RefirePolicy";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "max_attempts", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 2, name: "backoff_seconds", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "transient", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 4, name: "parks", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 5, name: "cosmetics", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RefirePolicy {
+    return new RefirePolicy().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RefirePolicy {
+    return new RefirePolicy().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RefirePolicy {
+    return new RefirePolicy().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RefirePolicy | PlainMessage<RefirePolicy> | undefined, b: RefirePolicy | PlainMessage<RefirePolicy> | undefined): boolean {
+    return proto3.util.equals(RefirePolicy, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.GetProjectSettingsRequest
+ */
+export class GetProjectSettingsRequest extends Message<GetProjectSettingsRequest> {
+  /**
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  constructor(data?: PartialMessage<GetProjectSettingsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.GetProjectSettingsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetProjectSettingsRequest {
+    return new GetProjectSettingsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetProjectSettingsRequest {
+    return new GetProjectSettingsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetProjectSettingsRequest {
+    return new GetProjectSettingsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetProjectSettingsRequest | PlainMessage<GetProjectSettingsRequest> | undefined, b: GetProjectSettingsRequest | PlainMessage<GetProjectSettingsRequest> | undefined): boolean {
+    return proto3.util.equals(GetProjectSettingsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.GetProjectSettingsResponse
+ */
+export class GetProjectSettingsResponse extends Message<GetProjectSettingsResponse> {
+  /**
+   * settings is the convention-keyed settings doc; empty entries list means
+   * the doc is unset.
+   *
+   * @generated from field: map<string, string> settings = 1;
+   */
+  settings: { [key: string]: string } = {};
+
+  /**
+   * etag is the doc's content-addressed etag (empty when the doc is
+   * unset).
+   *
+   * @generated from field: string etag = 2;
+   */
+  etag = "";
+
+  constructor(data?: PartialMessage<GetProjectSettingsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.GetProjectSettingsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "settings", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
+    { no: 2, name: "etag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetProjectSettingsResponse {
+    return new GetProjectSettingsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetProjectSettingsResponse {
+    return new GetProjectSettingsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetProjectSettingsResponse {
+    return new GetProjectSettingsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetProjectSettingsResponse | PlainMessage<GetProjectSettingsResponse> | undefined, b: GetProjectSettingsResponse | PlainMessage<GetProjectSettingsResponse> | undefined): boolean {
+    return proto3.util.equals(GetProjectSettingsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.SetProjectSettingsRequest
+ */
+export class SetProjectSettingsRequest extends Message<SetProjectSettingsRequest> {
+  /**
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  /**
+   * settings is the complete replacement doc — settings are swapped whole,
+   * never merged.
+   *
+   * @generated from field: map<string, string> settings = 2;
+   */
+  settings: { [key: string]: string } = {};
+
+  /**
+   * expected_etag is the etag the caller last read: the current etag, or ""
+   * exactly when the doc is still unset.
+   *
+   * @generated from field: string expected_etag = 3;
+   */
+  expectedEtag = "";
+
+  constructor(data?: PartialMessage<SetProjectSettingsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.SetProjectSettingsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "settings", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
+    { no: 3, name: "expected_etag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetProjectSettingsRequest {
+    return new SetProjectSettingsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetProjectSettingsRequest {
+    return new SetProjectSettingsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetProjectSettingsRequest {
+    return new SetProjectSettingsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetProjectSettingsRequest | PlainMessage<SetProjectSettingsRequest> | undefined, b: SetProjectSettingsRequest | PlainMessage<SetProjectSettingsRequest> | undefined): boolean {
+    return proto3.util.equals(SetProjectSettingsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.SetProjectSettingsResponse
+ */
+export class SetProjectSettingsResponse extends Message<SetProjectSettingsResponse> {
+  /**
+   * @generated from field: string etag = 1;
+   */
+  etag = "";
+
+  constructor(data?: PartialMessage<SetProjectSettingsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.SetProjectSettingsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "etag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetProjectSettingsResponse {
+    return new SetProjectSettingsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetProjectSettingsResponse {
+    return new SetProjectSettingsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetProjectSettingsResponse {
+    return new SetProjectSettingsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetProjectSettingsResponse | PlainMessage<SetProjectSettingsResponse> | undefined, b: SetProjectSettingsResponse | PlainMessage<SetProjectSettingsResponse> | undefined): boolean {
+    return proto3.util.equals(SetProjectSettingsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.GetRefirePolicyRequest
+ */
+export class GetRefirePolicyRequest extends Message<GetRefirePolicyRequest> {
+  /**
+   * project_id of the policy row ("" selects the global default slot).
+   *
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  /**
+   * route of the policy row ("" selects the project-scoped default).
+   *
+   * @generated from field: string route = 2;
+   */
+  route = "";
+
+  constructor(data?: PartialMessage<GetRefirePolicyRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.GetRefirePolicyRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "route", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetRefirePolicyRequest {
+    return new GetRefirePolicyRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetRefirePolicyRequest {
+    return new GetRefirePolicyRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetRefirePolicyRequest {
+    return new GetRefirePolicyRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetRefirePolicyRequest | PlainMessage<GetRefirePolicyRequest> | undefined, b: GetRefirePolicyRequest | PlainMessage<GetRefirePolicyRequest> | undefined): boolean {
+    return proto3.util.equals(GetRefirePolicyRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.GetRefirePolicyResponse
+ */
+export class GetRefirePolicyResponse extends Message<GetRefirePolicyResponse> {
+  /**
+   * @generated from field: castle.v1.RefirePolicy policy = 1;
+   */
+  policy?: RefirePolicy;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp updated_at = 2;
+   */
+  updatedAt?: Timestamp;
+
+  constructor(data?: PartialMessage<GetRefirePolicyResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.GetRefirePolicyResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "policy", kind: "message", T: RefirePolicy },
+    { no: 2, name: "updated_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetRefirePolicyResponse {
+    return new GetRefirePolicyResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetRefirePolicyResponse {
+    return new GetRefirePolicyResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetRefirePolicyResponse {
+    return new GetRefirePolicyResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetRefirePolicyResponse | PlainMessage<GetRefirePolicyResponse> | undefined, b: GetRefirePolicyResponse | PlainMessage<GetRefirePolicyResponse> | undefined): boolean {
+    return proto3.util.equals(GetRefirePolicyResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.SetRefirePolicyRequest
+ */
+export class SetRefirePolicyRequest extends Message<SetRefirePolicyRequest> {
+  /**
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  /**
+   * @generated from field: string route = 2;
+   */
+  route = "";
+
+  /**
+   * @generated from field: castle.v1.RefirePolicy policy = 3;
+   */
+  policy?: RefirePolicy;
+
+  constructor(data?: PartialMessage<SetRefirePolicyRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.SetRefirePolicyRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "route", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "policy", kind: "message", T: RefirePolicy },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetRefirePolicyRequest {
+    return new SetRefirePolicyRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetRefirePolicyRequest {
+    return new SetRefirePolicyRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetRefirePolicyRequest {
+    return new SetRefirePolicyRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetRefirePolicyRequest | PlainMessage<SetRefirePolicyRequest> | undefined, b: SetRefirePolicyRequest | PlainMessage<SetRefirePolicyRequest> | undefined): boolean {
+    return proto3.util.equals(SetRefirePolicyRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.SetRefirePolicyResponse
+ */
+export class SetRefirePolicyResponse extends Message<SetRefirePolicyResponse> {
+  /**
+   * @generated from field: google.protobuf.Timestamp updated_at = 1;
+   */
+  updatedAt?: Timestamp;
+
+  constructor(data?: PartialMessage<SetRefirePolicyResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.SetRefirePolicyResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "updated_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetRefirePolicyResponse {
+    return new SetRefirePolicyResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetRefirePolicyResponse {
+    return new SetRefirePolicyResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetRefirePolicyResponse {
+    return new SetRefirePolicyResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetRefirePolicyResponse | PlainMessage<SetRefirePolicyResponse> | undefined, b: SetRefirePolicyResponse | PlainMessage<SetRefirePolicyResponse> | undefined): boolean {
+    return proto3.util.equals(SetRefirePolicyResponse, a, b);
+  }
+}
+

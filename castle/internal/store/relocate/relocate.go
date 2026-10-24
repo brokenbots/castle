@@ -79,7 +79,8 @@ var Tables = []table{
 		cols: []column{
 			{"id", KindText, false}, {"membership_policy", KindText, false},
 			{"default_refire_policy", KindText, false}, {"queues", KindText, false},
-			{"settings", KindText, false}, {"info", KindText, false},
+			{"settings", KindText, false}, {"settings_etag", KindText, false},
+			{"info", KindText, false},
 			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
 		},
 	},
@@ -116,6 +117,7 @@ var Tables = []table{
 			{"failure_reason", KindText, true}, {"started_at", KindTS, true},
 			{"agent_identity", KindText, false},
 			{"refire_disposition", KindText, true},
+			{"project_id", KindText, true},
 		},
 	},
 	{

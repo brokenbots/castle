@@ -27,15 +27,15 @@ func (p *plf) next(v any) string {
 
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
-const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason,agent_identity"
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason,agent_identity,project_id"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url,agent_identity) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url,agent_identity,project_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, us(r.CreatedAt),
-		timePtr(r.StartedAt), nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL), r.AgentIdentity)
+		timePtr(r.StartedAt), nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL), r.AgentIdentity, nonEmpty(r.ProjectID))
 	return err
 }
 
@@ -110,13 +110,96 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit i
 	return out, next, nil
 }
 
+// ListRunsVisibleTo is the pg implementation of the membership read scope
+// (KB-324 S1); the predicate mirrors the project_members EXISTS clause the
+// assignment lease scan consults. See the sqlite implementation for the
+// contract documentation.
+func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	p := &plf{}
+	q := `SELECT ` + runColumns + ` FROM runs WHERE (
+		overseer_id = ` + p.next(criteriaID) + `
+		OR EXISTS (SELECT 1 FROM workflow_assignments wa
+		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = ` + p.next(criteriaID) + `)
+		OR EXISTS (SELECT 1 FROM project_members pm
+		           WHERE pm.project_id = runs.project_id AND pm.member_id = ` + p.next(criteriaID) + `))`
+	if overseerID != "" {
+		q += " AND overseer_id=" + p.next(overseerID)
+	}
+	if status != "" {
+		q += " AND status=" + p.next(status)
+	}
+	cursorCreated, cursorID, err := store.DecodeRunCursor(pageToken)
+	if err != nil {
+		return nil, "", err
+	}
+	if cursorCreated != "" {
+		cursorTS, err := store.DecodeRunCursorCreated(cursorCreated)
+		if err != nil {
+			return nil, "", err
+		}
+		q += " AND (created_at, id) < (" + p.next(cursorTS) + "::timestamptz, " + p.next(cursorID) + ")"
+	}
+	q += " ORDER BY created_at DESC, id DESC"
+	if limit > 0 {
+		q += " LIMIT " + p.next(limit+1)
+	}
+	rows, err := s.reader.QueryContext(ctx, q, p.args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var out []*store.Run
+	for rows.Next() {
+		r, err := scanRun(rows.Scan)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if limit > 0 && len(out) > limit {
+		last := out[limit-1]
+		next = store.EncodeRunCursorFromTime(last.CreatedAt, last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
+}
+
+func (s *Store) IsRunVisibleTo(ctx context.Context, runID, criteriaID string) (bool, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	p := &plf{}
+	var one any
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM runs WHERE id = `+p.next(runID)+` AND (
+		overseer_id = `+p.next(criteriaID)+`
+		OR EXISTS (SELECT 1 FROM workflow_assignments wa
+		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = `+p.next(criteriaID)+`)
+		OR EXISTS (SELECT 1 FROM project_members pm
+		           WHERE pm.project_id = runs.project_id AND pm.member_id = `+p.next(criteriaID)+`)
+		)
+		LIMIT 1`, p.args...).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func scanRun(scan func(...any) error) (*store.Run, error) {
 	var r store.Run
 	var created time.Time
 	var overseerID sql.NullString
 	var started, ended, pausedAt sql.NullTime
-	var variableScope, pendingSignal, ticket, repoURL, prURL, failureReason sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason, &r.AgentIdentity)
+	var variableScope, pendingSignal, ticket, repoURL, prURL, failureReason, projectID sql.NullString
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason, &r.AgentIdentity, &projectID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -156,6 +239,9 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	}
 	if failureReason.Valid {
 		r.FailureReason = failureReason.String
+	}
+	if projectID.Valid {
+		r.ProjectID = projectID.String
 	}
 	return &r, nil
 }

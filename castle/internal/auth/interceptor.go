@@ -119,15 +119,38 @@ var consoleRunControlProcedures = map[string]struct{}{
 	castlev1connect.ConsoleServiceResolveResumeProcedure: {},
 }
 
+// consoleProjectAdminProcedures are the KB-324 project-administration
+// surfaces a console identity reaches: the membership writes (the KB-324
+// write shape moves admission and eviction to console sessions — protocol
+// tokens carry assignment/run writes only), the ONE settings doc
+// (Get/SetProjectSettings with its etag swap), the refire policy rows
+// (Get/SetRefirePolicy over the KB-321 store methods), plus the registry
+// reads an admin context needs. CreateProject is admitted for the settings
+// seed (a console-session write; the handler gates the seed per caller) and
+// SubmitProjectAssignment stays agent-owned.
+var consoleProjectAdminProcedures = map[string]struct{}{
+	castlev1connect.ProjectServiceGetProjectProcedure:          {},
+	castlev1connect.ProjectServiceListProjectsProcedure:        {},
+	castlev1connect.ProjectServiceListProjectMembersProcedure:  {},
+	castlev1connect.ProjectServiceAddProjectMemberProcedure:    {},
+	castlev1connect.ProjectServiceRemoveProjectMemberProcedure: {},
+	castlev1connect.ProjectServiceGetProjectSettingsProcedure:  {},
+	castlev1connect.ProjectServiceSetProjectSettingsProcedure:  {},
+	castlev1connect.ProjectServiceGetRefirePolicyProcedure:     {},
+	castlev1connect.ProjectServiceSetRefirePolicyProcedure:     {},
+	castlev1connect.ProjectServiceCreateProjectProcedure:       {},
+}
+
 // isConsoleAllowed reports whether a console identity may invoke the
-// procedure (CRI-195, extended by CRI-196). Console identities are human
-// operators viewing the Parapet console: they get the read-only
+// procedure (CRI-195, extended by CRI-196 and KB-324). Console identities
+// are human operators viewing the Parapet console: they get the read-only
 // ServerService observation surface across ALL runs and agents (a human
 // viewing the console is not subject to caller-owns-run — that boundary is
-// for agent identities) plus the run-control writes a human operator needs
-// (CRI-196). Everything else — CriteriaService, ServerService
-// SubmitWorkflowAssignment/SendPrompt, OrchestratorService writes
-// (CancelRun), Register — is denied.
+// for agent identities), the run-control writes a human operator needs
+// (CRI-196), and the KB-324 project-administration surfaces (membership,
+// settings, refire policies — the console-session write class). Everything
+// else — CriteriaService, ServerService SubmitWorkflowAssignment/
+// SendPrompt, OrchestratorService writes (CancelRun), Register — is denied.
 func isConsoleAllowed(procedure string) bool {
 	if _, ok := readOnlyServerProcedures[procedure]; ok {
 		return true
@@ -135,7 +158,10 @@ func isConsoleAllowed(procedure string) bool {
 	if _, ok := runArchiveReadProcedures[procedure]; ok {
 		return true
 	}
-	_, ok := consoleRunControlProcedures[procedure]
+	if _, ok := consoleRunControlProcedures[procedure]; ok {
+		return true
+	}
+	_, ok := consoleProjectAdminProcedures[procedure]
 	return ok
 }
 

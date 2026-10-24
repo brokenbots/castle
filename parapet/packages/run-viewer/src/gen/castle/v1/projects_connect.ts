@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddProjectMemberRequest, AddProjectMemberResponse, CreateProjectRequest, CreateProjectResponse, GetProjectRequest, GetProjectResponse, ListProjectMembersRequest, ListProjectMembersResponse, ListProjectsRequest, ListProjectsResponse, RemoveProjectMemberRequest, RemoveProjectMemberResponse, SubmitProjectAssignmentRequest, SubmitProjectAssignmentResponse } from "./projects_pb.js";
+import { AddProjectMemberRequest, AddProjectMemberResponse, CreateProjectRequest, CreateProjectResponse, GetProjectRequest, GetProjectResponse, GetProjectSettingsRequest, GetProjectSettingsResponse, GetRefirePolicyRequest, GetRefirePolicyResponse, ListProjectMembersRequest, ListProjectMembersResponse, ListProjectsRequest, ListProjectsResponse, RemoveProjectMemberRequest, RemoveProjectMemberResponse, SetProjectSettingsRequest, SetProjectSettingsResponse, SetRefirePolicyRequest, SetRefirePolicyResponse, SubmitProjectAssignmentRequest, SubmitProjectAssignmentResponse } from "./projects_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -107,6 +107,60 @@ export const ProjectService = {
       name: "SubmitProjectAssignment",
       I: SubmitProjectAssignmentRequest,
       O: SubmitProjectAssignmentResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetProjectSettings returns the project's ONE settings doc
+     * (convention-keyed JSON entries) plus the doc's content-addressed etag.
+     * The etag is what SetProjectSettings reconciles against.
+     *
+     * @generated from rpc castle.v1.ProjectService.GetProjectSettings
+     */
+    getProjectSettings: {
+      name: "GetProjectSettings",
+      I: GetProjectSettingsRequest,
+      O: GetProjectSettingsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetProjectSettings swaps the whole settings doc under optimistic etag
+     * semantics: expected_etag must be the etag the caller last read, or ""
+     * exactly when the doc is still unset. A writer whose expectation no
+     * longer holds is rejected without clobbering; the response carries the
+     * new etag to chain further swaps.
+     *
+     * @generated from rpc castle.v1.ProjectService.SetProjectSettings
+     */
+    setProjectSettings: {
+      name: "SetProjectSettings",
+      I: SetProjectSettingsRequest,
+      O: SetProjectSettingsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetRefirePolicy returns the policy row for (project_id, route) — the
+     * exact key, not the engine's resolution ladder. The project-scoped
+     * default row uses an empty route; the global default uses empty
+     * project_id and route.
+     *
+     * @generated from rpc castle.v1.ProjectService.GetRefirePolicy
+     */
+    getRefirePolicy: {
+      name: "GetRefirePolicy",
+      I: GetRefirePolicyRequest,
+      O: GetRefirePolicyResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetRefirePolicy upserts the policy row for (project_id, route) with
+     * the same strict validation the policy file loader applies.
+     *
+     * @generated from rpc castle.v1.ProjectService.SetRefirePolicy
+     */
+    setRefirePolicy: {
+      name: "SetRefirePolicy",
+      I: SetRefirePolicyRequest,
+      O: SetRefirePolicyResponse,
       kind: MethodKind.Unary,
     },
   }

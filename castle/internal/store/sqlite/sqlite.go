@@ -159,13 +159,14 @@ func (s *Store) CreateProject(ctx context.Context, p *store.Project) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO projects (id, membership_policy, default_refire_policy, queues, settings, info, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO projects (id, membership_policy, default_refire_policy, queues, settings, settings_etag, info, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID,
 		p.MembershipPolicy,
 		p.DefaultRefirePolicy,
 		queuesJSON,
 		store.MarshalJSONMap(p.Settings),
+		store.SettingsETag(p.Settings),
 		store.MarshalJSONMap(p.Info),
 		p.CreatedAt.UTC().Format(store.TimestampLayout),
 		p.UpdatedAt.UTC().Format(store.TimestampLayout))
@@ -375,6 +376,76 @@ func (s *Store) IsProjectMember(ctx context.Context, projectID, memberID string)
 		return false, err
 	}
 	return true, nil
+}
+
+// GetProjectSettings returns the project's convention-keyed settings doc and
+// its content-addressed etag. ErrNotFound when the project does not exist.
+func (s *Store) GetProjectSettings(ctx context.Context, projectID string) (map[string]string, string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if projectID == "" {
+		return nil, "", errors.New("project id required")
+	}
+	var settings, etag sql.NullString
+	err := s.reader.QueryRowContext(ctx, `
+		SELECT COALESCE(settings,''), COALESCE(settings_etag,'')
+		FROM projects WHERE id=?`, projectID).Scan(&settings, &etag)
+	if err != nil {
+		return nil, "", store.ErrNotFound
+	}
+	return store.UnmarshalJSONMap(settings.String), etag.String, nil
+}
+
+// SetProjectSettings swaps the whole settings doc under the caller's expected
+// etag. expectedETag "" is accepted only while the current doc is unset; the
+// conditional UPDATE re-checks the etag so a concurrent writer loses the swap
+// and gets ErrSettingsConflict instead of clobbering its neighbor.
+func (s *Store) SetProjectSettings(ctx context.Context, projectID string, settings map[string]string, expectedETag string) (string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if projectID == "" {
+		return "", errors.New("project id required")
+	}
+	var current string
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(settings_etag,'') FROM projects WHERE id=?`, projectID).Scan(&current)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", store.ErrNotFound
+		}
+		return "", err
+	}
+	if expectedETag != current {
+		return "", store.ErrSettingsConflict
+	}
+	etag := store.SettingsETag(settings)
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE projects
+		SET settings=?, settings_etag=?, updated_at=?
+		WHERE id=? AND settings_etag=?`,
+		store.MarshalJSONMap(settings), etag,
+		time.Now().UTC().Format(store.TimestampLayout),
+		projectID, current)
+	if err != nil {
+		return "", err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if affected == 0 {
+		// Another writer swapped the doc between the read above and this
+		// UPDATE. A writer that landed the identical content (identical
+		// etag) simply won the race before us: treat it as a no-op.
+		var now string
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(settings_etag,'') FROM projects WHERE id=?`, projectID).Scan(&now); err != nil {
+			return "", err
+		}
+		if now == etag {
+			return etag, nil
+		}
+		return "", store.ErrSettingsConflict
+	}
+	return etag, nil
 }
 
 func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
@@ -661,7 +732,7 @@ func (s *Store) DeleteConsoleSessionsByUser(ctx context.Context, userID string) 
 
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
-const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason,agent_identity"
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason,agent_identity,project_id"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 	ctx, cancel := s.opCtx(ctx)
@@ -671,9 +742,9 @@ func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 		started = r.StartedAt.Format(store.TimestampLayout)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url,agent_identity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url,agent_identity,project_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(store.TimestampLayout),
-		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL), r.AgentIdentity)
+		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL), r.AgentIdentity, nullText(r.ProjectID))
 	return err
 }
 
@@ -744,6 +815,92 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit i
 	return out, next, nil
 }
 
+// runVisibilityScope is the read-visibility predicate for criteria callers
+// (KB-324 S1): the caller sees runs it leases (overseer_id), runs it owns via
+// a minting assignment, and runs belonging to a project whose member set
+// contains it — the same project_members EXISTS clause the assignment lease
+// scan consults. Unscoped runs (project_id NULL) are never returned here;
+// they stay console-operator-visible.
+func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	q := `SELECT ` + runColumns + ` FROM runs WHERE (
+		overseer_id = ?
+		OR EXISTS (SELECT 1 FROM workflow_assignments wa
+		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = ?)
+		OR EXISTS (SELECT 1 FROM project_members pm
+		           WHERE pm.project_id = runs.project_id AND pm.member_id = ?)
+	)`
+	args := []any{criteriaID, criteriaID, criteriaID}
+	if overseerID != "" {
+		q += ` AND overseer_id=?`
+		args = append(args, overseerID)
+	}
+	if status != "" {
+		q += ` AND status=?`
+		args = append(args, status)
+	}
+	cursorCreated, cursorID, err := store.DecodeRunCursor(pageToken)
+	if err != nil {
+		return nil, "", err
+	}
+	if cursorCreated != "" {
+		q += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, cursorCreated, cursorCreated, cursorID)
+	}
+	q += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit+1)
+	}
+	rows, err := s.reader.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var out []*store.Run
+	for rows.Next() {
+		r, err := scanRun(rows.Scan)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if limit > 0 && len(out) > limit {
+		last := out[limit-1]
+		next = store.EncodeRunCursor(last.CreatedAt.Format(store.TimestampLayout), last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
+}
+
+func (s *Store) IsRunVisibleTo(ctx context.Context, runID, criteriaID string) (bool, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	var one any
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM runs WHERE id = ? AND (
+		overseer_id = ?
+		OR EXISTS (SELECT 1 FROM workflow_assignments wa
+		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = ?)
+		OR EXISTS (SELECT 1 FROM project_members pm
+		           WHERE pm.project_id = runs.project_id AND pm.member_id = ?)
+		)
+		LIMIT 1`,
+		runID, criteriaID, criteriaID, criteriaID).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func scanRun(scan func(...any) error) (*store.Run, error) {
 	var r store.Run
 	var created string
@@ -757,7 +914,8 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var repoURL sql.NullString
 	var prURL sql.NullString
 	var failureReason sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason, &r.AgentIdentity)
+	var projectID sql.NullString
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason, &r.AgentIdentity, &projectID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -797,6 +955,9 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	}
 	if failureReason.Valid {
 		r.FailureReason = failureReason.String
+	}
+	if projectID.Valid {
+		r.ProjectID = projectID.String
 	}
 	return &r, nil
 }
@@ -1495,9 +1656,9 @@ func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowA
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO runs(id, overseer_id, workflow_name, workflow_hcl, status, current_step, last_seq, created_at)
-		 VALUES(?, NULL, ?, ?, 'pending', '', 0, ?)`,
-		a.RunID, a.WorkflowName, a.WorkflowSource, a.CreatedAt.Format(store.TimestampLayout)); err != nil {
+		`INSERT INTO runs(id, overseer_id, workflow_name, workflow_hcl, status, current_step, last_seq, created_at, project_id)
+		 VALUES(?, NULL, ?, ?, 'pending', '', 0, ?, ?)`,
+		a.RunID, a.WorkflowName, a.WorkflowSource, a.CreatedAt.Format(store.TimestampLayout), nullText(a.ProjectID)); err != nil {
 		return nil, false, err
 	}
 
