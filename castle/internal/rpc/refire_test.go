@@ -93,6 +93,19 @@ func TestRefireFailedRunsNow_RequeuesAndDispatchesStalledRun(t *testing.T) {
 		t.Fatalf("submit: %v", err)
 	}
 
+	// SubmitWorkflowAssignment dispatches the queued assignment to the
+	// connected agent asynchronously; drain that initial delivery so the
+	// later channel read observes the successor, not this race-y frame.
+	expectCommand(t, ch, 3*time.Second, func(msg *pb.ControlMessage) {
+		wa := msg.GetWorkflowAssignment()
+		if wa == nil {
+			t.Fatalf("initial delivery: expected WorkflowAssignment, got %v", msg)
+		}
+		if wa.RunId != resp.Msg.RunId {
+			t.Fatalf("initial delivery run id = %s, want submitted %s", wa.RunId, resp.Msg.RunId)
+		}
+	})
+
 	stallLikeAgent(t, ctx, ts.store, resp.Msg.RunId)
 
 	outcomes, err := ts.server.RefireFailedRunsNow(ctx)
@@ -172,6 +185,18 @@ func TestRefireFailedRunsNow_ParkedRunNeverDispatched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
+	// SubmitWorkflowAssignment dispatches the queued assignment to the
+	// connected agent asynchronously; drain that initial delivery so it
+	// cannot masquerade as the parked run leaking into the quiet window.
+	expectCommand(t, ch, 3*time.Second, func(msg *pb.ControlMessage) {
+		wa := msg.GetWorkflowAssignment()
+		if wa == nil {
+			t.Fatalf("initial delivery: expected WorkflowAssignment, got %v", msg)
+		}
+		if wa.RunId != resp.Msg.RunId {
+			t.Fatalf("initial delivery run id = %s, want submitted %s", wa.RunId, resp.Msg.RunId)
+		}
+	})
 	parkLikeAgent(t, ctx, ts.store, resp.Msg.RunId)
 
 	outcomes, err := ts.server.RefireFailedRunsNow(ctx)
