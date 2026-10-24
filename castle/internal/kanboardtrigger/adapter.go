@@ -31,9 +31,18 @@ type AssignmentReader interface {
 }
 
 // RunWatcher opens a per-run event stream. Implemented by the criteria.v1
-// ServerService Connect client.
+// ServerService Connect client (whose ServerStreamForClient satisfies
+// RunEventStream).
 type RunWatcher interface {
-	WatchRun(ctx context.Context, req *connect.Request[pb.WatchRunRequest]) (*connect.ServerStreamForClient[pb.Envelope], error)
+	WatchRun(ctx context.Context, req *connect.Request[pb.WatchRunRequest]) (RunEventStream, error)
+}
+
+// RunEventStream is the run-event stream reader the mirror consumes.
+type RunEventStream interface {
+	Receive() bool
+	Msg() *pb.Envelope
+	Err() error
+	Close() error
 }
 
 // Adapter polls the board, fires assignments (firing loop), and mirrors run

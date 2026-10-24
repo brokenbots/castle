@@ -153,7 +153,7 @@ func (c *castleClients) GetAssignmentDisposition(ctx context.Context, req *conne
 	return c.server.GetAssignmentDisposition(ctx, req)
 }
 
-func (c *castleClients) WatchRun(ctx context.Context, req *connect.Request[criteriav1.WatchRunRequest]) (*connect.ServerStreamForClient[criteriav1.Envelope], error) {
+func (c *castleClients) WatchRun(ctx context.Context, req *connect.Request[criteriav1.WatchRunRequest]) (kanboardtrigger.RunEventStream, error) {
 	c.auth(req.Header())
 	return c.server.WatchRun(ctx, req)
 }
