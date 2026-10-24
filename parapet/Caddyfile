@@ -1,0 +1,38 @@
+# Parapet UI Caddyfile (castle repo, parapet/). Deploy recipe: bake into the
+# caddy image (COPY Caddyfile -> /etc/caddy/Caddyfile) under a NEW
+# localhost:5000/parapet tag, update 06-parapet.yaml, kubectl apply, verify
+# imageID digest.
+#
+# CRI-257 standalone run viewer: the bundle lives at /srv/parapet/runview/
+# (second static root). handle_path strips the /runview prefix before matching
+# files so /runview/ -> runview/index.html. A plain handle + uri strip_prefix
+# + try_files {path} does NOT work: try_files matches against the original
+# request path, so root/runview/... is looked up and 404s. /runview/api/*
+# 404s explicitly (honest failure) until a local control server exists behind
+# it; without that rule the SPA fallback returns HTML for JSON endpoints and
+# the data source fails with a parse error instead of a clean 404.
+:8080 {
+	encode zstd gzip
+
+	# Connect/gRPC endpoints -> castle over h2c. castle.v1.* included: the
+	# console Service (CastleService/ConsoleService) rides the same castle back-end.
+	@connect path /criteria.v1.* /castle.v1.* /grpc.health.*
+	handle @connect {
+		reverse_proxy h2c://castle.criteria-jobs.svc.cluster.local:8080
+	}
+
+	handle_path /runview/api/* {
+		respond 404
+	}
+	handle_path /runview/* {
+		root * /srv/parapet/runview
+		try_files {path} /index.html
+		file_server
+	}
+
+	handle {
+		root /srv/parapet
+		try_files {path} /index.html
+		file_server
+	}
+}
