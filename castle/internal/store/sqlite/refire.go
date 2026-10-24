@@ -23,8 +23,7 @@ func (s *Store) UpsertRefirePolicy(ctx context.Context, projectID, route, policy
 		`INSERT INTO refire_policies(project_id, route, policy, created_at, updated_at)
 		 VALUES(?,?,?,?,?)
 		 ON CONFLICT(project_id, route) DO UPDATE SET policy = excluded.policy, updated_at = excluded.updated_at`,
-		nullText(projectID), nullText(route), policyJSON,
-		now.Format(store.TimestampLayout), now.Format(store.TimestampLayout))
+		projectID, route, policyJSON, now.Format(store.TimestampLayout), now.Format(store.TimestampLayout))
 	return err
 }
 
@@ -65,7 +64,7 @@ func (s *Store) DeleteRefirePolicy(ctx context.Context, projectID, route string)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM refire_policies WHERE project_id = ? AND route = ?`,
-		nullText(projectID), nullText(route))
+		projectID, route)
 	return err
 }
 
