@@ -90,40 +90,56 @@ func (c *Client) fetchTagNames(ctx context.Context, taskID int, out *[]string) e
 	return nil
 }
 
-// rpcRequest is the JSON-RPC 2.0 request envelope.
-type rpcRequest struct {
+// RPCRequest is the JSON-RPC 2.0 request envelope.
+type RPCRequest struct {
 	JSONRPC string `json:"jsonrpc"`
 	Method  string `json:"method"`
 	ID      int    `json:"id"`
 	Params  any    `json:"params,omitempty"`
 }
 
-// rpcResponse is the JSON-RPC 2.0 response envelope. Kanboard reports
+// RPCResponse is the JSON-RPC 2.0 response envelope. Kanboard reports
 // application errors both in-band (error member) and, for auth failures, via
 // HTTP 401.
-type rpcResponse struct {
+type RPCResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      int             `json:"id"`
 	Result  json.RawMessage `json:"result"`
-	Error   *rpcError       `json:"error"`
+	Error   *RPCError       `json:"error"`
 }
 
-type rpcError struct {
+// RPCError is a JSON-RPC error object (in-band or decoded from a 401 body).
+type RPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
 }
 
-func (e *rpcError) Error() string {
+func (e *RPCError) Error() string {
 	if e.Data != nil {
 		return fmt.Sprintf("kanboard rpc error %d: %s (%v)", e.Code, e.Message, e.Data)
 	}
 	return fmt.Sprintf("kanboard rpc error %d: %s", e.Code, e.Message)
 }
 
+// MarshalRPC encodes a response envelope for one request id (used by tests
+// and fakes standing in for a real Kanboard).
+func MarshalRPC(id int, result any, rpcErr *RPCError) string {
+	resp := RPCResponse{JSONRPC: "2.0", ID: id}
+	if rpcErr != nil {
+		resp.Error = rpcErr
+	} else if raw, err := json.Marshal(result); err == nil {
+		resp.Result = raw
+	} else {
+		resp.Error = &RPCError{Code: -32603, Message: err.Error()}
+	}
+	out, _ := json.Marshal(resp)
+	return string(out)
+}
+
 // call invokes one JSON-RPC method and decodes the result into target.
 func (c *Client) call(ctx context.Context, method string, params any, target any) error {
-	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", Method: method, ID: 1, Params: params})
+	body, err := json.Marshal(RPCRequest{JSONRPC: "2.0", Method: method, ID: 1, Params: params})
 	if err != nil {
 		return err
 	}
@@ -147,7 +163,7 @@ func (c *Client) call(ctx context.Context, method string, params any, target any
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("kanboard returned HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
-	var envelope rpcResponse
+	var envelope RPCResponse
 	if err := json.Unmarshal(respBody, &envelope); err != nil {
 		return fmt.Errorf("parsing kanboard response: %w", err)
 	}
