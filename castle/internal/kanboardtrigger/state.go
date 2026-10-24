@@ -12,8 +12,13 @@ import (
 // sequence. It replaces the outgoing watcher's in-memory memo, which loses
 // its anti-refire protection on restart; here the protection and the fire
 // keys' sequence alignment survive restarts.
+//
+// A failed submit zeroes only PrevColumnID (forcing re-entry) and keeps
+// FireSeq: the retry re-derives the failed attempt's key instead of
+// reverting to an older fire's sequence.
 type TicketMemo struct {
-	// PrevColumnID is the column id the card occupied at the last poll.
+	// PrevColumnID is the column id the card occupied at the last poll; 0
+	// is "no valid column" and forces re-entry (e.g. after a failed fire).
 	PrevColumnID int `json:"prev_column_id"`
 	// FireSeq is the per-ticket fire counter; fire number N derives the
 	// idempotency key kanboard:<board-project>:<ticket>:<N>.
@@ -74,7 +79,9 @@ func (st *state) normalized() *state {
 // fileStore persists the adapter state to JSON with atomic writes (write
 // temporary file + rename) so a crash mid-write never truncates the file.
 // The in-memory state an Adapter builds from this file is the hot authority;
-// the file is written back on every mutation.
+// poll-goroutine mutations batch to one flush per poll (Adapter.flush), and
+// async watch-pump settles save immediately (Adapter.persistLocked) so a
+// settle verdict is durable when it happens.
 type fileStore struct {
 	path string
 }

@@ -192,8 +192,8 @@ func (a *Adapter) hasActiveRun(ticket string) bool {
 	return false
 }
 
-// setMemo records the card's column for the next entry comparison and
-// persists the state.
+// setMemo records the card's column for the next entry comparison (marked
+// dirty; flushed at poll end).
 func (a *Adapter) setMemo(ticket string, columnID int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -219,9 +219,9 @@ func (a *Adapter) nextFireSeq(ticket string) int {
 	return 1
 }
 
-// commitFire persists a successful fire: the fire sequence and the entry
-// memo (the entry consumed by this fire must not re-fire on the next poll —
-// KB-302).
+// commitFire records a successful fire (persisted at poll end): the fire
+// sequence and the entry memo (the entry consumed by this fire must not
+// re-fire on the next poll — KB-302).
 func (a *Adapter) commitFire(ticket string, seq int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
