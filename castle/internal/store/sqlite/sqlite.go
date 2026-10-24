@@ -1661,12 +1661,12 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 
 	// The re-assertion predicates (state='leased', lease still expired, run
 	// still pending) keep the expiry safe when the candidate scan and the
-	// UPDATE observe
-	// different snapshots: an assignment that was re-queued and re-leased
-	// after the scan must not be clobbered here, and a run that started in
-	// that window must not be requeued. RETURNING yields only the
-	// rows actually transitioned, so the returned ids and the run overseer
-	// cleanup below never reference a candidate that was re-leased instead.
+	// UPDATE observe different snapshots: an assignment that was re-queued
+	// and re-leased after the scan must not be clobbered here, and a run
+	// that started in that window must not be requeued. RETURNING yields
+	// only the rows actually transitioned, so the returned ids and the run
+	// overseer cleanup below never reference a candidate that was re-leased
+	// instead.
 	placeholders := strings.Repeat("?,", len(ids))
 	placeholders = placeholders[:len(placeholders)-1]
 
