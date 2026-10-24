@@ -262,18 +262,23 @@ func main() {
 	// Run archive is castle-owned (KB-308): the operator archives terminal
 	// run records here before CR retention deletes them.
 	runArchivePath, runArchiveHandler := castlev1connect.NewRunArchiveServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
+	// Projects are castle-owned (KB-318): agents register into a project and
+	// dispatch is restricted to the project's member set.
+	projectPath, projectHandler := castlev1connect.NewProjectServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
 	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
 		criteria.ServiceName,
 		criteriav1connect.ServerServiceName,
 		criteriav1connect.OrchestratorServiceName,
 		castlev1connect.ConsoleServiceName,
 		castlev1connect.RunArchiveServiceName,
+		castlev1connect.ProjectServiceName,
 	))
 	mux.Handle(critPath, critHandler)
 	mux.Handle(serverPath, serverHandler)
 	mux.Handle(orchestratorPath, orchestratorHandler)
 	mux.Handle(consolePath, consoleHandler)
 	mux.Handle(runArchivePath, runArchiveHandler)
+	mux.Handle(projectPath, projectHandler)
 	mux.Handle(healthPath, healthHandler)
 
 	if *grpcReflection {

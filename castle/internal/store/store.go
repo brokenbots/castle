@@ -28,6 +28,102 @@ var ErrRunTerminal = errors.New("run is terminal")
 // PermissionDenied.
 var ErrArchiveOperatorConflict = errors.New("archive record owned by another identity")
 
+// ErrProjectClosed is returned when a self-join (JoinProject) targets a
+// project whose membership policy is closed: closed projects admit members
+// only through the operator-managed AddProjectMember path.
+var ErrProjectClosed = errors.New("project membership is closed")
+
+// ErrProjectExists is returned when a project with the same ID already exists.
+var ErrProjectExists = errors.New("project already exists")
+
+const (
+	// ProjectMembershipOpen allows any identity to self-join the project
+	// (JoinProject). This is the default membership policy.
+	ProjectMembershipOpen = "open"
+	// ProjectMembershipClosed admits members only through the
+	// operator-managed AddProjectMember path.
+	ProjectMembershipClosed = "closed"
+)
+
+const (
+	// ProjectMemberKindAI marks an AI-operator member (a criteria agent).
+	ProjectMemberKindAI = "ai"
+	// ProjectMemberKindHuman marks a human operator member.
+	ProjectMemberKindHuman = "human"
+)
+
+// IsValidProjectMembershipPolicy reports whether the policy name is known.
+func IsValidProjectMembershipPolicy(p string) bool {
+	return p == ProjectMembershipOpen || p == ProjectMembershipClosed
+}
+
+// IsValidProjectMemberKind reports whether the member kind is known.
+func IsValidProjectMemberKind(k string) bool {
+	return k == ProjectMemberKindAI || k == ProjectMemberKindHuman
+}
+
+// AgentSDKVersion is one {name, version} pair of the SDK inventory an agent
+// reports at registration (e.g. the criteria SDK itself, an adapter SDK).
+type AgentSDKVersion struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// AgentIdentity is the agent identity block an agent presents at
+// registration (KB-318, User-Agent pattern). All fields are free-form
+// operator-supplied strings; castle never interprets them. The block is
+// persisted verbatim on the overseer row and stamped onto runs leased to
+// that agent for exact-build traceability.
+type AgentIdentity struct {
+	Name        string            `json:"name,omitempty"`
+	Version     string            `json:"version,omitempty"`
+	RepoURL     string            `json:"repo_url,omitempty"`
+	BuildDate   string            `json:"build_date,omitempty"`
+	SDKVersions []AgentSDKVersion `json:"sdk_versions,omitempty"`
+	Extra       map[string]string `json:"extra,omitempty"`
+}
+
+// IsZero reports whether the block carries no information at all.
+func (i *AgentIdentity) IsZero() bool {
+	if i == nil {
+		return true
+	}
+	return i.Name == "" && i.Version == "" && i.RepoURL == "" && i.BuildDate == "" &&
+		len(i.SDKVersions) == 0 && len(i.Extra) == 0
+}
+
+// Project is a first-class scoping entity (KB-318): agents and (later)
+// humans join projects, and workflow assignment dispatch leases only the
+// assignments of the projects the leasing agent belongs to. Membership is
+// enforced at this (store) layer. Labels continue to partition within the
+// project pool for capability routing.
+//
+// DefaultRefirePolicy is criteria-owned policy vocabulary: castle persists it
+// verbatim and never interprets it. Queues are the project-owned work
+// lanes; settings and info are opaque maps persisted for the project.
+type Project struct {
+	ID                  string
+	MembershipPolicy    string // ProjectMembership*
+	DefaultRefirePolicy string
+	// Queues lists the project-owned queue names.
+	Queues []string
+	// Settings and Info are opaque, shape-validated project maps.
+	Settings  map[string]string
+	Info      map[string]string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ProjectMember is one member of a project's operator set: either an AI
+// operator (a criteria agent identified by its criteria ID) or a human
+// operator.
+type ProjectMember struct {
+	ProjectID string
+	MemberID  string
+	Kind      string // ProjectMemberKind*
+	CreatedAt time.Time
+}
+
 // EventSchemaVersion is the current persisted event schema version. It tracks
 // the criteria.v1 envelope major version and is stored in the events table for
 // forward compatibility checks.
@@ -115,13 +211,16 @@ const (
 )
 
 type Overseer struct {
-	ID         string
-	Name       string
-	Hostname   string
-	Version    string
-	TokenHash  string
-	Status     string // "online" | "offline"
-	Labels     map[string]string
+	ID        string
+	Name      string
+	Hostname  string
+	Version   string
+	TokenHash string
+	Status    string // "online" | "offline"
+	Labels    map[string]string
+	// Identity carries the agent identity block registered with this
+	// overseer (KB-318); nil when the agent registered without one.
+	Identity   *AgentIdentity
 	CreatedAt  time.Time
 	LastSeenAt time.Time
 }
@@ -176,6 +275,15 @@ type WorkflowAssignment struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	Labels           map[string]string
+	// ProjectID scopes the assignment to a project when non-empty: only
+	// members of that project may lease it (KB-318). An empty ProjectID is
+	// unscoped global work, matching pre-project behavior.
+	ProjectID string
+	// InputValues and TargetMetadata are the workflow-generic assignment
+	// conventions (KB-318): shape-validated string maps castle persists and
+	// delivers verbatim but never interprets.
+	InputValues    map[string]string
+	TargetMetadata map[string]string
 }
 
 // WorkflowAssignmentLease records a single lease grant to an agent.
@@ -233,6 +341,11 @@ type Run struct {
 	// RunFailed event reason for agent-driven failures, or the operator's
 	// cancel reason for CancelRun.
 	FailureReason string
+	// AgentIdentity holds the JSON-serialised identity block of the agent
+	// executing the run (KB-318), stamped from the agent's overseer row at
+	// assignment lease time (and directly at CreateRun for agent-owned
+	// runs) for exact-build traceability. Empty when unknown.
+	AgentIdentity string
 }
 
 // RunStatusAwaitingHuman is the parked status of a run whose engine reached
@@ -456,7 +569,9 @@ type Store interface {
 	// CreateWorkflowAssignment atomically creates the queued run and assignment
 	// record in a single transaction. If an assignment with the same
 	// (owner_criteria_id, idempotency_key) already exists, the existing record is
-	// returned and created is false.
+	// returned and created is false. InputValues and TargetMetadata are the
+	// workflow-generic assignment conventions (KB-318): shape-validated string
+	// maps persisted verbatim, never interpreted.
 	CreateWorkflowAssignment(ctx context.Context, a *WorkflowAssignment) (*WorkflowAssignment, bool, error)
 	// GetWorkflowAssignment returns a workflow assignment by id.
 	GetWorkflowAssignment(ctx context.Context, id string) (*WorkflowAssignment, error)
@@ -467,6 +582,13 @@ type Store interface {
 	// to criteriaID. Returns ErrNotFound when no eligible queued assignment is
 	// available. Expired leases are only returned to the queue when their run
 	// has not yet started (status='pending'); running runs are left leased.
+	//
+	// Project scoping (KB-318) is enforced here, at the store layer: an
+	// assignment carrying a ProjectID is visible to the scan only when
+	// criteriaID is a member of that project; unscoped assignments
+	// (empty ProjectID) are visible to every agent as before. The leased
+	// run's agent_identity column is stamped from the leasing agent's
+	// overseer identity row for exact-build traceability.
 	LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*WorkflowAssignment, error)
 	// ExpireWorkflowAssignmentLeases transitions leased assignments whose lease
 	// has expired and whose run is still pending back to queued, clearing their
@@ -486,6 +608,34 @@ type Store interface {
 	// MarkWorkflowAssignmentTerminal transitions an active assignment to the
 	// terminal state, preventing further lease attempts.
 	MarkWorkflowAssignmentTerminal(ctx context.Context, runID, reason string) error
+
+	// Projects (KB-318)
+	// CreateProject inserts a new project. MembershipPolicy must name a
+	// known policy; ID must be a project-slug id. Fails with ErrProjectExists
+	// when the ID is already taken.
+	CreateProject(ctx context.Context, p *Project) error
+	// GetProject returns the project with the given ID.
+	// Returns ErrNotFound when no project matches.
+	GetProject(ctx context.Context, id string) (*Project, error)
+	// ListProjects returns every project ordered by ID.
+	ListProjects(ctx context.Context) ([]*Project, error)
+	// JoinProject adds the calling identity to the project as a self-join.
+	// Refused with ErrProjectClosed when the project's membership policy is
+	// closed; ErrNotFound when the project does not exist. Idempotent for an
+	// existing member of the same kind.
+	JoinProject(ctx context.Context, projectID, memberID, kind string, now time.Time) error
+	// AddProjectMember adds a member under operator management: allowed for
+	// every membership policy. ErrNotFound when the project does not exist.
+	// Idempotent for an existing member of the same kind.
+	AddProjectMember(ctx context.Context, m *ProjectMember) error
+	// RemoveProjectMember removes a membership row. Removing an unknown
+	// membership is a no-op.
+	RemoveProjectMember(ctx context.Context, projectID, memberID string) error
+	// ListProjectMembers returns the project's member set ordered by member ID.
+	ListProjectMembers(ctx context.Context, projectID string) ([]*ProjectMember, error)
+	// IsProjectMember reports whether memberID belongs to projectID's
+	// member set. A project that does not exist yields false.
+	IsProjectMember(ctx context.Context, projectID, memberID string) (bool, error)
 
 	Close() error
 }

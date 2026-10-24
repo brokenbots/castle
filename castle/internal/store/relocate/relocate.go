@@ -73,6 +73,26 @@ type table struct {
 // Tables is the full relocation set, FK-safe order.
 var Tables = []table{
 	{
+		name: "projects",
+		key:  []string{"id"},
+		pk:   []string{"id"},
+		cols: []column{
+			{"id", KindText, false}, {"membership_policy", KindText, false},
+			{"default_refire_policy", KindText, false}, {"queues", KindText, false},
+			{"settings", KindText, false}, {"info", KindText, false},
+			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
+		},
+	},
+	{
+		name: "project_members",
+		key:  []string{"project_id", "member_id"},
+		pk:   []string{"project_id", "member_id"},
+		cols: []column{
+			{"project_id", KindText, false}, {"member_id", KindText, false},
+			{"kind", KindText, false}, {"created_at", KindTS, false},
+		},
+	},
+	{
 		name: "overseers",
 		key:  []string{"id"},
 		pk:   []string{"id"},
@@ -80,6 +100,7 @@ var Tables = []table{
 			{"id", KindText, false}, {"name", KindText, false}, {"hostname", KindText, true},
 			{"version", KindText, true}, {"token_hash", KindText, false}, {"status", KindText, false},
 			{"created_at", KindTS, false}, {"last_seen_at", KindTS, false}, {"labels", KindText, true},
+			{"identity", KindText, true},
 		},
 	},
 	{
@@ -93,6 +114,7 @@ var Tables = []table{
 			{"variable_scope", KindText, true}, {"pending_signal", KindText, true}, {"paused_at", KindTS, true},
 			{"ticket", KindText, true}, {"repo_url", KindText, true}, {"pr_url", KindText, true},
 			{"failure_reason", KindText, true}, {"started_at", KindTS, true},
+			{"agent_identity", KindText, false},
 		},
 	},
 	{
@@ -134,6 +156,7 @@ var Tables = []table{
 			{"state", KindText, false}, {"terminal_reason", KindText, true},
 			{"leased_criteria_id", KindText, true}, {"lease_expires_at", KindTS, true},
 			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
+			{"project_id", KindText, true}, {"input_values", KindText, true}, {"target_metadata", KindText, true},
 		},
 	},
 	{

@@ -1,0 +1,192 @@
+// ProjectService — castle-owned project surface (KB-318). Projects are a
+// first-class castle concept: agents register INTO a project, dispatch is
+// restricted to the project's member set, and capability labels partition
+// work only WITHIN the project pool. Upstream criteria deliberately does not
+// ship a project entity, so this surface lives under the castle.v1 package
+// and keeps the criteria.v1 wire contract an exact mirror of the released
+// SDK.
+syntax = "proto3";
+
+package castle.v1;
+
+import "google/protobuf/timestamp.proto";
+import "criteria/v1/server.proto";
+
+option go_package = "github.com/brokenbots/castle/castle/gen/castle/v1;castlev1";
+
+service ProjectService {
+  // CreateProject registers a new project. IDs are lowercase slugs; the
+  // membership policy decides whether agents may self-join at registration
+  // time (OPEN) or only via AddProjectMember (CLOSED).
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+
+  // GetProject returns one project record by id.
+  rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
+
+  // ListProjects returns all projects in id order.
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+
+  // AddProjectMember admits a member (an agent operator or a human
+  // operator) regardless of the project's membership policy. Self-joining a
+  // CLOSED project through Register must fail; only this procedure admits
+  // members into such a project.
+  rpc AddProjectMember(AddProjectMemberRequest) returns (AddProjectMemberResponse);
+
+  // RemoveProjectMember revokes a membership; removing an unknown member is
+  // a no-op for idempotence.
+  rpc RemoveProjectMember(RemoveProjectMemberRequest) returns (RemoveProjectMemberResponse);
+
+  // ListProjectMembers returns the project's member set in member_id order.
+  rpc ListProjectMembers(ListProjectMembersRequest) returns (ListProjectMembersResponse);
+
+  // SubmitProjectAssignment queues a workflow assignment scoped to a
+  // project: only members of the project will ever lease it. The response
+  // shape mirrors criteria ServerService.SubmitWorkflowAssignment so
+  // operators see identical semantics.
+  //
+  // input_values and target_metadata are workflow-generic conventions:
+  // values are shape-validated only and NEVER interpreted by the server.
+  rpc SubmitProjectAssignment(SubmitProjectAssignmentRequest) returns (SubmitProjectAssignmentResponse);
+}
+
+enum ProjectMembershipPolicy {
+  PROJECT_MEMBERSHIP_POLICY_UNSPECIFIED = 0;
+  // OPEN — agents may self-join the project at registration time.
+  PROJECT_MEMBERSHIP_POLICY_OPEN = 1;
+  // CLOSED — membership is granted only through AddProjectMember.
+  PROJECT_MEMBERSHIP_POLICY_CLOSED = 2;
+}
+
+enum ProjectMemberKind {
+  PROJECT_MEMBER_KIND_UNSPECIFIED = 0;
+  // PROJECT_MEMBER_KIND_AI — an agent operator (automation that leases and
+  // executes work).
+  PROJECT_MEMBER_KIND_AI = 1;
+  // PROJECT_MEMBER_KIND_HUMAN — a human operator (humans AND ai are both
+  // operators of project work).
+  PROJECT_MEMBER_KIND_HUMAN = 2;
+}
+
+message Project {
+  // id is the project slug (lowercase id used across IDs, tickets, UIs).
+  string id = 1;
+  // membership_policy decides whether registration self-joins are allowed.
+  ProjectMembershipPolicy membership_policy = 2;
+  // default_refire_policy is the project-wide default for assignment
+  // refiring behavior.
+  string default_refire_policy = 3;
+  // queues lists the project-owned queue names.
+  repeated string queues = 4;
+  // settings is an opaque, shape-validated key/value map owned by the
+  // project.
+  map<string, string> settings = 5;
+  // info is an opaque, shape-validated key/value map with descriptive
+  // project metadata.
+  map<string, string> info = 6;
+  // created_at is the project creation time.
+  google.protobuf.Timestamp created_at = 7;
+  // updated_at is the project's last update time.
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message ProjectMember {
+  // project_id of the membership row.
+  string project_id = 1;
+  // member_id is the agent operator or human operator identifier.
+  string member_id = 2;
+  // kind distinguishes ai operators from human operators.
+  ProjectMemberKind kind = 3;
+  // created_at is when the membership was recorded.
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message CreateProjectRequest {
+  // project is the project to create; id and membership_policy are
+  // required.
+  Project project = 1;
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message GetProjectRequest {
+  string project_id = 1;
+}
+
+message GetProjectResponse {
+  Project project = 1;
+}
+
+message ListProjectsRequest {}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+}
+
+message AddProjectMemberRequest {
+  // project_id of the project to extend.
+  string project_id = 1;
+  // member_id to admit.
+  string member_id = 2;
+  // kind for the membership (ai or human operator).
+  ProjectMemberKind kind = 3;
+}
+
+message AddProjectMemberResponse {
+  ProjectMember member = 1;
+}
+
+message RemoveProjectMemberRequest {
+  string project_id = 1;
+  string member_id = 2;
+}
+
+message RemoveProjectMemberResponse {}
+
+message ListProjectMembersRequest {
+  string project_id = 1;
+}
+
+message ListProjectMembersResponse {
+  repeated ProjectMember members = 1;
+}
+
+message SubmitProjectAssignmentRequest {
+  // project_id scopes the assignment to a project's member set.
+  string project_id = 1;
+  // workflow_name is the logical name of the workflow to execute.
+  string workflow_name = 2;
+  // workflow_source is the raw HCL/CHCL source for the workflow module.
+  string workflow_source = 3;
+  // lockfile_source is the optional raw HCL source of the workflow tree's
+  // .criteria.lock.hcl.
+  string lockfile_source = 4;
+  // labels are optional capability key/value pairs; they partition eligible
+  // agents WITHIN the project's pool.
+  map<string, string> labels = 5;
+  // idempotency_key is an optional opaque caller-provided identifier, scoped
+  // per domain (the submitting project assignment owner).
+  string idempotency_key = 6;
+  // input_values are workflow input values (workflow-generic convention);
+  // shape-validated only, persisted and delivered verbatim.
+  map<string, string> input_values = 7;
+  // target_metadata are environment hints, e.g. adapter.<kind>.image;
+  // shape-validated only, persisted and delivered verbatim.
+  map<string, string> target_metadata = 8;
+}
+
+message SubmitProjectAssignmentResponse {
+  // run_id is the server-created run identifier. For idempotent replays this
+  // is the run_id of the existing assignment.
+  string run_id = 1;
+  // state is the current assignment state (criteria vocabulary).
+  criteria.v1.WorkflowAssignmentState state = 2;
+  // created_at is the server time when the assignment was first recorded.
+  google.protobuf.Timestamp created_at = 3;
+  // When state == REJECTED, a human-readable reason for the rejection.
+  string rejection_reason = 4;
+  // When state == LEASED or TERMINAL, the criteria ID of the agent that
+  // leased the assignment, if known.
+  string leased_criteria_id = 5;
+}

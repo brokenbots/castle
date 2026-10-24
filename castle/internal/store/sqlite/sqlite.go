@@ -121,6 +121,262 @@ func (s *Store) opCtx(ctx context.Context) (context.Context, context.CancelFunc)
 	return context.WithTimeout(context.WithoutCancel(ctx), storeOpTimeout)
 }
 
+// -----------------------------------------------------------------------------
+// Projects (KB-318)
+// -----------------------------------------------------------------------------
+
+// CreateProject persists a new project. The ID must be a slug shape, the
+// membership policy must be one of the known policy values, and queue names
+// must be non-empty when present. Settings and info are opaque maps: the
+// store persists and returns them, never interprets them.
+func (s *Store) CreateProject(ctx context.Context, p *store.Project) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if p == nil {
+		return errors.New("project required")
+	}
+	if err := store.ValidateProjectID(p.ID); err != nil {
+		return err
+	}
+	if !store.IsValidProjectMembershipPolicy(p.MembershipPolicy) {
+		return fmt.Errorf("%w: %q", store.ErrInvalidProjectPolicy, p.MembershipPolicy)
+	}
+	queues := make([]string, 0, len(p.Queues))
+	for _, q := range p.Queues {
+		if q == "" {
+			return errors.New("queue names must be non-empty")
+		}
+		queues = append(queues, q)
+	}
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = time.Now()
+	}
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = p.CreatedAt
+	}
+	queuesJSON, err := store.MarshalQueues(queues)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO projects (id, membership_policy, default_refire_policy, queues, settings, info, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID,
+		p.MembershipPolicy,
+		p.DefaultRefirePolicy,
+		queuesJSON,
+		store.MarshalJSONMap(p.Settings),
+		store.MarshalJSONMap(p.Info),
+		p.CreatedAt.UTC().Format(store.TimestampLayout),
+		p.UpdatedAt.UTC().Format(store.TimestampLayout))
+	if err != nil {
+		if store.IsUniqueViolation(err) {
+			return store.ErrProjectExists
+		}
+		return err
+	}
+	return nil
+}
+
+// scanProject reads one projects row from the given scanner helper.
+func scanProject(scan func(dest ...any) error) (*store.Project, error) {
+	var p store.Project
+	var queues, settings, info sql.NullString
+	var created, updated string
+	if err := scan(&p.ID, &p.MembershipPolicy, &p.DefaultRefirePolicy,
+		&queues, &settings, &info, &created, &updated); err != nil {
+		return nil, err
+	}
+	p.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
+	p.UpdatedAt, _ = time.Parse(store.TimestampLayout, updated)
+	p.Queues = store.UnmarshalQueues(queues.String)
+	p.Settings = store.UnmarshalJSONMap(settings.String)
+	p.Info = store.UnmarshalJSONMap(info.String)
+	return &p, nil
+}
+
+// GetProject loads a project by ID.
+func (s *Store) GetProject(ctx context.Context, id string) (*store.Project, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if id == "" {
+		return nil, errors.New("id required")
+	}
+	p, err := scanProject(s.reader.QueryRowContext(ctx, `
+		SELECT id, membership_policy, COALESCE(default_refire_policy,''), COALESCE(queues,''),
+		       COALESCE(settings,''), COALESCE(info,''), created_at, updated_at
+		FROM projects WHERE id=?`, id).Scan)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	return p, nil
+}
+
+// ListProjects returns every project ordered by ID.
+func (s *Store) ListProjects(ctx context.Context) ([]*store.Project, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	rows, err := s.reader.QueryContext(ctx, `
+		SELECT id, membership_policy, COALESCE(default_refire_policy,''), COALESCE(queues,''),
+		       COALESCE(settings,''), COALESCE(info,''), created_at, updated_at
+		FROM projects ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	projects := make([]*store.Project, 0)
+	for rows.Next() {
+		p, err := scanProject(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+	return projects, rows.Err()
+}
+
+// JoinProject records an agent's own membership. Agents may join themselves
+// only while the project's membership policy is open; operator-driven
+// membership regardless of policy uses AddProjectMember.
+func (s *Store) JoinProject(ctx context.Context, projectID, memberID, kind string, now time.Time) error {
+	if !store.IsValidProjectMemberKind(kind) {
+		return fmt.Errorf("%w: %q", store.ErrInvalidProjectMember, kind)
+	}
+	return s.joinProject(ctx, projectID, memberID, kind, now, false)
+}
+
+// AddProjectMember records operator-driven membership regardless of the
+// project's membership policy.
+func (s *Store) AddProjectMember(ctx context.Context, m *store.ProjectMember) error {
+	if m == nil {
+		return errors.New("member required")
+	}
+	if !store.IsValidProjectMemberKind(m.Kind) {
+		return fmt.Errorf("%w: %q", store.ErrInvalidProjectMember, m.Kind)
+	}
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = time.Now()
+	}
+	return s.joinProject(ctx, m.ProjectID, m.MemberID, m.Kind, m.CreatedAt, true)
+}
+
+// joinProject performs the membership upsert shared by JoinProject and
+// AddProjectMember. Re-joining with a different member kind updates the kind;
+// the operation is idempotent and never rewrites created_at.
+func (s *Store) joinProject(ctx context.Context, projectID, memberID, kind string, now time.Time, bypassPolicy bool) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if projectID == "" {
+		return errors.New("project id required")
+	}
+	if memberID == "" {
+		return errors.New("member id required")
+	}
+	ts := now.UTC().Format(store.TimestampLayout)
+	if bypassPolicy {
+		// Operator path: verify the project exists so a typo'd project ID
+		// surfaces as ErrNotFound instead of silently creating an orphan
+		// membership the lease scan would never match.
+		var one int
+		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM projects WHERE id=?`, projectID).Scan(&one); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return err
+		}
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO project_members (project_id, member_id, kind, created_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (project_id, member_id) DO UPDATE SET kind=excluded.kind`,
+			projectID, memberID, kind, ts)
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO project_members (project_id, member_id, kind, created_at)
+		SELECT p.id, ?, ?, ? FROM projects p
+		WHERE p.id = ? AND p.membership_policy = ?
+		ON CONFLICT (project_id, member_id) DO UPDATE SET kind=excluded.kind`,
+		memberID, kind, ts, projectID, store.ProjectMembershipOpen)
+	if err != nil {
+		return err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		// No row: the project is missing or its membership policy is
+		// closed. Re-check to report the precise condition.
+		var policy string
+		err := s.reader.QueryRowContext(ctx, `SELECT membership_policy FROM projects WHERE id=?`, projectID).Scan(&policy)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrNotFound
+			}
+			return err
+		}
+		return store.ErrProjectClosed
+	}
+	return nil
+}
+
+// RemoveProjectMember drops a membership. Removing a member that was never
+// joined to the project is not an error.
+func (s *Store) RemoveProjectMember(ctx context.Context, projectID, memberID string) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if projectID == "" || memberID == "" {
+		return errors.New("project id and member id required")
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM project_members WHERE project_id=? AND member_id=?`, projectID, memberID)
+	return err
+}
+
+// ListProjectMembers returns the members of a project ordered by member id.
+func (s *Store) ListProjectMembers(ctx context.Context, projectID string) ([]*store.ProjectMember, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if projectID == "" {
+		return nil, errors.New("project id required")
+	}
+	rows, err := s.reader.QueryContext(ctx, `
+		SELECT project_id, member_id, kind, created_at
+		FROM project_members WHERE project_id=? ORDER BY member_id ASC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	members := make([]*store.ProjectMember, 0)
+	for rows.Next() {
+		var m store.ProjectMember
+		var created string
+		if err := rows.Scan(&m.ProjectID, &m.MemberID, &m.Kind, &created); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
+		members = append(members, &m)
+	}
+	return members, rows.Err()
+}
+
+// IsProjectMember reports whether memberID belongs to projectID.
+func (s *Store) IsProjectMember(ctx context.Context, projectID, memberID string) (bool, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if projectID == "" || memberID == "" {
+		return false, nil
+	}
+	var one int
+	err := s.reader.QueryRowContext(ctx, `
+		SELECT 1 FROM project_members WHERE project_id=? AND member_id=?`, projectID, memberID).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -128,9 +384,13 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 	if err != nil {
 		return err
 	}
+	identity, err := store.IdentityJSON(o.Identity)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, o.CreatedAt.Format(store.TimestampLayout), o.LastSeenAt.Format(store.TimestampLayout))
+		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, o.CreatedAt.Format(store.TimestampLayout), o.LastSeenAt.Format(store.TimestampLayout), identity)
 	if err == nil {
 		s.freshness.recordWrite(o.CreatedAt)
 	}
@@ -140,11 +400,11 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity FROM overseers WHERE id=?`, id)
 	var o store.Overseer
 	var created, seen string
-	var labels sql.NullString
-	if err := row.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen); err != nil {
+	var labels, identity sql.NullString
+	if err := row.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen, &identity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
@@ -153,6 +413,7 @@ func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, er
 	o.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
 	o.LastSeenAt, _ = time.Parse(store.TimestampLayout, seen)
 	o.Labels = store.UnmarshalLabels(labels.String)
+	o.Identity = store.IdentityFromJSON(identity.String)
 	return &o, nil
 }
 
@@ -201,7 +462,7 @@ func newestOverseerCreatedAt(list []*store.Overseer) time.Time {
 // ListOverseers services the auth token resolution path through the reader;
 // the KB-223 staleness fallback re-runs it through the writer handle.
 func (s *Store) scanOverseers(ctx context.Context, db *sql.DB) ([]*store.Overseer, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
+	rows, err := db.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity FROM overseers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -210,13 +471,14 @@ func (s *Store) scanOverseers(ctx context.Context, db *sql.DB) ([]*store.Oversee
 	for rows.Next() {
 		var o store.Overseer
 		var created, seen string
-		var labels sql.NullString
-		if err := rows.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen); err != nil {
+		var labels, identity sql.NullString
+		if err := rows.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen, &identity); err != nil {
 			return nil, err
 		}
 		o.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
 		o.LastSeenAt, _ = time.Parse(store.TimestampLayout, seen)
 		o.Labels = store.UnmarshalLabels(labels.String)
+		o.Identity = store.IdentityFromJSON(identity.String)
 		out = append(out, &o)
 	}
 	return out, rows.Err()
@@ -399,7 +661,7 @@ func (s *Store) DeleteConsoleSessionsByUser(ctx context.Context, userID string) 
 
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
-const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason,agent_identity"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 	ctx, cancel := s.opCtx(ctx)
@@ -409,9 +671,9 @@ func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 		started = r.StartedAt.Format(store.TimestampLayout)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url,agent_identity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(store.TimestampLayout),
-		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL))
+		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL), r.AgentIdentity)
 	return err
 }
 
@@ -495,7 +757,7 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var repoURL sql.NullString
 	var prURL sql.NullString
 	var failureReason sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason)
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason, &r.AgentIdentity)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -1221,9 +1483,7 @@ func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowA
 	defer tx.Rollback() //nolint:errcheck
 
 	existing, err := scanAssignmentTx(ctx, tx, `
-		SELECT id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
-		       idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
-		       created_at, updated_at
+		SELECT `+assignmentColumns+`
 		FROM workflow_assignments
 		WHERE owner_criteria_id=? AND idempotency_key=?`, a.OwnerCriteriaID, a.IdempotencyKey)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -1241,12 +1501,21 @@ func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowA
 		return nil, false, err
 	}
 
+	inputValues, err := store.MarshalLabels(a.InputValues)
+	if err != nil {
+		return nil, false, err
+	}
+	targetMetadata, err := store.MarshalLabels(a.TargetMetadata)
+	if err != nil {
+		return nil, false, err
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO workflow_assignments(id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
-		                                   idempotency_key, state, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                                   idempotency_key, state, created_at, updated_at, project_id, input_values, target_metadata)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.OwnerCriteriaID, a.RunID, a.WorkflowName, a.WorkflowSource, a.LockfileSource,
-		a.IdempotencyKey, a.State, a.CreatedAt.Format(store.TimestampLayout), a.UpdatedAt.Format(store.TimestampLayout)); err != nil {
+		a.IdempotencyKey, a.State, a.CreatedAt.Format(store.TimestampLayout), a.UpdatedAt.Format(store.TimestampLayout),
+		nullText(a.ProjectID), inputValues, targetMetadata); err != nil {
 		return nil, false, err
 	}
 
@@ -1271,6 +1540,13 @@ func (s *Store) insertAssignmentLabelsTx(ctx context.Context, tx *sql.Tx, assign
 	return nil
 }
 
+// assignmentColumns is the projection scanned by single-row assignment
+// readers; keep in sync with scanAssignment, scanAssignmentTx, and the
+// migration that last altered the workflow_assignments table.
+const assignmentColumns = `id, owner_criteria_id, run_id, workflow_name, workflow_source,
+	lockfile_source, idempotency_key, state, terminal_reason, leased_criteria_id,
+	lease_expires_at, created_at, updated_at, project_id, input_values, target_metadata`
+
 func (s *Store) GetWorkflowAssignment(ctx context.Context, id string) (*store.WorkflowAssignment, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -1278,10 +1554,7 @@ func (s *Store) GetWorkflowAssignment(ctx context.Context, id string) (*store.Wo
 		return nil, errors.New("id required")
 	}
 	return s.scanAssignment(ctx, s.db.QueryRowContext(ctx, `
-		SELECT id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
-		       idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
-		       created_at, updated_at
-		FROM workflow_assignments WHERE id=?`, id))
+		SELECT `+assignmentColumns+` FROM workflow_assignments WHERE id=?`, id))
 }
 
 func (s *Store) GetWorkflowAssignmentByRunID(ctx context.Context, runID string) (*store.WorkflowAssignment, error) {
@@ -1291,20 +1564,37 @@ func (s *Store) GetWorkflowAssignmentByRunID(ctx context.Context, runID string) 
 		return nil, errors.New("run_id required")
 	}
 	return s.scanAssignment(ctx, s.db.QueryRowContext(ctx, `
-		SELECT id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
-		       idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
-		       created_at, updated_at
-		FROM workflow_assignments WHERE run_id=?`, runID))
+		SELECT `+assignmentColumns+` FROM workflow_assignments WHERE run_id=?`, runID))
+}
+
+// nullText maps an empty string to SQL NULL so an unscoped assignment
+// satisfies the workflow_assignments.project_id foreign key; non-empty text
+// (and the empty-text-equals-empty convention for plain nullable columns)
+// passes through unchanged.
+func nullText(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func scanAssignmentMaps(projectID sql.NullString, inputValues, targetMetadata sql.NullString, a *store.WorkflowAssignment) {
+	if projectID.Valid {
+		a.ProjectID = projectID.String
+	}
+	a.InputValues = store.UnmarshalLabels(inputValues.String)
+	a.TargetMetadata = store.UnmarshalLabels(targetMetadata.String)
 }
 
 func (s *Store) scanAssignment(ctx context.Context, row *sql.Row) (*store.WorkflowAssignment, error) {
 	var a store.WorkflowAssignment
 	var created, updated string
 	var lockfile, terminalReason, leasedID, expires sql.NullString
+	var projectID, inputValues, targetMetadata sql.NullString
 	err := row.Scan(
 		&a.ID, &a.OwnerCriteriaID, &a.RunID, &a.WorkflowName, &a.WorkflowSource, &lockfile,
 		&a.IdempotencyKey, &a.State, &terminalReason, &leasedID, &expires,
-		&created, &updated)
+		&created, &updated, &projectID, &inputValues, &targetMetadata)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -1326,6 +1616,7 @@ func (s *Store) scanAssignment(ctx context.Context, row *sql.Row) (*store.Workfl
 		t, _ := time.Parse(store.TimestampLayout, expires.String)
 		a.LeaseExpiresAt = &t
 	}
+	scanAssignmentMaps(projectID, inputValues, targetMetadata, &a)
 	labels, err := s.loadAssignmentLabels(ctx, a.ID)
 	if err != nil {
 		return nil, err
@@ -1338,11 +1629,12 @@ func scanAssignmentTx(ctx context.Context, tx *sql.Tx, query string, args ...any
 	var a store.WorkflowAssignment
 	var created, updated string
 	var lockfile, terminalReason, leasedID, expires sql.NullString
+	var projectID, inputValues, targetMetadata sql.NullString
 	row := tx.QueryRowContext(ctx, query, args...)
 	err := row.Scan(
 		&a.ID, &a.OwnerCriteriaID, &a.RunID, &a.WorkflowName, &a.WorkflowSource, &lockfile,
 		&a.IdempotencyKey, &a.State, &terminalReason, &leasedID, &expires,
-		&created, &updated)
+		&created, &updated, &projectID, &inputValues, &targetMetadata)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -1364,6 +1656,7 @@ func scanAssignmentTx(ctx context.Context, tx *sql.Tx, query string, args ...any
 		t, _ := time.Parse(store.TimestampLayout, expires.String)
 		a.LeaseExpiresAt = &t
 	}
+	scanAssignmentMaps(projectID, inputValues, targetMetadata, &a)
 	return &a, nil
 }
 
@@ -1431,9 +1724,10 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		return nil, err
 	}
 
-	// Verify the agent is online.
-	var status string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM overseers WHERE id=?`, criteriaID).Scan(&status); err != nil {
+	// Verify the agent is online and read its identity block for the
+	// exact-build stamp on the leased run (KB-318).
+	var status, identity string
+	if err := tx.QueryRowContext(ctx, `SELECT status, COALESCE(identity, '') FROM overseers WHERE id=?`, criteriaID).Scan(&status, &identity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
@@ -1467,16 +1761,28 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 	// parked at a human gate (awaiting_human, KB-226) are not executable
 	// work either: the engine already completed them for a human decision,
 	// so re-dispatching would re-run finished work.
+	//
+	// Project scoping (KB-318) is enforced here, at the store layer: the
+	// scan only offers an assignment carrying a project_id to an agent in
+	// that project's member set. Unscoped assignments (project_id IS NULL)
+	// stay visible to every agent.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
-		       a.idempotency_key, a.created_at, a.updated_at, l.key, l.value
+		       a.idempotency_key, a.created_at, a.updated_at, a.project_id, l.key, l.value
 		FROM workflow_assignments a
 		JOIN runs r ON r.id = a.run_id
 		LEFT JOIN workflow_assignment_labels l ON l.assignment_id = a.id
 		WHERE a.state = ?
 		  AND r.status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped', '`+store.RunStatusAwaitingHuman+`')
+		  AND (
+		          a.project_id IS NULL
+		          OR EXISTS (
+		              SELECT 1 FROM project_members pm
+		              WHERE pm.project_id = a.project_id AND pm.member_id = ?
+		          )
+		      )
 		ORDER BY a.created_at ASC, a.id ASC`,
-		store.WorkflowAssignmentStateQueued)
+		store.WorkflowAssignmentStateQueued, criteriaID)
 	if err != nil {
 		return nil, err
 	}
@@ -1484,10 +1790,9 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 	candidates := make(map[string]*assignmentCandidate)
 	for rows.Next() {
 		var id, runID, wfName, wfSource, idemp, created, updated string
-		var lockfile sql.NullString
-		var lkey, lvalue sql.NullString
+		var lockfile, projectID, lkey, lvalue sql.NullString
 		if err := rows.Scan(&id, &runID, &wfName, &wfSource, &lockfile, &idemp,
-			&created, &updated, &lkey, &lvalue); err != nil {
+			&created, &updated, &projectID, &lkey, &lvalue); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1509,6 +1814,9 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 			}
 			if lockfile.Valid {
 				c.assignment.LockfileSource = lockfile.String
+			}
+			if projectID.Valid {
+				c.assignment.ProjectID = projectID.String
 			}
 			candidates[id] = c
 		}
@@ -1551,7 +1859,7 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 			continue
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE runs SET overseer_id=? WHERE id=?`, criteriaID, c.assignment.RunID); err != nil {
+			`UPDATE runs SET overseer_id=?, agent_identity=? WHERE id=?`, criteriaID, identity, c.assignment.RunID); err != nil {
 			return nil, err
 		}
 		leaseID := uuid.NewString()
@@ -1741,7 +2049,8 @@ func (s *Store) ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, cr
 	}
 	rows, err := s.reader.QueryContext(ctx, `
 		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
-		       a.idempotency_key, a.created_at, a.updated_at, l.key, l.value
+		       a.idempotency_key, a.created_at, a.updated_at, a.project_id,
+		       a.input_values, a.target_metadata, l.key, l.value
 		FROM workflow_assignments a
 		JOIN runs r ON r.id = a.run_id
 		LEFT JOIN workflow_assignment_labels l ON l.assignment_id = a.id
@@ -1756,10 +2065,9 @@ func (s *Store) ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, cr
 	candidates := make(map[string]*assignmentCandidate)
 	for rows.Next() {
 		var id, runID, wfName, wfSource, idemp, created, updated string
-		var lockfile sql.NullString
-		var lkey, lvalue sql.NullString
+		var lockfile, projectID, inputValues, targetMetadata, lkey, lvalue sql.NullString
 		if err := rows.Scan(&id, &runID, &wfName, &wfSource, &lockfile, &idemp,
-			&created, &updated, &lkey, &lvalue); err != nil {
+			&created, &updated, &projectID, &inputValues, &targetMetadata, &lkey, &lvalue); err != nil {
 			return nil, err
 		}
 		c, ok := candidates[id]
@@ -1781,6 +2089,7 @@ func (s *Store) ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, cr
 			if lockfile.Valid {
 				c.assignment.LockfileSource = lockfile.String
 			}
+			scanAssignmentMaps(projectID, inputValues, targetMetadata, c.assignment)
 			candidates[id] = c
 		}
 		if lkey.Valid {

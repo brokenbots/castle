@@ -16,9 +16,13 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 	if err != nil {
 		return err
 	}
+	identity, err := store.IdentityJSON(o.Identity)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, us(o.CreatedAt), us(o.LastSeenAt))
+		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, us(o.CreatedAt), us(o.LastSeenAt), nonEmpty(identity))
 	if err == nil {
 		s.freshness.recordWrite(o.CreatedAt)
 	}
@@ -28,15 +32,15 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers WHERE id=$1`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity FROM overseers WHERE id=$1`, id)
 	return scanOverseer(row.Scan)
 }
 
 func scanOverseer(scan func(...any) error) (*store.Overseer, error) {
 	var o store.Overseer
 	var created, seen time.Time
-	var labels sql.NullString
-	if err := scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen); err != nil {
+	var labels, identity sql.NullString
+	if err := scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen, &identity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
@@ -45,6 +49,7 @@ func scanOverseer(scan func(...any) error) (*store.Overseer, error) {
 	o.CreatedAt = created
 	o.LastSeenAt = seen
 	o.Labels = store.UnmarshalLabels(labels.String)
+	o.Identity = store.IdentityFromJSON(identity.String)
 	return &o, nil
 }
 
@@ -88,7 +93,7 @@ func newestOverseerCreatedAt(list []*store.Overseer) time.Time {
 
 // scanOverseers runs the overseers table scan over the given pool handle.
 func (s *Store) scanOverseers(ctx context.Context, db *sql.DB) ([]*store.Overseer, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at FROM overseers ORDER BY created_at DESC`)
+	rows, err := db.QueryContext(ctx, `SELECT id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity FROM overseers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}

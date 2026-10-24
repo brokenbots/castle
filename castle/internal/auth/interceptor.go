@@ -412,7 +412,7 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 		}
 	}
 	if i.allowAnonRegister {
-		return next(ctx, req)
+		return i.nextRegister(ctx, req, next)
 	}
 	if i.bootstrapTokenHash == "" {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("register is disabled: no bootstrap token configured"))
@@ -423,6 +423,25 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 	}
 	if !ConstantTimeEqual(tok, i.bootstrapTokenHash) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid bootstrap token"))
+	}
+	return i.nextRegister(ctx, req, next)
+}
+
+// nextRegister carries the KB-318 registration metadata (agent identity
+// block, self-join project id) from Register headers into the handler
+// context, after the bootstrap gate has admitted the call. Validation
+// failures surface as InvalidArgument so a misconfigured agent fails fast at
+// registration instead of persisting a truncated identity block.
+func (i *AuthInterceptor) nextRegister(ctx context.Context, req connect.AnyRequest, next connect.UnaryFunc) (connect.AnyResponse, error) {
+	identity, projectID, err := ParseAgentRegistration(req.Header())
+	if err != nil {
+		return nil, err
+	}
+	if identity != nil {
+		ctx = WithAgentIdentity(ctx, identity)
+	}
+	if projectID != "" {
+		ctx = WithRegisterProjectID(ctx, projectID)
 	}
 	return next(ctx, req)
 }
