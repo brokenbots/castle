@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
@@ -125,11 +126,19 @@ func (s *ServerServer) Login(ctx context.Context, req *connect.Request[castlev1.
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// The session carries the member's project set at issue time (KB-325),
+	// read through the shared membership set — ledger metadata only; rights
+	// never resolve from it.
+	membership, err := s.Store.ListMemberProjects(ctx, u.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolve member projects: %w", err))
+	}
 	sess := &store.ConsoleSession{
-		ID:        uuid.NewString(),
-		UserID:    u.ID,
-		TokenHash: auth.HashToken(token),
-		CreatedAt: time.Now().UTC(),
+		ID:         uuid.NewString(),
+		UserID:     u.ID,
+		TokenHash:  auth.HashToken(token),
+		CreatedAt:  time.Now().UTC(),
+		Membership: membership,
 	}
 	if err := s.Store.CreateConsoleSession(ctx, sess); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -142,4 +151,52 @@ func (s *ServerServer) Login(ctx context.Context, req *connect.Request[castlev1.
 		SessionToken: token,
 		Username:     u.Username,
 	}), nil
+}
+
+// Logout revokes the caller's own console session server-side (KB-325). The
+// presented token stops authenticating immediately: the ledger row is
+// stamped with the revocation and every later token resolution observes it.
+// Only a console session can log itself out; a protocol-token caller has no
+// login session to end and is denied.
+func (s *ServerServer) Logout(ctx context.Context, req *connect.Request[castlev1.LogoutRequest]) (*connect.Response[castlev1.LogoutResponse], error) {
+	_, sessionID, err := requireConsoleSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if err := s.Store.RevokeConsoleSession(ctx, sessionID, now); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("revoke console session: %w", err))
+	}
+	if s.Log != nil {
+		// Never log the presented token or its digest — only the ledger id.
+		s.Log.Info("console session revoked", "session_id", sessionID)
+	}
+	return connect.NewResponse(&castlev1.LogoutResponse{
+		RevokedAt: timestamppb.New(now),
+	}), nil
+}
+
+// ListSessions lists the calling console user's session ledger (KB-325):
+// one entry per issued session with its credential kind, issue-time
+// membership snapshot and created/revoked stamps, including revoked rows so
+// the full lifecycle is visible. The snapshot is display metadata —
+// authorization never reads it.
+func (s *ServerServer) ListSessions(ctx context.Context, req *connect.Request[castlev1.ListSessionsRequest]) (*connect.Response[castlev1.ListSessionsResponse], error) {
+	userID, _, err := requireConsoleSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	all, err := s.Store.ListConsoleSessions(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out := make([]*castlev1.SessionInfo, 0, len(all))
+	for _, sess := range all {
+		if sess.UserID != userID {
+			// A caller sees its own account's sessions only.
+			continue
+		}
+		out = append(out, mapConsoleSession(sess))
+	}
+	return connect.NewResponse(&castlev1.ListSessionsResponse{Sessions: out}), nil
 }

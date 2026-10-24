@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { LoginRequest, LoginResponse, ResolveResumeRequest, ResolveResumeResponse } from "./console_pb.js";
+import { ListSessionsRequest, ListSessionsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, ResolveResumeRequest, ResolveResumeResponse } from "./console_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -41,6 +41,52 @@ export const ConsoleService = {
       name: "Login",
       I: LoginRequest,
       O: LoginResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Logout revokes the caller's own console session server-side (KB-325).
+     * The presented bearer token stops authenticating at once: the server
+     * persists the revocation stamp on the session's ledger row, and every
+     * later token resolution observes it, so the next request with the same
+     * token answers UNAUTHENTICATED. Logout is idempotent — revoking an
+     * already-revoked session succeeds with the original revocation stamp.
+     *
+     * Only a console session may log itself out: callers authenticated with
+     * any protocol token (agent, orchestrator, trigger) are denied with
+     * PERMISSION_DENIED — a protocol token has no login session to end.
+     *
+     * @generated from rpc castle.v1.ConsoleService.Logout
+     */
+    logout: {
+      name: "Logout",
+      I: LogoutRequest,
+      O: LogoutResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListSessions lists the calling console user's session ledger (KB-325).
+     * Each entry carries the credential KIND the session was issued as and
+     * the membership set the session was issued under (the member's project
+     * ids at login time, resolved through the shared project membership
+     * set). The snapshot is ledger metadata for visibility and audit only —
+     * authorization is never served from it: every request resolves member
+     * rights live through the shared membership predicate the assignment
+     * lease scan and run read-scoping consult, so membership changes after
+     * a login take effect without a re-login and a stale snapshot can never
+     * widen authority.
+     *
+     * Entries include revoked sessions (with their revocation stamp) so the
+     * ledger shows the full login -> logout lifecycle. Only a console
+     * session may list sessions: protocol-token callers are denied with
+     * PERMISSION_DENIED, and a caller sees its own user's sessions only —
+     * never another console user's.
+     *
+     * @generated from rpc castle.v1.ConsoleService.ListSessions
+     */
+    listSessions: {
+      name: "ListSessions",
+      I: ListSessionsRequest,
+      O: ListSessionsResponse,
       kind: MethodKind.Unary,
     },
     /**

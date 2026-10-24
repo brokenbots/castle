@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/brokenbots/castle/castle/internal/store"
 )
@@ -88,16 +89,20 @@ func (s *Store) DeleteConsoleUsers(ctx context.Context) error {
 func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSession) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO console_sessions(id,user_id,token_hash,created_at) VALUES($1,$2,$3,$4)`,
-		sess.ID, sess.UserID, sess.TokenHash, us(sess.CreatedAt))
+	membership, err := store.MarshalMembership(sess.Membership)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO console_sessions(id,user_id,token_hash,created_at,revoked_at,membership) VALUES($1,$2,$3,$4,$5,$6)`,
+		sess.ID, sess.UserID, sess.TokenHash, us(sess.CreatedAt), timePtr(sess.RevokedAt), membership)
 	return err
 }
 
 func (s *Store) ListConsoleSessions(ctx context.Context) ([]*store.ConsoleSession, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	rows, err := s.reader.QueryContext(ctx, `SELECT id,user_id,token_hash,created_at FROM console_sessions ORDER BY created_at ASC`)
+	rows, err := s.reader.QueryContext(ctx, `SELECT id,user_id,token_hash,created_at,revoked_at,membership FROM console_sessions ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +110,29 @@ func (s *Store) ListConsoleSessions(ctx context.Context) ([]*store.ConsoleSessio
 	var out []*store.ConsoleSession
 	for rows.Next() {
 		var sess store.ConsoleSession
-		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &sess.CreatedAt); err != nil {
+		var revoked *time.Time
+		var membership []byte
+		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &sess.CreatedAt, &revoked, &membership); err != nil {
 			return nil, err
 		}
+		sess.RevokedAt = revoked
+		sess.Membership = store.UnmarshalMembership(string(membership))
 		out = append(out, &sess)
 	}
 	return out, rows.Err()
+}
+
+// RevokeConsoleSession stamps the server-side revocation (KB-325) on the
+// ledger row. Idempotent: unknown ids and already-revoked sessions are
+// touched again with the FIRST stamp winning (COALESCE keeps the original
+// stamp on a re-logout, so the ledger records one revocation instant).
+func (s *Store) RevokeConsoleSession(ctx context.Context, sessionID string, at time.Time) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE console_sessions SET revoked_at = COALESCE(revoked_at, $1) WHERE id = $2`,
+		us(at), sessionID)
+	return err
 }
 
 func (s *Store) DeleteConsoleSessions(ctx context.Context) error {

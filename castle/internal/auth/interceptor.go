@@ -444,7 +444,8 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 	if sess == nil {
 		return ctx, i.unauthenticatedTokenError(ctx, tok)
 	}
-	return context.WithValue(ctx, callerConsoleUserIDKey{}, sess.UserID), nil
+	ctx = context.WithValue(ctx, callerConsoleUserIDKey{}, sess.UserID)
+	return context.WithValue(ctx, callerConsoleSessionIDKey{}, sess.ID), nil
 }
 
 // overseerTokenPresenceChecker is implemented (optionally) by stores that can

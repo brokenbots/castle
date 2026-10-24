@@ -14,9 +14,16 @@ import (
 // user ID (CRI-195). Console identities are human operators logged in through
 // the Login RPC with username + password. They are distinct from agent and
 // orchestrator identities: CallerCriteriaID and CallerOrchestratorID stay
-// empty for console callers, so handlers keyed on those never treat a console
-// caller as an agent or orchestrator.
+// empty for console callers, so handlers keyed on those never treat a
+// console caller as an agent or orchestrator.
 type callerConsoleUserIDKey struct{}
+
+// callerConsoleSessionIDKey is the context key for the authenticated console
+// session's ledger id (KB-325). Only a console session carries it; the
+// interceptor injects it together with the user ID, so self-scoped ledger
+// RPCs (Logout, ListSessions) can revoke and list the presented session
+// without re-resolving the token.
+type callerConsoleSessionIDKey struct{}
 
 // CallerConsoleUserID returns the console user ID injected by
 // AuthInterceptor, or "" when the caller is not a console user (agent token,
@@ -24,6 +31,16 @@ type callerConsoleUserIDKey struct{}
 // without the interceptor wired).
 func CallerConsoleUserID(ctx context.Context) string {
 	v, _ := ctx.Value(callerConsoleUserIDKey{}).(string)
+	return v
+}
+
+// CallerConsoleSessionID returns the authenticated console session's ledger
+// id injected by AuthInterceptor (KB-325), or "" when the caller is not
+// authenticated with a console session. A protocol token, an exempt
+// procedure, or a direct handler call in tests without the interceptor all
+// have no session to name.
+func CallerConsoleSessionID(ctx context.Context) string {
+	v, _ := ctx.Value(callerConsoleSessionIDKey{}).(string)
 	return v
 }
 
@@ -35,16 +52,30 @@ func WithCallerConsoleUserID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, callerConsoleUserIDKey{}, id)
 }
 
+// WithCallerConsoleSessionID returns a context with the given console
+// session ledger id injected as the presented session (KB-325). Use in tests
+// that call handlers directly (no HTTP stack) to simulate the identity the
+// interceptor would inject.
+func WithCallerConsoleSessionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, callerConsoleSessionIDKey{}, id)
+}
+
 // ResolveConsoleSession returns the console session whose persisted token
 // hash matches, or nil when none matches (CRI-195). Compares against
 // persisted SHA-256 hashes with constant-time equality like agent and
-// orchestrator token resolution.
+// orchestrator token resolution. A server-side-revoked session (KB-325:
+// RevokedAt stamped by Logout or token rotation) never resolves — the
+// invalidation is immediate because every token lookup reads the live
+// ledger row.
 func ResolveConsoleSession(ctx context.Context, st store.Store, token string) (*store.ConsoleSession, error) {
 	sessions, err := st.ListConsoleSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, sess := range sessions {
+		if sess.RevokedAt != nil {
+			continue
+		}
 		if ConstantTimeEqual(token, sess.TokenHash) {
 			return sess, nil
 		}

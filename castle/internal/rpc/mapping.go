@@ -5,6 +5,7 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
+	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 )
 
@@ -62,4 +63,25 @@ func mapRun(r *store.Run) *pb.Run {
 		out.StartedAt = timestamppb.New(*r.StartedAt)
 	}
 	return out
+}
+
+// mapConsoleSession projects a session ledger row (KB-325) onto the wire:
+// the credential class fixed to the console-session kind (the ledger lists
+// login sessions), the issue-time membership snapshot, and the stamps. The
+// snapshot is display metadata only — live member rights always resolve
+// through the shared membership set.
+func mapConsoleSession(sess *store.ConsoleSession) *castlev1.SessionInfo {
+	if sess == nil {
+		return nil
+	}
+	info := &castlev1.SessionInfo{
+		SessionId:  sess.ID,
+		Kind:       castlev1.SessionKind_SESSION_KIND_CONSOLE,
+		Membership: sess.Membership,
+		CreatedAt:  timestamppb.New(sess.CreatedAt),
+	}
+	if sess.RevokedAt != nil {
+		info.RevokedAt = timestamppb.New(*sess.RevokedAt)
+	}
+	return info
 }

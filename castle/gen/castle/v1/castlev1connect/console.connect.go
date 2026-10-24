@@ -41,6 +41,11 @@ const (
 const (
 	// ConsoleServiceLoginProcedure is the fully-qualified name of the ConsoleService's Login RPC.
 	ConsoleServiceLoginProcedure = "/castle.v1.ConsoleService/Login"
+	// ConsoleServiceLogoutProcedure is the fully-qualified name of the ConsoleService's Logout RPC.
+	ConsoleServiceLogoutProcedure = "/castle.v1.ConsoleService/Logout"
+	// ConsoleServiceListSessionsProcedure is the fully-qualified name of the ConsoleService's
+	// ListSessions RPC.
+	ConsoleServiceListSessionsProcedure = "/castle.v1.ConsoleService/ListSessions"
 	// ConsoleServiceResolveResumeProcedure is the fully-qualified name of the ConsoleService's
 	// ResolveResume RPC.
 	ConsoleServiceResolveResumeProcedure = "/castle.v1.ConsoleService/ResolveResume"
@@ -64,6 +69,34 @@ type ConsoleServiceClient interface {
 	// authorized for the read-only ServerService observation surface across
 	// all runs and agents, and denied every write procedure.
 	Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error)
+	// Logout revokes the caller's own console session server-side (KB-325).
+	// The presented bearer token stops authenticating at once: the server
+	// persists the revocation stamp on the session's ledger row, and every
+	// later token resolution observes it, so the next request with the same
+	// token answers UNAUTHENTICATED. Logout is idempotent — revoking an
+	// already-revoked session succeeds with the original revocation stamp.
+	//
+	// Only a console session may log itself out: callers authenticated with
+	// any protocol token (agent, orchestrator, trigger) are denied with
+	// PERMISSION_DENIED — a protocol token has no login session to end.
+	Logout(context.Context, *connect.Request[v1.LogoutRequest]) (*connect.Response[v1.LogoutResponse], error)
+	// ListSessions lists the calling console user's session ledger (KB-325).
+	// Each entry carries the credential KIND the session was issued as and
+	// the membership set the session was issued under (the member's project
+	// ids at login time, resolved through the shared project membership
+	// set). The snapshot is ledger metadata for visibility and audit only —
+	// authorization is never served from it: every request resolves member
+	// rights live through the shared membership predicate the assignment
+	// lease scan and run read-scoping consult, so membership changes after
+	// a login take effect without a re-login and a stale snapshot can never
+	// widen authority.
+	//
+	// Entries include revoked sessions (with their revocation stamp) so the
+	// ledger shows the full login -> logout lifecycle. Only a console
+	// session may list sessions: protocol-token callers are denied with
+	// PERMISSION_DENIED, and a caller sees its own user's sessions only —
+	// never another console user's.
+	ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error)
 	// ResolveResume delivers the console's explicit pending-signal decision —
 	// an approval decision (ApprovalCard) or a signal note — to a paused run
 	// (CRI-196). It mirrors the CRI-255 ResolveResume vocabulary while keeping
@@ -98,6 +131,18 @@ func NewConsoleServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(consoleServiceMethods.ByName("Login")),
 			connect.WithClientOptions(opts...),
 		),
+		logout: connect.NewClient[v1.LogoutRequest, v1.LogoutResponse](
+			httpClient,
+			baseURL+ConsoleServiceLogoutProcedure,
+			connect.WithSchema(consoleServiceMethods.ByName("Logout")),
+			connect.WithClientOptions(opts...),
+		),
+		listSessions: connect.NewClient[v1.ListSessionsRequest, v1.ListSessionsResponse](
+			httpClient,
+			baseURL+ConsoleServiceListSessionsProcedure,
+			connect.WithSchema(consoleServiceMethods.ByName("ListSessions")),
+			connect.WithClientOptions(opts...),
+		),
 		resolveResume: connect.NewClient[v1.ResolveResumeRequest, v1.ResolveResumeResponse](
 			httpClient,
 			baseURL+ConsoleServiceResolveResumeProcedure,
@@ -110,12 +155,24 @@ func NewConsoleServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 // consoleServiceClient implements ConsoleServiceClient.
 type consoleServiceClient struct {
 	login         *connect.Client[v1.LoginRequest, v1.LoginResponse]
+	logout        *connect.Client[v1.LogoutRequest, v1.LogoutResponse]
+	listSessions  *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
 	resolveResume *connect.Client[v1.ResolveResumeRequest, v1.ResolveResumeResponse]
 }
 
 // Login calls castle.v1.ConsoleService.Login.
 func (c *consoleServiceClient) Login(ctx context.Context, req *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error) {
 	return c.login.CallUnary(ctx, req)
+}
+
+// Logout calls castle.v1.ConsoleService.Logout.
+func (c *consoleServiceClient) Logout(ctx context.Context, req *connect.Request[v1.LogoutRequest]) (*connect.Response[v1.LogoutResponse], error) {
+	return c.logout.CallUnary(ctx, req)
+}
+
+// ListSessions calls castle.v1.ConsoleService.ListSessions.
+func (c *consoleServiceClient) ListSessions(ctx context.Context, req *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error) {
+	return c.listSessions.CallUnary(ctx, req)
 }
 
 // ResolveResume calls castle.v1.ConsoleService.ResolveResume.
@@ -141,6 +198,34 @@ type ConsoleServiceHandler interface {
 	// authorized for the read-only ServerService observation surface across
 	// all runs and agents, and denied every write procedure.
 	Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error)
+	// Logout revokes the caller's own console session server-side (KB-325).
+	// The presented bearer token stops authenticating at once: the server
+	// persists the revocation stamp on the session's ledger row, and every
+	// later token resolution observes it, so the next request with the same
+	// token answers UNAUTHENTICATED. Logout is idempotent — revoking an
+	// already-revoked session succeeds with the original revocation stamp.
+	//
+	// Only a console session may log itself out: callers authenticated with
+	// any protocol token (agent, orchestrator, trigger) are denied with
+	// PERMISSION_DENIED — a protocol token has no login session to end.
+	Logout(context.Context, *connect.Request[v1.LogoutRequest]) (*connect.Response[v1.LogoutResponse], error)
+	// ListSessions lists the calling console user's session ledger (KB-325).
+	// Each entry carries the credential KIND the session was issued as and
+	// the membership set the session was issued under (the member's project
+	// ids at login time, resolved through the shared project membership
+	// set). The snapshot is ledger metadata for visibility and audit only —
+	// authorization is never served from it: every request resolves member
+	// rights live through the shared membership predicate the assignment
+	// lease scan and run read-scoping consult, so membership changes after
+	// a login take effect without a re-login and a stale snapshot can never
+	// widen authority.
+	//
+	// Entries include revoked sessions (with their revocation stamp) so the
+	// ledger shows the full login -> logout lifecycle. Only a console
+	// session may list sessions: protocol-token callers are denied with
+	// PERMISSION_DENIED, and a caller sees its own user's sessions only —
+	// never another console user's.
+	ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error)
 	// ResolveResume delivers the console's explicit pending-signal decision —
 	// an approval decision (ApprovalCard) or a signal note — to a paused run
 	// (CRI-196). It mirrors the CRI-255 ResolveResume vocabulary while keeping
@@ -171,6 +256,18 @@ func NewConsoleServiceHandler(svc ConsoleServiceHandler, opts ...connect.Handler
 		connect.WithSchema(consoleServiceMethods.ByName("Login")),
 		connect.WithHandlerOptions(opts...),
 	)
+	consoleServiceLogoutHandler := connect.NewUnaryHandler(
+		ConsoleServiceLogoutProcedure,
+		svc.Logout,
+		connect.WithSchema(consoleServiceMethods.ByName("Logout")),
+		connect.WithHandlerOptions(opts...),
+	)
+	consoleServiceListSessionsHandler := connect.NewUnaryHandler(
+		ConsoleServiceListSessionsProcedure,
+		svc.ListSessions,
+		connect.WithSchema(consoleServiceMethods.ByName("ListSessions")),
+		connect.WithHandlerOptions(opts...),
+	)
 	consoleServiceResolveResumeHandler := connect.NewUnaryHandler(
 		ConsoleServiceResolveResumeProcedure,
 		svc.ResolveResume,
@@ -181,6 +278,10 @@ func NewConsoleServiceHandler(svc ConsoleServiceHandler, opts ...connect.Handler
 		switch r.URL.Path {
 		case ConsoleServiceLoginProcedure:
 			consoleServiceLoginHandler.ServeHTTP(w, r)
+		case ConsoleServiceLogoutProcedure:
+			consoleServiceLogoutHandler.ServeHTTP(w, r)
+		case ConsoleServiceListSessionsProcedure:
+			consoleServiceListSessionsHandler.ServeHTTP(w, r)
 		case ConsoleServiceResolveResumeProcedure:
 			consoleServiceResolveResumeHandler.ServeHTTP(w, r)
 		default:
@@ -194,6 +295,14 @@ type UnimplementedConsoleServiceHandler struct{}
 
 func (UnimplementedConsoleServiceHandler) Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ConsoleService.Login is not implemented"))
+}
+
+func (UnimplementedConsoleServiceHandler) Logout(context.Context, *connect.Request[v1.LogoutRequest]) (*connect.Response[v1.LogoutResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ConsoleService.Logout is not implemented"))
+}
+
+func (UnimplementedConsoleServiceHandler) ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ConsoleService.ListSessions is not implemented"))
 }
 
 func (UnimplementedConsoleServiceHandler) ResolveResume(context.Context, *connect.Request[v1.ResolveResumeRequest]) (*connect.Response[v1.ResolveResumeResponse], error) {
