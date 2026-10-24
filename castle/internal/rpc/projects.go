@@ -187,7 +187,7 @@ func (s *ServerServer) ListProjectMembers(ctx context.Context, req *connect.Requ
 }
 
 func (s *ServerServer) SubmitProjectAssignment(ctx context.Context, req *connect.Request[castlev1.SubmitProjectAssignmentRequest]) (*connect.Response[castlev1.SubmitProjectAssignmentResponse], error) {
-	callerID := auth.CallerCriteriaID(ctx)
+	callerID := auth.AssignmentOwnerID(ctx)
 	if callerID == "" {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
 	}
@@ -256,8 +256,15 @@ func (s *ServerServer) SubmitProjectAssignment(ctx context.Context, req *connect
 
 // requireProjectCaller enforces the agent-identity-only posture for the
 // project surface: console and orchestrator identities reaching a handler
-// despite interceptor policy are rejected here (defense in depth).
+// despite interceptor policy are rejected here (defense in depth). Trigger
+// identities are rejected explicitly with PermissionDenied (KB-320): they
+// hold exactly one project surface call — SubmitProjectAssignment, which
+// resolves its own caller above — and must never administer projects or
+// membership.
 func requireProjectCaller(ctx context.Context) error {
+	if auth.CallerTriggerID(ctx) != "" {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))
+	}
 	if auth.CallerCriteriaID(ctx) == "" {
 		return connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
 	}
