@@ -346,3 +346,111 @@ func TestMarkAssignmentTerminalAndAttempts(t *testing.T) {
 		}
 	})
 }
+
+// TestExpireLeasesLoseRaceToLease pins the expiry contract under a writer
+// race: with agent A holding an expired lease, expiry racing a re-lease to
+// agent B must never clobber B's lease (the pg READ COMMITTED
+// check-then-update hole), never leave a queued assignment's run overseer
+// pointing at a live lease holder, and never report a transition that
+// leaves the run overseer cleared for a leased assignment. sqlite has a
+// single writer so the race never interleaves there, but both engines must
+// uphold the same contract.
+func TestExpireLeasesLoseRaceToLease(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		now := microUTC(time.Now())
+		for _, id := range []string{"oa-race", "ob-race"} {
+			if err := s.CreateOverseer(ctx, &store.Overseer{ID: id, Name: id, TokenHash: id, Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+				t.Fatalf("CreateOverseer(%s): %v", id, err)
+			}
+		}
+		for i := 0; i < 25; i++ {
+			a := newAssignment(t, ctx, s, "owner-race", fmt.Sprintf("key-race-%d", i), nil, now)
+			// Agent A leases with an already-expired lease so expiry can be
+			// driven deterministically with an explicit now; no sleeping.
+			if _, err := s.LeaseWorkflowAssignment(ctx, "oa-race", map[string]string{}, now, -time.Second); err != nil {
+				t.Fatalf("iteration %d: lease to A: %v", i, err)
+			}
+
+			var (
+				wg      sync.WaitGroup
+				expired []string
+				expErr  error
+				// leaseErr distinguishes "B acquired" (nil) from "B ran
+				// before expiry requeued the work" (ErrNotFound).
+				leaseErr error
+			)
+			start := make(chan struct{})
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				expired, expErr = s.ExpireWorkflowAssignmentLeases(ctx, now.Add(time.Minute))
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				_, leaseErr = s.LeaseWorkflowAssignment(ctx, "ob-race", map[string]string{}, now.Add(time.Minute), time.Hour)
+			}()
+			close(start)
+			wg.Wait()
+
+			if expErr != nil {
+				t.Fatalf("iteration %d: ExpireWorkflowAssignmentLeases: %v", i, expErr)
+			}
+			if leaseErr != nil && !errors.Is(leaseErr, store.ErrNotFound) {
+				t.Fatalf("iteration %d: LeaseWorkflowAssignment: %v", i, leaseErr)
+			}
+
+			got, err := s.GetWorkflowAssignment(ctx, a.ID)
+			if err != nil {
+				t.Fatalf("iteration %d: GetWorkflowAssignment: %v", i, err)
+			}
+			run, err := s.GetRun(ctx, a.RunID)
+			if err != nil {
+				t.Fatalf("iteration %d: GetRun: %v", i, err)
+			}
+
+			switch {
+			case leaseErr == nil:
+				// B holds the lease: it must have survived expiry with its
+				// run overseer intact, whichever goroutine ran first.
+				if got.State != store.WorkflowAssignmentStateLeased || got.LeasedCriteriaID != "ob-race" {
+					t.Fatalf("iteration %d: re-lease succeeded but assignment ended %q on %q, want leased on ob-race", i, got.State, got.LeasedCriteriaID)
+				}
+				if got.LeaseExpiresAt == nil || !got.LeaseExpiresAt.After(now.Add(time.Minute)) {
+					t.Fatalf("iteration %d: live lease missing/expired after re-lease: %+v", i, got)
+				}
+				if run.OverseerID != "ob-race" {
+					t.Fatalf("iteration %d: live lease on ob-race but run overseer = %q", i, run.OverseerID)
+				}
+			default:
+				// B never acquired (it ran before expiry requeued the work):
+				// the assignment must have been requeued (by expiry or by the
+				// lease path's own stale-lease sweep) with a cleared overseer.
+				if got.State != store.WorkflowAssignmentStateQueued {
+					t.Fatalf("iteration %d: no live lease but assignment stuck in %q", i, got.State)
+				}
+				if run.OverseerID != "" {
+					t.Fatalf("iteration %d: queued assignment still holds run overseer %q", i, run.OverseerID)
+				}
+			}
+			// Expiry may legitimately report nothing (the re-lease path's own
+			// stale-lease sweep can requeue the expired lease before the
+			// expiry scan observes it), but a reported transition must
+			// describe this iteration's assignment — never a foreign row.
+			for _, id := range expired {
+				if id != a.ID {
+					t.Fatalf("iteration %d: expiry transitioned a foreign assignment %s, want none or %s", i, id, a.ID)
+				}
+			}
+			// Terminalize this iteration's assignment so the next iteration
+			// starts with an empty queue pool: LeaseWorkflowAssignment leases
+			// the oldest queued assignment, so leftover queued work from
+			// earlier iterations would steal leases and make the race
+			// non-targeted.
+			if err := s.MarkWorkflowAssignmentTerminal(ctx, a.RunID, "test-cleanup"); err != nil {
+				t.Fatalf("iteration %d: MarkWorkflowAssignmentTerminal: %v", i, err)
+			}
+		}
+	})
+}

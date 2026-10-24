@@ -2,7 +2,10 @@ package relocate
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -464,4 +467,113 @@ func TestParseSQLTimestamp(t *testing.T) {
 	if _, err := ParseSQLTimestamp("not-a-time"); err == nil {
 		t.Error("ParseSQLTimestamp(garbage): want error")
 	}
+}
+
+// TestRegistryColumnsMatchSchema pins relocate.Tables against the actual
+// engine schemas: the freeze-and-import copies exactly the registered
+// columns (verifySample only compares registered columns too), so a
+// migration that adds a column without registering it would silently drop
+// that data during a one-shot cutover. The registry's column set must equal
+// the schema's column set on both engines — no missing, no extra.
+func TestRegistryColumnsMatchSchema(t *testing.T) {
+	ctx := context.Background()
+
+	sqldb, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "schema-sqlite.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqldb.Close()
+	if err := sqlite.Migrate(ctx, sqldb); err != nil {
+		t.Fatalf("migrate sqlite schema: %v", err)
+	}
+
+	pgdb, err := sql.Open("pgx", pgtest.DSN(t))
+	if err != nil {
+		t.Fatalf("open pg: %v", err)
+	}
+	defer pgdb.Close()
+	if err := pg.Migrate(ctx, pgdb); err != nil {
+		t.Fatalf("migrate pg schema: %v", err)
+	}
+
+	for _, tbl := range Tables {
+		sqliteCols, err := sqliteSchemaColumns(ctx, sqldb, tbl.name)
+		if err != nil {
+			t.Fatalf("read sqlite schema for %s: %v", tbl.name, err)
+		}
+		pgCols, err := pgSchemaColumns(ctx, pgdb, tbl.name)
+		if err != nil {
+			t.Fatalf("read pg schema for %s: %v", tbl.name, err)
+		}
+		registered := map[string]bool{}
+		for _, c := range tbl.cols {
+			registered[c.name] = true
+		}
+		if diff := setDelta(registered, sqliteCols); diff != "" {
+			t.Errorf("registry vs sqlite schema mismatch for %s:\n%s", tbl.name, diff)
+		}
+		if diff := setDelta(registered, pgCols); diff != "" {
+			t.Errorf("registry vs pg schema mismatch for %s:\n%s", tbl.name, diff)
+		}
+	}
+}
+
+func sqliteSchemaColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		names[name] = true
+	}
+	return names, rows.Err()
+}
+
+func pgSchemaColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+	// information_schema.columns on the parent of a partitioned table
+	// reports the parent's column list, which is what the registry tracks.
+	rows, err := db.QueryContext(ctx,
+		`SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names[name] = true
+	}
+	return names, rows.Err()
+}
+
+func setDelta(want, got map[string]bool) string {
+	var missing, extra []string
+	for c := range want {
+		if !got[c] {
+			missing = append(missing, c)
+		}
+	}
+	for c := range got {
+		if !want[c] {
+			extra = append(extra, c)
+		}
+	}
+	if len(missing) == 0 && len(extra) == 0 {
+		return ""
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	return fmt.Sprintf("  registry missing (present in schema): %v\n  registry extra (absent from schema): %v", missing, extra)
 }

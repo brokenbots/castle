@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -409,6 +410,76 @@ func TestRunArchivesInvalidCursor(t *testing.T) {
 			_, _, err := s.ListRunArchives(ctx, "", "", 10, c.token)
 			if !errors.Is(err, store.ErrInvalidCursor) {
 				t.Errorf("%s: expected ErrInvalidCursor, got %v", c.name, err)
+			}
+		}
+	})
+}
+
+// TestRunArchiveConcurrentCrossIdentity pins the first-writer-wins
+// attribution under a race: two different identities archiving the same key
+// concurrently must yield exactly one created result and exactly one
+// documented conflict (never a raw unique violation), with the winner's row
+// stored — whichever write lands first.
+func TestRunArchiveConcurrentCrossIdentity(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		for i := 0; i < 20; i++ {
+			key := fmt.Sprintf("cr-uid/race-%d", i)
+			recA := archiveSyntheticRec(key, i)
+			recA.OperatorID = "criteria/operator-a"
+			recB := &store.RunArchiveRecord{
+				Key:        key,
+				JobName:    recA.JobName,
+				FinalPhase: recA.FinalPhase,
+				Ticket:     recA.Ticket,
+				Record:     fmt.Sprintf(`{"writer":"b","seq":%d}`, i),
+				OperatorID: "criteria/operator-b",
+				ArchivedAt: recA.ArchivedAt,
+			}
+			recs := []*store.RunArchiveRecord{recA, recB}
+
+			type result struct {
+				created bool
+				err     error
+			}
+			results := make([]result, 2)
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for j := 0; j < 2; j++ {
+				wg.Add(1)
+				go func(j int) {
+					defer wg.Done()
+					<-start
+					created, err := s.PutRunArchiveRecord(ctx, recs[j])
+					results[j] = result{created: created, err: err}
+				}(j)
+			}
+			close(start)
+			wg.Wait()
+
+			var winner *store.RunArchiveRecord
+			conflicts := 0
+			for j, r := range results {
+				switch {
+				case r.err == nil && r.created:
+					if winner != nil {
+						t.Fatalf("iteration %d: both writers reported created for %s", i, key)
+					}
+					winner = recs[j]
+				case errors.Is(r.err, store.ErrArchiveOperatorConflict):
+					conflicts++
+				default:
+					t.Fatalf("iteration %d: writer %d got unexpected error (unique violation escaping?): %v", i, j, r.err)
+				}
+			}
+			if winner == nil || conflicts != 1 {
+				t.Fatalf("iteration %d: want exactly one created and one conflict, got winner=%v conflicts=%d", i, winner != nil, conflicts)
+			}
+			got, err := s.GetRunArchiveRecord(ctx, key)
+			if err != nil {
+				t.Fatalf("iteration %d: GetRunArchiveRecord: %v", i, err)
+			}
+			if got.Record != winner.Record || got.OperatorID != winner.OperatorID {
+				t.Fatalf("iteration %d: stored row is not the winner's: got operator %q record %s, want %q %s", i, got.OperatorID, got.Record, winner.OperatorID, winner.Record)
 			}
 		}
 	})

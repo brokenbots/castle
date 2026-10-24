@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -269,4 +270,82 @@ func pageSeqs(evs []*store.Event) []uint64 {
 func gotRun(t *testing.T, s store.Store, id string) (*store.Run, error) {
 	t.Helper()
 	return s.GetRun(context.Background(), id)
+}
+
+// TestEventAppendConcurrentReplayDedup pins the at-most-once guarantee under
+// concurrency: writers replaying the same (run, correlation) pair must all
+// observe the same single seq, exactly one reports created, exactly one row
+// exists, and the run's last_seq never advances past that seq. The pg leg
+// serializes appends per run under the advisory lock before the dedup
+// check, so the check can no longer miss a concurrent replay; the unique
+// index remains only as a backstop, not as the dedup mechanism.
+func TestEventAppendConcurrentReplayDedup(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		now := microUTC(time.Now())
+		newOverseer(t, s, "ov-events", now, nil)
+		newRun(t, s, &store.Run{ID: "run-events-race", OverseerID: "ov-events", WorkflowName: "wf", Status: "running", CreatedAt: now})
+
+		const writers = 8
+		type result struct {
+			seq     uint64
+			created bool
+			err     error
+		}
+		results := make([]result, writers)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := 0; i < writers; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				e := ev("run-events-race", "step.log", now, "corr-race", `{"writer":true}`)
+				seq, created, err := s.AppendEvent(ctx, e)
+				results[i] = result{seq: seq, created: created, err: err}
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		createdCount := 0
+		seqs := map[uint64]int{}
+		for i, r := range results {
+			if r.err != nil {
+				t.Fatalf("writer %d: AppendEvent: %v", i, r.err)
+			}
+			if r.created {
+				createdCount++
+			}
+			seqs[r.seq]++
+		}
+		if createdCount != 1 {
+			t.Fatalf("created=true reported %d times, want exactly 1", createdCount)
+		}
+		if len(seqs) != 1 {
+			t.Fatalf("writers observed divergent seqs: %v", seqs)
+		}
+		var seq uint64
+		for s := range seqs {
+			seq = s
+		}
+		if seq != 1 {
+			t.Fatalf("replayed append allocated seq %d, want 1", seq)
+		}
+
+		events, err := s.ListEvents(ctx, "run-events-race", 0, 0)
+		if err != nil {
+			t.Fatalf("ListEvents: %v", err)
+		}
+		if len(events) != 1 || events[0].Seq != seq || events[0].CorrelationID != "corr-race" {
+			t.Fatalf("ListEvents = %d rows, want exactly the one replayed row: %+v", len(events), events)
+		}
+
+		r, err := gotRun(t, s, "run-events-race")
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		if r.LastSeq != seq {
+			t.Fatalf("run last_seq = %d, want %d", r.LastSeq, seq)
+		}
+	})
 }
