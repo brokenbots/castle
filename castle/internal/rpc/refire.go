@@ -8,11 +8,13 @@ import (
 )
 
 const (
-	// refireScanLimit bounds each policy pass's candidate scan. Failed runs
-	// older than this stay eligible for later passes (candidates are scanned
-	// oldest-failure-first), so the limit is throughput shaping, not
-	// correctness (KB-321).
-	refireScanLimit = 200
+	// refireScanLimit bounds each policy pass's candidate scan to
+	// refire.ScanLimit (freshest failure first). The bound is a batch size,
+	// not a cap on eligibility: rows evaluated to a final disposition carry
+	// a non-NULL runs.refire_disposition stamp and age out of the candidate
+	// set, so the working set drains as verdicts land (KB-321) and no
+	// family is indefinitely displaced from the scan.
+	refireScanLimit = refire.ScanLimit
 )
 
 // RefireFailedRunsNow evaluates the refire policy for currently-eligible

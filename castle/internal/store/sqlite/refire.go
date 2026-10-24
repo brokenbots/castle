@@ -70,7 +70,8 @@ func (s *Store) DeleteRefirePolicy(ctx context.Context, projectID, route string)
 
 // ListRefireCandidates scans the refire-candidate projection on the reader
 // connection (never the serialized writer): the newest failed attempt of
-// every policy-eligible ending, oldest first, up to limit.
+// every policy-eligible ending whose story is not yet stamped
+// (runs.refire_disposition IS NULL), freshest failure first, up to limit.
 func (s *Store) ListRefireCandidates(ctx context.Context, limit int) ([]store.RefireCandidate, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -107,6 +108,18 @@ func (s *Store) RefireFailedRuns(ctx context.Context, now time.Time, limit int) 
 }
 
 func (s *Store) refireFailedRunsAttempt(ctx context.Context, now time.Time, limit int) ([]store.RefireOutcome, error) {
+	// Pre-scan on the reader (the reapers' pattern, KB-321): an idle policy
+	// pass — zero eligible failed runs — must not open a write transaction
+	// every tick. The authoritative scan still repeats inside the
+	// transaction below.
+	seed, err := s.ListRefireCandidates(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(seed) == 0 {
+		return nil, nil
+	}
+
 	// Bound the pass so a wedged writer connection fails the tick instead of
 	// pinning the refire goroutine (CRI-143).
 	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)

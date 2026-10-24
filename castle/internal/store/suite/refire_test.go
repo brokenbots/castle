@@ -2,6 +2,7 @@ package suite
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -214,7 +215,6 @@ func TestParkedRunNeverRefiresWithoutHumanAck(t *testing.T) {
 		if _, inserted, err := s.AppendEvent(ctx, &appendRunEvent); err != nil || !inserted {
 			t.Fatalf("AppendEvent: %v/%v", inserted, err)
 		}
-
 		outcomes := f.refireAt(f.now.Add(time.Hour))
 		got := dispositionCounts(t, outcomes)
 		if got[store.RefireDispositionPark] != 1 || got[store.RefireDispositionRefire] != 0 {
@@ -284,7 +284,9 @@ func TestParksVocabularyFailureReasonParks(t *testing.T) {
 
 // TestCosmeticAndUnknownEndingsUntouched pins the cosmetic and no-action
 // verdicts: known-benign endings (pod-state emit races) and unclassified
-// endings stay terminal-failed with zero writes — no park, no successor.
+// endings stay terminal-failed with zero rewrites — no park, no successor —
+// and their disposition stamp ages them out of future scans (KB-321), so
+// permanent no-action rows cannot occupy the working set.
 func TestCosmeticAndUnknownEndingsUntouched(t *testing.T) {
 	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
 		f := newRefireFixture(t, ctx, s)
@@ -310,6 +312,13 @@ func TestCosmeticAndUnknownEndingsUntouched(t *testing.T) {
 			t.Fatalf("terminal: %v", err)
 		}
 
+		// A cancelled run never enters the scan (cancellation is
+		// operator-driven, not policy-driven).
+		cancelled := f.submit("owner-1", "kb-8-cancelled")
+		if _, err := s.CancelRun(ctx, cancelled.RunID, "operator request", f.now); err != nil {
+			t.Fatalf("CancelRun: %v", err)
+		}
+
 		// Only the two failed endings are candidates at all.
 		cands, err := s.ListRefireCandidates(ctx, 200)
 		if err != nil || len(cands) != 2 {
@@ -318,8 +327,8 @@ func TestCosmeticAndUnknownEndingsUntouched(t *testing.T) {
 
 		outcomes := f.refireAt(f.now.Add(time.Hour))
 		got := dispositionCounts(t, outcomes)
-		if got[store.RefireDispositionCosmetic] != 1 || got[store.RefireDispositionRefire] != 0 {
-			t.Fatalf("outcomes = %v, want cosmetic+None: %+v", got, outcomes)
+		if got[store.RefireDispositionCosmetic] < 1 || got[store.RefireDispositionRefire] != 0 {
+			t.Fatalf("outcomes = %v, want cosmetic+none, zero refire: %+v", got, outcomes)
 		}
 		for _, o := range outcomes {
 			if o.Disposition == store.RefireDispositionRefire {
@@ -330,15 +339,12 @@ func TestCosmeticAndUnknownEndingsUntouched(t *testing.T) {
 			t.Fatalf("cosmetic run rewritten: %q", r.Status)
 		}
 
-		// A cancelled run never enters the scan (cancellation is
-		// operator-driven, not policy-driven).
-		cancelled := f.submit("owner-1", "kb-8-cancelled")
-		if _, err := s.CancelRun(ctx, cancelled.RunID, "operator request", f.now); err != nil {
-			t.Fatalf("CancelRun: %v", err)
-		}
+		// The pass closes both no-action stories: the disposition stamp ages
+		// them out of the scan (succeeded and cancelled were never
+		// candidates), so the working set drains fully (KB-321).
 		cands, err = s.ListRefireCandidates(ctx, 200)
-		if err != nil || len(cands) != 2 {
-			t.Fatalf("candidates after cancel = %d, %v, want 2", len(cands), err)
+		if err != nil || len(cands) != 0 {
+			t.Fatalf("candidates after pass = %d, %v, want 0 (stamped out)", len(cands), err)
 		}
 	})
 }
@@ -518,6 +524,71 @@ func TestRefirePolicyCRUD(t *testing.T) {
 		}
 		if err := s.DeleteRefirePolicy(ctx, "unknown", "unknown"); err != nil {
 			t.Fatalf("DeleteRefirePolicy(unknown) = %v, want a no-op", err)
+		}
+	})
+}
+
+// TestRefireScanDrainsNoActionRows is the starvation regression (KB-321):
+// more than refire.ScanLimit permanently no-action failed families
+// (cosmetic / unclassified endings that stay terminal-failed) must never
+// displace a fresh transient stall from the scan. The disposition stamp
+// ages the no-action rows out of the working set, and the scan ranks
+// freshest failures first, so the stall is refired on the very first pass.
+// Against the pre-fix oldest-first scan with no stamps, the 200-row scan
+// window was permanently pinned by no-action rows and the stall was never
+// evaluated.
+func TestRefireScanDrainsNoActionRows(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		f := newRefireFixture(t, ctx, s)
+		f.setPolicy("", "")
+
+		base := f.now
+		// A backlog of no-action failed families, every one older than the
+		// fresh stall (staggered oldest-to-newest within the backlog).
+		for i := 0; i < refire.ScanLimit+50; i++ {
+			f.now = base.Add(-48*time.Hour + time.Duration(i)*time.Second)
+			a := f.submit("owner-noise", fmt.Sprintf("kb-11-noise-%d", i))
+			if i%2 == 0 {
+				f.failLikeAgent(a, "pod-state emit race while staging")
+			} else {
+				f.failLikeAgent(a, "compiler exploded")
+			}
+		}
+		// The freshest failure is a transient stall that must refire.
+		f.now = base
+		fresh := f.submit("owner-fresh", "kb-11-fresh-stall")
+		f.failStalled(fresh)
+
+		outcomes := f.refireAt(base.Add(time.Hour))
+		got := dispositionCounts(t, outcomes)
+		if got[store.RefireDispositionRefire] != 1 {
+			t.Fatalf("outcomes = %v, want exactly one refire (the fresh stall): %+v",
+				got, outcomes)
+		}
+		var refireOutcome *store.RefireOutcome
+		for i := range outcomes {
+			if outcomes[i].Disposition == store.RefireDispositionRefire {
+				refireOutcome = &outcomes[i]
+			}
+		}
+		if refireOutcome == nil || refireOutcome.RunID != fresh.RunID ||
+			refireOutcome.RootRunID != fresh.RunID || refireOutcome.RefireRunID == "" {
+			t.Fatalf("refire outcome = %+v, want the fresh stall's lineage", refireOutcome)
+		}
+		successor, err := s.GetWorkflowAssignment(ctx, refireOutcome.RefireAssignmentID)
+		if err != nil {
+			t.Fatalf("GetWorkflowAssignment(successor): %v", err)
+		}
+		if successor.IdempotencyKey != "kb-11-fresh-stall#attempt-2" {
+			t.Fatalf("successor key = %q", successor.IdempotencyKey)
+		}
+
+		// A second pass is idempotent: every no-action row is now stamped
+		// out of the scan and refires the fresh stall never mints a second
+		// successor.
+		outcomes = f.refireAt(base.Add(2 * time.Hour))
+		if got := dispositionCounts(t, outcomes); got[store.RefireDispositionRefire] != 0 {
+			t.Fatalf("second pass outcomes = %v, want zero refires: %+v", got, outcomes)
 		}
 	})
 }

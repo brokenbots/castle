@@ -27,6 +27,12 @@ const refireFamilyKey = "COALESCE(NULLIF(w.refire_root_run_id, ''), w.run_id)"
 // refireFamilyKeyOther is the same expression over the family-scan alias.
 const refireFamilyKeyOther = "COALESCE(NULLIF(w2.refire_root_run_id, ''), w2.run_id)"
 
+// ScanLimit is the candidate-scan working-set bound used by the refire
+// dispatcher (KB-321). Rows evaluated to a final disposition carry a
+// non-NULL runs.refire_disposition stamp and age out of the set, so the
+// bound is a batch size, not a starvation risk.
+const ScanLimit = 200
+
 // candidateProjection is the refire-candidate projection (both engines share
 // column names): the full assignment row (aliased w.*) plus the run facts the
 // policy evaluation needs.
@@ -43,10 +49,15 @@ const candidateProjection = `
 	r.failure_reason AS r_failure_reason, r.ended_at AS r_ended_at`
 
 // CandidatesQuery renders the refire-candidate scan (both engines): the
-// newest failed attempt of every eligible family, oldest failure first. The
-// family-max guard means each pass evaluates only the newest attempt a
-// family ever reached, so a successor already minted elsewhere can never
-// double-refire a lineage. limit <= 0 means no limit.
+// newest failed attempt of every eligible family, freshest failure first.
+// A run evaluated to a final disposition (refire / park / cosmetic / none)
+// carries a non-NULL runs.refire_disposition stamp and ages out of the scan,
+// so permanent no-action endings can never displace a fresh failure from the
+// working set; deferred and budget-exhausted rows stay unstamped and
+// revisitable (policy retunes must reach them). The family-max guard means
+// each pass evaluates only the newest attempt a family ever reached, so a
+// successor already minted elsewhere can never double-refire a lineage.
+// limit <= 0 means no limit.
 func CandidatesQuery(d reap.Dialect, limit int) (string, []any) {
 	q := `
 		SELECT ` + candidateProjection + `
@@ -55,12 +66,13 @@ func CandidatesQuery(d reap.Dialect, limit int) (string, []any) {
 		WHERE w.state = '` + store.WorkflowAssignmentStateTerminal + `'
 		  AND w.terminal_reason IN (` + candidateEligibleReasons + `)
 		  AND r.status = 'failed'
+		  AND r.refire_disposition IS NULL
 		  AND w.refire_attempt = (
 		      SELECT MAX(w2.refire_attempt)
 		      FROM workflow_assignments w2
 		      WHERE ` + refireFamilyKeyOther + ` = ` + refireFamilyKey + `
 		  )
-		ORDER BY r.ended_at ASC, w.id ASC`
+		ORDER BY r.ended_at DESC, w.id DESC`
 	args := []any{}
 	if limit > 0 {
 		q += ` LIMIT ` + d.P(1)
@@ -186,11 +198,21 @@ func AttachLabels(ctx context.Context, runner reap.Runner, d reap.Dialect, candi
 //   - park: the run is reclassified to the KB-226 parked shape — status
 //     awaiting_human, no ended_at, no failure_reason, no assignment change —
 //     and never refires without a human ack.
-//   - cosmetic / none: left alone, with a verdict line for the log.
+//   - cosmetic / none: the verdict is stamped on the run as data
+//     (runs.refire_disposition) and the run is left terminal-failed for an
+//     operator decision; the stamp ages the row out of the candidate scan.
 //   - refire: under the policy's attempt budget (family attempts counting
 //     the original) and backoff deadline, a successor run plus queued
 //     assignment is minted with an attempt-suffixed idempotency key and the
-//     family lineage carried forward.
+//     family lineage carried forward; the minted attempt's original is
+//     stamped refired.
+//
+// Deferred (backoff pending, no ended_at), budget-exhausted, and skipped
+// outcomes write nothing: those rows stay in the candidate set so policy
+// retunes reach them on the next pass. A single candidate error — a racing
+// writer colliding on the idempotency key, say — aborts the whole pass
+// transaction; the tick retries the remaining candidates (single-replica
+// constraint, KB-321).
 //
 // Returns one store.RefireOutcome per candidate, in candidates order.
 func EvaluateCandidates(
@@ -262,9 +284,17 @@ func evaluateCandidate(
 		}
 		return outcome, nil
 	case DispositionCosmetic, DispositionNone:
-		// The verdict is recorded, nothing is written: known-benign
-		// endings (cosmetic) and unclassified endings (none) stay
-		// terminal-failed, so an operator decision can still land later.
+		// The verdict is stamped on the run as data: known-benign endings
+		// (cosmetic) and unclassified endings (none) stay terminal-failed
+		// for an operator decision, but their story is closed in the
+		// automatic pass — the stamp ages them out of the candidate scan so
+		// permanent no-action rows can never starve a fresh failure
+		// (KB-321). Reopening a stamped row (a policy retune reclassifying
+		// the reason) is a deliberate data edit: the stamp is data, not
+		// code state.
+		if err := stampRefireDisposition(ctx, tx, d, a.RunID, string(disposition)); err != nil {
+			return store.RefireOutcome{}, fmt.Errorf("refire stamp %s: %w", a.RunID, err)
+		}
 		outcome.Disposition = string(disposition)
 		outcome.Reason = classReason + " under refire policy " + source
 		return outcome, nil
@@ -307,6 +337,24 @@ func evaluateCandidate(
 	return mintSuccessor(ctx, tx, d, now, c, a, policy, source, key, outcome)
 }
 
+// stampRefireDisposition closes an evaluated run's story in the automatic
+// pass (KB-321): the disposition is data on the run, so a terminally
+// verdict row (successor minted, reclassified parked, cosmetic / none
+// verdict) ages out of the candidate scan instead of permanently occupying
+// it under the scan limit. Deferred and budget-exhausted rows are
+// deliberately NOT stamped: policy retunes (re-enabling refiring, raising
+// max_attempts, retuning the vocabulary) must reach them on the next pass.
+// The status guard keeps a run that left the failed status between the scan
+// and this write unstamped (CRI-142 discipline).
+func stampRefireDisposition(ctx context.Context, tx reap.Runner, d reap.Dialect, runID, disposition string) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE runs
+		 SET refire_disposition = `+d.P(1)+`
+		 WHERE id = `+d.P(2)+` AND status = 'failed' AND refire_disposition IS NULL`,
+		disposition, runID)
+	return err
+}
+
 // stampParkedRun reclassifies a failed run to the KB-226 parked shape under a
 // status guard, so a run that left the failed status between the scan and
 // this write is never clobbered (CRI-142 discipline). Returns whether the
@@ -314,9 +362,9 @@ func evaluateCandidate(
 func stampParkedRun(ctx context.Context, tx reap.Runner, d reap.Dialect, runID string) (bool, error) {
 	res, err := tx.ExecContext(ctx,
 		`UPDATE runs
-		 SET status = `+d.P(1)+`, ended_at = NULL, failure_reason = NULL
-		 WHERE id = `+d.P(2)+` AND status = 'failed'`,
-		store.RunStatusAwaitingHuman, runID)
+		 SET status = `+d.P(1)+`, ended_at = NULL, failure_reason = NULL, refire_disposition = `+d.P(2)+`
+		 WHERE id = `+d.P(3)+` AND status = 'failed'`,
+		store.RunStatusAwaitingHuman, store.RefireDispositionPark, runID)
 	if err != nil {
 		return false, err
 	}
@@ -397,6 +445,12 @@ func mintSuccessor(
 			id, k, v); err != nil {
 			return store.RefireOutcome{}, fmt.Errorf("refire insert label %s: %w", a.RunID, err)
 		}
+	}
+	// The minted attempt's original leaves the candidate set: the family's
+	// fate moves to the successor (stamped refired; see
+	// stampRefireDisposition — deferred/exhausted stay unstamped).
+	if err := stampRefireDisposition(ctx, tx, d, a.RunID, store.RefireDispositionRefire); err != nil {
+		return store.RefireOutcome{}, fmt.Errorf("refire stamp %s: %w", a.RunID, err)
 	}
 
 	outcome.Disposition = store.RefireDispositionRefire
