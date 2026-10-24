@@ -112,6 +112,30 @@ cron's prompt-encoded stall classification becomes `transient`/`parks`/
 `cosmetics` policy rows, evaluated by the dispatch reconcile loop instead of
 a timer that re-fired everything indiscriminately.
 
+## Scan hygiene and data semantics (review round 2)
+
+- The candidate scan ranks freshest-failure-first over every failed family
+  whose story is not yet stamped (`runs.refire_disposition IS NULL`,
+  migration 0018, both engines). Rows evaluated to a **final** disposition —
+  refire (successor minted), park, cosmetic, none — are stamped and age out
+  of the working set, so an accumulating backlog of no-action endings can
+  never starve a fresh failure under the `refire.ScanLimit` batch.
+- **Deferred** (backoff pending) and **exhausted** rows stay unstamped and
+  are re-evaluated every pass, so policy retunes (re-enabling refiring,
+  raising `max_attempts`, retuning the vocabulary) reach them without any
+  code change. The stamp is data: reopening a stamped row is a deliberate
+  edit — `UPDATE runs SET refire_disposition = NULL WHERE ...` — after which
+  the next pass re-evaluates the row under current policy.
+- First boot against an existing database replays historical failures: the
+  first pass evaluates every un-stamped pre-existing failed family (bounded
+  per family by `max_attempts`; deferred rows wait out their backoff). A
+  long-running installation upgrading to this workstream should expect a
+  burst of refires on upgrade; if that is ever unwanted, tune
+  `max_attempts: 0` via the policy file before the first boot.
+- A single candidate error (e.g. an idempotency-key collision with a
+  concurrently minted successor) aborts the pass transaction; the next tick
+  retries the remaining candidates (single-replica constraint).
+
 ## Acceptance mapping
 
 - stall-failed run auto-refires: "agent heartbeat lost" /
