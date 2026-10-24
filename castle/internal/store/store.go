@@ -237,6 +237,19 @@ type Orchestrator struct {
 	CreatedAt time.Time
 }
 
+// Trigger is a submit-only integration identity (KB-320): a board-trigger
+// adapter (e.g. the Kanboard trigger adapter) submits workflow assignments —
+// route name, project, payload — on board events and reads castle run events
+// to mirror outcomes back onto the board. Its authority is the least-privilege
+// allowlist in the auth interceptor (triggerProcedures); it may never drive
+// agent-owned run state. The TokenHash is the SHA-256 hex digest of the
+// accept token.
+type Trigger struct {
+	ID        string
+	TokenHash string
+	CreatedAt time.Time
+}
+
 // ConsoleUser is a human console login identity (CRI-195). The password is
 // stored only as a bcrypt hash; plaintext never reaches the store. The
 // seeded default user has the fixed ID ConsoleDefaultUserID so a changed
@@ -396,6 +409,17 @@ type Store interface {
 	// DeleteOrchestrator removes the orchestrator identity, revoking its
 	// accept token (CRI-133). Deleting an unknown ID is a no-op.
 	DeleteOrchestrator(ctx context.Context, id string) error
+
+	// Trigger identities (KB-320)
+	// UpsertTrigger inserts or replaces the trigger record by ID. Updating
+	// an existing identity rotates its token: the new TokenHash invalidates
+	// previously issued accept tokens. CreatedAt is preserved on update.
+	UpsertTrigger(ctx context.Context, t *Trigger) error
+	// ListTriggers returns all registered trigger identities.
+	ListTriggers(ctx context.Context) ([]*Trigger, error)
+	// DeleteTrigger removes the trigger identity, revoking its accept token
+	// (KB-320). Deleting an unknown ID is a no-op.
+	DeleteTrigger(ctx context.Context, id string) error
 
 	// Console users and sessions (CRI-195)
 	// UpsertConsoleUser inserts or replaces the console user record by ID.

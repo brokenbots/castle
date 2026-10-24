@@ -649,7 +649,7 @@ func (s *ServerServer) InspectRun(ctx context.Context, req *connect.Request[pb.I
 }
 
 func (s *ServerServer) SubmitWorkflowAssignment(ctx context.Context, req *connect.Request[pb.SubmitWorkflowAssignmentRequest]) (*connect.Response[pb.SubmitWorkflowAssignmentResponse], error) {
-	callerID := auth.CallerCriteriaID(ctx)
+	callerID := auth.AssignmentOwnerID(ctx)
 	if callerID == "" {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
 	}
@@ -694,7 +694,7 @@ func (s *ServerServer) SubmitWorkflowAssignment(ctx context.Context, req *connec
 }
 
 func (s *ServerServer) GetAssignmentDisposition(ctx context.Context, req *connect.Request[pb.GetAssignmentDispositionRequest]) (*connect.Response[pb.GetAssignmentDispositionResponse], error) {
-	callerID := auth.CallerCriteriaID(ctx)
+	callerID := auth.AssignmentOwnerID(ctx)
 	if callerID == "" {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
 	}

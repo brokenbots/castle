@@ -127,6 +127,12 @@ func main() {
 	// empty value REVOKES the operator identity: the previously provisioned
 	// row is deleted, so its accept token stops authenticating immediately.
 	orchestratorToken := flag.String("orchestrator-token", envOrDefault("CASTLE_ORCHESTRATOR_TOKEN", ""), "accept token for the orchestrator operator identity (or CASTLE_ORCHESTRATOR_TOKEN); empty revokes the previously provisioned operator identity (disables orchestrator auth)")
+	// Trigger identity provisioning (KB-320). Least-privilege board adapter:
+	// submits tagged board work into the assignment queue and mirrors the
+	// resulting runs back to board columns. The token is supplied via flag or
+	// env and persisted as a SHA-256 hash; it is never logged. An empty value
+	// REVOKES the trigger identity, disabling board-trigger auth.
+	triggerToken := flag.String("trigger-token", envOrDefault("CASTLE_TRIGGER_TOKEN", ""), "accept token for the kanboard trigger identity (or CASTLE_TRIGGER_TOKEN); empty revokes the previously provisioned trigger identity (disables board-trigger auth)")
 	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
@@ -211,6 +217,25 @@ func main() {
 	} else {
 		if err := st.DeleteOrchestrator(context.Background(), "orchestrator-operator"); err != nil {
 			log.Error("revoke orchestrator identity", "err", err)
+			os.Exit(1)
+		}
+	}
+
+	// Provision or revoke the kanboard trigger identity (KB-320). Same
+	// idempotent upsert/rotate/revoke semantics as the orchestrator identity.
+	if *triggerToken != "" {
+		if err := st.UpsertTrigger(context.Background(), &store.Trigger{
+			ID:        "trigger-kanboard",
+			TokenHash: auth.HashToken(*triggerToken),
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			log.Error("provision trigger identity", "err", err)
+			os.Exit(1)
+		}
+		log.Info("trigger identity provisioned", "trigger_id", "trigger-kanboard")
+	} else {
+		if err := st.DeleteTrigger(context.Background(), "trigger-kanboard"); err != nil {
+			log.Error("revoke trigger identity", "err", err)
 			os.Exit(1)
 		}
 	}
