@@ -155,6 +155,45 @@ func authorizeConsoleProcedure(ctx context.Context, procedure string) error {
 	return connect.NewError(connect.CodePermissionDenied, errors.New("console identities cannot invoke this procedure"))
 }
 
+// triggerProcedures are the submit-only board-adapter surface (KB-320). A
+// trigger identity submits board-tagged work into the assignment queue and
+// observes the resulting runs to mirror board columns; everything else —
+// every mutating agent procedure, project administration, run control,
+// credential registration — is denied. GetAssignmentDisposition is read-only
+// and ownership-scoped in the handler (assignment owner match), the pair of
+// submit RPCs is where board events turn into runs, and WatchRun drives the
+// column mirror exactly like the orchestrator's observation loop. The
+// adapter consumes run events only through WatchRun, so ListRunEvents stays
+// off the surface (even though that procedure is anon-readable anyway).
+var triggerProcedures = map[string]struct{}{
+	criteriav1connect.ServerServiceSubmitWorkflowAssignmentProcedure: {},
+	criteriav1connect.ServerServiceGetAssignmentDispositionProcedure: {},
+	criteriav1connect.ServerServiceWatchRunProcedure:                 {},
+	castlev1connect.ProjectServiceSubmitProjectAssignmentProcedure:   {},
+}
+
+// isTriggerAllowed reports whether a trigger identity may invoke the
+// procedure (KB-320): map-deterministic membership in the submit-only
+// allowlist above.
+func isTriggerAllowed(procedure string) bool {
+	_, ok := triggerProcedures[procedure]
+	return ok
+}
+
+// authorizeTriggerProcedure enforces the trigger auth boundary (KB-320). A
+// trigger is a least-privilege board adapter: it may only submit
+// assignments and observe the runs they produce. Agent, orchestrator, and
+// console callers pass through (CallerTriggerID is empty for them).
+func authorizeTriggerProcedure(ctx context.Context, procedure string) error {
+	if CallerTriggerID(ctx) == "" {
+		return nil
+	}
+	if isTriggerAllowed(procedure) {
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this procedure"))
+}
+
 // InterceptorOption configures an AuthInterceptor.
 type InterceptorOption func(*AuthInterceptor)
 
@@ -230,6 +269,9 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if err := authorizeConsoleProcedure(newCtx, req.Spec().Procedure); err != nil {
 			return nil, err
 		}
+		if err := authorizeTriggerProcedure(newCtx, req.Spec().Procedure); err != nil {
+			return nil, err
+		}
 		return next(newCtx, req)
 	}
 }
@@ -255,6 +297,9 @@ func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 			return err
 		}
 		if err := authorizeConsoleProcedure(newCtx, conn.Spec().Procedure); err != nil {
+			return err
+		}
+		if err := authorizeTriggerProcedure(newCtx, conn.Spec().Procedure); err != nil {
 			return err
 		}
 		return next(newCtx, conn)
@@ -305,8 +350,10 @@ func anonReadableProcedure(procedure string) bool {
 // surfaces and stay fully unauthenticated.
 //
 // The surface includes OrchestratorService subscription APIs, which a console
-// identity must never reach (CRI-195), so the console boundary is re-checked
-// after identity injection.
+// identity must never reach (CRI-195), so the console and trigger boundaries
+// are re-checked after identity injection: a trigger token on an anon-readable
+// surface stays submit-only (KB-320), which matters because WatchRun is
+// both a mirror surface and an anon-readable surface.
 func (i *AuthInterceptor) authenticateAnonReadToken(ctx context.Context, h http.Header, procedure string) (context.Context, error) {
 	if !i.allowAnonReads || !anonReadableProcedure(procedure) {
 		return ctx, nil
@@ -321,19 +368,23 @@ func (i *AuthInterceptor) authenticateAnonReadToken(ctx context.Context, h http.
 	if err := authorizeConsoleProcedure(newCtx, procedure); err != nil {
 		return nil, err
 	}
+	if err := authorizeTriggerProcedure(newCtx, procedure); err != nil {
+		return nil, err
+	}
 	return newCtx, nil
 }
 
 // authenticateHeaders validates the token and returns a context with the
 // caller's identity injected: criteria agent ID for agent tokens,
-// orchestrator ID for orchestrator tokens (CRI-133), console user ID for
-// console session tokens (CRI-195). Agent tokens take precedence when both
+// orchestrator ID for orchestrator tokens (CRI-133), trigger ID for trigger
+// tokens (KB-320), console user ID for console session tokens (CRI-195).
+// Agent tokens take precedence when both
 // match: the per-table token-hash UNIQUE indexes cannot detect identical
 // token material across tables, so in that (operator misconfiguration) case
 // the token acts as an agent and the identity it shadows is unreachable. The
-// same applies to orchestrator over console: these token spaces are
-// independently generated (distinct random material), so precedence only
-// matters for pathological collisions.
+// same applies to orchestrator and trigger over console: these token
+// spaces are independently generated (distinct random material), so
+// precedence only matters for pathological collisions.
 func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header) (context.Context, error) {
 	tok, ok := TokenFromHeaders(h)
 	if !ok {
@@ -352,6 +403,13 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 	}
 	if orch != nil {
 		return context.WithValue(ctx, callerOrchestratorIDKey{}, orch.ID), nil
+	}
+	trigger, err := ResolveTriggerToken(ctx, i.store, tok)
+	if err != nil {
+		return ctx, connect.NewError(connect.CodeInternal, err)
+	}
+	if trigger != nil {
+		return context.WithValue(ctx, callerTriggerIDKey{}, trigger.ID), nil
 	}
 	sess, err := ResolveConsoleSession(ctx, i.store, tok)
 	if err != nil {
@@ -394,7 +452,9 @@ func (i *AuthInterceptor) unauthenticatedTokenError(ctx context.Context, tok str
 // handleRegister enforces the bootstrap-token gate for the Register RPC, and
 // denies console identities outright (CRI-195): a console token can never
 // register an agent, even under --dev-allow-anon-register, so the human
-// console cannot bootstrap agent credentials.
+// console cannot bootstrap agent credentials. Trigger identities are denied
+// the same way (KB-320): a board adapter is submit-only and can never mint
+// agent credentials.
 //
 //   - Console session token presented: PermissionDenied, checked first so the
 //     denial is deterministic regardless of the bootstrap configuration.
@@ -409,6 +469,11 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 		}
 		if sess != nil {
 			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("console identities cannot register agents"))
+		}
+		if trigger, err := ResolveTriggerToken(ctx, i.store, tok); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		} else if trigger != nil {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot register agents"))
 		}
 	}
 	if i.allowAnonRegister {
