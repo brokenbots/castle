@@ -1,7 +1,8 @@
--- 0003_subscriptions: per-subscriber replay cursors.
+-- 0003_subscriptions: per-subscriber replay cursors. Mirrors sqlite 0003
+-- (no foreign keys on run_id: cursors persist independently of run rows).
 CREATE TABLE IF NOT EXISTS run_subscriptions (
     subscriber_id TEXT NOT NULL,
-    run_id        TEXT NOT NULL REFERENCES runs(id),
+    run_id        TEXT NOT NULL,
     last_seq      BIGINT NOT NULL,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (subscriber_id, run_id)
