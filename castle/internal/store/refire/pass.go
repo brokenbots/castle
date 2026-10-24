@@ -182,6 +182,7 @@ func evaluateCandidate(
 	outcome := store.RefireOutcome{
 		Disposition:   store.RefireDispositionSkipped,
 		RunID:         a.RunID,
+		RootRunID:     c.RootRunID,
 		RefireAttempt: c.Attempt,
 	}
 	policy, source := ResolvePolicy(policies, a.ProjectID, a.WorkflowName)

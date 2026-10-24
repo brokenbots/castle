@@ -447,6 +447,7 @@ type RefireCandidate struct {
 type RefireOutcome struct {
 	Disposition        string
 	RunID              string
+	RootRunID          string
 	Reason             string
 	RefireAttempt      int
 	RefireRunID        string

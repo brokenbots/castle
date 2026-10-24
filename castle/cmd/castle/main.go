@@ -25,6 +25,7 @@ import (
 	"github.com/brokenbots/castle/castle/internal/rpc"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/pg"
+	"github.com/brokenbots/castle/castle/internal/store/refire"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
@@ -141,6 +142,8 @@ func main() {
 	agentHeartbeatInterval := flag.Duration("agent-heartbeat-interval", envOrDefaultDuration("CASTLE_AGENT_HEARTBEAT_INTERVAL", 10*time.Second), "nominal criteria agent heartbeat cadence (or CASTLE_AGENT_HEARTBEAT_INTERVAL); the run reaper multiplies this to derive staleness")
 	runReapMultiplier := flag.Int("run-reap-multiplier", envOrDefaultInt("CASTLE_RUN_REAP_MULTIPLIER", 6), "reap pending/running runs whose agent heartbeat is older than this multiple of the heartbeat interval (or CASTLE_RUN_REAP_MULTIPLIER); 0 disables run reaping")
 	createdNeverStartedWindow := flag.Duration("created-never-started-window", envOrDefaultDuration("CASTLE_CREATED_NEVER_STARTED_WINDOW", 10*time.Minute), "reap pending/running runs whose started_at is still unset this long after created_at (KB-233 rule 2: CreateRun that never reached RunStarted, reason created_never_started) (or CASTLE_CREATED_NEVER_STARTED_WINDOW); 0 disables created_never_started reaping")
+	refireInterval := flag.Duration("refire-interval", envOrDefaultDuration("CASTLE_REFIRE_INTERVAL", 15*time.Second), "run the refire/classification policy pass this often (KB-321: failed runs requeue under policy limits, designed-park endings reclassify to awaiting_human); 0 disables refiring")
+	refirePolicyFile := flag.String("refire-policy-file", envOrDefault("CASTLE_REFIRE_POLICY_FILE", ""), "policy file to upsert as refire_policies rows at boot (KB-321); rows are (project_id,route,policy) records, empty strings are the global default scope")
 	flag.Parse()
 
 	tlsEnabled := *tlsCert != "" || *tlsKey != ""
@@ -167,6 +170,10 @@ func main() {
 	}
 	if *createdNeverStartedWindow < 0 {
 		log.Error("invalid created never-started window", "created_never_started_window", *createdNeverStartedWindow)
+		os.Exit(1)
+	}
+	if *refireInterval < 0 {
+		log.Error("invalid refire interval", "refire_interval", *refireInterval)
 		os.Exit(1)
 	}
 
@@ -198,6 +205,16 @@ func main() {
 	criteriaRPC := rpc.NewCriteriaServer(st, h, log, controls)
 	serverRPC := rpc.NewServerServer(st, h, log, controls)
 	orchestratorRPC := rpc.NewOrchestratorServer(st, log)
+
+	// Refire policy bootstrap (KB-321): policy rows ARE the classification
+	// configuration (the retired arc-shepherd cronjob encoded it). The
+	// built-in default policy is inserted once if the table is empty; an
+	// operator policy file is upserted on top verbatim, so deployment
+	// configuration stays editable as data without touching code.
+	if err := refireBootstrapOnce(context.Background(), st, log, *refirePolicyFile); err != nil {
+		log.Error("refire policy bootstrap", "err", err)
+		os.Exit(1)
+	}
 
 	// Provision or revoke the orchestrator operator identity (CRI-133).
 	// Upserting is idempotent and rotates the token when the configured token
@@ -413,6 +430,28 @@ func main() {
 		}()
 	}
 
+	// Background: refire/classification policy passes (KB-321). Failed runs
+	// requeue successor attempts under the policy's attempt/backoff limits
+	// and designed-park endings reclassify to awaiting_human (the human gate
+	// holds until acknowledged); this replaces the external arc-shepherd
+	// cronjob. Every tick runs through the server's dispatch loop, so minted
+	// successors reach connected agents the same way as first attempts.
+	if *refireInterval > 0 {
+		log.Info("refire policy engine enabled", "refire_interval", *refireInterval)
+		go func() {
+			t := time.NewTicker(*refireInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					serverRPC.RunRefirePass(context.Background())
+				}
+			}
+		}()
+	}
+
 	go func() {
 		log.Info("castle listening", "addr", *addr, "db", *dbPath, "tls", tlsCfg != nil, "event_buffer_capacity", *eventBufferCapacity)
 		var err error
@@ -486,4 +525,45 @@ func logReapOutcomes(log *slog.Logger, reapedMsg string, outcomes []store.RunRea
 		}
 		log.Info(reapedMsg, "run_id", o.RunID, "reason", o.Reason)
 	}
+}
+
+// refireBootstrapOnce seeds the policy rows at boot (KB-321): the built-in
+// default policy is inserted when the table has no default (”, ”) row, and
+// the operator policy file (when configured) is upserted verbatim on top.
+// A malformed file entry aborts boot with the parse error — deployment
+// configuration must be decodable, not silently ignored.
+func refireBootstrapOnce(ctx context.Context, st store.Store, log *slog.Logger, policyFile string) error {
+	existing, err := st.ListRefirePolicies(ctx)
+	if err != nil {
+		return fmt.Errorf("list refire policies: %w", err)
+	}
+	hasDefault := false
+	for _, r := range existing {
+		hasDefault = hasDefault || (r.ProjectID == "" && r.Route == "")
+	}
+	if !hasDefault {
+		if err := st.UpsertRefirePolicy(ctx, "", "",
+			refire.MustMarshalPolicy(refire.DefaultPolicyDoc()), time.Now().UTC()); err != nil {
+			return fmt.Errorf("seed default refire policy: %w", err)
+		}
+		log.Info("seeded default refire policy")
+	}
+	if policyFile == "" {
+		return nil
+	}
+	specs, err := refire.LoadPolicyFile(policyFile)
+	if err != nil {
+		return fmt.Errorf("load refire policy file: %w", err)
+	}
+	for _, spec := range specs {
+		payload, err := refire.MarshalPolicy(spec.Policy)
+		if err != nil {
+			return fmt.Errorf("marshal refire policy %s: %w", spec.Route, err)
+		}
+		if err := st.UpsertRefirePolicy(ctx, spec.ProjectID, spec.Route, payload, time.Now().UTC()); err != nil {
+			return fmt.Errorf("upsert refire policy %s: %w", spec.Route, err)
+		}
+		log.Info("upserted refire policy", "project_id", spec.ProjectID, "route", spec.Route)
+	}
+	return nil
 }
