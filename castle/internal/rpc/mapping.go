@@ -3,9 +3,9 @@ package rpc
 import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 )
 

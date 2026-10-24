@@ -220,6 +220,135 @@ func TestConsoleSessionDeleteAll(t *testing.T) {
 	})
 }
 
+// TestConsoleSessionRevokedAtKeepsFirstStamp covers the KB-325 revocation
+// tombstone: the first revoked_at stamp wins (Logout is idempotent), the
+// revoked row stays in the ledger (ListConsoleSessions returns it), and the
+// issue-time membership snapshot round-trips through both engines.
+func TestConsoleSessionRevokedAtKeepsFirstStamp(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		now := microUTC(time.Now())
+		if err := s.UpsertConsoleUser(ctx, &store.ConsoleUser{
+			ID: "u1", Username: "u1", PasswordHash: "h", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		created := microUTC(time.Now())
+		membership := []string{"proj-a", "proj-b"}
+		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{
+			ID: "s1", UserID: "u1", TokenHash: "h1", CreatedAt: created, Membership: membership,
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+
+		got, err := s.ListConsoleSessions(ctx)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("list: %v entries=%d", err, len(got))
+		}
+		if got[0].RevokedAt != nil {
+			t.Fatalf("fresh session must not be revoked: %v", got[0].RevokedAt)
+		}
+		if !got[0].CreatedAt.Equal(created) {
+			t.Fatalf("created_at round-trip mismatch: want %v got %v", created, got[0].CreatedAt)
+		}
+		if len(got[0].Membership) != 2 || got[0].Membership[0] != "proj-a" || got[0].Membership[1] != "proj-b" {
+			t.Fatalf("membership snapshot not round-tripped: %+v", got[0].Membership)
+		}
+
+		revoked := microUTC(time.Now())
+		if err := s.RevokeConsoleSession(ctx, "s1", revoked); err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+		// A later stamp must not overwrite the first (first stamp wins).
+		if err := s.RevokeConsoleSession(ctx, "s1", revoked.Add(time.Hour)); err != nil {
+			t.Fatalf("re-revoke: %v", err)
+		}
+
+		got, err = s.ListConsoleSessions(ctx)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("list after revoke: %v entries=%d", err, len(got))
+		}
+		if got[0].RevokedAt == nil || !got[0].RevokedAt.Equal(revoked) {
+			t.Fatalf("revoked_at mismatch: want first stamp %v, got %v", revoked, got[0].RevokedAt)
+		}
+		if len(got[0].Membership) != 2 {
+			t.Fatalf("membership snapshot must survive revocation: %+v", got[0].Membership)
+		}
+	})
+}
+
+// TestConsoleSessionRevocationEmptyMembershipAndUnknownID covers the edges:
+// a session created without a membership snapshot reads back empty, and
+// revoking an unknown session id is a no-op.
+func TestConsoleSessionRevocationEmptyMembershipAndUnknownID(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		now := microUTC(time.Now())
+		if err := s.UpsertConsoleUser(ctx, &store.ConsoleUser{
+			ID: "u1", Username: "u1", PasswordHash: "h", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{
+			ID: "s1", UserID: "u1", TokenHash: "h1", CreatedAt: now, Membership: []string{},
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		got, err := s.ListConsoleSessions(ctx)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("list: %v entries=%d", err, len(got))
+		}
+		if len(got[0].Membership) != 0 {
+			t.Fatalf("explicit empty membership must read back empty, got %+v", got[0].Membership)
+		}
+
+		if err := s.RevokeConsoleSession(ctx, "sess-unknown", now); err != nil {
+			t.Fatalf("revoking an unknown session id must be a no-op, got %v", err)
+		}
+	})
+}
+
+// TestListMemberProjectsSharesMembershipSet pins the KB-325 contract:
+// ListMemberProjects reads the same project_members rows the lease scan and
+// run read scope consult, ordered by project id; membership removal is
+// reflected; an unknown member yields nil (not an error).
+func TestListMemberProjectsSharesMembershipSet(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		now := microUTC(time.Now())
+		for _, id := range []string{"proj-x", "proj-b"} {
+			newProject(t, ctx, s, id, store.ProjectMembershipOpen, now)
+		}
+		for _, m := range []*store.ProjectMember{
+			{ProjectID: "proj-x", MemberID: "member-1", Kind: store.ProjectMemberKindHuman, CreatedAt: now},
+			{ProjectID: "proj-b", MemberID: "member-1", Kind: store.ProjectMemberKindAI, CreatedAt: now},
+		} {
+			if err := s.AddProjectMember(ctx, m); err != nil {
+				t.Fatalf("AddProjectMember(%s/%s): %v", m.ProjectID, m.MemberID, err)
+			}
+		}
+
+		got, err := s.ListMemberProjects(ctx, "member-1")
+		if err != nil {
+			t.Fatalf("ListMemberProjects: %v", err)
+		}
+		if len(got) != 2 || got[0] != "proj-b" || got[1] != "proj-x" {
+			t.Fatalf("member projects must come back ordered by project id, got %v", got)
+		}
+
+		if err := s.RemoveProjectMember(ctx, "proj-b", "member-1"); err != nil {
+			t.Fatalf("RemoveProjectMember: %v", err)
+		}
+		got, err = s.ListMemberProjects(ctx, "member-1")
+		if err != nil || len(got) != 1 || got[0] != "proj-x" {
+			t.Fatalf("membership removal must be reflected: %v %v", err, got)
+		}
+
+		// An unknown member has no projects and yields nil, not an error.
+		unknown, err := s.ListMemberProjects(ctx, "member-nobody")
+		if err != nil || len(unknown) != 0 {
+			t.Fatalf("unknown member must yield nothing: %v %v", err, unknown)
+		}
+	})
+}
+
 // TestOrchestratorInsertAndList covers the orchestrator identity list shape
 // with created_at round-trip.
 func TestOrchestratorInsertAndList(t *testing.T) {

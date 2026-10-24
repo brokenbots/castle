@@ -273,11 +273,11 @@ type ConsoleUser struct {
 // never a source of authority — live rights always resolve through the
 // shared project membership set.
 type ConsoleSession struct {
-	ID        string
-	UserID    string
-	TokenHash string
-	CreatedAt time.Time
-	RevokedAt *time.Time
+	ID         string
+	UserID     string
+	TokenHash  string
+	CreatedAt  time.Time
+	RevokedAt  *time.Time
 	Membership []string
 }
 
