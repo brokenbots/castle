@@ -74,7 +74,14 @@ func (s *Store) DeleteRefirePolicy(ctx context.Context, projectID, route string)
 func (s *Store) ListRefireCandidates(ctx context.Context, limit int) ([]store.RefireCandidate, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	return scanRefireCandidates(ctx, s.reader, reap.SQLite, limit)
+	candidates, err := scanRefireCandidates(ctx, s.reader, reap.SQLite, limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := refire.AttachLabels(ctx, s.reader, reap.SQLite, candidates); err != nil {
+		return nil, err
+	}
+	return candidates, nil
 }
 
 // RefireFailedRuns evaluates the refire policy for the candidates (see
@@ -119,6 +126,9 @@ func (s *Store) refireFailedRunsAttempt(ctx context.Context, now time.Time, limi
 	if err != nil {
 		return nil, err
 	}
+	if err := refire.AttachLabels(ctx, tx, reap.SQLite, candidates); err != nil {
+		return nil, err
+	}
 	outcomes, err := refire.EvaluateCandidates(ctx, tx, reap.SQLite, now, policies, candidates)
 	if err != nil {
 		return nil, err
@@ -139,7 +149,7 @@ func scanRefireCandidates(ctx context.Context, runner reap.Runner, d reap.Dialec
 	var out []store.RefireCandidate
 	for rows.Next() {
 		var a store.WorkflowAssignment
-		var id, runID, wfName, wfSource, key, state, created, updated, refireRoot string
+		var id, runID, wfName, wfSource, key, state, created, updated string
 		var refireAttempt int
 		var failureReason, lockfile, termReason, leased, leaseExp, projectID, inputValues, targetMetadata sql.NullString
 		var endedAt sql.NullString
@@ -182,7 +192,7 @@ func scanRefireCandidates(ctx context.Context, runner reap.Runner, d reap.Dialec
 			Attempt:    refireAttempt,
 			// refireFamilyKey expression result: the family root's run id
 			// (originals key their family by their own run id).
-			RootRunID: refireRoot,
+			RootRunID: a.RefireRootRunID,
 		}
 		if c.RootRunID == "" {
 			c.RootRunID = runID

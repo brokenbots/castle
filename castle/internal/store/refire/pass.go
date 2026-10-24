@@ -125,6 +125,61 @@ func lastEventsOf(ctx context.Context, runner reap.Runner, d reap.Dialect, runID
 	return out, rows.Err()
 }
 
+// AttachLabels loads every candidate's eligibility-label rows in one round
+// trip on the caller's snapshot and fills c.Assignment.Labels (KB-321):
+// minted refire successors inherit the assignment's labels so eligibility
+// matching survives a refire.
+func AttachLabels(ctx context.Context, runner reap.Runner, d reap.Dialect, candidates []store.RefireCandidate) error {
+	ids := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if c.Assignment != nil && c.Assignment.ID != "" {
+			ids = append(ids, c.Assignment.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := runner.QueryContext(ctx,
+		`SELECT assignment_id, key, value FROM workflow_assignment_labels
+		 WHERE assignment_id IN (`+d.Placeholders(1, len(ids))+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var byID map[string]map[string]string
+	for rows.Next() {
+		var assignmentID, k, v string
+		if err := rows.Scan(&assignmentID, &k, &v); err != nil {
+			return err
+		}
+		if byID == nil {
+			byID = make(map[string]map[string]string)
+		}
+		m, ok := byID[assignmentID]
+		if !ok {
+			m = make(map[string]string)
+			byID[assignmentID] = m
+		}
+		m[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, c := range candidates {
+		if c.Assignment == nil {
+			continue
+		}
+		if labels, ok := byID[c.Assignment.ID]; ok {
+			c.Assignment.Labels = labels
+		}
+	}
+	return nil
+}
+
 // EvaluateCandidates classifies each candidate against its resolved policy
 // and takes the verdicts on the caller's write transaction (KB-321):
 //
@@ -207,6 +262,10 @@ func evaluateCandidate(
 		}
 		return outcome, nil
 	case DispositionCosmetic, DispositionNone:
+		// The verdict is recorded, nothing is written: known-benign
+		// endings (cosmetic) and unclassified endings (none) stay
+		// terminal-failed, so an operator decision can still land later.
+		outcome.Disposition = string(disposition)
 		outcome.Reason = classReason + " under refire policy " + source
 		return outcome, nil
 	}
@@ -344,6 +403,7 @@ func mintSuccessor(
 	outcome.Reason = fmt.Sprintf(
 		"refiring attempt %d of %d (%s) under refire policy %s",
 		c.Attempt+1, policy.MaxAttempts, c.FailureReason, source)
+	outcome.RefireAttempt = c.Attempt + 1
 	outcome.RefireRunID = runID
 	outcome.RefireAssignmentID = id
 	return outcome, nil
