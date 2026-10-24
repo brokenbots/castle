@@ -10,14 +10,13 @@ import (
 )
 
 // TestTriggerAllowlistMatrix pins the submit-only surface (KB-320): the
-// five procedures the board adapter needs pass for a trigger identity,
+// four procedures the board adapter needs pass for a trigger identity,
 // everything representative else is PermissionDenied, and non-trigger
 // callers pass through regardless.
 func TestTriggerAllowlistMatrix(t *testing.T) {
 	allowed := []string{
 		criteriav1connect.ServerServiceSubmitWorkflowAssignmentProcedure,
 		criteriav1connect.ServerServiceGetAssignmentDispositionProcedure,
-		criteriav1connect.ServerServiceListRunEventsProcedure,
 		criteriav1connect.ServerServiceWatchRunProcedure,
 		castlev1connect.ProjectServiceSubmitProjectAssignmentProcedure,
 	}
@@ -25,6 +24,10 @@ func TestTriggerAllowlistMatrix(t *testing.T) {
 		criteriav1connect.CriteriaServiceRegisterProcedure,
 		criteriav1connect.CriteriaServiceCreateRunProcedure,
 		criteriav1connect.ServerServiceGetRunProcedure,
+		// The adapter only consumes run events through WatchRun, so the
+		// batched read stays off the trigger surface even though the
+		// procedure itself is anon-readable for other callers.
+		criteriav1connect.ServerServiceListRunEventsProcedure,
 		criteriav1connect.ServerServiceStopRunProcedure,
 		castlev1connect.ProjectServiceCreateProjectProcedure,
 		castlev1connect.ProjectServiceListProjectsProcedure,

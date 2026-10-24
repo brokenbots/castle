@@ -161,12 +161,13 @@ func authorizeConsoleProcedure(ctx context.Context, procedure string) error {
 // every mutating agent procedure, project administration, run control,
 // credential registration — is denied. GetAssignmentDisposition is read-only
 // and ownership-scoped in the handler (assignment owner match), the pair of
-// submit RPCs is where board events turn into runs, and the event surfaces
-// drive the column mirror exactly like the orchestrator's observation loop.
+// submit RPCs is where board events turn into runs, and WatchRun drives the
+// column mirror exactly like the orchestrator's observation loop. The
+// adapter consumes run events only through WatchRun, so ListRunEvents stays
+// off the surface (even though that procedure is anon-readable anyway).
 var triggerProcedures = map[string]struct{}{
 	criteriav1connect.ServerServiceSubmitWorkflowAssignmentProcedure: {},
 	criteriav1connect.ServerServiceGetAssignmentDispositionProcedure: {},
-	criteriav1connect.ServerServiceListRunEventsProcedure:            {},
 	criteriav1connect.ServerServiceWatchRunProcedure:                 {},
 	castlev1connect.ProjectServiceSubmitProjectAssignmentProcedure:   {},
 }
@@ -351,8 +352,8 @@ func anonReadableProcedure(procedure string) bool {
 // The surface includes OrchestratorService subscription APIs, which a console
 // identity must never reach (CRI-195), so the console and trigger boundaries
 // are re-checked after identity injection: a trigger token on an anon-readable
-// surface stays submit-only (KB-320), which matters because ListRunEvents and
-// WatchRun are both mirror surfaces and anon-readable surfaces.
+// surface stays submit-only (KB-320), which matters because WatchRun is
+// both a mirror surface and an anon-readable surface.
 func (i *AuthInterceptor) authenticateAnonReadToken(ctx context.Context, h http.Header, procedure string) (context.Context, error) {
 	if !i.allowAnonReads || !anonReadableProcedure(procedure) {
 		return ctx, nil

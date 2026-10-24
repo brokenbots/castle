@@ -81,19 +81,14 @@ func TestTriggerBoundarySubmitOnlyAndOwned(t *testing.T) {
 		t.Fatalf("assignment owner = %q, want the trigger identity", a.OwnerCriteriaID)
 	}
 
-	// Allowed: mirror surfaces (disposition + event read + event stream).
+	// Allowed: mirror surfaces (disposition + event stream). The batched
+	// event read stays denied (asserted below): the adapter mirrors through
+	// WatchRun only.
 	disp, err := cClient.GetAssignmentDisposition(ctx, triggerBearer(&pb.GetAssignmentDispositionRequest{
 		RunId: resp.Msg.GetRunId(),
 	}))
 	if err != nil || disp.Msg.GetState() != pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_QUEUED {
 		t.Fatalf("disposition read as trigger: %v state %v", err, disp.Msg.GetState())
-	}
-	events, err := cClient.ListRunEvents(ctx, triggerBearer(&pb.ListRunEventsRequest{RunId: resp.Msg.GetRunId()}))
-	if err != nil {
-		t.Fatalf("list run events as trigger: %v", err)
-	}
-	if events.Msg == nil {
-		t.Fatal("nil list run events response")
 	}
 	wReq := connect.NewRequest(&pb.WatchRunRequest{RunId: resp.Msg.GetRunId(), SubscriberId: "kanboard-trigger-adapter:test"})
 	wReq.Header().Set("Authorization", "Bearer trigger-test-token")
@@ -104,6 +99,9 @@ func TestTriggerBoundarySubmitOnlyAndOwned(t *testing.T) {
 	stream.Close()
 
 	// Denied: agent procedures, agent registration, and project admin.
+	if _, err := cClient.ListRunEvents(ctx, triggerBearer(&pb.ListRunEventsRequest{RunId: resp.Msg.GetRunId()})); !isPermissionDenied(err) {
+		t.Errorf("ListRunEvents as trigger: err = %v, want PermissionDenied (the adapter mirrors through WatchRun only)", err)
+	}
 	if _, err := oClient.CreateRun(ctx, triggerBearer(&pb.CreateRunRequest{CriteriaId: "trigger-kanboard", WorkflowName: "wf"})); !isPermissionDenied(err) {
 		t.Errorf("CreateRun as trigger: err = %v, want PermissionDenied", err)
 	}
