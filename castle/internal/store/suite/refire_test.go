@@ -584,7 +584,7 @@ func TestRefireScanDrainsNoActionRows(t *testing.T) {
 		}
 
 		// A second pass is idempotent: every no-action row is now stamped
-		// out of the scan and refires the fresh stall never mints a second
+		// out of the scan, and the fresh stall never mints a second
 		// successor.
 		outcomes = f.refireAt(base.Add(2 * time.Hour))
 		if got := dispositionCounts(t, outcomes); got[store.RefireDispositionRefire] != 0 {

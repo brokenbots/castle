@@ -338,8 +338,8 @@ func evaluateCandidate(
 }
 
 // stampRefireDisposition closes an evaluated run's story in the automatic
-// pass (KB-321): the disposition is data on the run, so a terminally
-// verdict row (successor minted, reclassified parked, cosmetic / none
+// pass (KB-321): the disposition is data on the run, so a final-verdict row
+// (successor minted, reclassified parked, cosmetic / none
 // verdict) ages out of the candidate scan instead of permanently occupying
 // it under the scan limit. Deferred and budget-exhausted rows are
 // deliberately NOT stamped: policy retunes (re-enabling refiring, raising
