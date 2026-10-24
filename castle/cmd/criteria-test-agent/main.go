@@ -26,6 +26,7 @@ import (
 	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	castleauth "github.com/brokenbots/castle/castle/internal/auth"
 	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
@@ -85,6 +86,7 @@ type config struct {
 	labels      map[string]string
 	homeDir     string
 	longStepDur time.Duration
+	identity    map[string][]string
 }
 
 func envOrDefault(key, fallback string) string {
@@ -109,6 +111,25 @@ func parseLabels(s string) map[string]string {
 	return out
 }
 
+// parseSDKVersions parses AGENT_SDK_VERSIONS (comma-separated "name:version"
+// pairs) into repeated sdk-version header values.
+func parseSDKVersions(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// parseExtra parses AGENT_EXTRA (comma-separated "key:value" entries) into
+// repeated extra header values; later occurrences of a key win.
+func parseExtra(s string) []string {
+	return parseSDKVersions(s)
+}
+
 func loadConfig() config {
 	longDur := defaultLongStepDur
 	if v := os.Getenv("AGENT_LONG_STEP_DURATION"); v != "" {
@@ -116,12 +137,33 @@ func loadConfig() config {
 			longDur = d
 		}
 	}
+	labels := parseLabels(envOrDefault("AGENT_LABELS", ""))
+	identity := map[string][]string{}
+	if v := os.Getenv("AGENT_VERSION"); v != "" {
+		identity[castleauth.HeaderAgentVersion] = []string{v}
+	}
+	if v := os.Getenv("AGENT_REPO_URL"); v != "" {
+		identity[castleauth.HeaderAgentRepoURL] = []string{v}
+	}
+	if v := os.Getenv("AGENT_BUILD_DATE"); v != "" {
+		identity[castleauth.HeaderAgentBuildDate] = []string{v}
+	}
+	if v := os.Getenv("AGENT_SDK_VERSIONS"); v != "" {
+		identity[castleauth.HeaderAgentSDKVersion] = parseSDKVersions(v)
+	}
+	if v := os.Getenv("AGENT_EXTRA"); v != "" {
+		identity[castleauth.HeaderAgentExtra] = parseExtra(v)
+	}
+	if v := os.Getenv("AGENT_PROJECT"); v != "" {
+		identity[castleauth.HeaderAgentProject] = []string{v}
+	}
 	return config{
 		castleAddr:  envOrDefault("CASTLE_ADDR", "http://castle:8080"),
 		name:        envOrDefault("AGENT_NAME", "criteria-test-agent"),
-		labels:      parseLabels(envOrDefault("AGENT_LABELS", "")),
+		labels:      labels,
 		homeDir:     envOrDefault("AGENT_HOME_DIR", "/var/lib/agent"),
 		longStepDur: longDur,
+		identity:    identity,
 	}
 }
 
@@ -227,6 +269,11 @@ func (a *agent) ensureRegistered(ctx context.Context) error {
 		Name:   a.cfg.name,
 		Labels: a.cfg.labels,
 	})
+	for name, values := range a.cfg.identity {
+		for _, v := range values {
+			req.Header().Add(name, v)
+		}
+	}
 	resp, err := a.client.Register(ctx, req)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
