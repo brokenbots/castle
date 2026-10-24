@@ -19,6 +19,14 @@ const assignmentColumns = `
 	idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
 	created_at, updated_at`
 
+// expireLeasesHook is test-only mutable state: a hook fired by
+// ExpireWorkflowAssignmentLeases after the candidate scan and before the
+// expiry UPDATE (same transaction) so pg-package tests can interleave an
+// out-of-band write into the READ COMMITTED window the re-assertion
+// predicates guard. Nil in production; see events.go's eventAppendHook for
+// the same idiom.
+var expireLeasesHook func()
+
 func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowAssignment) (*store.WorkflowAssignment, bool, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -422,6 +430,15 @@ func labelsSatisfy(agentLabels, required map[string]string) bool {
 // has expired and whose run has not yet started back to queued. It clears the
 // associated run's overseer_id so the assignment can be safely redispatched to
 // a new agent. The returned IDs can be used by callers to redispatch the work.
+//
+// Every statement re-asserts all three expiry predicates — assignment
+// state='leased', lease_expires_at < now, and run status='pending' — because a
+// run's status is written unguarded and READ COMMITTED means the expiry
+// transaction's later statements see a newer snapshot than the candidate
+// scan: a run that starts (pending → running) between the scan and the
+// expiry UPDATE — the same window LeaseWorkflowAssignment's inline
+// stale-lease sweep guards — would otherwise be requeued with a live run.
+// The run's overseer_id is cleared only while the run is still pending.
 func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Time) ([]string, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -456,6 +473,14 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	}
 	rows.Close()
 
+	// Test-only seam: fired after the candidate scan and before the expiry
+	// UPDATE, inside the same transaction, so tests can interleave writes on
+	// a second connection into the READ COMMITTED window the re-assertion
+	// predicates guard. Nil in production.
+	if expireLeasesHook != nil {
+		expireLeasesHook()
+	}
+
 	if len(ids) == 0 {
 		_ = tx.Rollback()
 		return nil, nil
@@ -466,13 +491,14 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	// `WHERE id IN (...)` subquery cannot infer parameter types through
 	// pgx's renumbering, so every placeholder gets an explicit ::text cast.
 	//
-	// The re-assertion predicate (state='leased', lease still expired) makes
-	// the expiry safe under READ COMMITTED: the candidate scan above ran
-	// against an earlier snapshot, and the UPDATE re-reads the latest
-	// committed row, so without the predicate an assignment that was
-	// re-queued and re-leased to another agent after the scan would be
-	// clobbered here. The re-assertion reuses $2 for the expiry bound; the
-	// leased state is an inlined literal like r.status='pending' in the scan.
+	// The re-assertion predicates (state='leased', lease still expired, run
+	// still pending) make the expiry safe under READ COMMITTED: the candidate
+	// scan above ran against an earlier snapshot, and the UPDATE re-reads the
+	// latest committed row, so without the predicates an assignment that was
+	// re-queued and re-leased to another agent after the scan — or whose run
+	// started in that window — would be clobbered here. The re-assertion
+	// reuses $2 for the expiry bound; the leased state and the pending
+	// status are inlined literals like r.status='pending' in the scan.
 	p := &plf{args: []any{store.WorkflowAssignmentStateQueued, us(now)}}
 	phs := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -484,6 +510,7 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		 SET state=$1, leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=$2
 		 WHERE id IN (`+casted+`)
 		   AND state='leased' AND lease_expires_at < $2
+		   AND run_id IN (SELECT id FROM runs WHERE status='pending')
 		 RETURNING id, run_id`,
 		p.args...)
 	if err != nil {
@@ -513,7 +540,10 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	// sequence, and continuing the first statement's numbering ($3+) leaves a
 	// $1/$2 gap that fails to parse (42P18). It clears overseer_id only for
 	// runs of assignments actually transitioned above — a candidate that was
-	// re-leased between scan and update keeps its run's overseer.
+	// re-leased between scan and update keeps its run's overseer, and a run
+	// that started in that window keeps its overseer too (the run-status
+	// predicate re-reads the latest snapshot, so the stale-pending run row
+	// never lands here).
 	if len(transitionedRunIDs) > 0 {
 		p2 := &plf{}
 		phs2 := make([]string, 0, len(transitionedRunIDs))
@@ -523,7 +553,8 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE runs
 			 SET overseer_id=NULL
-			 WHERE id IN (`+strings.Join(phs2, ",")+")",
+			 WHERE id IN (`+strings.Join(phs2, ",")+`)
+			   AND status='pending'`,
 			p2.args...); err != nil {
 			return nil, err
 		}

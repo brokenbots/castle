@@ -347,6 +347,66 @@ func TestMarkAssignmentTerminalAndAttempts(t *testing.T) {
 	})
 }
 
+// TestExpireLeasesSkipRunningRuns is the both-engine contract leg of the
+// expiry re-assertion: a lease whose run has already started (status='running',
+// lease long expired) is never requeued on either engine — the returned ids do
+// not contain it, the assignment keeps its holder and its lease expiry, and
+// the run keeps both its status and its overseer. The pg window race between
+// scan and expiry UPDATE is pinned separately in the pg backstop test; this
+// test pins the shared outcome on both engines, including on sqlite where the
+// race cannot interleave.
+func TestExpireLeasesSkipRunningRuns(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		now := microUTC(time.Now())
+		if err := s.CreateOverseer(ctx, &store.Overseer{ID: "oa-running", Name: "oa-running", TokenHash: "k", Status: "online", CreatedAt: now, LastSeenAt: now}); err != nil {
+			t.Fatalf("CreateOverseer: %v", err)
+		}
+		a := newAssignment(t, ctx, s, "owner-running", "key-running", nil, now)
+		if _, err := s.LeaseWorkflowAssignment(ctx, "oa-running", map[string]string{}, now, -time.Second); err != nil {
+			t.Fatalf("lease: %v", err)
+		}
+
+		// Start the run through the same unguarded write path production
+		// uses, so expiry must rely on the run-status re-assertion predicate.
+		started, err := gotRun(t, s, a.RunID)
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		started.Status = "running"
+		started.StartedAt = &now
+		if err := s.UpdateRun(ctx, started); err != nil {
+			t.Fatalf("UpdateRun: %v", err)
+		}
+
+		ids, err := s.ExpireWorkflowAssignmentLeases(ctx, now.Add(time.Minute))
+		if err != nil {
+			t.Fatalf("ExpireWorkflowAssignmentLeases: %v", err)
+		}
+		for _, id := range ids {
+			if id == a.ID {
+				t.Fatalf("expiry requeued a running run's assignment: %v", ids)
+			}
+		}
+		got, err := s.GetWorkflowAssignment(ctx, a.ID)
+		if err != nil {
+			t.Fatalf("GetWorkflowAssignment: %v", err)
+		}
+		if got.State != store.WorkflowAssignmentStateLeased || got.LeasedCriteriaID != "oa-running" {
+			t.Fatalf("running run's assignment requeued: state=%q holder=%q", got.State, got.LeasedCriteriaID)
+		}
+		if got.LeaseExpiresAt == nil || !got.LeaseExpiresAt.Equal(now.Add(-time.Second)) {
+			t.Fatalf("lease expiry clobbered: %+v", got.LeaseExpiresAt)
+		}
+		run, err := gotRun(t, s, a.RunID)
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		if run.Status != "running" || run.OverseerID != "oa-running" {
+			t.Fatalf("live run mutated: status=%q overseer=%q", run.Status, run.OverseerID)
+		}
+	})
+}
+
 // TestExpireLeasesLoseRaceToLease pins the expiry contract under a writer
 // race: with agent A holding an expired lease, expiry racing a re-lease to
 // agent B must never clobber B's lease (the pg READ COMMITTED
@@ -432,6 +492,11 @@ func TestExpireLeasesLoseRaceToLease(t *testing.T) {
 				}
 				if run.OverseerID != "" {
 					t.Fatalf("iteration %d: queued assignment still holds run overseer %q", i, run.OverseerID)
+				}
+				// An interleaving-neutral invariant: a requeued assignment
+				// never keeps lease bookkeeping on either engine.
+				if got.LeaseExpiresAt != nil || got.LeasedCriteriaID != "" {
+					t.Fatalf("iteration %d: requeued assignment kept lease bookkeeping: %+v", i, got)
 				}
 			}
 			// Expiry may legitimately report nothing (the re-lease path's own

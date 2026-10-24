@@ -1609,6 +1609,17 @@ func mustParseTime(s string) time.Time {
 // has expired and whose run has not yet started back to queued. It clears the
 // associated run's overseer_id so the assignment can be safely redispatched to
 // a new agent. The returned IDs can be used by callers to redispatch the work.
+//
+// Every statement re-asserts all three expiry predicates — assignment
+// state='leased', lease_expires_at < now, and run status='pending' — because a
+// run's status is written unguarded and the expiry transaction's later
+// statements can observe a newer snapshot (or, on pg, an interleaved writer):
+// a run that starts (pending → running) between the scan and the expiry
+// UPDATE — the same window LeaseWorkflowAssignment's inline stale-lease sweep
+// guards — would otherwise be requeued with a live run. The run's overseer_id
+// is cleared only while the run is still pending. (sqlite serializes writers,
+// so the pg race cannot interleave here, but both engines enforce one
+// contract.)
 func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Time) ([]string, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -1648,10 +1659,12 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		return nil, nil
 	}
 
-	// The re-assertion predicate (state='leased', lease still expired) keeps
-	// the expiry safe when the candidate scan and the UPDATE observe
+	// The re-assertion predicates (state='leased', lease still expired, run
+	// still pending) keep the expiry safe when the candidate scan and the
+	// UPDATE observe
 	// different snapshots: an assignment that was re-queued and re-leased
-	// after the scan must not be clobbered here. RETURNING yields only the
+	// after the scan must not be clobbered here, and a run that started in
+	// that window must not be requeued. RETURNING yields only the
 	// rows actually transitioned, so the returned ids and the run overseer
 	// cleanup below never reference a candidate that was re-leased instead.
 	placeholders := strings.Repeat("?,", len(ids))
@@ -1668,6 +1681,7 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		 SET state=?, leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=?
 		 WHERE id IN (`+placeholders+`)
 		   AND state='leased' AND lease_expires_at < ?
+		   AND run_id IN (SELECT id FROM runs WHERE status='pending')
 		 RETURNING id, run_id`,
 		args...)
 	if err != nil {
@@ -1690,7 +1704,9 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	tRows.Close()
 
 	// Clear overseer_id only for runs of assignments actually transitioned
-	// above; a candidate re-leased between scan and update keeps its overseer.
+	// above, and only while the run is still pending; a candidate re-leased
+	// between scan and update keeps its overseer, and so does a run that
+	// started in that window.
 	if len(transitionedRunIDs) > 0 {
 		runPlaceholders := strings.Repeat("?,", len(transitionedRunIDs))
 		runPlaceholders = runPlaceholders[:len(runPlaceholders)-1]
@@ -1701,7 +1717,8 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE runs
 			 SET overseer_id=NULL
-			 WHERE id IN (`+runPlaceholders+")",
+			 WHERE id IN (`+runPlaceholders+`)
+			   AND status='pending'`,
 			runArgs...); err != nil {
 			return nil, err
 		}
