@@ -28,6 +28,68 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// SessionKind names the credential class a session was issued as. The two
+// classes decide the WRITE shape across the surface: a console session
+// reaches the human-console surfaces (run control, project administration,
+// this ledger), a protocol token reaches the assignment/run and observation
+// surfaces. Member kind (human vs ai) has no server-side role — the
+// credential class is the only discriminator.
+type SessionKind int32
+
+const (
+	// Unspecified. Never returned; present for forward compatibility.
+	SessionKind_SESSION_KIND_UNSPECIFIED SessionKind = 0
+	// A console session issued by ConsoleService.Login: a human login
+	// credential whose bearer token is persisted only as a digest.
+	SessionKind_SESSION_KIND_CONSOLE SessionKind = 1
+	// A registered protocol token (agent, orchestrator, or trigger accept
+	// token). Protocol tokens are registered operator credentials, not login
+	// sessions; the value exists so the ledger's kind vocabulary is complete
+	// and callers cannot mistake a protocol token class for a login session.
+	SessionKind_SESSION_KIND_PROTOCOL_TOKEN SessionKind = 2
+)
+
+// Enum value maps for SessionKind.
+var (
+	SessionKind_name = map[int32]string{
+		0: "SESSION_KIND_UNSPECIFIED",
+		1: "SESSION_KIND_CONSOLE",
+		2: "SESSION_KIND_PROTOCOL_TOKEN",
+	}
+	SessionKind_value = map[string]int32{
+		"SESSION_KIND_UNSPECIFIED":    0,
+		"SESSION_KIND_CONSOLE":        1,
+		"SESSION_KIND_PROTOCOL_TOKEN": 2,
+	}
+)
+
+func (x SessionKind) Enum() *SessionKind {
+	p := new(SessionKind)
+	*p = x
+	return p
+}
+
+func (x SessionKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SessionKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_castle_v1_console_proto_enumTypes[0].Descriptor()
+}
+
+func (SessionKind) Type() protoreflect.EnumType {
+	return &file_castle_v1_console_proto_enumTypes[0]
+}
+
+func (x SessionKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SessionKind.Descriptor instead.
+func (SessionKind) EnumDescriptor() ([]byte, []int) {
+	return file_castle_v1_console_proto_rawDescGZIP(), []int{0}
+}
+
 type LoginRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// username is the console user's login name.
@@ -140,6 +202,254 @@ func (x *LoginResponse) GetUsername() string {
 	return ""
 }
 
+type LogoutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogoutRequest) Reset() {
+	*x = LogoutRequest{}
+	mi := &file_castle_v1_console_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogoutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogoutRequest) ProtoMessage() {}
+
+func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_console_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogoutRequest.ProtoReflect.Descriptor instead.
+func (*LogoutRequest) Descriptor() ([]byte, []int) {
+	return file_castle_v1_console_proto_rawDescGZIP(), []int{2}
+}
+
+type LogoutResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// revoked_at is the instant the server stamped the session's revocation.
+	RevokedAt     *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogoutResponse) Reset() {
+	*x = LogoutResponse{}
+	mi := &file_castle_v1_console_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogoutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogoutResponse) ProtoMessage() {}
+
+func (x *LogoutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_console_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogoutResponse.ProtoReflect.Descriptor instead.
+func (*LogoutResponse) Descriptor() ([]byte, []int) {
+	return file_castle_v1_console_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *LogoutResponse) GetRevokedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RevokedAt
+	}
+	return nil
+}
+
+type ListSessionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSessionsRequest) Reset() {
+	*x = ListSessionsRequest{}
+	mi := &file_castle_v1_console_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSessionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSessionsRequest) ProtoMessage() {}
+
+func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_console_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSessionsRequest.ProtoReflect.Descriptor instead.
+func (*ListSessionsRequest) Descriptor() ([]byte, []int) {
+	return file_castle_v1_console_proto_rawDescGZIP(), []int{4}
+}
+
+// SessionInfo is one ledger entry of a console session.
+type SessionInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// session_id is the session's stable ledger id.
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// kind is the credential class the session was issued as.
+	Kind SessionKind `protobuf:"varint,2,opt,name=kind,proto3,enum=castle.v1.SessionKind" json:"kind,omitempty"`
+	// membership is the member's project set at issue time (the project ids
+	// the console user belonged to when the session was minted), sorted.
+	// Snapshot metadata only — live rights always resolve through the shared
+	// membership set.
+	Membership []string `protobuf:"bytes,3,rep,name=membership,proto3" json:"membership,omitempty"`
+	// created_at is when the session was issued.
+	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// revoked_at is when the session was revoked (Logout or rotation), unset
+	// while the session is still live.
+	RevokedAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SessionInfo) Reset() {
+	*x = SessionInfo{}
+	mi := &file_castle_v1_console_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionInfo) ProtoMessage() {}
+
+func (x *SessionInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_console_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionInfo.ProtoReflect.Descriptor instead.
+func (*SessionInfo) Descriptor() ([]byte, []int) {
+	return file_castle_v1_console_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SessionInfo) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *SessionInfo) GetKind() SessionKind {
+	if x != nil {
+		return x.Kind
+	}
+	return SessionKind_SESSION_KIND_UNSPECIFIED
+}
+
+func (x *SessionInfo) GetMembership() []string {
+	if x != nil {
+		return x.Membership
+	}
+	return nil
+}
+
+func (x *SessionInfo) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *SessionInfo) GetRevokedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RevokedAt
+	}
+	return nil
+}
+
+type ListSessionsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// sessions lists the caller's console sessions, oldest first.
+	Sessions      []*SessionInfo `protobuf:"bytes,1,rep,name=sessions,proto3" json:"sessions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSessionsResponse) Reset() {
+	*x = ListSessionsResponse{}
+	mi := &file_castle_v1_console_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSessionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSessionsResponse) ProtoMessage() {}
+
+func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_console_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSessionsResponse.ProtoReflect.Descriptor instead.
+func (*ListSessionsResponse) Descriptor() ([]byte, []int) {
+	return file_castle_v1_console_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ListSessionsResponse) GetSessions() []*SessionInfo {
+	if x != nil {
+		return x.Sessions
+	}
+	return nil
+}
+
 type ResolveResumeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// run_id is the paused run to resolve.
@@ -159,7 +469,7 @@ type ResolveResumeRequest struct {
 
 func (x *ResolveResumeRequest) Reset() {
 	*x = ResolveResumeRequest{}
-	mi := &file_castle_v1_console_proto_msgTypes[2]
+	mi := &file_castle_v1_console_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -171,7 +481,7 @@ func (x *ResolveResumeRequest) String() string {
 func (*ResolveResumeRequest) ProtoMessage() {}
 
 func (x *ResolveResumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_castle_v1_console_proto_msgTypes[2]
+	mi := &file_castle_v1_console_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -184,7 +494,7 @@ func (x *ResolveResumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveResumeRequest.ProtoReflect.Descriptor instead.
 func (*ResolveResumeRequest) Descriptor() ([]byte, []int) {
-	return file_castle_v1_console_proto_rawDescGZIP(), []int{2}
+	return file_castle_v1_console_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ResolveResumeRequest) GetRunId() string {
@@ -218,7 +528,7 @@ type ResolveResumeResponse struct {
 
 func (x *ResolveResumeResponse) Reset() {
 	*x = ResolveResumeResponse{}
-	mi := &file_castle_v1_console_proto_msgTypes[3]
+	mi := &file_castle_v1_console_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -230,7 +540,7 @@ func (x *ResolveResumeResponse) String() string {
 func (*ResolveResumeResponse) ProtoMessage() {}
 
 func (x *ResolveResumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_castle_v1_console_proto_msgTypes[3]
+	mi := &file_castle_v1_console_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -243,7 +553,7 @@ func (x *ResolveResumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveResumeResponse.ProtoReflect.Descriptor instead.
 func (*ResolveResumeResponse) Descriptor() ([]byte, []int) {
-	return file_castle_v1_console_proto_rawDescGZIP(), []int{3}
+	return file_castle_v1_console_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ResolveResumeResponse) GetIssuedAt() *timestamppb.Timestamp {
@@ -263,7 +573,25 @@ const file_castle_v1_console_proto_rawDesc = "" +
 	"\bpassword\x18\x02 \x01(\tR\bpassword\"P\n" +
 	"\rLoginResponse\x12#\n" +
 	"\rsession_token\x18\x01 \x01(\tR\fsessionToken\x12\x1a\n" +
-	"\busername\x18\x02 \x01(\tR\busername\"\xc9\x01\n" +
+	"\busername\x18\x02 \x01(\tR\busername\"\x0f\n" +
+	"\rLogoutRequest\"K\n" +
+	"\x0eLogoutResponse\x129\n" +
+	"\n" +
+	"revoked_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\"\x15\n" +
+	"\x13ListSessionsRequest\"\xee\x01\n" +
+	"\vSessionInfo\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12*\n" +
+	"\x04kind\x18\x02 \x01(\x0e2\x16.castle.v1.SessionKindR\x04kind\x12\x1e\n" +
+	"\n" +
+	"membership\x18\x03 \x03(\tR\n" +
+	"membership\x129\n" +
+	"\n" +
+	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"\n" +
+	"revoked_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\"J\n" +
+	"\x14ListSessionsResponse\x122\n" +
+	"\bsessions\x18\x01 \x03(\v2\x16.castle.v1.SessionInfoR\bsessions\"\xc9\x01\n" +
 	"\x14ResolveResumeRequest\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x16\n" +
 	"\x06signal\x18\x02 \x01(\tR\x06signal\x12F\n" +
@@ -272,9 +600,15 @@ const file_castle_v1_console_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"P\n" +
 	"\x15ResolveResumeResponse\x127\n" +
-	"\tissued_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt2\xa0\x01\n" +
+	"\tissued_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt*f\n" +
+	"\vSessionKind\x12\x1c\n" +
+	"\x18SESSION_KIND_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14SESSION_KIND_CONSOLE\x10\x01\x12\x1f\n" +
+	"\x1bSESSION_KIND_PROTOCOL_TOKEN\x10\x022\xb0\x02\n" +
 	"\x0eConsoleService\x12:\n" +
-	"\x05Login\x12\x17.castle.v1.LoginRequest\x1a\x18.castle.v1.LoginResponse\x12R\n" +
+	"\x05Login\x12\x17.castle.v1.LoginRequest\x1a\x18.castle.v1.LoginResponse\x12=\n" +
+	"\x06Logout\x12\x18.castle.v1.LogoutRequest\x1a\x19.castle.v1.LogoutResponse\x12O\n" +
+	"\fListSessions\x12\x1e.castle.v1.ListSessionsRequest\x1a\x1f.castle.v1.ListSessionsResponse\x12R\n" +
 	"\rResolveResume\x12\x1f.castle.v1.ResolveResumeRequest\x1a .castle.v1.ResolveResumeResponseB<Z:github.com/brokenbots/castle/castle/gen/castle/v1;castlev1b\x06proto3"
 
 var (
@@ -289,27 +623,43 @@ func file_castle_v1_console_proto_rawDescGZIP() []byte {
 	return file_castle_v1_console_proto_rawDescData
 }
 
-var file_castle_v1_console_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_castle_v1_console_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_castle_v1_console_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_castle_v1_console_proto_goTypes = []any{
-	(*LoginRequest)(nil),          // 0: castle.v1.LoginRequest
-	(*LoginResponse)(nil),         // 1: castle.v1.LoginResponse
-	(*ResolveResumeRequest)(nil),  // 2: castle.v1.ResolveResumeRequest
-	(*ResolveResumeResponse)(nil), // 3: castle.v1.ResolveResumeResponse
-	nil,                           // 4: castle.v1.ResolveResumeRequest.PayloadEntry
-	(*timestamppb.Timestamp)(nil), // 5: google.protobuf.Timestamp
+	(SessionKind)(0),              // 0: castle.v1.SessionKind
+	(*LoginRequest)(nil),          // 1: castle.v1.LoginRequest
+	(*LoginResponse)(nil),         // 2: castle.v1.LoginResponse
+	(*LogoutRequest)(nil),         // 3: castle.v1.LogoutRequest
+	(*LogoutResponse)(nil),        // 4: castle.v1.LogoutResponse
+	(*ListSessionsRequest)(nil),   // 5: castle.v1.ListSessionsRequest
+	(*SessionInfo)(nil),           // 6: castle.v1.SessionInfo
+	(*ListSessionsResponse)(nil),  // 7: castle.v1.ListSessionsResponse
+	(*ResolveResumeRequest)(nil),  // 8: castle.v1.ResolveResumeRequest
+	(*ResolveResumeResponse)(nil), // 9: castle.v1.ResolveResumeResponse
+	nil,                           // 10: castle.v1.ResolveResumeRequest.PayloadEntry
+	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
 }
 var file_castle_v1_console_proto_depIdxs = []int32{
-	4, // 0: castle.v1.ResolveResumeRequest.payload:type_name -> castle.v1.ResolveResumeRequest.PayloadEntry
-	5, // 1: castle.v1.ResolveResumeResponse.issued_at:type_name -> google.protobuf.Timestamp
-	0, // 2: castle.v1.ConsoleService.Login:input_type -> castle.v1.LoginRequest
-	2, // 3: castle.v1.ConsoleService.ResolveResume:input_type -> castle.v1.ResolveResumeRequest
-	1, // 4: castle.v1.ConsoleService.Login:output_type -> castle.v1.LoginResponse
-	3, // 5: castle.v1.ConsoleService.ResolveResume:output_type -> castle.v1.ResolveResumeResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	11, // 0: castle.v1.LogoutResponse.revoked_at:type_name -> google.protobuf.Timestamp
+	0,  // 1: castle.v1.SessionInfo.kind:type_name -> castle.v1.SessionKind
+	11, // 2: castle.v1.SessionInfo.created_at:type_name -> google.protobuf.Timestamp
+	11, // 3: castle.v1.SessionInfo.revoked_at:type_name -> google.protobuf.Timestamp
+	6,  // 4: castle.v1.ListSessionsResponse.sessions:type_name -> castle.v1.SessionInfo
+	10, // 5: castle.v1.ResolveResumeRequest.payload:type_name -> castle.v1.ResolveResumeRequest.PayloadEntry
+	11, // 6: castle.v1.ResolveResumeResponse.issued_at:type_name -> google.protobuf.Timestamp
+	1,  // 7: castle.v1.ConsoleService.Login:input_type -> castle.v1.LoginRequest
+	3,  // 8: castle.v1.ConsoleService.Logout:input_type -> castle.v1.LogoutRequest
+	5,  // 9: castle.v1.ConsoleService.ListSessions:input_type -> castle.v1.ListSessionsRequest
+	8,  // 10: castle.v1.ConsoleService.ResolveResume:input_type -> castle.v1.ResolveResumeRequest
+	2,  // 11: castle.v1.ConsoleService.Login:output_type -> castle.v1.LoginResponse
+	4,  // 12: castle.v1.ConsoleService.Logout:output_type -> castle.v1.LogoutResponse
+	7,  // 13: castle.v1.ConsoleService.ListSessions:output_type -> castle.v1.ListSessionsResponse
+	9,  // 14: castle.v1.ConsoleService.ResolveResume:output_type -> castle.v1.ResolveResumeResponse
+	11, // [11:15] is the sub-list for method output_type
+	7,  // [7:11] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_castle_v1_console_proto_init() }
@@ -322,13 +672,14 @@ func file_castle_v1_console_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_castle_v1_console_proto_rawDesc), len(file_castle_v1_console_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   5,
+			NumEnums:      1,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_castle_v1_console_proto_goTypes,
 		DependencyIndexes: file_castle_v1_console_proto_depIdxs,
+		EnumInfos:         file_castle_v1_console_proto_enumTypes,
 		MessageInfos:      file_castle_v1_console_proto_msgTypes,
 	}.Build()
 	File_castle_v1_console_proto = out.File

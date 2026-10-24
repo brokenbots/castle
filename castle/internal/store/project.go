@@ -69,3 +69,30 @@ func UnmarshalQueues(s string) []string {
 	}
 	return q
 }
+
+// MarshalMembership renders a session's issue-time membership snapshot (the
+// member's project ids, KB-325) as text; an empty set stores as empty text
+// (the engines treat empty text as "no projects").
+func MarshalMembership(projects []string) (string, error) {
+	if len(projects) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(projects)
+	if err != nil {
+		return "", fmt.Errorf("marshal membership: %w", err)
+	}
+	return string(b), nil
+}
+
+// UnmarshalMembership parses the stored membership snapshot text back into a
+// slice; empty or undecodable text yields nil.
+func UnmarshalMembership(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var m []string
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		return nil
+	}
+	return m
+}

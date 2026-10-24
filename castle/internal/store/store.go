@@ -264,12 +264,21 @@ type ConsoleUser struct {
 }
 
 // ConsoleSession is a login session issued to a console user (CRI-195).
-// TokenHash is the SHA-256 hex digest of the issued bearer token.
+// TokenHash is the SHA-256 hex digest of the issued bearer token. RevokedAt
+// carries the server-side revocation stamp (KB-325): nil while the session
+// is live, set once Logout (or token rotation) kills it — resolution must
+// treat a stamped session as invalid immediately. Membership is the
+// member's project set recorded at issue time (the ids of the project_members
+// rows the login resolved through): ledger metadata for visibility only,
+// never a source of authority — live rights always resolve through the
+// shared project membership set.
 type ConsoleSession struct {
-	ID        string
-	UserID    string
-	TokenHash string
-	CreatedAt time.Time
+	ID         string
+	UserID     string
+	TokenHash  string
+	CreatedAt  time.Time
+	RevokedAt  *time.Time
+	Membership []string
 }
 
 // WorkflowAssignment is a durable, idempotent queued workflow submission.
@@ -506,8 +515,16 @@ type Store interface {
 	DeleteConsoleUsers(ctx context.Context) error
 	// CreateConsoleSession persists a login session for a console user.
 	CreateConsoleSession(ctx context.Context, s *ConsoleSession) error
-	// ListConsoleSessions returns all console login sessions.
+	// ListConsoleSessions returns all console login sessions (KB-325: the
+	// session ledger, including revoked rows — every entry carries its
+	// RevokedAt stamp and issue-time membership snapshot).
 	ListConsoleSessions(ctx context.Context) ([]*ConsoleSession, error)
+	// RevokeConsoleSession stamps the server-side revocation (KB-325) on the
+	// session ledger row with the given id: RevokedAt is set to at and the
+	// session stops resolving from the next token lookup on. Revoking an
+	// unknown or already-revoked session is a no-op (logout is idempotent
+	// and the first stamp wins).
+	RevokeConsoleSession(ctx context.Context, sessionID string, at time.Time) error
 	// DeleteConsoleSessions revokes every console login session.
 	DeleteConsoleSessions(ctx context.Context) error
 	// DeleteConsoleSessionsByUser revokes all sessions of one console user,
@@ -782,6 +799,13 @@ type Store interface {
 	// IsProjectMember reports whether memberID belongs to projectID's
 	// member set. A project that does not exist yields false.
 	IsProjectMember(ctx context.Context, projectID, memberID string) (bool, error)
+	// ListMemberProjects returns the ids of the projects whose member set
+	// contains memberID (KB-325), ordered by project id. It reads the same
+	// project_members set the assignment lease scan and the run read scope
+	// consult — the ONE shared membership set; callers (e.g. the console
+	// session ledger snapshot) must never derive membership any other way.
+	// An unknown member has no projects and yields nil.
+	ListMemberProjects(ctx context.Context, memberID string) ([]string, error)
 
 	// Project settings (KB-324 S1)
 	// GetProjectSettings returns the project's ONE settings doc — the

@@ -13,6 +13,49 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 
 /**
+ * SessionKind names the credential class a session was issued as. The two
+ * classes decide the WRITE shape across the surface: a console session
+ * reaches the human-console surfaces (run control, project administration,
+ * this ledger), a protocol token reaches the assignment/run and observation
+ * surfaces. Member kind (human vs ai) has no server-side role — the
+ * credential class is the only discriminator.
+ *
+ * @generated from enum castle.v1.SessionKind
+ */
+export enum SessionKind {
+  /**
+   * Unspecified. Never returned; present for forward compatibility.
+   *
+   * @generated from enum value: SESSION_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * A console session issued by ConsoleService.Login: a human login
+   * credential whose bearer token is persisted only as a digest.
+   *
+   * @generated from enum value: SESSION_KIND_CONSOLE = 1;
+   */
+  CONSOLE = 1,
+
+  /**
+   * A registered protocol token (agent, orchestrator, or trigger accept
+   * token). Protocol tokens are registered operator credentials, not login
+   * sessions; the value exists so the ledger's kind vocabulary is complete
+   * and callers cannot mistake a protocol token class for a login session.
+   *
+   * @generated from enum value: SESSION_KIND_PROTOCOL_TOKEN = 2;
+   */
+  PROTOCOL_TOKEN = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(SessionKind)
+proto3.util.setEnumType(SessionKind, "castle.v1.SessionKind", [
+  { no: 0, name: "SESSION_KIND_UNSPECIFIED" },
+  { no: 1, name: "SESSION_KIND_CONSOLE" },
+  { no: 2, name: "SESSION_KIND_PROTOCOL_TOKEN" },
+]);
+
+/**
  * @generated from message castle.v1.LoginRequest
  */
 export class LoginRequest extends Message<LoginRequest> {
@@ -107,6 +150,223 @@ export class LoginResponse extends Message<LoginResponse> {
 
   static equals(a: LoginResponse | PlainMessage<LoginResponse> | undefined, b: LoginResponse | PlainMessage<LoginResponse> | undefined): boolean {
     return proto3.util.equals(LoginResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.LogoutRequest
+ */
+export class LogoutRequest extends Message<LogoutRequest> {
+  constructor(data?: PartialMessage<LogoutRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.LogoutRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): LogoutRequest {
+    return new LogoutRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): LogoutRequest {
+    return new LogoutRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): LogoutRequest {
+    return new LogoutRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: LogoutRequest | PlainMessage<LogoutRequest> | undefined, b: LogoutRequest | PlainMessage<LogoutRequest> | undefined): boolean {
+    return proto3.util.equals(LogoutRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.LogoutResponse
+ */
+export class LogoutResponse extends Message<LogoutResponse> {
+  /**
+   * revoked_at is the instant the server stamped the session's revocation.
+   *
+   * @generated from field: google.protobuf.Timestamp revoked_at = 1;
+   */
+  revokedAt?: Timestamp;
+
+  constructor(data?: PartialMessage<LogoutResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.LogoutResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "revoked_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): LogoutResponse {
+    return new LogoutResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): LogoutResponse {
+    return new LogoutResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): LogoutResponse {
+    return new LogoutResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: LogoutResponse | PlainMessage<LogoutResponse> | undefined, b: LogoutResponse | PlainMessage<LogoutResponse> | undefined): boolean {
+    return proto3.util.equals(LogoutResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.ListSessionsRequest
+ */
+export class ListSessionsRequest extends Message<ListSessionsRequest> {
+  constructor(data?: PartialMessage<ListSessionsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.ListSessionsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListSessionsRequest {
+    return new ListSessionsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListSessionsRequest {
+    return new ListSessionsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListSessionsRequest {
+    return new ListSessionsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListSessionsRequest | PlainMessage<ListSessionsRequest> | undefined, b: ListSessionsRequest | PlainMessage<ListSessionsRequest> | undefined): boolean {
+    return proto3.util.equals(ListSessionsRequest, a, b);
+  }
+}
+
+/**
+ * SessionInfo is one ledger entry of a console session.
+ *
+ * @generated from message castle.v1.SessionInfo
+ */
+export class SessionInfo extends Message<SessionInfo> {
+  /**
+   * session_id is the session's stable ledger id.
+   *
+   * @generated from field: string session_id = 1;
+   */
+  sessionId = "";
+
+  /**
+   * kind is the credential class the session was issued as.
+   *
+   * @generated from field: castle.v1.SessionKind kind = 2;
+   */
+  kind = SessionKind.UNSPECIFIED;
+
+  /**
+   * membership is the member's project set at issue time (the project ids
+   * the console user belonged to when the session was minted), sorted.
+   * Snapshot metadata only — live rights always resolve through the shared
+   * membership set.
+   *
+   * @generated from field: repeated string membership = 3;
+   */
+  membership: string[] = [];
+
+  /**
+   * created_at is when the session was issued.
+   *
+   * @generated from field: google.protobuf.Timestamp created_at = 4;
+   */
+  createdAt?: Timestamp;
+
+  /**
+   * revoked_at is when the session was revoked (Logout or rotation), unset
+   * while the session is still live.
+   *
+   * @generated from field: google.protobuf.Timestamp revoked_at = 5;
+   */
+  revokedAt?: Timestamp;
+
+  constructor(data?: PartialMessage<SessionInfo>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.SessionInfo";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "kind", kind: "enum", T: proto3.getEnumType(SessionKind) },
+    { no: 3, name: "membership", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 4, name: "created_at", kind: "message", T: Timestamp },
+    { no: 5, name: "revoked_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SessionInfo {
+    return new SessionInfo().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SessionInfo {
+    return new SessionInfo().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SessionInfo {
+    return new SessionInfo().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SessionInfo | PlainMessage<SessionInfo> | undefined, b: SessionInfo | PlainMessage<SessionInfo> | undefined): boolean {
+    return proto3.util.equals(SessionInfo, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.ListSessionsResponse
+ */
+export class ListSessionsResponse extends Message<ListSessionsResponse> {
+  /**
+   * sessions lists the caller's console sessions, oldest first.
+   *
+   * @generated from field: repeated castle.v1.SessionInfo sessions = 1;
+   */
+  sessions: SessionInfo[] = [];
+
+  constructor(data?: PartialMessage<ListSessionsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.ListSessionsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "sessions", kind: "message", T: SessionInfo, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListSessionsResponse {
+    return new ListSessionsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListSessionsResponse {
+    return new ListSessionsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListSessionsResponse {
+    return new ListSessionsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListSessionsResponse | PlainMessage<ListSessionsResponse> | undefined, b: ListSessionsResponse | PlainMessage<ListSessionsResponse> | undefined): boolean {
+    return proto3.util.equals(ListSessionsResponse, a, b);
   }
 }
 

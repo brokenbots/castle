@@ -50,3 +50,19 @@ func requireCallerOwnsRun(ctx context.Context, st store.Store, runID string) (ca
 	}
 	return callerID, run, nil
 }
+
+// requireConsoleSession enforces the console-session credential class for
+// the session-ledger RPCs (KB-325): the caller must be authenticated with a
+// console session, not a protocol token. The credential class — not the
+// member kind — decides the surface: agents, orchestrators and triggers
+// carry protocol tokens with no login session to end and no ledger row to
+// list, so they are denied without disclosing any other caller's ledger.
+// Returns the authenticated user and session ledger ids.
+func requireConsoleSession(ctx context.Context) (userID, sessionID string, err error) {
+	userID = auth.CallerConsoleUserID(ctx)
+	sessionID = auth.CallerConsoleSessionID(ctx)
+	if userID == "" || sessionID == "" {
+		return "", "", connect.NewError(connect.CodePermissionDenied, errors.New("console session required"))
+	}
+	return userID, sessionID, nil
+}

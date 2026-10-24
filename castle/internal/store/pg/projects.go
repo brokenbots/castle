@@ -259,6 +259,32 @@ func (s *Store) IsProjectMember(ctx context.Context, projectID, memberID string)
 	return true, nil
 }
 
+// ListMemberProjects returns the ids of the projects whose member set
+// contains memberID (KB-325), read from the same project_members set the
+// lease scan and run read scope consult. An unknown member has no projects.
+func (s *Store) ListMemberProjects(ctx context.Context, memberID string) ([]string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if memberID == "" {
+		return nil, nil
+	}
+	rows, err := s.reader.QueryContext(ctx,
+		`SELECT project_id FROM project_members WHERE member_id=$1 ORDER BY project_id ASC`, memberID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // GetProjectSettings returns the project's convention-keyed settings doc and
 // its content-addressed etag. ErrNotFound when the project does not exist.
 func (s *Store) GetProjectSettings(ctx context.Context, projectID string) (map[string]string, string, error) {

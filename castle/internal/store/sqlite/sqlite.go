@@ -378,6 +378,32 @@ func (s *Store) IsProjectMember(ctx context.Context, projectID, memberID string)
 	return true, nil
 }
 
+// ListMemberProjects returns the ids of the projects whose member set
+// contains memberID (KB-325), read from the same project_members set the
+// lease scan and run read scope consult. An unknown member has no projects.
+func (s *Store) ListMemberProjects(ctx context.Context, memberID string) ([]string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if memberID == "" {
+		return nil, nil
+	}
+	rows, err := s.reader.QueryContext(ctx,
+		`SELECT project_id FROM project_members WHERE member_id=? ORDER BY project_id ASC`, memberID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // GetProjectSettings returns the project's convention-keyed settings doc and
 // its content-addressed etag. ErrNotFound when the project does not exist.
 func (s *Store) GetProjectSettings(ctx context.Context, projectID string) (map[string]string, string, error) {
@@ -687,31 +713,80 @@ func (s *Store) DeleteConsoleUsers(ctx context.Context) error {
 func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSession) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO console_sessions(id,user_id,token_hash,created_at) VALUES(?,?,?,?)`,
-		sess.ID, sess.UserID, sess.TokenHash, sess.CreatedAt.Format(store.TimestampLayout))
+	membership, err := store.MarshalMembership(sess.Membership)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO console_sessions(id,user_id,token_hash,created_at,revoked_at,membership) VALUES(?,?,?,?,?,?)`,
+		sess.ID, sess.UserID, sess.TokenHash, sess.CreatedAt.Format(store.TimestampLayout),
+		tsPtr(sess.RevokedAt), membership)
 	return err
 }
 
 func (s *Store) ListConsoleSessions(ctx context.Context) ([]*store.ConsoleSession, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	rows, err := s.reader.QueryContext(ctx, `SELECT id,user_id,token_hash,created_at FROM console_sessions ORDER BY created_at ASC`)
+	rows, err := s.reader.QueryContext(ctx, `SELECT id,user_id,token_hash,created_at,revoked_at,membership FROM console_sessions ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []*store.ConsoleSession
 	for rows.Next() {
-		var sess store.ConsoleSession
-		var created string
-		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &created); err != nil {
+		sess, err := scanConsoleSession(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		sess.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
-		out = append(out, &sess)
+		out = append(out, sess)
 	}
 	return out, rows.Err()
+}
+
+// RevokeConsoleSession stamps the server-side revocation (KB-325) on the
+// ledger row. Idempotent: unknown ids and already-revoked sessions are
+// touched again with the FIRST stamp winning (COALESCE keeps the original
+// stamp on a re-logout, so the ledger records one revocation instant).
+func (s *Store) RevokeConsoleSession(ctx context.Context, sessionID string, at time.Time) error {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE console_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?`,
+		at.Format(store.TimestampLayout), sessionID)
+	return err
+}
+
+// tsPtr renders an optional timestamp as a driver value: nil stays SQL NULL
+// so absent stamps (the session ledger's revocation column) stay NULL
+// instead of a zero-text value.
+func tsPtr(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Format(store.TimestampLayout)
+}
+
+// scanConsoleSession scans one console_sessions row (the full ledger
+// projection: created/revoked stamps + issue-time membership snapshot).
+func scanConsoleSession(scan func(...any) error) (*store.ConsoleSession, error) {
+	var sess store.ConsoleSession
+	var created string
+	var revoked sql.NullString
+	var membership []byte
+	err := scan(&sess.ID, &sess.UserID, &sess.TokenHash, &created, &revoked, &membership)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, err
+	}
+	sess.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
+	if revoked.Valid {
+		t, _ := time.Parse(store.TimestampLayout, revoked.String)
+		sess.RevokedAt = &t
+	}
+	sess.Membership = store.UnmarshalMembership(string(membership))
+	return &sess, nil
 }
 
 func (s *Store) DeleteConsoleSessions(ctx context.Context) error {

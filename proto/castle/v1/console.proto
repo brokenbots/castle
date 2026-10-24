@@ -29,6 +29,36 @@ service ConsoleService {
   // all runs and agents, and denied every write procedure.
   rpc Login(LoginRequest) returns (LoginResponse);
 
+  // Logout revokes the caller's own console session server-side (KB-325).
+  // The presented bearer token stops authenticating at once: the server
+  // persists the revocation stamp on the session's ledger row, and every
+  // later token resolution observes it, so the next request with the same
+  // token answers UNAUTHENTICATED. Logout is idempotent — revoking an
+  // already-revoked session succeeds with the original revocation stamp.
+  //
+  // Only a console session may log itself out: callers authenticated with
+  // any protocol token (agent, orchestrator, trigger) are denied with
+  // PERMISSION_DENIED — a protocol token has no login session to end.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // ListSessions lists the calling console user's session ledger (KB-325).
+  // Each entry carries the credential KIND the session was issued as and
+  // the membership set the session was issued under (the member's project
+  // ids at login time, resolved through the shared project membership
+  // set). The snapshot is ledger metadata for visibility and audit only —
+  // authorization is never served from it: every request resolves member
+  // rights live through the shared membership predicate the assignment
+  // lease scan and run read-scoping consult, so membership changes after
+  // a login take effect without a re-login and a stale snapshot can never
+  // widen authority.
+  //
+  // Entries include revoked sessions (with their revocation stamp) so the
+  // ledger shows the full login -> logout lifecycle. Only a console
+  // session may list sessions: protocol-token callers are denied with
+  // PERMISSION_DENIED, and a caller sees its own user's sessions only —
+  // never another console user's.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+
   // ResolveResume delivers the console's explicit pending-signal decision —
   // an approval decision (ApprovalCard) or a signal note — to a paused run
   // (CRI-196). It mirrors the CRI-255 ResolveResume vocabulary while keeping
@@ -62,6 +92,57 @@ message LoginResponse {
   string session_token = 1;
   // username echoes the authenticated console user's login name.
   string username = 2;
+}
+
+// SessionKind names the credential class a session was issued as. The two
+// classes decide the WRITE shape across the surface: a console session
+// reaches the human-console surfaces (run control, project administration,
+// this ledger), a protocol token reaches the assignment/run and observation
+// surfaces. Member kind (human vs ai) has no server-side role — the
+// credential class is the only discriminator.
+enum SessionKind {
+  // Unspecified. Never returned; present for forward compatibility.
+  SESSION_KIND_UNSPECIFIED = 0;
+  // A console session issued by ConsoleService.Login: a human login
+  // credential whose bearer token is persisted only as a digest.
+  SESSION_KIND_CONSOLE = 1;
+  // A registered protocol token (agent, orchestrator, or trigger accept
+  // token). Protocol tokens are registered operator credentials, not login
+  // sessions; the value exists so the ledger's kind vocabulary is complete
+  // and callers cannot mistake a protocol token class for a login session.
+  SESSION_KIND_PROTOCOL_TOKEN = 2;
+}
+
+message LogoutRequest {}
+
+message LogoutResponse {
+  // revoked_at is the instant the server stamped the session's revocation.
+  google.protobuf.Timestamp revoked_at = 1;
+}
+
+message ListSessionsRequest {}
+
+// SessionInfo is one ledger entry of a console session.
+message SessionInfo {
+  // session_id is the session's stable ledger id.
+  string session_id = 1;
+  // kind is the credential class the session was issued as.
+  SessionKind kind = 2;
+  // membership is the member's project set at issue time (the project ids
+  // the console user belonged to when the session was minted), sorted.
+  // Snapshot metadata only — live rights always resolve through the shared
+  // membership set.
+  repeated string membership = 3;
+  // created_at is when the session was issued.
+  google.protobuf.Timestamp created_at = 4;
+  // revoked_at is when the session was revoked (Logout or rotation), unset
+  // while the session is still live.
+  google.protobuf.Timestamp revoked_at = 5;
+}
+
+message ListSessionsResponse {
+  // sessions lists the caller's console sessions, oldest first.
+  repeated SessionInfo sessions = 1;
 }
 
 message ResolveResumeRequest {

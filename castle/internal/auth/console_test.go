@@ -39,6 +39,76 @@ func seedConsoleUser(t *testing.T, db *sqlite.Store) string {
 	return token
 }
 
+// TestRevokedSessionInvalidatesImmediately covers the KB-325 tombstone
+// path: revoking the session row server-side (without deleting it) stops
+// token resolution on the very next lookup, while the row remains in the
+// ledger for list purposes.
+func TestRevokedSessionInvalidatesImmediately(t *testing.T) {
+	db := newAuthTestStore(t)
+	token := seedConsoleUser(t, db)
+	ctx := context.Background()
+
+	if sess, err := ResolveConsoleSession(ctx, db, token); sess == nil || err != nil {
+		t.Fatalf("live session must resolve (sess=%v, err=%v)", sess, err)
+	}
+
+	now := time.Now().UTC()
+	if err := db.RevokeConsoleSession(ctx, "sess-1", now); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if sess, err := ResolveConsoleSession(ctx, db, token); sess != nil || err != nil {
+		t.Fatalf("revoked session must stop resolving immediately (sess=%v, err=%v)", sess, err)
+	}
+
+	// The tombstoned row stays in the ledger: listing still shows it.
+	rows, err := db.ListConsoleSessions(ctx)
+	if err != nil || len(rows) != 1 || rows[0].RevokedAt == nil {
+		t.Fatalf("revoked row must remain in the ledger (rows=%+v, err=%v)", rows, err)
+	}
+}
+
+// TestCallerConsoleSessionIDInjected pins that the interceptor exposes the
+// resolved console session ledger id to handlers — the key that lets the
+// session-ledger RPCs require the console-session credential class.
+func TestCallerConsoleSessionIDInjected(t *testing.T) {
+	db := newAuthTestStore(t)
+	token := seedConsoleUser(t, db)
+	var consoleID, sessionID string
+	call := newUnaryProbe(t, db, criteriav1connect.ServerServiceListRunsProcedure, false, func(ctx context.Context) {
+		consoleID, sessionID = CallerConsoleUserID(ctx), CallerConsoleSessionID(ctx)
+	})
+	if err := call(token); err != nil {
+		t.Fatalf("console token rejected: %v", err)
+	}
+	if consoleID != "console-default" || sessionID != "sess-1" {
+		t.Fatalf("expected console user id + session id injected, got user=%q session=%q", consoleID, sessionID)
+	}
+}
+
+// TestRevokedSessionIsUnauthenticatedOnSurface ensures a session revoked via
+// the tombstone path is not merely nil-for-handler but unauthenticated on the
+// wire surface: the token maps to no identity at all afterward.
+func TestRevokedSessionIsUnauthenticatedOnSurface(t *testing.T) {
+	db := newAuthTestStore(t)
+	token := seedConsoleUser(t, db)
+	ctx := context.Background()
+	if err := db.RevokeConsoleSession(ctx, "sess-1", time.Now().UTC()); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	var consoleID, agentID string
+	call := newUnaryProbe(t, db, criteriav1connect.ServerServiceListRunsProcedure, false, func(ctx context.Context) {
+		consoleID, agentID = CallerConsoleUserID(ctx), CallerCriteriaID(ctx)
+	})
+	err := call(token)
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("revoked console token must be unauthenticated on the surface, got %v", err)
+	}
+	if consoleID != "" || agentID != "" {
+		t.Fatalf("no identity may be injected for a revoked token (console=%q agent=%q)", consoleID, agentID)
+	}
+}
+
 func TestHashPasswordRoundTrip(t *testing.T) {
 	hash, err := HashPassword("s3cret-operator-password")
 	if err != nil {
