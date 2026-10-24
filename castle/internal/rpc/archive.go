@@ -16,7 +16,6 @@ import (
 	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 )
 
 // archiveRecordJSON marshals the received archive record so the stored body
@@ -213,7 +212,7 @@ func (s *ServerServer) GetRunArchive(ctx context.Context, req *connect.Request[c
 func (s *ServerServer) ListRunArchives(ctx context.Context, req *connect.Request[castlev1.ListRunArchivesRequest]) (*connect.Response[castlev1.ListRunArchivesResponse], error) {
 	limit := int(req.Msg.GetLimit())
 	if limit <= 0 {
-		limit = sqlite.ListRunArchivesDefaultLimit
+		limit = store.ListRunArchivesDefaultLimit
 	}
 	all, next, err := s.Store.ListRunArchives(ctx, req.Msg.GetKeyPrefix(), "", limit, req.Msg.GetCursor())
 	if err != nil {

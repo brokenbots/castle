@@ -109,18 +109,7 @@ func Store(t *testing.T) *pg.Store {
 	t.Helper()
 	base := shared(t)
 
-	name := fmt.Sprintf("castle_suite_%d_%d", os.Getpid(), dbCounter.Add(1))
-	if !dbNameRE.MatchString(name) {
-		t.Fatalf("pgtest: generated database name %q is not a valid identifier", name)
-	}
-	// DROP first: a crashed prior run of the same pid may have left the name.
-	if _, err := base.Exec(`DROP DATABASE IF EXISTS ` + name); err != nil {
-		t.Fatalf("pgtest: prune database %s: %v", name, err)
-	}
-	if _, err := base.Exec(`CREATE DATABASE ` + name); err != nil {
-		t.Fatalf("pgtest: create database %s: %v", name, err)
-	}
-
+	name := allocate(t, base)
 	s := open(t, dsn(name))
 	t.Cleanup(func() {
 		for _, st := range openStores(t) {
@@ -134,6 +123,39 @@ func Store(t *testing.T) *pg.Store {
 		perTest.Delete(t)
 	})
 	return s
+}
+
+// DSN boots the shared ephemeral server and returns the DSN of a fresh,
+// empty database; migrations run when the caller opens it (pg.Open). The
+// database is dropped after the test finishes. Lets tests exercise the
+// real open-with-migrations path instead of pgtest.Store's internal one.
+func DSN(t *testing.T) string {
+	t.Helper()
+	base := shared(t)
+	name := allocate(t, base)
+	t.Cleanup(func() {
+		if _, err := base.Exec(`DROP DATABASE IF EXISTS ` + name + ` WITH (FORCE)`); err != nil {
+			t.Errorf("pgtest: drop database %s: %v", name, err)
+		}
+	})
+	return dsn(name)
+}
+
+// allocate creates a uniquely named, empty database on the shared server.
+func allocate(t *testing.T, base *sql.DB) string {
+	t.Helper()
+	name := fmt.Sprintf("castle_suite_%d_%d", os.Getpid(), dbCounter.Add(1))
+	if !dbNameRE.MatchString(name) {
+		t.Fatalf("pgtest: generated database name %q is not a valid identifier", name)
+	}
+	// DROP first: a crashed prior run of the same pid may have left the name.
+	if _, err := base.Exec(`DROP DATABASE IF EXISTS ` + name); err != nil {
+		t.Fatalf("pgtest: prune database %s: %v", name, err)
+	}
+	if _, err := base.Exec(`CREATE DATABASE ` + name); err != nil {
+		t.Fatalf("pgtest: create database %s: %v", name, err)
+	}
+	return name
 }
 
 // Reopen returns a new Store over the same isolated database the test's

@@ -3,7 +3,6 @@
 -- gets the same shape via ALTER (no table rebuild needed) — pg-native column
 -- order matches the CREATE order sqlite converged on.
 ALTER TABLE runs ALTER COLUMN overseer_id DROP NOT NULL;
-ALTER TABLE runs ADD COLUMN IF NOT EXISTS labels TEXT;
 
 -- Agent labels used to match eligible assignments.
 ALTER TABLE overseers ADD COLUMN IF NOT EXISTS labels TEXT;
@@ -13,7 +12,7 @@ CREATE TABLE IF NOT EXISTS workflow_assignments (
     owner_criteria_id TEXT NOT NULL,
     run_id           TEXT NOT NULL UNIQUE REFERENCES runs(id),
     workflow_name    TEXT NOT NULL,
-    workflow_source  TEXT,
+    workflow_source  TEXT NOT NULL,
     lockfile_source  TEXT,
     idempotency_key  TEXT NOT NULL,
     state            TEXT NOT NULL DEFAULT 'queued',

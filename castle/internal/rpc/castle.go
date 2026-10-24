@@ -14,7 +14,6 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/store"
-	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 
@@ -82,10 +81,10 @@ func (s *ServerServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRu
 func (s *ServerServer) ListRunEvents(ctx context.Context, req *connect.Request[pb.ListRunEventsRequest]) (*connect.Response[pb.ListRunEventsResponse], error) {
 	limit := int(req.Msg.Limit)
 	if limit <= 0 {
-		limit = sqlite.ListEventsDefaultLimit
+		limit = store.ListEventsDefaultLimit
 	}
-	if limit > sqlite.ListEventsMaxLimit {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("limit %d exceeds maximum %d; page using since_seq", limit, sqlite.ListEventsMaxLimit))
+	if limit > store.ListEventsMaxLimit {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("limit %d exceeds maximum %d; page using since_seq", limit, store.ListEventsMaxLimit))
 	}
 
 	all, err := s.Store.ListEvents(ctx, req.Msg.RunId, req.Msg.SinceSeq, limit)

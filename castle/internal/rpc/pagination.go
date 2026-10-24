@@ -8,7 +8,6 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/brokenbots/castle/castle/internal/store"
-	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 	criteria "github.com/brokenbots/criteria/sdk"
 )
 
@@ -20,7 +19,7 @@ var errStopEventPagination = errors.New("stop paged event iteration")
 func forEachPersistedEventPage(ctx context.Context, st store.Store, runID string, since uint64, onEvent func(*criteria.Envelope) error) (uint64, error) {
 	cursor := since
 	for page := 0; page < maxListEventPagesPerRPC; page++ {
-		events, err := st.ListEvents(ctx, runID, cursor, sqlite.ListEventsMaxLimit)
+		events, err := st.ListEvents(ctx, runID, cursor, store.ListEventsMaxLimit)
 		if err != nil {
 			return cursor, err
 		}
@@ -40,7 +39,7 @@ func forEachPersistedEventPage(ctx context.Context, st store.Store, runID string
 			}
 			cursor = ev.Seq
 		}
-		if len(events) < sqlite.ListEventsMaxLimit {
+		if len(events) < store.ListEventsMaxLimit {
 			return cursor, nil
 		}
 	}
