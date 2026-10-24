@@ -27,15 +27,15 @@ func (p *plf) next(v any) string {
 
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
-const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason"
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason,agent_identity"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url,agent_identity) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, us(r.CreatedAt),
-		timePtr(r.StartedAt), nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL))
+		timePtr(r.StartedAt), nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL), r.AgentIdentity)
 	return err
 }
 
@@ -116,7 +116,7 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var overseerID sql.NullString
 	var started, ended, pausedAt sql.NullTime
 	var variableScope, pendingSignal, ticket, repoURL, prURL, failureReason sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason)
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason, &r.AgentIdentity)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
