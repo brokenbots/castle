@@ -60,7 +60,7 @@ type harness struct {
 	statePath string
 }
 
-func newHarness(t *testing.T, fk *fakeKanboard, cfg *Config, tweak func(*fakeSubmitter)) *harness {
+func newHarness(t *testing.T, fk *fakeKanboard, cfg *Config, tweak func(*fakeSubmitter), opts ...func(*Options)) *harness {
 	t.Helper()
 	statePath := filepath.Join(t.TempDir(), "adapter-state.json")
 	sub := &fakeSubmitter{}
@@ -69,11 +69,15 @@ func newHarness(t *testing.T, fk *fakeKanboard, cfg *Config, tweak func(*fakeSub
 	}
 	watcher := newFakeRunWatcher()
 	kb := kanboard.New(fk.srv.URL+"/jsonrpc.php", "test-app-token")
-	a, err := New(cfg, kb, sub, sub, watcher, discardLogger(), Options{
+	o := Options{
 		StatePath:    statePath,
 		PollInterval: 0,
 		Instance:     "test",
-	})
+	}
+	for _, f := range opts {
+		f(&o)
+	}
+	a, err := New(cfg, kb, sub, sub, watcher, discardLogger(), o)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -92,14 +96,18 @@ func (h *harness) poll(t *testing.T) {
 
 // rebuild returns a fresh Adapter over the same board, submitter and state
 // file, as a process restart would produce.
-func (h *harness) rebuild(t *testing.T, cfg *Config) *harness {
+func (h *harness) rebuild(t *testing.T, cfg *Config, opts ...func(*Options)) *harness {
 	watcher := newFakeRunWatcher()
 	kb := kanboard.New(h.fk.srv.URL+"/jsonrpc.php", "test-app-token")
-	a, err := New(cfg, kb, h.sub, h.sub, watcher, discardLogger(), Options{
+	o := Options{
 		StatePath:    h.statePath,
 		PollInterval: 0,
 		Instance:     "test",
-	})
+	}
+	for _, f := range opts {
+		f(&o)
+	}
+	a, err := New(cfg, kb, h.sub, h.sub, watcher, discardLogger(), o)
 	if err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}

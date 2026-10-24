@@ -205,6 +205,109 @@ func TestBoundedSettleAfterStreamEndsSilently(t *testing.T) {
 	pollUntil(t, h, func() bool { return len(h.sub.submitted()) == 2 })
 }
 
+// withBudget overrides the deferral budget for tests that need a settle on
+// a deterministic schedule; the production default is defaultDeferralBudget.
+func withBudget(d time.Duration) func(*Options) {
+	return func(o *Options) { o.DeferralBudget = d }
+}
+
+// TestBoundedSettleWithStreamHeldOpen: a TERMINAL disposition whose watch
+// stream stays open must still settle within the persisted deferral
+// budget — WatchRun tails live indefinitely, so waiting for the stream to
+// end is not a bound on its own. The held-open stream never delivers an
+// event: the record settles NoVerdict once the budget expires (card
+// untouched, record mirrored then pruned, ticket unblocked), while a
+// pending envelope would still win first via applyEnvelope.
+func TestBoundedSettleWithStreamHeldOpen(t *testing.T) {
+	h, fk := mirrorHarness(t, 46, "Work in progress", nil, withBudget(100*time.Millisecond))
+	h.sub.dispState = pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL
+	h.watcher.holdEvents(runIDOf(1)) // stream stays open, replay never arrives
+	h.poll(t)                        // fires run-1
+	h.poll(t)                        // disposition defers (watch live, replay pending)
+
+	rec := recordOf(t, h, "run-1")
+	if rec.Settled || rec.Mirrored || !rec.TerminalByDisposition || rec.DeferSinceMs == 0 {
+		t.Fatalf("deferred settle not recorded: %+v", rec)
+	}
+
+	// Fire-blocked while the budget is still unspent: no duplicate run.
+	fk.setCardColumn(46, "Ready")
+	h.poll(t)
+	if n := len(h.sub.submitted()); n != 1 {
+		t.Fatalf("fire-blocked ticket submitted %d assignments, want 1", n)
+	}
+
+	// Later polls settle NoVerdict once the budget expires, even though
+	// the stream never ends; the mirror cycle completes (card untouched)
+	// and the record is pruned. waitFor keeps polling past the budget's
+	// wall clock, unlike pollUntil's fixed poll count.
+	waitFor(t, 2*time.Second, "bounded settle with stream held open", func() bool {
+		h.poll(t)
+		return !hasRun(h, "run-1")
+	})
+	if col := fk.columnOf(46); col != "Ready" {
+		t.Errorf("card column = %q, want untouched (NoVerdict moves nothing)", col)
+	}
+	if c := fk.commentsOn(46); len(c) != 0 {
+		t.Errorf("NoVerdict settle commented: %v", c)
+	}
+	s, err := loadState(h.statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if _, ok := s.Runs["run-1"]; ok {
+		t.Errorf("settled run-1 still in state file: %+v", s.Runs["run-1"])
+	}
+	// The NoVerdict settle unblocks the ticket: a fresh entry fires again.
+	// (The Ready transition while fire-blocked was consumed as an entry,
+	// so a second column change supplies one.)
+	fk.setCardColumn(46, "Work in progress")
+	pollUntil(t, h, func() bool { return len(h.sub.submitted()) == 2 })
+}
+
+// TestDeferralBudgetSurvivesRestart: the deferral deadline is persisted
+// with the record, so a restart reloads the spent budget and the first
+// poll after the reload settles the record NoVerdict — the bound does
+// not reset when the process does.
+func TestDeferralBudgetSurvivesRestart(t *testing.T) {
+	h, fk := mirrorHarness(t, 47, "Work in progress", nil, withBudget(time.Hour))
+	h.sub.dispState = pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL
+	h.watcher.holdEvents(runIDOf(1))
+	h.poll(t) // fires run-1
+	h.poll(t) // disposition defers (watch live, replay pending; budget unspent)
+
+	rec := recordOf(t, h, "run-1")
+	if rec.Settled || !rec.TerminalByDisposition || rec.DeferSinceMs == 0 {
+		t.Fatalf("deferred settle not recorded: %+v", rec)
+	}
+	s, err := loadState(h.statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	persisted, ok := s.Runs["run-1"]
+	if !ok || persisted.Settled || persisted.DeferSinceMs != rec.DeferSinceMs {
+		t.Fatalf("deferred record not persisted: %+v (want DeferSinceMs %d)", persisted, rec.DeferSinceMs)
+	}
+
+	// Restart over the same state file with a budget that truncates to
+	// zero milliseconds: already expired on disk. The first poll settles.
+	h2 := h.rebuild(t, testLaneConfig(), withBudget(time.Microsecond))
+	h2.poll(t)
+	waitFor(t, 2*time.Second, "settle after restart", func() bool {
+		h2.poll(t)
+		return !hasRun(h2, "run-1")
+	})
+	if col := fk.columnOf(47); col != "Work in progress" {
+		t.Errorf("card column = %q, want untouched (NoVerdict moves nothing)", col)
+	}
+	if c := fk.commentsOn(47); len(c) != 0 {
+		t.Errorf("NoVerdict settle commented: %v", c)
+	}
+	// The reload settle unblocks the ticket: a fresh entry fires again.
+	fk.setCardColumn(47, "Ready")
+	pollUntil(t, h2, func() bool { return len(h2.sub.submitted()) == 2 })
+}
+
 // TestPruneSettledMirroredRunsBoundedState: after a run settles and
 // mirrors, the record disappears from the adapter map and from the
 // persisted state file, and the run count stays bounded across N
@@ -272,10 +375,10 @@ func TestWatchPumpsStopOnShutdown(t *testing.T) {
 }
 
 // mirrorHarness fires from `column` with the standard dev+triage config.
-func mirrorHarness(t *testing.T, ticketID int, column string, sub func(*fakeSubmitter)) (*harness, *fakeKanboard) {
+func mirrorHarness(t *testing.T, ticketID int, column string, sub func(*fakeSubmitter), opts ...func(*Options)) (*harness, *fakeKanboard) {
 	fk := newFakeKanboard(t, "KB board", boardColumns()...)
 	fk.addCard(t, ticketID, column, fmt.Sprintf("KB-%d", ticketID), "k8s-run", "repo:own/name")
-	h := newHarness(t, fk, testLaneConfig(), sub)
+	h := newHarness(t, fk, testLaneConfig(), sub, opts...)
 	return h, fk
 }
 

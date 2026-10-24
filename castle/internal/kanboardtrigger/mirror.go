@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -185,13 +186,34 @@ func (a *Adapter) settleByDisposition(runID string, st pb.WorkflowAssignmentStat
 		// cycle ends here (bounded; card untouched).
 		r.Mirrored = true
 	case pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL:
+		// Deferral budget: bound how long an unsettled TERMINAL record may
+		// block the ticket while its watch is live. WatchRun tails live
+		// indefinitely (no idle timeout) and the reaper publishes no
+		// envelope, so "wait for the stream" is not a bound on its own —
+		// DeferSinceMs (persisted, hence restart-safe) starts at the first
+		// deferral and its expiry settles the record NoVerdict even while
+		// the stream is still open. The marker stays set through a budget
+		// settle so the mirror cycle still completes on a live watch; a
+		// terminal envelope arriving before the budget expires still wins
+		// via applyEnvelope (as does a late one while the record survives
+		// the next prune — the bounded contract).
+		if r.TerminalByDisposition && a.deferralExpired(r) {
+			r.Settled = true
+			r.NoVerdict = true
+			// FailureReason/FinalState stay empty and SeenEvents is not
+			// overridden: no envelope was observed, mirror leaves the card
+			// untouched. TerminalByDisposition is kept (see above).
+			a.log.Info("deferral budget exhausted; settling run without a verdict", "run", runID)
+			break
+		}
 		if a.watching[runID] { // read the map directly: helpers lock
 			// The watch replay is still pending: stay unsettled (ticket
-			// fire-blocked) until the envelope applies or the pump ends —
-			// a later disposition read completes the settle once the stream
-			// is gone.
+			// fire-blocked) until the envelope applies or the deferral
+			// budget expires — a later poll applies whichever lands first.
 			if !r.TerminalByDisposition {
 				r.TerminalByDisposition = true
+				r.DeferSinceMs = time.Now().UnixMilli()
+				a.markDirtyLocked()
 				a.log.Info("deferring disposition settle; watch replay still pending", "run", runID)
 			}
 			break
@@ -206,6 +228,14 @@ func (a *Adapter) settleByDisposition(runID string, st pb.WorkflowAssignmentStat
 		a.log.Info("settling run by assignment disposition", "run", runID, "state", st.String())
 		a.persistLocked()
 	}
+}
+
+// deferralExpired reports whether the persisted deferral budget is
+// exhausted (deadline counted from the first TERMINAL observation). A
+// zero DeferSinceMs — records written before the field existed — counts
+// as expired, which keeps the settle bounded for every persisted shape.
+func (a *Adapter) deferralExpired(r *RunRecord) bool {
+	return time.Now().UnixMilli()-r.DeferSinceMs >= a.deferralBudget.Milliseconds()
 }
 
 // finalizeNoVerdict settles a deferred terminal-disposition record whose
@@ -326,8 +356,12 @@ func (a *Adapter) reconcileMirrors(ctx context.Context, tasks []kanboard.Task) {
 		}
 		switch {
 		case rec.NoVerdict:
-			if a.isWatching(rec.RunID) {
-				continue // watch still live: a terminal envelope may arrive
+			// While the watch is live a terminal envelope may still arrive,
+			// unless the record was settled by the deferral budget
+			// (marked TerminalByDisposition, kept through the settle): its
+			// mirror cycle is bounded and completes now.
+			if a.isWatching(rec.RunID) && !rec.TerminalByDisposition {
+				continue
 			}
 			a.log.InfoContext(ctx, "assignment settled without observable verdict; card untouched",
 				"ticket", rec.TicketID, "run", rec.RunID)

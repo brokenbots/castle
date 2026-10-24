@@ -81,6 +81,10 @@ type Adapter struct {
 	// pumps tracks live watch goroutines so tests (and shutdown
 	// verification) can wait for stream teardown.
 	pumps sync.WaitGroup
+
+	// deferralBudget bounds the TERMINAL-disposition deferred settle; see
+	// Options.DeferralBudget. Only the poll path reads it.
+	deferralBudget time.Duration
 }
 
 // Options configures New.
@@ -94,7 +98,19 @@ type Options struct {
 	// Instance disambiguates WatchRun subscriber cursors between adapter
 	// processes sharing one castle; default "default".
 	Instance string
+	// DeferralBudget bounds how long a TERMINAL disposition may keep a run
+	// record unsettled while its watch replay is pending; default
+	// defaultDeferralBudget (2 minutes). Zero picks the default.
+	DeferralBudget time.Duration
 }
+
+// defaultDeferralBudget is how long the mirror waits for a pending watch
+// replay before settling a TERMINAL disposition as NoVerdict anyway: it
+// must comfortably exceed the seconds-scale window in which the server
+// replays a run's events after adoption, while bounding the settle when no
+// terminal envelope can ever arrive (WatchRun tails live indefinitely —
+// a run stamped terminal by the reaper has a live stream and no envelope).
+const defaultDeferralBudget = 2 * time.Minute
 
 // New builds an Adapter. It loads the durable state (entry memos, tracked
 // runs) and requires a validated config.
@@ -115,21 +131,25 @@ func New(cfg *Config, kb *kanboard.Client, submit Submitter, dispose AssignmentR
 	if opts.Instance == "" {
 		opts.Instance = "default"
 	}
+	if opts.DeferralBudget <= 0 {
+		opts.DeferralBudget = defaultDeferralBudget
+	}
 	return &Adapter{
-		cfg:           cfg,
-		kb:            kb,
-		submit:        submit,
-		dispose:       dispose,
-		watch:         runWatch,
-		log:           log,
-		interval:      opts.PollInterval,
-		subscriberID:  "kanboard-trigger-adapter:" + opts.Instance,
-		statePath:     opts.StatePath,
-		memos:         st.Tickets,
-		runs:          st.Runs,
-		watching:      map[string]bool{},
-		streamsCtx:    context.Background(),
-		streamsCancel: func() {},
+		cfg:            cfg,
+		kb:             kb,
+		submit:         submit,
+		dispose:        dispose,
+		watch:          runWatch,
+		log:            log,
+		interval:       opts.PollInterval,
+		subscriberID:   "kanboard-trigger-adapter:" + opts.Instance,
+		statePath:      opts.StatePath,
+		deferralBudget: opts.DeferralBudget,
+		memos:          st.Tickets,
+		runs:           st.Runs,
+		watching:       map[string]bool{},
+		streamsCtx:     context.Background(),
+		streamsCancel:  func() {},
 	}, nil
 }
 

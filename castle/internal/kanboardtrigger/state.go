@@ -59,9 +59,18 @@ type RunRecord struct {
 	// TerminalByDisposition marks a run whose assignment disposition was
 	// TERMINAL while its watch was still live: the mirror defers the
 	// settle until the watch either replays a terminal envelope (which
-	// then wins) or ends without one (which finalizes the NoVerdict
-	// settle). Never combined with Settled.
+	// then wins) or the deferral budget expires (which finalizes the
+	// NoVerdict settle even while the stream is still open). Never
+	// combined with Settled, with one exception: a budget-expiry settle
+	// keeps the marker so reconcileMirrors can complete the record's
+	// mirror cycle despite a still-live watch.
 	TerminalByDisposition bool `json:"terminal_by_disposition,omitempty"`
+	// DeferSinceMs is the wall-clock time (ms) at which the TERMINAL
+	// disposition deferral began (set together with
+	// TerminalByDisposition). It is persisted so the deferral budget
+	// survives restarts; zero (e.g. records written before the field
+	// existed) counts as expired.
+	DeferSinceMs int64 `json:"defer_since_ms,omitempty"`
 	// CommentWaived marks a failed run whose card was already observed in
 	// Review with the KB-302 comment considered posted (or first seen
 	// parked): the comment obligation never needs a retry.
