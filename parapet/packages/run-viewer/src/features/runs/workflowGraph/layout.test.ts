@@ -18,22 +18,8 @@ const diamond: WorkflowGraph = {
 };
 
 describe('layoutWorkflow', () => {
-  test('layers top-to-bottom by default: layers on y, spread on x', () => {
+  test('defaults to left-right: layers on x, spread on y', () => {
     const positions = layoutWorkflow(diamond);
-    const a = positions.get('a')!;
-    const b = positions.get('b')!;
-    const c = positions.get('c')!;
-    expect(a.y).toBe(0);
-    expect(b.y).toBe(NODE_Y_GAP);
-    expect(c.y).toBe(NODE_Y_GAP);
-    // Layer-1 siblings spread symmetrically around the origin on x.
-    expect(b.x).toBe(-NODE_X_GAP / 2);
-    expect(c.x).toBe(NODE_X_GAP / 2);
-    expect(a.x).toBe(0);
-  });
-
-  test('left-right transposes: layers on x, spread on y', () => {
-    const positions = layoutWorkflow(diamond, { orientation: 'left-right' });
     const a = positions.get('a')!;
     const b = positions.get('b')!;
     const c = positions.get('c')!;
@@ -46,15 +32,76 @@ describe('layoutWorkflow', () => {
     expect(a.y).toBe(0);
   });
 
+  test('top-bottom transposes: layers on y, spread on x', () => {
+    const positions = layoutWorkflow(diamond, { orientation: 'top-bottom' });
+    const a = positions.get('a')!;
+    const b = positions.get('b')!;
+    const c = positions.get('c')!;
+    expect(a.y).toBe(0);
+    expect(b.y).toBe(NODE_Y_GAP);
+    expect(c.y).toBe(NODE_Y_GAP);
+    // Layer-1 siblings spread symmetrically around the origin on x.
+    expect(b.x).toBe(-NODE_X_GAP / 2);
+    expect(c.x).toBe(NODE_X_GAP / 2);
+    expect(a.x).toBe(0);
+  });
+
   test('layer indices are preserved across orientations', () => {
     for (const positions of [
       layoutWorkflow(diamond),
-      layoutWorkflow(diamond, { orientation: 'left-right' }),
+      layoutWorkflow(diamond, { orientation: 'top-bottom' }),
     ]) {
       expect(positions.get('a')!.layer).toBe(0);
       expect(positions.get('b')!.layer).toBe(1);
       expect(positions.get('c')!.layer).toBe(1);
     }
+  });
+
+  test('longest-path layering stretches paths and sinks shared targets to the deepest entry', () => {
+    // start -> deep is a two-step path; failed is entered from start AND
+    // from deep. BFS would park failed next to deep (visited-guard
+    // artifact, sweeping deep's return edge upward); longest-path parks it
+    // one layer past its deepest entry, so the graph reads entry-left →
+    // terminal-right with no backward sweep.
+    const converge: WorkflowGraph = {
+      name: 'w',
+      startAt: 'start',
+      nodes: [
+        { id: 'start', kind: 'step' },
+        { id: 'deep', kind: 'step' },
+        { id: 'failed', kind: 'state', terminal: true },
+      ],
+      edges: [
+        { from: 'start', via: 'failure', to: 'failed' },
+        { from: 'start', via: 'success', to: 'deep' },
+        { from: 'deep', via: 'failure', to: 'failed' },
+      ],
+    };
+    const positions = layoutWorkflow(converge, { orientation: 'left-right' });
+    expect(positions.get('start')!.layer).toBe(0);
+    expect(positions.get('deep')!.layer).toBe(1);
+    expect(positions.get('failed')!.layer).toBe(2);
+  });
+
+  test('cycle edges are exempt from relaxation so they still sweep back', () => {
+    // build -> review -> build: the review node's layer must not push
+    // build deeper (the closing leg is a cycle), so review stays layered
+    // past build and the edge reads as a loop.
+    const loop: WorkflowGraph = {
+      name: 'w',
+      startAt: 'build',
+      nodes: [
+        { id: 'build', kind: 'step' },
+        { id: 'review', kind: 'step' },
+      ],
+      edges: [
+        { from: 'build', via: 'success', to: 'review' },
+        { from: 'review', via: 'revise', to: 'build' },
+      ],
+    };
+    const positions = layoutWorkflow(loop, { orientation: 'left-right' });
+    expect(positions.get('build')!.layer).toBe(0);
+    expect(positions.get('review')!.layer).toBe(1);
   });
 });
 
@@ -102,9 +149,11 @@ describe('classifyEdges', () => {
     expect(roles.loopBadge).toEqual(new Set());
   });
 
-  test('classifies an upward return as a back edge but not a cycle edge', () => {
-    // classify -> failed style returns: the target never reaches the
-    // source, so nothing loops back.
+  test('relaxation sinks convergence targets so no upward return remains', () => {
+    // classify -> failed style returns: longest-path layering parks
+    // `failed` one layer past its deepest entry, so even the deep node's
+    // return edge reads forward — nothing sweeps upward in an acyclic
+    // workflow.
     const returns: WorkflowGraph = {
       name: 'w',
       startAt: 'start',
@@ -120,16 +169,15 @@ describe('classifyEdges', () => {
       ],
     };
     const roles = classifyEdges(returns);
-    expect(roles.back).toEqual(new Set([2]));
+    expect(roles.back).toEqual(new Set());
     expect(roles.cycle).toEqual(new Set());
     expect(roles.loopBadge).toEqual(new Set());
   });
 
-  test('classifies an edge whose target sits on the same layer (visited-guard artifact)', () => {
-    // c is reached from a before the b -> c edge expands, so BFS layers b
-    // and c on the same layer: the layered layout cannot draw b -> c as a
-    // forward step, and it renders with the back-edge class (see the doc
-    // comment on classifyEdges).
+  test('relaxation separates same-layer targets so the visited-guard artifact never renders', () => {
+    // c is reached from a before the b -> c edge expands; BFS seeds b and
+    // c on the same layer, but relaxation pushes c past b, so the edge
+    // reads forward instead of rendering with the back-edge class.
     const flat: WorkflowGraph = {
       name: 'w',
       startAt: 'a',
@@ -146,11 +194,10 @@ describe('classifyEdges', () => {
     };
     const positions = layoutWorkflow(flat);
     expect(positions.get('b')!.layer).toBe(1);
-    expect(positions.get('c')!.layer).toBe(1);
+    expect(positions.get('c')!.layer).toBe(2);
     const roles = classifyEdges(flat);
-    expect(roles.back).toEqual(new Set([2]));
+    expect(roles.back).toEqual(new Set());
     expect(roles.cycle).toEqual(new Set());
-    expect(roles.loopBadge).toEqual(new Set());
   });
 
   test('classifies a cycle entered through a long path, not sibling returns', () => {
@@ -173,12 +220,13 @@ describe('classifyEdges', () => {
         { from: 'd', via: 'failure', to: 'failed' },
       ],
     };
-    // d -> b closes the b-c-d loop; d -> failed is an upward return, not a
-    // loop. All three legs of the loop are cycle edges (each target
-    // reaches its source around the loop).
+    // d -> b closes the b-c-d loop; all three legs are cycle edges (each
+    // target reaches its source around the loop). The closing edge sweeps
+    // back (b is cycle-exempt on layer 1); d's return to failed now reads
+    // forward: relaxation sinks failed past d.
     const roles = classifyEdges(chain);
     expect(roles.cycle).toEqual(new Set([2, 3, 4]));
-    expect(roles.back).toEqual(new Set([4, 5]));
+    expect(roles.back).toEqual(new Set([4]));
     expect(roles.loopBadge).toEqual(new Set([4]));
   });
 
@@ -195,16 +243,15 @@ describe('classifyEdges', () => {
     expect(roles.loopBadge).toEqual(new Set());
   });
 
-  test('intake fixture: upward returns are back edges, though the workflow is acyclic', () => {
-    // The intake workflow has no cycles, but many steps converge on the
-    // early-layered shared `failed`/`set_review_state` nodes, so their
-    // edges target an earlier layer — exactly the long sweeping edges item
-    // 2 de-emphasizes. The cycle classification separates these from real
-    // loops: the fixture has none.
+  test('intake fixture: relaxation keeps the acyclic workflow free of back edges', () => {
+    // The intake workflow has no cycles. BFS alone layered the shared
+    // `failed`/`set_review_state` convergence targets early, producing
+    // long sweeping return edges; longest-path relaxation parks them at
+    // their deepest entry, so no edge renders de-emphasized anymore.
     const graph = parseWorkflowHcl(linearSource);
     expect(graph.edges.length).toBeGreaterThan(0);
     const roles = classifyEdges(graph);
-    expect(roles.back.size).toBeGreaterThan(0);
+    expect(roles.back).toEqual(new Set());
     expect(roles.cycle).toEqual(new Set());
     expect(roles.loopBadge).toEqual(new Set());
   });

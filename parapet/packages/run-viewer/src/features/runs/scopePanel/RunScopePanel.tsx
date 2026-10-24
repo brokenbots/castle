@@ -70,7 +70,7 @@ export function RunScopePanel({ events }: RunScopePanelProps) {
           <div className="space-y-3">
             {Array.from(scope.stepOutputs.entries()).map(([step, outputs]) => (
               <div key={step} className="rounded-md bg-surface-raised p-2">
-                <div className="mb-1 font-mono text-meta text-purple-400">steps.{step}</div>
+                <div className="mb-1 font-mono text-meta text-accent-strong">steps.{step}</div>
                 <div className="ml-2 space-y-1">
                   {Array.from(outputs.entries()).map(([key, val]) => (
                     <div key={key} className="flex items-start gap-2">

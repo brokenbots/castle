@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
@@ -7,21 +7,23 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/criteria.v1.ServerService': {
-        target: 'http://localhost:8080',
+        target: process.env.VITE_CASTLE_URL || 'http://catch/',
         changeOrigin: true,
       },
       '/criteria.v1.CriteriaService': {
-        target: 'http://localhost:8080',
+        target: process.env.VITE_CASTLE_URL || 'http://catch/',
         changeOrigin: true,
       },
       '/grpc.health.v1.Health': {
-        target: 'http://localhost:8080',
+        target: process.env.VITE_CASTLE_URL || 'http://catch/',
         changeOrigin: true,
       },
     },
   },
   test: {
-    environment: 'jsdom',
+    // Custom environment: jsdom + Node's fetch/AbortController primitives.
+    // See src/test/jsdomWithNodeFetch.ts for why this seam exists.
+    environment: './src/test/jsdomWithNodeFetch.ts',
     setupFiles: ['./src/test/setup.ts'],
     globals: true,
   },

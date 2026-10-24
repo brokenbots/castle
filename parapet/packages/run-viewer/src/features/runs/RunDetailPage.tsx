@@ -5,19 +5,21 @@ import { useGetRunQuery, type EventEnvelope } from '../../api/castleApi';
 import { classifyError } from '../../api/errors';
 import { selectPauseState } from './runsSlice';
 import { useRunEventLog } from './eventLog/useRunEventLog';
+import { useEventReplay } from './eventLog/useEventReplay';
 import { EventLog } from './eventLog/EventLog';
 import { StatusPill } from './StatusPill';
-import { RunInspection } from './RunInspection';
+import { RunInspection, RunInspectionSummary } from './RunInspection';
+import { RunControls } from './RunControls';
 import { ScopeAndControlsPanel } from './ScopeAndControlsPanel';
 import { CASTLE_RUN_CAPABILITIES, type RunCapabilities } from './capabilities';
 import { ForEachStrip } from './eventLog/ForEachStrip';
-import { PageHeader } from '../../components/PageHeader';
 import { PageState } from '../../components/PageState';
-import { DockedPanel } from '../../components/DockedPanel';
 import { Breadcrumbs } from '../../components/Breadcrumbs';
+import { DetailPanel } from '../../components/DetailPanel';
 import { useDocumentTitle } from '../../shell/useDocumentTitle';
+import { ReplayControls } from './ReplayControls';
 import { extractTextEdges, parseWorkflowHcl, type WorkflowGraph as WorkflowGraphSpec } from './workflowGraph/parseWorkflowHcl';
-import { buildSubworkflowLayers, layerSourceText, selectWorkflowGraphs, type SubworkflowLayer } from './workflowGraph/layers';
+import { buildSubworkflowLayers, followLayerPath, layerSourceText, selectWorkflowGraphs, type SubworkflowLayer } from './workflowGraph/layers';
 import { WorkflowLayerNav } from './workflowGraph/WorkflowLayerNav';
 import { WorkflowGraph } from './workflowGraph/WorkflowGraph';
 import { WorkflowSourceView } from './workflowGraph/WorkflowSourceView';
@@ -44,7 +46,7 @@ function parseGraph(source: string): WorkflowGraphSpec | null {
   }
 }
 
-type ExpandablePanel = 'events' | 'graph' | 'inspection';
+type ExpandablePanel = 'graph';
 
 // Fullscreen overlay for an expanded run-detail panel: a fixed layer filling
 // the viewport above the page chrome on the opaque canvas. Expansion is
@@ -63,19 +65,9 @@ type ExpandablePanel = 'events' | 'graph' | 'inspection';
 // must be revisited.
 const FULLSCREEN_PANEL_CLASSES =
   'fixed inset-0 z-50 flex flex-col overflow-y-auto bg-canvas p-4 sm:p-6';
-const EVENTS_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=events-panel-body]]:flex [&_[data-testid=events-panel-body]]:flex-col [&_[data-testid=events-panel-body]]:flex-1 [&_[data-testid=events-panel-body]]:min-h-0 [&_[data-testid=events-panel-body]>div]:flex [&_[data-testid=events-panel-body]>div]:flex-col [&_[data-testid=events-panel-body]>div]:flex-1 [&_[data-testid=events-panel-body]>div]:min-h-0 [&_[data-testid=events-panel-body]>div>div:last-child]:flex-1 [&_[data-testid=events-panel-body]>div>div:last-child]:min-h-0 [&_[data-testid=event-log-scroll]]:h-full`;
 const GRAPH_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&>[data-testid=workflow-graph]]:flex-1 [&>[data-testid=workflow-graph]]:min-h-0`;
-const INSPECTION_FULLSCREEN_CLASSES = `${FULLSCREEN_PANEL_CLASSES} [&_[data-testid=run-inspection]]:flex-1 [&_[data-testid=run-inspection]]:min-h-0 [&_[data-testid=run-inspection]]:overflow-y-auto`;
 const PANEL_ICON_BUTTON_CLASSES =
   'shrink-0 rounded-md border border-line-strong p-1.5 text-ink-muted hover:bg-surface-raised hover:text-ink';
-
-function panelButtonClass(expanded: boolean): string {
-  return expanded
-    // Pinned to the viewport so the collapse control stays reachable even
-    // when the panel body scrolls.
-    ? `${PANEL_ICON_BUTTON_CLASSES} fixed right-4 top-4 sm:right-6 sm:top-6`
-    : `${PANEL_ICON_BUTTON_CLASSES} absolute right-0 top-0`;
-}
 
 interface PanelExpandButtonProps {
   title: string;
@@ -144,31 +136,31 @@ export function RunDetailPage({
   const { id = '' } = useParams();
   const run = useGetRunQuery(id);
   const { events, log, loadEarlier, watch, reconnect, refresh } = useRunEventLog(id);
+  // Replay (agent-first offline debugging): walks the loaded history over
+  // the graph while the live stream keeps flowing underneath. `events`
+  // stays the live stream; `replay` carries the view window the page
+  // renders (untouched when inactive).
+  const replay = useEventReplay(events);
+  const viewEvents = replay.active ? replay.replayed : events;
   const pauseState = useSelector(selectPauseState(id));
   const [selectedStep, setSelectedStep] = useState<{ runId: string; step: string } | null>(null);
   // Which panel (if any) is currently expanded to a fullscreen overlay.
   // Null keeps every panel docked; toggling only swaps classes on the
   // wrapper sections, so panel components and their hooks stay mounted.
   const [expandedPanel, setExpandedPanel] = useState<ExpandablePanel | null>(null);
-  // Graph reading direction (CRI-257); top-bottom preserves the original
-  // rendering, left-right transposes the layered layout.
-  const [graphOrientation, setGraphOrientation] = useState<GraphOrientation>('top-bottom');
+  // Graph reading direction (CRI-257); left-right keeps the entry node
+  // leftmost and terminals on the right — the agent-first reading order —
+  // with top-bottom available via the orientation toggle.
+  const [graphOrientation, setGraphOrientation] = useState<GraphOrientation>('left-right');
   // Follow mode: keep the viewport centered on the running step as the
   // event stream advances (CRI-257). Drag-pan and wheel-zoom stay live.
   const [followMode, setFollowMode] = useState(false);
-  // Source pane placement (right of the graph / under it) with collapse
-  // state remembered per placement (CRI-257): collapsing the under view
-  // does not force the side view collapsed, and vice versa.
-  const [sourcePlacement, setSourcePlacement] = useState<'side' | 'under'>('under');
-  const [sourceCollapsed, setSourceCollapsed] = useState<Record<'side' | 'under', boolean>>({
-    side: false,
-    under: false,
-  });
-  const toggleSourceCollapsed = () =>
-    setSourceCollapsed((state) => ({ ...state, [sourcePlacement]: !state[sourcePlacement] }));
-  const eventsExpandRef = useRef<HTMLButtonElement>(null);
+  // Whether the right-side details drawer (inspection details, workflow
+  // source, run scope) is open. The page renders all three columns in the
+  // drawer by default; the toggle collapses the drawer so the graph and
+  // events stretch to the full width.
+  const [drawerOpen, setDrawerOpen] = useState(true);
   const graphExpandRef = useRef<HTMLButtonElement>(null);
-  const inspectionExpandRef = useRef<HTMLButtonElement>(null);
 
   const togglePanel = (panel: ExpandablePanel) => {
     setExpandedPanel((current) => (current === panel ? null : panel));
@@ -182,9 +174,7 @@ export function RunDetailPage({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       setExpandedPanel(null);
-      if (expandedPanel === 'events') eventsExpandRef.current?.focus();
-      else if (expandedPanel === 'graph') graphExpandRef.current?.focus();
-      else inspectionExpandRef.current?.focus();
+      if (expandedPanel === 'graph') graphExpandRef.current?.focus();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -263,21 +253,120 @@ export function RunDetailPage({
   // The overlay maps the event stream onto graph nodes: running (pulsing)
   // for the active step, succeeded/failed for finished ones, per-iteration
   // for_each progress from ForEachStrip data, and unvisited nodes dimmed.
-  const overlay = useMemo(
-    () => (graph ? selectNodeOverlay(events) : { statuses: {}, forEach: {} }),
-    [graph, events],
-  );
-  // The node the engine is currently inside (last stepEntered wins per
-  // selectNodeOverlay) — the follow target when follow mode is on.
+  // A failed run's reached terminal node (lit by the runCompleted message)
+  // is re-tinted failed — the message carries the final state, and the
+  // overall failure verdict comes from the run itself.
+  const overlay = useMemo(() => {
+    const base = graph ? selectNodeOverlay(viewEvents) : { statuses: {}, forEach: {} };
+    if (run.data?.status === 'failed') {
+      for (let i = viewEvents.length - 1; i >= 0; i -= 1) {
+        const e = viewEvents[i];
+        if (e.type !== 'runCompleted' && e.type !== 'runFailed') continue;
+        const p = e.payload as { finalState?: unknown; final_state?: unknown } | undefined;
+        const finalState = typeof p?.finalState === 'string' ? p.finalState : typeof p?.final_state === 'string' ? p.final_state : null;
+        if (finalState) {
+          base.statuses[finalState] = 'failed';
+          break;
+        }
+      }
+    }
+    // Subworkflow exits light the CHILD layer's reached terminal (a state
+    // node never receives its own event): the parent step's outcome IS the
+    // sub-workflow's exit verdict — success polarity → the child's success
+    // terminal, anything else → the non-success one.
+    if (graph) {
+      for (const node of graph.nodes) {
+        if (!node.subworkflow) continue;
+        const last = [...viewEvents].reverse().find((e) => {
+          if (e.type === 'stepOutcome') return (e.payload as { step?: unknown })?.step === node.id;
+          if (e.type === 'stepTransition') return (e.payload as { from?: unknown })?.from === node.id;
+          return false;
+        });
+        if (!last) continue;
+        const child = layersByName.get(node.subworkflow);
+        if (!child?.graph) continue;
+        const outcome =
+          last.type === 'stepOutcome'
+            ? (last.payload as { outcome?: unknown })?.outcome
+            : 'success'; // a transition implies a successful exit
+        const wantSuccess = outcome === 'success' || outcome === 'ok';
+        const terminal = child.graph.nodes.find(
+          (n) => n.terminal && Boolean(n.success) === wantSuccess,
+        );
+        if (terminal && !base.statuses[terminal.id]) {
+          base.statuses[terminal.id] = wantSuccess ? 'succeeded' : 'failed';
+        }
+      }
+    }
+    return base;
+  }, [graph, viewEvents, run.data?.status, layersByName]);
+  // The status pill is the run's ground truth from castle at all times —
+  // replay animates the graph/event surface underneath and never fakes the
+  // run row's state (a stopped/failed/succeeded run keeps its real pill;
+  // replay just reads the loaded history, which has no live status of its
+  // own).
+  // Where the process is, per miniature (agent-first position cues): the
+  // nodes of each layer graph currently running or failed, so the rail's
+  // thumbnails show where in the graph the process is.
+  const activeIdsByLayer = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    const byGraph = (g: WorkflowGraphSpec | null | undefined) => {
+      if (!g) return new Set<string>();
+      const ids = new Set<string>();
+      for (const node of g.nodes) {
+        const status = overlay.statuses[node.id];
+        if (status === 'running' || status === 'failed') ids.add(node.id);
+      }
+      return ids;
+    };
+    map.set('', byGraph(graph));
+    for (const layer of layersByName.values()) map.set(layer.name, byGraph(layer.graph));
+    return map;
+  }, [overlay, graph, layersByName]);
+  // The node the engine (or the replay cursor, while replaying) is
+  // currently inside — the newest stepEntered of the view window. The
+  // follow target for the graph pan and the auto-traversal.
   const currentStepId = useMemo(() => {
-    const running = Object.entries(overlay.statuses).find(([, status]) => status === 'running');
-    return running?.[0] ?? null;
-  }, [overlay]);
-  const selected = selectedStep && selectedStep.runId === (run.data?.runId ?? '') ? selectedStep.step : null;
-  const visibleEvents = useMemo(
-    () => (selected ? events.filter((e) => eventBelongsToStep(e, selected)) : events),
-    [events, selected],
+    for (let i = viewEvents.length - 1; i >= 0; i -= 1) {
+      const e = viewEvents[i];
+      if (e.type !== 'stepEntered') continue;
+      const step = (e.payload as { step?: unknown } | undefined)?.step;
+      if (typeof step === 'string' && step !== '') return step;
+    }
+    return null;
+  }, [viewEvents]);
+  // Follow-along traversal (agent-first): when follow mode is on and the
+  // engine's step runs inside a subworkflow, the stack auto-opens to the
+  // layer containing it (following the last chain of subworkflow targets
+  // that resolves it). User navigation wins afterwards — the effect only
+  // acts while the live graph does not already contain the step.
+  const autoTraversing = useRef(false);
+  const followPath = useMemo(
+    () => (followMode ? followLayerPath(graph, currentStepId, layersByName) : null),
+    [followMode, graph, currentStepId, layersByName],
   );
+  useEffect(() => {
+    if (!followPath) return;
+    if (
+      followPath.length === layerStackLayers.length &&
+      layerStackLayers.every((layer, i) => layer.name === followPath[i])
+    ) {
+      return;
+    }
+    autoTraversing.current = true;
+    setLayerStack({ runId: run.data!.runId, names: followPath });
+  }, [followPath, layerStackLayers, run.data]);
+  const selected = selectedStep && selectedStep.runId === (run.data?.runId ?? '') ? selectedStep.step : null;
+  // Drawer follow (CRI-2xx): the source and inspection panels can track the
+  // view's current step (live engine step, or the replay cursor's while
+  // replaying — currentStepId already reads the replay window) instead of
+  // the manual node selection. Each panel follows independently; the source
+  // panel defaults to following, the inspection one to manual.
+  const viewStepId = currentStepId;
+  const [followSource, setFollowSource] = useState(true);
+  const [followInspection, setFollowInspection] = useState(false);
+  const toggleFollowSource = () => setFollowSource((v) => !v);
+  const toggleFollowInspection = () => setFollowInspection((v) => !v);
   // Node click drives source highlighting: the graph parser records each
   // node's exact declaration range, so the source pane highlights the block
   // (and scrolls to it) without re-scanning (CRI-257). Ranges index into
@@ -287,6 +376,18 @@ export function RunDetailPage({
     [currentGraph, selected],
   );
   const highlightRange = selectedNode?.sourceRange ?? null;
+  // The follow-linked source highlight: while the source panel follows, the
+  // view's current step's declaration lights regardless of manual selection.
+  const followHighlight = useMemo(() => {
+    if (!followSource || !viewStepId) return null;
+    const node = currentGraph?.nodes.find((n) => n.id === viewStepId);
+    return node?.sourceRange ?? null;
+  }, [followSource, viewStepId, currentGraph]);
+  const sourceHighlight = followSource ? followHighlight ?? highlightRange : highlightRange;
+  const visibleEvents = useMemo(
+    () => (selected ? viewEvents.filter((e) => eventBelongsToStep(e, selected)) : viewEvents),
+    [viewEvents, selected],
+  );
 
   // CRI-131 re-home (KB-102): run identity metadata (ticket / repo / PR) no
   // longer rides wire fields on the run row — the producer publishes it as
@@ -322,6 +423,27 @@ export function RunDetailPage({
     if (!run.data || run.data.status !== 'running') return false;
     return !events.some((e) => e.type === 'runCompleted' || e.type === 'runFailed');
   }, [run.data, events]);
+
+  // The run row (status/final state) is fetched once; a run that ends while
+  // the page is open would otherwise keep showing running until a manual
+  // refresh. When the stream delivers the terminal message, re-fetch the
+  // row once so the header/summary land on the terminal state without the
+  // user reloading (the graph needs no re-fetch: it renders from the
+  // stream's own terminal event).
+  const streamEnded = useMemo(
+    () => events.some((e) => e.type === 'runCompleted' || e.type === 'runFailed'),
+    [events],
+  );
+  const endedRef = useRef(false);
+  useEffect(() => {
+    if (!streamEnded) {
+      endedRef.current = false;
+      return;
+    }
+    if (endedRef.current) return;
+    endedRef.current = true;
+    void run.refetch();
+  }, [streamEnded, run]);
 
   // Group events by for_each node
   const forEachNodes = useMemo(() => {
@@ -375,47 +497,60 @@ export function RunDetailPage({
   }
 
   return (
-    <div className="flex h-full min-h-0 items-stretch gap-4" data-testid="run-detail-layout">
-      <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-        {/* Breadcrumb trail plus a back affordance: deep-linked runs exit to
-            the run list without relying on browser back. */}
+    <div className="flex h-full min-h-0 flex-col" data-testid="run-detail-layout">
+      {/* Thin static header: identity, status and control row stay pinned
+          above the scrollable workspace, so controls remain reachable while
+          the graph and events scroll beneath. */}
+      <header
+        data-testid="run-detail-header"
+        className="sticky top-0 z-20 shrink-0 border-b border-line bg-canvas/95 px-4 py-3 backdrop-blur-sm"
+      >
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-          <Breadcrumbs
-            items={[{ label: 'Runs', to: '/runs' }, { label: run.data.workflowName }]}
-          />
-          <Link
-            to="/runs"
-            data-testid="run-back"
-            className="inline-flex shrink-0 items-center gap-1 text-body text-ink-muted hover:text-ink hover:underline"
-          >
-            <svg aria-hidden viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M10 3 5 8l5 5" />
-            </svg>
-            Back to runs
-          </Link>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+            <Breadcrumbs
+              items={[{ label: 'Runs', to: '/runs' }, { label: run.data.workflowName }]}
+            />
+            <Link
+              to="/runs"
+              data-testid="run-back"
+              className="inline-flex shrink-0 items-center gap-1 text-body text-ink-muted hover:text-ink hover:underline"
+            >
+              <svg aria-hidden viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M10 3 5 8l5 5" />
+              </svg>
+              Back to runs
+            </Link>
+          </div>
+          <div data-testid="run-detail-actions" className="flex shrink-0 items-center gap-3">
+            <RunControls
+              runId={run.data.runId}
+              status={run.data.status}
+              pauseState={pauseState}
+              capabilities={capabilities}
+            />
+            <button
+              type="button"
+              data-testid="run-drawer-toggle"
+              aria-expanded={drawerOpen}
+              aria-controls="run-detail-drawer"
+              title={drawerOpen ? 'Hide the details drawer' : 'Show the details drawer'}
+              onClick={() => setDrawerOpen((v) => !v)}
+              className={`rounded-md border p-1.5 ${drawerOpen ? 'border-accent-strong bg-accent-strong/10 text-accent-strong' : 'border-line-strong text-ink-muted hover:bg-surface-raised hover:text-ink'}`}
+            >
+              <svg aria-hidden viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="M15 4v16" />
+              </svg>
+            </button>
+          </div>
         </div>
-        <PageHeader
-          title={run.data.workflowName}
-          meta={run.data.runId}
-          actions={
-            <>
-              <StatusPill status={run.data.status} pauseEvent={pauseState.pauseEvent} />
-            </>
-          }
-        >
-          <div className="flex flex-wrap items-center gap-4 text-body">
-            {runMeta.ticket && (
-              <span>
-                ticket: <span className="font-mono">{runMeta.ticket}</span>
-              </span>
-            )}
-            {runMeta.repo && (
-              <span>
-                repo: <span className="font-mono">{runMeta.repo}</span>
-              </span>
-            )}
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+          <div className="flex min-w-0 items-center gap-4">
+            <h2 className="text-title font-semibold text-ink">{run.data.workflowName}</h2>
+            <StatusPill status={run.data.status} pauseEvent={pauseState.pauseEvent} />
+            <RunInspectionSummary runId={id} status={run.data.status} />
             {run.data.finalState && (
-              <span>
+              <span className="text-body text-ink-muted">
                 final: <span className="font-mono">{run.data.finalState}</span>
               </span>
             )}
@@ -425,8 +560,21 @@ export function RunDetailPage({
               </a>
             )}
           </div>
-        </PageHeader>
-
+          <span className="font-mono text-meta text-ink-faint">{run.data.runId}</span>
+        </div>
+        {runMeta.ticket && (
+          <div className="mt-1 text-body text-ink-muted">
+            {/* CRI-131 re-home: run metadata rides run.metadata envelopes; the
+                ticket is the operator-facing identity. */}
+            ticket: <span className="font-mono">{runMeta.ticket}</span>
+            {runMeta.repo && (
+              <>
+                {' · '}
+                <span className="font-mono">{runMeta.repo}</span>
+              </>
+            )}
+          </div>
+        )}
         {/* watchRun liveness: surface stream loss to the user instead of
             only logging it. While reconnecting show the bounded-backoff
             progress; once retries are exhausted offer a manual reconnect. */}
@@ -435,7 +583,7 @@ export function RunDetailPage({
             data-testid="stream-status"
             data-state={watch.state}
             role="status"
-            className="flex flex-wrap items-center gap-3 rounded-md border border-line bg-surface px-4 py-2 text-body"
+            className="mt-2 flex flex-wrap items-center gap-3 rounded-md border border-line bg-surface px-4 py-2 text-body"
           >
             {watch.state === 'reconnecting' && (
               <span className="text-ink-muted" data-testid="stream-reconnecting">
@@ -460,243 +608,200 @@ export function RunDetailPage({
             )}
           </div>
         )}
-
-        <section
-          id="inspection-panel"
-          data-testid="inspection-panel"
-          data-expanded={expandedPanel === 'inspection'}
-          className={expandedPanel === 'inspection' ? INSPECTION_FULLSCREEN_CLASSES : 'relative'}
-        >
-          <RunInspection runId={id} status={run.data.status} />
-          <PanelExpandButton
-            title="Inspection"
-            testId="inspection-panel-expand"
-            expanded={expandedPanel === 'inspection'}
-            onToggle={() => togglePanel('inspection')}
-            buttonRef={inspectionExpandRef}
-            className={panelButtonClass(expandedPanel === 'inspection')}
-            controlsId="inspection-panel"
-          />
-        </section>
-
-        {forEachNodes.size > 0 && (
-          <section>
-            {Array.from(forEachNodes.entries()).map(([node, nodeEvents]) => (
-              <ForEachStrip key={node} runId={id} events={nodeEvents} />
-            ))}
-          </section>
-        )}
-
-        {selected && (
-          <div className="flex items-center gap-2 text-xs" data-testid="step-filter">
-            <span className="rounded bg-sky-950 px-2 py-1 text-sky-300 border border-sky-800 font-mono">
-              Filtered to step: {selected}
-            </span>
-            <button
-              type="button"
-              data-testid="clear-step-filter"
-              onClick={() => setSelectedStep(null)}
-              className="text-slate-400 hover:text-slate-200"
-            >
-              Clear filter
-            </button>
-          </div>
-        )}
-
-        <section
-          id="events-panel"
-          data-testid="events-panel"
-          data-expanded={expandedPanel === 'events'}
-          className={expandedPanel === 'events' ? EVENTS_FULLSCREEN_CLASSES : 'relative'}
-        >
-          <h3 className="text-lg font-semibold mb-2">Events</h3>
-          <div data-testid="events-panel-body">
-            <EventLog
-              events={visibleEvents}
-              running={running}
-              hasEarlier={log.hasEarlier}
-              loadingEarlier={log.loadingEarlier}
-              onLoadEarlier={loadEarlier}
-            />
-          </div>
-          <PanelExpandButton
-            title="Events"
-            testId="events-panel-expand"
-            expanded={expandedPanel === 'events'}
-            onToggle={() => togglePanel('events')}
-            buttonRef={eventsExpandRef}
-            className={panelButtonClass(expandedPanel === 'events')}
-            controlsId="events-panel"
-          />
-        </section>
-        <section data-testid="source-pane">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-lg font-semibold">Workflow source</h3>
-            <div className="flex items-center gap-2">
-              <div
-                role="group"
-                aria-label="Source pane placement"
-                data-testid="source-placement-toggle"
-                className="flex overflow-hidden rounded-md border border-line-strong"
-              >
-                <button
-                  type="button"
-                  data-testid="source-placement-side"
-                  aria-pressed={sourcePlacement === 'side'}
-                  title="Show the source beside the step graph"
-                  onClick={() => setSourcePlacement('side')}
-                  className={`px-2 py-1 text-xs ${sourcePlacement === 'side' ? 'bg-surface-raised text-ink' : 'text-ink-muted hover:bg-surface-raised'}`}
-                >
-                  Side
-                </button>
-                <button
-                  type="button"
-                  data-testid="source-placement-under"
-                  aria-pressed={sourcePlacement === 'under'}
-                  title="Show the source under the step graph"
-                  onClick={() => setSourcePlacement('under')}
-                  className={`px-2 py-1 text-xs ${sourcePlacement === 'under' ? 'bg-surface-raised text-ink' : 'text-ink-muted hover:bg-surface-raised'}`}
-                >
-                  Under
-                </button>
-              </div>
-              <button
-                type="button"
-                data-testid="source-pane-collapse"
-                aria-expanded={!sourceCollapsed[sourcePlacement]}
-                aria-controls="source-pane-body"
-                onClick={toggleSourceCollapsed}
-                className="rounded-md border border-line-strong px-2 py-1 text-xs text-ink-muted hover:bg-surface-raised hover:text-ink"
-              >
-                {sourceCollapsed[sourcePlacement] ? 'Expand' : 'Collapse'}
-              </button>
-            </div>
-          </div>
-          {sourceCollapsed[sourcePlacement] ? (
-            <p className="text-sm text-ink-muted" data-testid="source-pane-collapsed">
-              Source pane collapsed.
-            </p>
-          ) : sourcePlacement === 'side' ? (
-            <p className="text-sm text-ink-muted" data-testid="source-pane-side-note">
-              Shown beside the step graph.
-            </p>
-          ) : (
-            <div id="source-pane-body" data-testid="source-pane-body">
-              <WorkflowSourceView source={currentSource} highlight={highlightRange} />
-            </div>
-          )}
-        </section>
-        <section
-          id="graph-panel"
-          data-testid="graph-panel"
-          data-expanded={expandedPanel === 'graph'}
-          className={expandedPanel === 'graph' ? GRAPH_FULLSCREEN_CLASSES : 'relative'}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-lg font-semibold">Step graph</h3>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                data-testid="graph-follow-toggle"
-                aria-pressed={followMode}
-                title="Follow the running step"
-                onClick={() => setFollowMode((v) => !v)}
-                className={`px-2 py-1 text-xs rounded-md border ${followMode ? 'border-sky-400 bg-sky-400/10 text-sky-300' : 'border-line-strong text-ink-muted hover:bg-surface-raised'}`}
-              >
-                Follow
-              </button>
-              <div
-                role="group"
-                aria-label="Graph orientation"
-                data-testid="graph-orientation-toggle"
-                className="flex overflow-hidden rounded-md border border-line-strong"
-              >
-                {(['top-bottom', 'left-right'] as const).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    data-testid={`orientation-${value}`}
-                    aria-pressed={graphOrientation === value}
-                    title={`Flow ${value === 'top-bottom' ? 'top to bottom' : 'left to right'}`}
-                    onClick={() => setGraphOrientation(value)}
-                    className={`px-2 py-1 text-xs ${graphOrientation === value ? 'bg-surface-raised text-ink' : 'text-ink-muted hover:bg-surface-raised'}`}
+      </header>
+      <div className="flex min-h-0 flex-1 items-stretch">
+        {/* The workspace pane fills the viewport below the header with no
+            scrolling of its own: the graph takes the remaining space and
+            pans/zooms internally, events pin to a fixed tail strip at the
+            bottom. Tight margins keep the graph the star. */}
+        <div className="flex min-w-0 flex-1 flex-col gap-2 p-2">
+          {/* Graph first: the user asked for the workflow state front and
+              center, directly below the overview header. */}
+          <section
+            id="graph-panel"
+            data-testid="graph-panel"
+            data-expanded={expandedPanel === 'graph'}
+            className={expandedPanel === 'graph' ? GRAPH_FULLSCREEN_CLASSES : 'relative flex min-h-0 flex-1 flex-col'}
+          >
+            <DetailPanel
+              id="graph-panel-inner"
+              title="Step graph"
+              collapsible={false}
+              className="flex min-h-0 flex-1 flex-col"
+              bodyClassName="flex min-h-0 flex-1 flex-col gap-2 p-2"
+              toolbar={
+                <>
+                  <ReplayControls replay={replay} live={running} followEnabled={followMode} onToggleFollow={() => setFollowMode((v) => !v)} />
+                  <div
+                    role="group"
+                    aria-label="Graph orientation"
+                    data-testid="graph-orientation-toggle"
+                    className="flex overflow-hidden rounded-md border border-line-strong"
                   >
-                    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      {value === 'top-bottom' ? <path d="M12 3v18M12 21l4-4M12 21l-4-4" /> : <path d="M3 12h18M21 12l-4-4M21 12l-4 4" />}
-                    </svg>
-                    <span className="sr-only">{value === 'top-bottom' ? 'Top to bottom' : 'Left to right'}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          {layerStackLayers.length > 0 && (
-            <div className="mb-2">
-              <WorkflowLayerNav
-                rootName={run.data?.workflowName || 'Workflow'}
-                stack={layerStackLayers}
-                onNavigate={navigateLayers}
+                    {(['top-bottom', 'left-right'] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        data-testid={`orientation-${value}`}
+                        aria-pressed={graphOrientation === value}
+                        title={`Flow ${value === 'top-bottom' ? 'top to bottom' : 'left to right'}`}
+                        onClick={() => setGraphOrientation(value)}
+                        className={`px-2 py-1 text-xs ${graphOrientation === value ? 'bg-surface-raised text-ink' : 'text-ink-muted hover:bg-surface-raised'}`}
+                      >
+                        <svg aria-hidden="true" viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          {value === 'top-bottom' ? <path d="M12 3v18M12 21l4-4M12 21l-4-4" /> : <path d="M3 12h18M21 12l-4-4M21 12l-4 4" />}
+                        </svg>
+                        <span className="sr-only">{value === 'top-bottom' ? 'Top to bottom' : 'Left to right'}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {/* Fullscreen is one of the graph's layout controls, in the
+                      toolbar with the others; the same control collapses the
+                      overlay (Escape also works, focus returns here). */}
+                  <PanelExpandButton
+                    title="Step graph"
+                    testId="graph-panel-expand"
+                    expanded={expandedPanel === 'graph'}
+                    onToggle={() => togglePanel('graph')}
+                    buttonRef={graphExpandRef}
+                    className={PANEL_ICON_BUTTON_CLASSES}
+                    controlsId="graph-panel"
+                  />
+                </>
+              }
+            >
+              {layerStackLayers.length > 0 || exploreableLayers.size > 0 ? (
+                <WorkflowLayerNav
+                  rootName={run.data?.workflowName || 'Workflow'}
+                  rootGraph={graph}
+                  stack={layerStackLayers}
+                  onNavigate={navigateLayers}
+                  activeIdsByLayer={activeIdsByLayer as Map<string, ReadonlySet<string>>}
+                />
+              ) : null}
+              {currentGraph ? (
+                <WorkflowGraph
+                  // Remount with the stack shape so a re-entered same-named
+                  // step inside a re-opened layer re-triggers the follow pan
+                  // (the memo inside WorkflowGraph otherwise suppresses it).
+                  key={`${topLayer?.name ?? 'root'}:${layerStackLayers.length}:${graphOrientation}`}
+                  graph={currentGraph}
+                  statuses={overlay.statuses}
+                  forEachProgress={overlay.forEach}
+                  orientation={graphOrientation}
+                  followStepId={followMode ? viewStepId : null}
+                  selectedId={selected}
+                  onSelect={(nodeId) =>
+                    setSelectedStep(nodeId === null ? null : { runId: run.data!.runId, step: nodeId })
+                  }
+                  onExploreLayer={openLayer}
+                  exploreableLayers={exploreableLayers}
+                />
+              ) : fallbackEdges.length === 0 ? (
+                <p className="text-sm text-ink-muted">No step transitions found.</p>
+              ) : (
+                <div data-testid="graph-fallback-edges" className="bg-surface rounded p-3 text-xs font-mono text-ink-muted">
+                  {fallbackEdges.map((edge, i) => (
+                    <div key={`${edge.from}:${edge.via}:${edge.to}:${i}`} className="py-1 border-b last:border-b-0 border-line">
+                      <span className="text-accent-strong">{edge.from}</span>
+                      <span className="text-ink-faint"> --{edge.via}--&gt; </span>
+                      <span className="text-success">{edge.to}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Events live inside the graph box as a collapsible bottom
+                  strip; collapsing it hands the reclaimed height to the
+                  graph. No fullscreen: the strip is docked furniture. */}
+              <section id="events-panel" data-testid="events-panel" className="relative shrink-0">
+                <DetailPanel
+                  id="events-panel-inner"
+                  idToggle="events-panel-collapse"
+                  title="Events"
+                >
+                  <div data-testid="events-panel-body" className="space-y-2">
+                    {selected && (
+                      <div className="flex items-center gap-2 text-xs" data-testid="step-filter">
+                        <span className="rounded bg-accent-soft px-2 py-1 text-accent-strong border border-accent-border font-mono">
+                          Filtered to step: {selected}
+                        </span>
+                        <button
+                          type="button"
+                          data-testid="clear-step-filter"
+                          onClick={() => setSelectedStep(null)}
+                          className="text-ink-muted hover:text-ink"
+                        >
+                          Clear filter
+                        </button>
+                      </div>
+                    )}
+                    <EventLog
+                      events={visibleEvents}
+                      running={running}
+                      hasEarlier={log.hasEarlier}
+                      loadingEarlier={log.loadingEarlier}
+                      onLoadEarlier={loadEarlier}
+                      variant="strip"
+                    />
+                  </div>
+                </DetailPanel>
+              </section>
+            </DetailPanel>
+          </section>
+
+          {forEachNodes.size > 0 && (
+            <section>
+              {Array.from(forEachNodes.entries()).map(([node, nodeEvents]) => (
+                <ForEachStrip key={node} runId={id} events={nodeEvents} />
+              ))}
+            </section>
+          )}
+        </div>
+        {/* Right drawer: inspection details, workflow source and the run's
+            scope live off the main flow; collapsible via the header toggle.
+            The source and inspection panels can follow the replayed step:
+            source highlights its declaration, inspection expands its rows. */}
+        {drawerOpen && (
+          <aside
+            id="run-detail-drawer"
+            data-testid="run-detail-drawer"
+            className="flex w-[28rem] min-w-[20rem] shrink-0 flex-col overflow-hidden border-l border-line bg-surface"
+          >
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+              <DetailPanel
+                id="inspection-drawer"
+                title="Inspection details"
+                followed={followInspection}
+                followTestId="inspection-follow-toggle"
+                onFollowToggle={toggleFollowInspection}
+              >
+                <RunInspection runId={id} status={run.data.status} />
+              </DetailPanel>
+              <DetailPanel
+                id="source-drawer"
+                title="Workflow source"
+                followed={followSource}
+                followTestId="source-follow-toggle"
+                onFollowToggle={toggleFollowSource}
+              >
+                <WorkflowSourceView source={currentSource} highlight={sourceHighlight} />
+              </DetailPanel>
+              <ScopeAndControlsPanel
+                runId={run.data.runId}
+                status={run.data.status}
+                pauseState={pauseState}
+                events={events}
+                capabilities={capabilities}
+                showControls={false}
+                onRefresh={() => {
+                  void run.refetch();
+                  refresh();
+                }}
               />
             </div>
-          )}
-          {currentGraph ? (
-            <WorkflowGraph
-              graph={currentGraph}
-              statuses={overlay.statuses}
-              forEachProgress={overlay.forEach}
-              orientation={graphOrientation}
-              followStepId={followMode ? currentStepId : null}
-              selectedId={selected}
-              onSelect={(nodeId) =>
-                setSelectedStep(nodeId === null ? null : { runId: run.data!.runId, step: nodeId })
-              }
-              onExploreLayer={openLayer}
-              exploreableLayers={exploreableLayers}
-            />
-          ) : fallbackEdges.length === 0 ? (
-            <p className="text-sm text-slate-400">No step transitions found.</p>
-          ) : (
-            <div className="bg-slate-900 rounded p-3 text-xs font-mono">
-              {fallbackEdges.map((edge, i) => (
-                <div key={`${edge.from}:${edge.via}:${edge.to}:${i}`} className="py-1 border-b last:border-b-0 border-slate-800">
-                  <span className="text-sky-300">{edge.from}</span>
-                  <span className="text-slate-500"> --{edge.via}--&gt; </span>
-                  <span className="text-emerald-300">{edge.to}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <PanelExpandButton
-            title="Step graph"
-            testId="graph-panel-expand"
-            expanded={expandedPanel === 'graph'}
-            onToggle={() => togglePanel('graph')}
-            buttonRef={graphExpandRef}
-            className={panelButtonClass(expandedPanel === 'graph')}
-            controlsId="graph-panel"
-          />
-        </section>
-        <ScopeAndControlsPanel
-          runId={run.data.runId}
-          status={run.data.status}
-          pauseState={pauseState}
-          events={events}
-          capabilities={capabilities}
-          onRefresh={() => {
-            void run.refetch();
-            refresh();
-          }}
-        />
+          </aside>
+        )}
       </div>
-      {sourcePlacement === 'side' && !sourceCollapsed.side && (
-        <DockedPanel
-          title="Workflow source"
-          testId="source-dock"
-          onClose={() => setSourceCollapsed((state) => ({ ...state, side: true }))}
-        >
-          <WorkflowSourceView source={currentSource} highlight={highlightRange} />
-        </DockedPanel>
-      )}
     </div>
   );
 }

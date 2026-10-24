@@ -41,15 +41,15 @@ export function ApprovalCard({ node, runId, approvers, reason, capabilities }: A
   };
 
   return (
-    <div className="bg-slate-800 rounded px-4 py-3 border border-purple-700/50">
-      <p className="text-sm font-semibold text-purple-400 mb-1">Approval Required</p>
+    <div className="bg-surface rounded px-4 py-3 border border-accent-border/60 text-ink">
+      <p className="text-sm font-semibold text-accent-strong mb-1">Approval Required</p>
       {reason && (
-        <p className="text-sm text-slate-300 mb-2">
+        <p className="text-sm text-ink-muted mb-2">
           <span className="font-semibold">Reason:</span> {reason}
         </p>
       )}
       {approvers.length > 0 && (
-        <p className="text-xs text-slate-400 mb-3">
+        <p className="text-xs text-ink-muted mb-3">
           <span className="font-semibold">Approvers:</span> {approvers.join(', ')}
         </p>
       )}
@@ -60,33 +60,33 @@ export function ApprovalCard({ node, runId, approvers, reason, capabilities }: A
             onClick={handleApprove}
             disabled={isLoading || noControls}
             title={noControls ? NO_CONTROLS_TOOLTIP : undefined}
-            className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
+            className="px-4 py-2 bg-success/80 hover:bg-success disabled:bg-surface-raised disabled:cursor-not-allowed rounded text-sm font-semibold text-canvas"
           >
-            {isLoading && decision === 'approved' ? 'Approving...' : 'Approve'}
+            {isLoading && decision === 'approved' ? 'Approving…' : 'Approve'}
           </button>
           <button
             onClick={handleReject}
             disabled={isLoading || noControls}
             title={noControls ? NO_CONTROLS_TOOLTIP : undefined}
-            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
+            className="px-4 py-2 bg-danger hover:bg-danger/80 disabled:bg-surface-raised disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
           >
-            {isLoading && decision === 'rejected' ? 'Rejecting...' : 'Reject'}
+            {isLoading && decision === 'rejected' ? 'Rejecting…' : 'Reject'}
           </button>
         </div>
       )}
 
       {isLoading && (
-        <p className="text-xs text-slate-400 mt-2">Submitting {decision}...</p>
+        <p className="text-xs text-ink-muted mt-2">Submitting {decision}…</p>
       )}
 
       {isSuccess && (
-        <p className="text-sm text-green-400 mt-2">
+        <p className="text-sm text-success mt-2">
           ✓ {decision === 'approved' ? 'Approved' : 'Rejected'} — run resuming
         </p>
       )}
 
       {error && (
-        <p className="text-sm text-rose-400 mt-2">
+        <p className="text-sm text-danger mt-2">
           ✗ Error: {error && typeof error === 'object' && 'data' in error ? String(error.data) : 'Failed to resume'}
         </p>
       )}

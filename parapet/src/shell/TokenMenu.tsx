@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { getAuthToken } from '../authToken';
+import { applyTheme, readStoredTheme, type ParapetTheme } from '../theme';
 
 // Masks an agent token for display: only the trailing four characters are
 // ever surfaced, never enough material to reconstruct the secret.
@@ -13,9 +14,11 @@ interface TokenMenuProps {
 }
 
 // Session menu anchored in the top bar: identifies the active agent token
-// (masked) and is the only place "Log out" is reachable from.
+// (masked), carries the theme toggle, and is the only place "Log out" is
+// reachable from.
 export function TokenMenu({ onLogout }: TokenMenuProps) {
   const [open, setOpen] = useState(false);
+  const [theme, setTheme] = useState<ParapetTheme>(() => readStoredTheme());
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,6 +38,12 @@ export function TokenMenu({ onLogout }: TokenMenuProps) {
   }, [open]);
 
   const masked = maskToken(getAuthToken());
+
+  const toggleTheme = () => {
+    const next: ParapetTheme = theme === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    setTheme(next);
+  };
 
   return (
     <div ref={rootRef} className="relative" data-testid="token-menu">
@@ -60,6 +69,18 @@ export function TokenMenu({ onLogout }: TokenMenuProps) {
             <p className="text-meta uppercase tracking-wide text-ink-faint">Agent token</p>
             <p className="mt-1 font-mono text-meta text-ink-muted">{masked}</p>
           </div>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="theme-toggle"
+            onClick={toggleTheme}
+            className="flex w-full items-center justify-between px-3 py-2 text-left text-body text-ink hover:bg-surface-raised"
+          >
+            Theme
+            <span className="text-meta text-ink-muted" data-testid="theme-current">
+              {theme === 'dark' ? 'Dark' : 'Light'}
+            </span>
+          </button>
           <button
             type="button"
             role="menuitem"

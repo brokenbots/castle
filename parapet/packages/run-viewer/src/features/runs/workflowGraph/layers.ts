@@ -206,3 +206,41 @@ export function layerSourceText(layer: SubworkflowLayer): string {
     return layer.body;
   }
 }
+
+/**
+ * The chain of layer names from the root workflow to the graph that
+ * contains `stepId` ([] when the root itself contains it) — the drill-down
+ * stack follow mode must auto-open so the view tracks an engine step that
+ * runs inside a subworkflow (CRI-2xx follow-along). Walks the
+ * subworkflow-target graph breadth-first; steps targeting layers whose
+ * bodies did not parse are dead ends. Returns null when no graph contains
+ * the step: the caller keeps its current stack (the step may belong to a
+ * layer of a different run segment, or simply not be on the graph yet).
+ */
+export function followLayerPath(
+  root: WorkflowGraph | null,
+  stepId: string | null,
+  layers: Map<string, SubworkflowLayer>,
+): string[] | null {
+  if (!root || !stepId) return null;
+  if (root.nodes.some((n) => n.id === stepId)) return [];
+  const visited = new Set<string>();
+  let frontier: Array<{ chain: string[]; graph: WorkflowGraph }> = [{ chain: [], graph: root }];
+  while (frontier.length > 0) {
+    const next: Array<{ chain: string[]; graph: WorkflowGraph }> = [];
+    for (const { chain, graph } of frontier) {
+      for (const node of graph.nodes) {
+        const target = node.subworkflow;
+        if (!target || visited.has(target)) continue;
+        const layer = layers.get(target);
+        if (!layer?.graph) continue;
+        visited.add(target);
+        const nextChain = [...chain, target];
+        if (layer.graph.nodes.some((n) => n.id === stepId)) return nextChain;
+        next.push({ chain: nextChain, graph: layer.graph });
+      }
+    }
+    frontier = next;
+  }
+  return null;
+}

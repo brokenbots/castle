@@ -61,36 +61,36 @@ export function PendingSignalCard({ signal, runId, onRefresh, capabilities }: Pe
   };
 
   return (
-    <div className="bg-slate-800 rounded px-4 py-3 border border-amber-700/50" data-testid="pending-signal-card">
-      <p className="text-sm text-slate-300 mb-2">
-        <span className="text-amber-400 font-semibold">Waiting for signal</span>: <span className="font-mono">{signal}</span>
+    <div className="bg-surface rounded px-4 py-3 border border-warning/40 text-ink" data-testid="pending-signal-card">
+      <p className="text-sm text-ink-muted mb-2">
+        <span className="text-warning font-semibold">Waiting for signal</span>: <span className="font-mono">{signal}</span>
       </p>
 
       {isStaleSignalError(error) ? (
         <div data-testid="pending-signal-stale">
-          <p className="text-sm text-emerald-400 font-semibold">Signal already satisfied</p>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-sm text-success font-semibold">Signal already satisfied</p>
+          <p className="text-xs text-ink-muted mt-1">
             The signal is no longer pending — the run already moved past this wait.
           </p>
           <button
             onClick={onRefresh}
             data-testid="pending-signal-refresh"
-            className="mt-2 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-xs font-semibold text-white"
+            className="mt-2 px-3 py-1.5 bg-surface-raised hover:bg-line-strong rounded text-xs font-semibold text-ink"
           >
             Refresh
           </button>
         </div>
       ) : isSuccess ? (
-        <p className="text-sm text-green-400 mt-2" data-testid="pending-signal-success">
+        <p className="text-sm text-success mt-2" data-testid="pending-signal-success">
           ✓ Signal delivered — run resuming
         </p>
       ) : error ? (
-        <p className="text-sm text-rose-400 mt-2" data-testid="pending-signal-error">
+        <p className="text-sm text-danger mt-2" data-testid="pending-signal-error">
           ✗ Error: {error && typeof error === 'object' && 'data' in error ? String(error.data) : 'Failed to deliver signal'}
         </p>
       ) : (
         <form onSubmit={handleSubmit} data-testid="pending-signal-form" className="mt-3">
-          <label className="block text-xs text-slate-400 mb-1" htmlFor="pending-signal-signal">
+          <label className="block text-xs text-ink-muted mb-1" htmlFor="pending-signal-signal">
             Signal
           </label>
           <input
@@ -100,9 +100,9 @@ export function PendingSignalCard({ signal, runId, onRefresh, capabilities }: Pe
             value={signal}
             readOnly
             disabled={isLoading || noControls}
-            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm font-mono text-slate-200 mb-2"
+            className="w-full bg-canvas border border-line-strong rounded px-2 py-1.5 text-sm font-mono text-ink mb-2"
           />
-          <label className="block text-xs text-slate-400 mb-1" htmlFor="pending-signal-note">
+          <label className="block text-xs text-ink-muted mb-1" htmlFor="pending-signal-note">
             Note (optional)
           </label>
           <input
@@ -113,29 +113,29 @@ export function PendingSignalCard({ signal, runId, onRefresh, capabilities }: Pe
             onChange={(event) => setNote(event.target.value)}
             disabled={isLoading || noControls}
             placeholder="Optional note delivered with the signal"
-            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm text-slate-200"
+            className="w-full bg-canvas border border-line-strong rounded px-2 py-1.5 text-sm text-ink"
           />
           <button
             type="submit"
             disabled={isLoading || noControls}
             title={noControls ? NO_CONTROLS_TOOLTIP : undefined}
             data-testid="pending-signal-submit"
-            className="mt-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
+            className="mt-2 px-4 py-2 bg-warning hover:bg-warning/80 disabled:bg-surface-raised disabled:cursor-not-allowed rounded text-sm font-semibold text-canvas"
           >
-            {isLoading ? 'Delivering...' : 'Deliver signal'}
+            {isLoading ? 'Delivering…' : 'Deliver signal'}
           </button>
           {isLoading && (
-            <p className="text-xs text-slate-400 mt-2">Delivering {signal}...</p>
+            <p className="text-xs text-ink-muted mt-2">Delivering {signal}…</p>
           )}
 
-          <details className="text-xs text-slate-400 mt-3">
-            <summary className="cursor-pointer hover:text-slate-300">Resume via curl</summary>
+          <details className="text-xs text-ink-muted mt-3">
+            <summary className="cursor-pointer hover:text-ink">Resume via curl</summary>
             <div className="mt-2 relative">
-              <pre className="bg-slate-900 rounded p-2 overflow-x-auto text-xs">{curlExample}</pre>
+              <pre className="bg-canvas rounded p-2 overflow-x-auto text-xs">{curlExample}</pre>
               <button
                 type="button"
                 onClick={handleCopy}
-                className="absolute top-2 right-2 px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs"
+                className="absolute top-2 right-2 px-2 py-1 bg-surface-raised hover:bg-line-strong rounded text-xs text-ink"
               >
                 Copy
               </button>

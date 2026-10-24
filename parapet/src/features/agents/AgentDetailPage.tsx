@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
-import { castleApi, useGetAgentQuery, useListRunsQuery, type Run } from '@castle/run-viewer';
+import {
+  castleApi,
+  useGetAgentQuery,
+  useListRunsQuery,
+  AGENT_STATUS_TEXT_COLORS,
+  type Run,
+} from '@castle/run-viewer';
 import { classifyError } from '@castle/run-viewer';
 import type { AppDispatch } from '../../store';
 import { PageHeader } from '@castle/run-viewer';
@@ -10,6 +16,18 @@ import { Breadcrumbs } from '@castle/run-viewer';
 import { useDocumentTitle } from '@castle/run-viewer';
 import { RUN_STATUS_TEXT_COLORS } from '@castle/run-viewer';
 import { StartedCell, useDocumentVisible, useNow } from '@castle/run-viewer';
+
+// Compact run-id display, matching the run list's short form. Lives here
+// because the run-viewer package doesn't export it (yet); keep in sync with
+// shortRunId in RunListPage.
+function shortRunId(id: string): string {
+  if (id.length <= 12) return id;
+  const head = id.slice(0, 8);
+  const tail = id.slice(-4);
+  return `${head}…${tail}`;
+}
+
+const idShortened = (id: string): boolean => id.length > 12;
 
 // A page of the agent's runs fetched through "Load more" (page 1 lives in
 // the listRuns cache; these entries hold the older pages).
@@ -138,22 +156,22 @@ export function AgentDetailPage() {
           <h3 className="text-lg font-semibold mb-2">Details</h3>
           <dl className="text-sm">
             <div className="flex gap-2 py-1">
-              <dt className="text-slate-400 w-32 shrink-0">Criteria ID</dt>
+              <dt className="text-ink-muted w-32 shrink-0">Criteria ID</dt>
               <dd className="font-mono" data-testid="agent-criteria-id">
                 {agentData.criteriaId}
               </dd>
             </div>
             <div className="flex gap-2 py-1">
-              <dt className="text-slate-400 w-32 shrink-0">Status</dt>
+              <dt className="text-ink-muted w-32 shrink-0">Status</dt>
               <dd
                 data-testid="agent-status"
-                className={agentData.status === 'online' ? 'text-emerald-400' : 'text-slate-500'}
+                className={AGENT_STATUS_TEXT_COLORS[agentData.status] ?? 'text-ink-muted'}
               >
                 {agentData.status}
               </dd>
             </div>
             <div className="flex gap-2 py-1">
-              <dt className="text-slate-400 w-32 shrink-0">Registered</dt>
+              <dt className="text-ink-muted w-32 shrink-0">Registered</dt>
               <dd data-testid="agent-registered">
                 {agentData.registeredAt
                   ? new Date(agentData.registeredAt).toLocaleString()
@@ -161,7 +179,7 @@ export function AgentDetailPage() {
               </dd>
             </div>
             <div className="flex gap-2 py-1">
-              <dt className="text-slate-400 w-32 shrink-0">Last seen</dt>
+              <dt className="text-ink-muted w-32 shrink-0">Last seen</dt>
               <dd data-testid="agent-last-seen">
                 {agentData.lastSeenAt ? new Date(agentData.lastSeenAt).toLocaleString() : '—'}
               </dd>
@@ -171,7 +189,7 @@ export function AgentDetailPage() {
         <div>
           <h3 className="text-lg font-semibold mb-2">Labels</h3>
           {labels.length === 0 ? (
-            <p className="text-sm text-slate-400" data-testid="agent-labels">
+            <p className="text-sm text-ink-muted" data-testid="agent-labels">
               No labels.
             </p>
           ) : (
@@ -181,7 +199,7 @@ export function AgentDetailPage() {
                   key={key}
                   className="rounded-full border border-line bg-surface px-2 py-0.5 font-mono text-xs"
                 >
-                  <span className="text-slate-400">{key}:</span> {value}
+                  <span className="text-ink-muted">{key}:</span> {value}
                 </li>
               ))}
             </ul>
@@ -213,28 +231,43 @@ export function AgentDetailPage() {
           />
         ) : (
           <table className="w-full text-left text-sm">
-            <thead className="text-slate-400">
-              <tr>
-                <th className="px-2 py-1">ID</th>
-                <th className="px-2 py-1">Workflow</th>
-                <th className="px-2 py-1">Status</th>
-                <th className="px-2 py-1">Started</th>
+            <thead className="text-ink-muted">
+              <tr className="border-b border-line">
+                <th className="px-2 py-1 font-medium">Workflow</th>
+                <th className="px-2 py-1 font-medium">Status</th>
+                <th className="px-2 py-1 font-medium">Started</th>
+                <th className="px-2 py-1 text-right font-medium">Run</th>
               </tr>
             </thead>
             <tbody>
               {runs.map((run) => (
-                <tr key={run.runId} className="border-t border-slate-800">
-                  <td className="px-2 py-1 font-mono">
-                    <Link className="text-sky-400 hover:underline" to={`/runs/${run.runId}`}>
-                      {run.runId}
+                <tr key={run.runId} className="border-t border-line transition-colors hover:bg-surface-raised/50">
+                  <td className="px-2 py-1">
+                    <Link className="text-ink hover:text-accent-strong hover:underline" to={`/runs/${run.runId}`}>
+                      {run.workflowName}
                     </Link>
                   </td>
-                  <td className="px-2 py-1">{run.workflowName}</td>
                   <td className={`px-2 py-1 ${RUN_STATUS_TEXT_COLORS[run.status] ?? ''}`}>
                     {run.status}
                   </td>
-                  <td className="px-2 py-1">
+                  <td className="px-2 py-1 text-ink-muted">
                     <StartedCell run={run} now={now} />
+                  </td>
+                  <td className="px-2 py-1 text-right">
+                    <Link
+                      className="font-mono text-meta text-ink-faint hover:text-accent-strong hover:underline"
+                      to={`/runs/${run.runId}`}
+                      title={run.runId}
+                    >
+                      {idShortened(run.runId) ? (
+                        <>
+                          <span aria-hidden>{shortRunId(run.runId)}</span>
+                          <span className="sr-only">{run.runId}</span>
+                        </>
+                      ) : (
+                        run.runId
+                      )}
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -245,13 +278,13 @@ export function AgentDetailPage() {
           <div className="mt-4">
             <button
               type="button"
-              className="rounded border border-slate-600 px-3 py-1 text-sm text-sky-300 hover:bg-slate-800"
+              className="rounded-md border border-line-strong px-3 py-1 text-body text-accent-strong hover:bg-surface-raised disabled:opacity-60"
               onClick={loadMore}
               disabled={loadingMore}
             >
               {loadingMore ? 'Loading…' : 'Load more'}
             </button>
-            {loadMoreError && <p className="mt-2 text-rose-400">Failed to load more runs.</p>}
+            {loadMoreError && <p className="mt-2 text-danger">Failed to load more runs.</p>}
           </div>
         )}
       </section>

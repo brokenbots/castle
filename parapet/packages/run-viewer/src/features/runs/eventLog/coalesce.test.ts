@@ -32,6 +32,24 @@ function other(seq: number, type = 'runStatus'): EventEnvelope {
   };
 }
 
+// criteria.v1.AdapterEvent wire shape: {step, adapter, kind, data}.
+function adapterEvent(
+  seq: number,
+  kind: string,
+  data: Record<string, unknown>,
+  adapter = 'claude-code',
+): EventEnvelope {
+  return {
+    schemaVersion: 1,
+    runId: 'run-1',
+    seq,
+    type: 'adapterEvent',
+    ts: new Date(0).toISOString(),
+    correlationId: '',
+    payload: { step: 'develop', adapter, kind, data },
+  };
+}
+
 describe('stepLogGroupKey', () => {
   test('keys on the step node; per-chunk correlation ids do not affect grouping', () => {
     // Wire-conformant shape: one step's chunks stream under the same node
@@ -194,5 +212,69 @@ describe('coalesceStepLogs', () => {
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ kind: 'stepLogBlock', startSeq: 1, endSeq: 5 });
+  });
+
+  test('is empty for adapter events that are not delta streams', () => {
+    expect(stepLogGroupKey(adapterEvent(1, 'agent.message', { text: 'hello' }))).toBe('');
+    expect(stepLogGroupKey(adapterEvent(1, 'adapter.lifecycle.provision_wanted', {}))).toBe('');
+  });
+
+  test('keys delta streams on adapter + kind regardless of transport identity', () => {
+    // Agent-first deltas carry no step node and a fresh correlation id per
+    // fragment; the adapter+kind pair is the stream identity.
+    expect(stepLogGroupKey(adapterEvent(1, 'agent.message', { delta: 'a' }))).toBe('adapter:claude-code:agent.message');
+  });
+});
+
+describe('adapter delta streams', () => {
+  test('folds a delta run into one block with the joined message text', () => {
+    const items = coalesceStepLogs([
+      adapterEvent(1, 'agent.message', { delta: 'Hel' }),
+      adapterEvent(2, 'agent.message', { delta: 'lo, ' }),
+      adapterEvent(3, 'agent.message', { delta: 'world' }),
+    ]);
+
+    expect(items).toHaveLength(1);
+    const block = items[0];
+    expect(block.kind).toBe('stepLogBlock');
+    if (block.kind !== 'stepLogBlock') return;
+    expect(block.key).toBe('adapter:claude-code:agent.message');
+    expect(block.step).toBe('claude-code · agent.message');
+    // Delta fragments are byte-stream continuations: no separators.
+    expect(block.fullText).toBe('Hello, world');
+    expect(block.tailText).toBe('world');
+  });
+
+  test('breaks the stream at a different adapter or kind, and at other events', () => {
+    // Streams need 2+ fragments to coalesce (a lone fragment stays a plain
+    // row — same rule as stepLog chunks).
+    const items = coalesceStepLogs([
+      adapterEvent(1, 'agent.message', { delta: 'a' }),
+      adapterEvent(2, 'agent.message', { delta: 'a2' }),
+      other(3),
+      adapterEvent(4, 'agent.message', { delta: 'b' }, 'shell'),
+      adapterEvent(5, 'agent.message', { delta: 'b2' }, 'shell'),
+      adapterEvent(6, 'tool.invocation', { delta: 'c' }),
+      adapterEvent(7, 'tool.invocation', { delta: 'c2' }),
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual(['stepLogBlock', 'event', 'stepLogBlock', 'stepLogBlock']);
+    const [head, , shellBlock, toolBlock] = items as [
+      { kind: 'stepLogBlock'; fullText: string },
+      unknown,
+      { kind: 'stepLogBlock'; fullText: string; step: string },
+      { kind: 'stepLogBlock'; fullText: string; step: string },
+    ];
+    // Delta fragments are byte-stream continuations: no separators.
+    expect(head.fullText).toBe('aa2');
+    expect(shellBlock.fullText).toBe('bb2');
+    expect(shellBlock.step).toBe('shell · agent.message');
+    expect(toolBlock.fullText).toBe('cc2');
+    expect(toolBlock.step).toBe('claude-code · tool.invocation');
+  });
+
+  test('a lone delta fragment stays a plain event row', () => {
+    const items = coalesceStepLogs([adapterEvent(1, 'agent.message', { delta: 'partial…' })]);
+    expect(items.map((item) => item.kind)).toEqual(['event']);
   });
 });

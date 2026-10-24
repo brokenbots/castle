@@ -99,9 +99,13 @@ describe('WorkflowGraph', () => {
       />,
     );
     const failedCard = screen.getByText('build').closest('[data-testid="graph-node"]');
-    expect(failedCard?.className).toContain('border-rose-500');
+    expect(failedCard?.className).toContain('border-danger');
     const idleCard = screen.getByText('done').closest('[data-testid="graph-node"]');
-    expect(idleCard?.className).toContain('opacity-60');
+    // Unvisited nodes dim via their CONTENT (id/kind text), never the card
+    // itself: the fill must stay opaque so edges passing underneath do not
+    // bleed through it.
+    expect(idleCard?.querySelector('p')?.className).toContain('opacity-60');
+    expect(idleCard?.className).not.toContain('opacity-60');
   });
 
   test('prefers live iteration progress over the declared control badge', async () => {
@@ -130,6 +134,11 @@ describe('WorkflowGraph', () => {
   test('calls onSelect with the clicked node id', async () => {
     const onSelect = vi.fn();
     render(<WorkflowGraph graph={graph()} onSelect={onSelect} />);
+    // The async ELK layout (sync fallback in worker-less jsdom) still
+    // resolves through a promise turn; settle before querying.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
     const node = screen.getByText('test');
     fireEvent.click(node);
     await vi.waitFor(() => expect(onSelect).toHaveBeenCalledWith('test'));
@@ -138,6 +147,9 @@ describe('WorkflowGraph', () => {
   test('toggles the selection off when the already-selected node is clicked again', async () => {
     const onSelect = vi.fn();
     render(<WorkflowGraph graph={graph()} selectedId="test" onSelect={onSelect} />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
     fireEvent.click(screen.getByText('test'));
     await vi.waitFor(() => expect(onSelect).toHaveBeenCalledWith(null));
 
@@ -149,6 +161,9 @@ describe('WorkflowGraph', () => {
   test('swaps handle sides with the orientation', async () => {
     // Top-bottom: flow enters at the top and exits at the bottom.
     const first = render(<WorkflowGraph graph={graph()} />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
     const tbHandles = Array.from(document.querySelectorAll('.react-flow__handle')).map((el) =>
       el.getAttribute('data-handlepos'),
     );
@@ -159,6 +174,9 @@ describe('WorkflowGraph', () => {
 
     // Left-right: flow enters on the left and exits on the right.
     const second = render(<WorkflowGraph graph={graph()} orientation="left-right" />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
     const lrHandles = Array.from(document.querySelectorAll('.react-flow__handle')).map(
       (el) => el.getAttribute('data-handlepos'),
     );
@@ -246,14 +264,12 @@ describe('WorkflowGraph', () => {
       expect(badge).toHaveTextContent('↺ loops back to build');
     });
 
-    test('renders cycle legs with the loop edge class and upward legs dashed', async () => {
+    test('renders cycle legs with the loop edge class, dashes marking the upward leg', async () => {
       await renderGraph(<WorkflowGraph graph={loopGraph()} />);
       const loopEdges = document.querySelectorAll('.react-flow__edge.workflow-edge-loop');
       expect(loopEdges).toHaveLength(2);
-      // Both legs are violet; the upward leg (review -> build, e1) is
-      // further de-emphasized (lower opacity + dashed), the forward leg
-      // (build -> review, e0) stays solid. React Flow applies the edge
-      // style prop inline.
+      // Both legs are violet; the upward leg (review -> build, e1) dashes —
+      // solid vs dashed carries direction on its own (no opacity variants).
       for (const edge of loopEdges) {
         const path = edge.querySelector('path.react-flow__edge-path') as SVGPathElement | null;
         expect(path).not.toBeNull();
@@ -261,16 +277,17 @@ describe('WorkflowGraph', () => {
       }
       const upPath = loopEdges[1].querySelector('path.react-flow__edge-path') as SVGPathElement;
       const forwardPath = loopEdges[0].querySelector('path.react-flow__edge-path') as SVGPathElement;
-      expect(upPath.style.opacity).toBe('0.7');
-      expect(forwardPath.style.opacity).toBe('0.9');
+      expect(upPath.style.opacity).toBe('1');
+      expect(forwardPath.style.opacity).toBe('1');
       expect(upPath.style.strokeDasharray).toBeTruthy();
       expect(forwardPath.style.strokeDasharray).toBe('');
     });
 
-    test('renders non-cycle upward returns dimmed and dashed, without loop styling', async () => {
-      // build layers test and failed onto layer 1, so test -> failed
-      // sweeps at/behind its source layer — but failed never reaches
-      // test: a back edge, not a loop.
+    test('renders convergence edges forward — upward returns no longer exist in acyclic graphs', async () => {
+      // Longest-path layering sinks `failed` one layer past its deepest
+      // entry (test), so both entries read left-to-right. The graph renders
+      // with plain edge styling: dimmed/dashed back edges only remain for
+      // genuine layered returns (cycles, self-loops).
       const returns = graph({
         nodes: [
           { id: 'build', kind: 'step' },
@@ -284,12 +301,8 @@ describe('WorkflowGraph', () => {
         ],
       });
       await renderGraph(<WorkflowGraph graph={returns} />);
-      const backEdge = document.querySelector('.react-flow__edge.workflow-edge-back');
-      expect(backEdge).not.toBeNull();
-      const path = backEdge!.querySelector('path.react-flow__edge-path') as SVGPathElement;
-      expect(path.style.stroke).toBe('#64748b');
-      expect(path.style.opacity).toBe('0.55');
-      expect(path.style.strokeDasharray).toBeTruthy();
+      expect(document.querySelector('.react-flow__edge.workflow-edge-back')).toBeNull();
+      expect(document.querySelector('.react-flow__edge.workflow-edge-loop')).toBeNull();
       // No loop badge: the graph is acyclic.
       expect(screen.queryByTestId('graph-node-loop-badge')).not.toBeInTheDocument();
     });

@@ -32,19 +32,19 @@ export function ForEachStrip({ events }: ForEachStripProps) {
     }).length;
 
     return (
-      <div className="bg-slate-800/50 rounded px-4 py-2 border border-slate-700 mb-2">
+      <div className="bg-surface-raised/50 rounded px-4 py-2 border border-line mb-2">
         <button
           onClick={() => setExpanded(!expanded)}
-          className="text-sm font-mono text-slate-300 hover:text-white w-full text-left"
+          className="text-sm font-mono text-ink-muted hover:text-ink w-full text-left"
         >
-          <span className="text-purple-400">for_each</span> <span className="text-slate-500">{node}</span> —{' '}
-          <span className="text-green-400">
+          <span className="text-accent-strong">for_each</span> <span className="text-ink-faint">{node}</span> —{' '}
+          <span className="text-success">
             {successCount}/{count} succeeded
           </span>
           {outcomeStr === 'any_failed' && (
-            <span className="text-rose-400 ml-2">({count - successCount} failed)</span>
+            <span className="text-danger ml-2">({count - successCount} failed)</span>
           )}
-          <span className="text-xs text-slate-500 ml-2">{expanded ? '▼' : '▶'}</span>
+          <span className="text-xs text-ink-faint ml-2">{expanded ? '▼' : '▶'}</span>
         </button>
 
         {expanded && (
@@ -55,10 +55,10 @@ export function ForEachStrip({ events }: ForEachStripProps) {
               const value = (p?.value as string) ?? '';
               const anyFailed = p?.anyFailed as boolean;
               return (
-                <div key={it.seq} className="flex gap-2 text-slate-400">
+                <div key={it.seq} className="flex gap-2 text-ink-muted">
                   <span className="w-8">#{index}</span>
                   <span className="flex-1 truncate">{value}</span>
-                  <span className={anyFailed ? 'text-rose-400' : 'text-green-400'}>
+                  <span className={anyFailed ? 'text-danger' : 'text-success'}>
                     {anyFailed ? '✗' : '✓'}
                   </span>
                 </div>
@@ -74,10 +74,10 @@ export function ForEachStrip({ events }: ForEachStripProps) {
   const dots = Array.from({ length: count }, (_, i) => (i < current ? '●' : '○'));
 
   return (
-    <div className="bg-slate-800/50 rounded px-4 py-2 border border-slate-700 mb-2">
-      <p className="text-sm font-mono text-slate-300">
-        <span className="text-purple-400">for_each</span> <span className="text-slate-500">{node}</span> —{' '}
-        <span className="text-sky-400">
+    <div className="bg-surface-raised/50 rounded px-4 py-2 border border-line mb-2">
+      <p className="text-sm font-mono text-ink-muted">
+        <span className="text-accent-strong">for_each</span> <span className="text-ink-faint">{node}</span> —{' '}
+        <span className="text-accent-strong">
           [{dots.join('')}] {current} of {count}
         </span>
       </p>

@@ -134,16 +134,10 @@ function otherEnv(seq: number): EventEnvelope {
 const thousand = Array.from({ length: 1000 }, (_, i) => env(i + 1));
 
 describe('estimateEventHeight', () => {
-  test('single-line payload estimates one line plus row padding', () => {
+  test('collapsed rows are a uniform single-line strip regardless of payload shape', () => {
     expect(estimateEventHeight(env(1, 'ok'))).toBe(9 + 16);
-  });
-
-  test('hard newlines scale the estimate', () => {
-    expect(estimateEventHeight(env(1, 'a\nb\nc'))).toBe(9 + 3 * 16);
-  });
-
-  test('long unbroken payloads estimate wrapped lines', () => {
-    expect(estimateEventHeight(env(1, 'x'.repeat(240)))).toBe(9 + 2 * 16);
+    expect(estimateEventHeight(env(1, 'a\nb\nc'))).toBe(9 + 16);
+    expect(estimateEventHeight(env(1, 'x'.repeat(240)))).toBe(9 + 16);
   });
 });
 
@@ -161,22 +155,18 @@ describe('EventLog', () => {
     expect(screen.queryByText('chunk 1000')).not.toBeInTheDocument();
   });
 
-  test('measures rendered rows from their real boxes', () => {
-    // A 240-char single-line payload: the estimator pins 2 lines (41px),
-    // but at this 800px-wide box it actually wraps to 3 lines (57px). With
-    // the stub modelling the browser box contract, measureElement can only
-    // see 57px if the row's height is not pinned to the estimate — so this
-    // test fails while the row style pins height.
+  test('collapsed rows clip to the uniform strip regardless of payload length', () => {
+    // A 240-char single-line payload: the collapsed row's nowrwap summary
+    // strip clips it at the constant 25px height; the row box is not pinned
+    // to the estimate (measureElement stays live for expanded bodies, which
+    // browsers re-measure via ResizeObserver — jsdom cannot observe that
+    // resize, so expansion growth is asserted interactively elsewhere).
     renderLog([env(1, 'x'.repeat(240)), env(2), env(3)]);
 
     const rows = screen.getAllByTestId('event-log-row');
     expect(rows.length).toBe(3);
-    // The row box is not pinned to the estimate, so measurement can work.
     expect(rows[0].style.height).toBe('');
-    expect(rows[1].style.height).toBe('');
-    // Row 1 sits at row 0's measured box (3 wrapped lines = 57px), not at
-    // the 41px estimate; content must not be clipped into the estimate.
-    expect(rows[1].style.transform).toBe('translateY(57px)');
+    expect(rows[1].style.transform).toBe('translateY(25px)');
     expect(rows[0].style.overflow).toBe('hidden');
   });
 
@@ -230,7 +220,9 @@ describe('EventLog', () => {
   test('hides the control when the log is complete', () => {
     renderLog(thousand.slice(0, 10), { hasEarlier: false });
 
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Load earlier events' }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -238,12 +230,13 @@ describe('estimateItemHeight', () => {
   const [block] = coalesceStepLogs([keyedEnv(1), keyedEnv(2)]);
   if (!block || block.kind !== 'stepLogBlock') throw new Error('expected a coalesced block');
 
-  test('collapsed blocks estimate a header line plus the tail', () => {
-    expect(estimateItemHeight(block, false)).toBe(9 + 2 * 16);
+  test('collapsed blocks are the uniform single-line strip', () => {
+    expect(estimateItemHeight(block, false)).toBe(9 + 16);
   });
 
   test('expanded blocks estimate from the full output', () => {
-    expect(estimateItemHeight(block, true)).toBe(9 + 3 * 16);
+    // The two joined chunk lines with no extra header line.
+    expect(estimateItemHeight(block, true)).toBe(9 + 2 * 16);
   });
 });
 
@@ -320,9 +313,10 @@ describe('step log coalescing', () => {
     expect(rows[0].textContent).toContain('×1000');
     expect(screen.queryByText('chunk 1')).not.toBeInTheDocument();
     expect(screen.getByText('chunk 1000')).toBeInTheDocument();
-    // The reader stays anchored at the old first chunk: the block header
-    // line plus the 999 chunk rows that moved in front of it.
-    expect(scroller.scrollTop).toBe(16 + 999 * 25);
+    // The reader stays anchored at the old first chunk: the 999 chunk rows
+    // that moved in front of it, each the uniform 25px strip (the merged
+    // block adds no separate header line).
+    expect(scroller.scrollTop).toBe(999 * 25);
   });
 });
 
@@ -331,7 +325,7 @@ describe('live tail', () => {
     renderLog(thousand, { running: true });
 
     const scroller = screen.getByTestId('event-log-scroll');
-    expect(screen.getByTestId('auto-follow-toggle')).toBeChecked();
+    expect(screen.getByTestId('auto-follow-toggle')).toHaveAttribute('aria-pressed', 'true');
     expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 

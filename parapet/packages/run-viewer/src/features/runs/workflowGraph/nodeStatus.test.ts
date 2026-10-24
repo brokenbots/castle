@@ -151,7 +151,7 @@ describe('selectNodeOverlay', () => {
     expect(statuses.check).toBe('succeeded');
   });
 
-  test('fails running nodes on runFailed and succeeds them on runCompleted', () => {
+  test('terminal events end the run: running nodes finalize and the reached final state lights', () => {
     const failed = selectNodeOverlay([
       event(1, 'stepEntered', { step: 'build' }),
       event(2, 'runFailed', { reason: 'step crashed' }),
@@ -164,13 +164,26 @@ describe('selectNodeOverlay', () => {
       event(3, 'runFailed', { reason: 'x', step: 'test' }),
     ]);
     expect(named.statuses.test).toBe('failed');
-    expect(named.statuses.build).toBe('running');
+    // A terminal event ends the run: every still-running node finalizes
+    // with it (nothing can remain running past runFailed).
+    expect(named.statuses.build).toBe('failed');
+
+    // A failure carrying the run's final state lights the terminal node
+    // even though no stepEntered ever fires for a state node.
+    const withState = selectNodeOverlay([
+      event(1, 'stepEntered', { step: 'build' }),
+      event(2, 'runFailed', { step: 'build', finalState: 'failed' }),
+    ]);
+    expect(withState.statuses.failed).toBe('failed');
 
     const completed = selectNodeOverlay([
       event(1, 'stepEntered', { step: 'build' }),
-      event(2, 'runCompleted', {}),
+      event(2, 'runCompleted', { finalState: 'awaiting_human' }),
     ]);
     expect(completed.statuses.build).toBe('succeeded');
+    // The reached terminal state lights from the completion event itself
+    // (the reported stall: the graph froze before the terminal steps).
+    expect(completed.statuses.awaiting_human).toBe('succeeded');
   });
 
   test('returns no state for unvisited steps', () => {

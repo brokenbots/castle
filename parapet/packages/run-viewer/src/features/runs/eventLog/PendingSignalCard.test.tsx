@@ -113,7 +113,7 @@ describe('PendingSignalCard', () => {
     renderCard();
 
     expect(screen.getByTestId('pending-signal-submit')).toBeDisabled();
-    expect(screen.getByTestId('pending-signal-submit')).toHaveTextContent('Delivering...');
+    expect(screen.getByTestId('pending-signal-submit')).toHaveTextContent('Delivering…');
     expect(screen.getByText(/Delivering deploy-signal/i)).toBeInTheDocument();
   });
 

@@ -61,6 +61,10 @@ export { server, consoleClient, getRuntimeCodec, type Codec } from './api/client
 export {
   RUN_TERMINAL_STATUSES,
   RUN_STATUS_TEXT_COLORS,
+  RUN_STATUS_CHIP_CLASSES,
+  RUN_STATUS_PILL_CLASSES,
+  STEP_NODE_STATUS_CLASSES,
+  AGENT_STATUS_TEXT_COLORS,
 } from './features/runs/runStatus';
 export {
   StartedCell,
@@ -106,4 +110,12 @@ export { PageHeader } from './components/PageHeader';
 export { PageState } from './components/PageState';
 export { Breadcrumbs } from './components/Breadcrumbs';
 export { DockedPanel } from './components/DockedPanel';
+export { DetailPanel } from './components/DetailPanel';
+export {
+  ColumnVisibilitySelect,
+  StickyTableHead,
+  makeRowClick,
+  useColumnVisibility,
+  type TableColumn,
+} from './components/DataTable';
 export { useDocumentTitle } from './shell/useDocumentTitle';

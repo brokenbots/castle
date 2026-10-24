@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
 import { WorkflowLayerNav } from './WorkflowLayerNav';
 import { buildSubworkflowLayers } from './layers';
+import { parseWorkflowHcl } from './parseWorkflowHcl';
 
 const PARENT_BODY =
   'workflow {\n  name = "qa_triage"\n  initial_state = "triage"\n}\nstep "triage" {\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
@@ -18,9 +19,12 @@ function stack() {
   });
 }
 
+// The root miniature rides the nav (always present above the graph).
+const rootGraph = parseWorkflowHcl(PARENT_BODY);
+
 describe('WorkflowLayerNav', () => {
   test('renders the root crumb plus one crumb per open layer, deepest marked current', () => {
-    render(<WorkflowLayerNav rootName="linear_intake_v1" stack={stack().slice(0, 1)} onNavigate={() => {}} />);
+    render(<WorkflowLayerNav rootName="linear_intake_v1" rootGraph={rootGraph} stack={stack().slice(0, 1)} onNavigate={() => {}} />);
 
     const breadcrumb = screen.getByTestId('layer-breadcrumb');
     expect(within(breadcrumb).getByTestId('layer-crumb-root')).toHaveTextContent('linear_intake_v1');
@@ -35,7 +39,7 @@ describe('WorkflowLayerNav', () => {
     const onNavigate = vi.fn();
     const user = userEvent.setup();
     const layers = stack();
-    render(<WorkflowLayerNav rootName="linear_intake_v1" stack={layers} onNavigate={onNavigate} />);
+    render(<WorkflowLayerNav rootName="linear_intake_v1" rootGraph={rootGraph} stack={layers} onNavigate={onNavigate} />);
 
     await user.click(screen.getByTestId('layer-crumb-root'));
     expect(onNavigate).toHaveBeenLastCalledWith(0);
@@ -51,7 +55,7 @@ describe('WorkflowLayerNav', () => {
   });
 
   test('the thumbnail rail renders one always-LR thumbnail per open layer', () => {
-    render(<WorkflowLayerNav rootName="linear_intake_v1" stack={stack()} onNavigate={() => {}} />);
+    render(<WorkflowLayerNav rootName="linear_intake_v1" rootGraph={rootGraph} stack={stack()} onNavigate={() => {}} />);
 
     const thumbs = screen.getAllByTestId('layer-thumb');
     expect(thumbs).toHaveLength(2);
@@ -66,7 +70,7 @@ describe('WorkflowLayerNav', () => {
   test('thumbnail clicks navigate to that layer depth', async () => {
     const onNavigate = vi.fn();
     const user = userEvent.setup();
-    render(<WorkflowLayerNav rootName="linear_intake_v1" stack={stack()} onNavigate={onNavigate} />);
+    render(<WorkflowLayerNav rootName="linear_intake_v1" rootGraph={rootGraph} stack={stack()} onNavigate={onNavigate} />);
 
     await user.click(screen.getAllByTestId('layer-thumb')[0]);
     expect(onNavigate).toHaveBeenLastCalledWith(1);
@@ -74,7 +78,7 @@ describe('WorkflowLayerNav', () => {
 
   test('a layer whose body did not parse shows a placeholder thumbnail', () => {
     const layers = buildSubworkflowLayers({ subworkflows: [{ name: 'broken', body: '' }] });
-    render(<WorkflowLayerNav rootName="root" stack={layers} onNavigate={() => {}} />);
+    render(<WorkflowLayerNav rootName="root" rootGraph={rootGraph} stack={layers} onNavigate={() => {}} />);
 
     expect(screen.getAllByTestId('layer-thumb')).toHaveLength(1);
     expect(screen.getByText('no graph')).toBeInTheDocument();

@@ -93,6 +93,7 @@ const DEFAULT_WORKFLOW_SOURCE =
 // module mock. UseGetRunQuery returns this object verbatim.
 const fixture = vi.hoisted(() => ({
   error: undefined as unknown,
+  refetch: undefined as unknown,
   data: {
     runId: 'run-1',
     criteriaId: 'ov-1',
@@ -121,6 +122,8 @@ vi.mock('../../api/castleApi', async () => {
       // A real failure leaves the query without data, exactly as the page's
       // error branch (`run.error || !run.data`) expects.
       data: fixture.error ? undefined : fixture.data,
+      // The stream's terminal-event refetch hook calls this; tests spy it.
+      refetch: fixture.refetch ?? (() => {}),
     }),
   };
 });
@@ -154,6 +157,7 @@ function wireMetadataEvent(seq: number, meta: { ticket?: string; repo_url?: stri
 describe('RunDetailPage', () => {
   beforeEach(() => {
     fixture.error = undefined;
+    fixture.refetch = undefined;
     // Live-tail affordances key off run status; make the shared fixture's
     // status explicit so tests that change it don't leak.
     fixture.data.status = 'running';
@@ -271,8 +275,11 @@ describe('RunDetailPage', () => {
       </Provider>,
     );
 
-    expect(await screen.findByText('CRI-131')).toBeInTheDocument();
-    expect(await screen.findByText('brokenbots/castle')).toBeInTheDocument();
+    // Collapsed event summaries now surface metadata keys too; scope the
+    // assertions to the static header, which owns the identity metadata.
+    const header = await screen.findByTestId('run-detail-header');
+    expect(await within(header).findByText('CRI-131')).toBeInTheDocument();
+    expect(await within(header).findByText('brokenbots/castle')).toBeInTheDocument();
     const link = screen.getByRole('link', { name: 'PR' });
     expect(link.getAttribute('href')).toBe('https://github.com/brokenbots/castle/pull/42');
     expect(link.getAttribute('rel')).toBe('noreferrer');
@@ -300,7 +307,10 @@ describe('RunDetailPage', () => {
       </Provider>,
     );
 
-    expect(await screen.findByText('CRI-131')).toBeInTheDocument();
+    // Scope to the header: the event log's collapsed summaries also show
+    // the ticket value now.
+    const header = await screen.findByTestId('run-detail-header');
+    expect(await within(header).findByText('CRI-131')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'PR' })).not.toBeInTheDocument();
   });
 
@@ -686,8 +696,7 @@ describe('RunDetailPage', () => {
       expect(await screen.findByText('Step graph')).toBeInTheDocument();
       // No graph is rendered; the text-edge fallback keeps the panel populated.
       expect(document.querySelector('[data-testid="workflow-graph"]')).toBeNull();
-      const graphSection = screen.getByText('Step graph').closest('section')!;
-      const edgeRows = graphSection.querySelectorAll('div.bg-slate-900 > div');
+      const edgeRows = document.querySelectorAll('[data-testid="graph-fallback-edges"] > div');
       expect(edgeRows).toHaveLength(2);
       expect(edgeRows[0].textContent).toBe('build --success--> test');
       expect(edgeRows[1].textContent).toBe('test --success--> done');
@@ -768,8 +777,11 @@ describe('RunDetailPage', () => {
     const testCard = document.querySelector('[data-node-id="test"]');
     const doneCard = document.querySelector('[data-node-id="done"]');
     expect(buildCard?.className).toContain('animate-pulse');
-    expect(testCard?.className).toContain('border-emerald-400/70');
-    expect(doneCard?.className).toContain('opacity-60');
+    expect(testCard?.className).toContain('border-success/70');
+    // The unvisited terminal node dims via its content, not the card (the
+    // fill stays opaque so no edge bleeds through).
+    expect(doneCard?.querySelector('p')?.className).toContain('opacity-60');
+    expect(doneCard?.className).not.toContain('opacity-60');
     expect(screen.getByLabelText('status running')).toBeInTheDocument();
     expect(screen.getByLabelText('status succeeded')).toBeInTheDocument();
   });
@@ -811,22 +823,23 @@ describe('RunDetailPage', () => {
         }),
       );
     });
-    expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
-    expect(screen.getByText('{"step":"test","outcome":"success"}')).toBeInTheDocument();
+    // The typed summaries render the step/outcome parts of both outcomes.
+    expect(screen.getByText('#201')).toBeInTheDocument();
+    expect(screen.getByText('#202')).toBeInTheDocument();
 
     act(() => {
       fireEvent.click(document.querySelector('[data-node-id="test"]')!);
     });
     // The chip names the step and the log shows only that step's events.
     expect(screen.getByTestId('step-filter')).toHaveTextContent('Filtered to step: test');
-    expect(screen.queryByText('{"step":"build","outcome":"success"}')).not.toBeInTheDocument();
-    expect(screen.getByText('{"step":"test","outcome":"success"}')).toBeInTheDocument();
+    expect(screen.queryByText('#201')).not.toBeInTheDocument();
+    expect(screen.getByText('#202')).toBeInTheDocument();
     // The selected node is highlighted in the graph.
     expect(document.querySelector('[data-node-id="test"]')?.className).toContain('ring-2');
 
     fireEvent.click(screen.getByTestId('clear-step-filter'));
     expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
-    expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
+    expect(screen.getByText('#201')).toBeInTheDocument();
 
     // Clicking a node re-applies the filter; clicking the already-selected
     // node toggles it back off.
@@ -838,7 +851,7 @@ describe('RunDetailPage', () => {
       fireEvent.click(document.querySelector('[data-node-id="test"]')!);
     });
     expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
-    expect(screen.getByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
+    expect(screen.getByText('#201')).toBeInTheDocument();
   });
 
   test('clicking a node highlights its exact declaration in the workflow source', async () => {
@@ -898,10 +911,14 @@ describe('RunDetailPage', () => {
 
     // Values come from the default InspectRun MSW handler; the blank
     // adapter state degrades to the empty notice instead of a viewer.
-    expect(await screen.findByText('Inspection')).toBeInTheDocument();
-    expect(screen.getByTestId('inspection-current-step')).toHaveTextContent('build');
-    expect(screen.getByText('local')).toBeInTheDocument();
-    expect(screen.getByText('sess-1')).toBeInTheDocument();
+    // The full panel lives in the right drawer; the static header carries
+    // the compact summary of the same InspectRun data.
+    const drawer = await screen.findByTestId('run-detail-drawer');
+    expect(within(drawer).getByText('Inspection details')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('inspection-current-step')).toHaveTextContent('build');
+    expect(within(drawer).getByText('local')).toBeInTheDocument();
+    expect(within(drawer).getByText('sess-1')).toBeInTheDocument();
+    expect(screen.getByTestId('inspection-summary-step')).toHaveTextContent('build');
     expect(screen.getByTestId('adapter-state-empty')).toBeInTheDocument();
   });
 
@@ -918,19 +935,18 @@ describe('RunDetailPage', () => {
 
     expect(await screen.findByTestId('scope-controls-panel')).toBeInTheDocument();
 
-    const layout = screen.getByTestId('run-detail-layout');
+    const header = screen.getByTestId('run-detail-header');
     const panel = screen.getByTestId('scope-controls-panel');
-    // The panel is part of the main column layout, not a floating overlay.
-    expect(layout).toContainElement(panel);
-    // The gathered content: control button row, the run scope view, and
-    // no duplicated scope content elsewhere.
-    expect(within(panel).getByTestId('scope-controls-row')).toBeInTheDocument();
+    // The control buttons moved into the sticky page header; the drawer's
+    // panel renders scope only (no duplicate control row).
+    expect(within(header).getByRole('button', { name: 'Pause' })).toBeInTheDocument();
+    expect(within(panel).queryByTestId('scope-controls-row')).not.toBeInTheDocument();
+    // The gathered drawer content: the run scope view, and no duplicated
+    // scope content or event log inside the panel.
     expect(within(panel).getByTestId('run-scope-panel')).toBeInTheDocument();
     expect(within(panel).queryByTestId('event-log-scroll')).not.toBeInTheDocument();
-    expect(within(layout).getByTestId('event-log-scroll')).toBeInTheDocument();
-
-    // The control buttons moved out of the page header into the panel.
-    expect(within(panel).getByRole('button', { name: 'Pause' })).toBeInTheDocument();
+    expect(screen.getByTestId('run-detail-drawer')).toContainElement(panel);
+    expect(within(screen.getByTestId('run-detail-layout')).getByTestId('event-log-scroll')).toBeInTheDocument();
   });
 
   test('collapses the scope & controls panel and restores its content on expand', async () => {
@@ -944,21 +960,20 @@ describe('RunDetailPage', () => {
       </Provider>,
     );
 
-    const toggle = await screen.findByTestId('scope-controls-collapse');
+    const drawer = await screen.findByTestId('run-detail-drawer');
+    const toggle = within(drawer).getByTestId('scope-controls-collapse');
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByTestId('run-scope-panel')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('run-scope-panel')).toBeInTheDocument();
 
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     // Collapsed hides the body but keeps the bar with its affordance.
-    expect(screen.queryByTestId('scope-controls-body')).not.toBeInTheDocument();
-    expect(screen.getByTestId('scope-controls-collapsed')).toBeInTheDocument();
-    // The control buttons leave the DOM with the collapsed body.
-    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
+    expect(within(drawer).queryByTestId('scope-controls-body')).not.toBeInTheDocument();
+    expect(within(drawer).getByTestId('scope-controls-collapsed')).toBeInTheDocument();
 
     await userEvent.click(toggle);
-    expect(screen.getByTestId('scope-controls-body')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
+    expect(within(drawer).getByTestId('scope-controls-body')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('run-scope-panel')).toBeInTheDocument();
   });
 });
 
@@ -1035,6 +1050,49 @@ describe('RunDetailPage stream status', () => {
     expect(banner).toHaveAttribute('data-state', 'reconnecting');
     expect(screen.getByTestId('stream-reconnecting')).toHaveTextContent('attempt 2/5');
     expect(screen.queryByTestId('stream-reconnect')).not.toBeInTheDocument();
+  });
+
+  test('re-fetches the run row once when the stream delivers the terminal event', async () => {
+    // The header/summary bind to the GetRun cache, which fetches once per
+    // mount: a run that fails while the page is open would keep reading
+    // running until a manual refresh. The terminal event must trigger one
+    // re-fetch (and only one — resend storms must not hammer Castle).
+    const refetch = vi.fn();
+    fixture.refetch = refetch;
+    fixture.data.status = 'running';
+
+    await renderDetail();
+    expect(refetch).not.toHaveBeenCalled();
+
+    act(() => {
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 900,
+          type: 'runCompleted',
+          correlationId: '',
+          payload: { finalState: 'done' },
+        }),
+      );
+    });
+    expect(refetch).toHaveBeenCalledTimes(1);
+
+    // A resent terminal event (or any further event after the end) does
+    // not re-trigger.
+    act(() => {
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 901,
+          type: 'runCompleted',
+          correlationId: '',
+          payload: { finalState: 'done' },
+        }),
+      );
+    });
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 
   test('offers a manual reconnect that resumes from the newest delivered seq', async () => {
@@ -1149,10 +1207,10 @@ describe('RunDetailPage panel fullscreen', () => {
     );
   }
 
-  test('expands the events panel fullscreen with live-tail continuity and collapses back', async () => {
+  test('events render inside the graph box with the step filter and docked continuity', async () => {
     // Pre-seeded history gives the log a scrollable, bottom-pinned tail like
-    // a live run; the event delivered below must still land in the expanded
-    // panel.
+    // a live run; the event delivered below must still land in the docked
+    // strip.
     server.use(
       http.post(serverPath('ListRunEvents'), () =>
         HttpResponse.json({ events: wireEvents(30), last_seq: '30' }),
@@ -1165,36 +1223,17 @@ describe('RunDetailPage panel fullscreen', () => {
     await vi.waitFor(() => expect(selectRunEvents('run-1')(store.getState())).toHaveLength(30));
     await vi.waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(0));
 
-    const expand = screen.getByTestId('events-panel-expand');
-    expect(expand).toHaveAttribute('aria-expanded', 'false');
-    await userEvent.click(expand);
-
     const panel = screen.getByTestId('events-panel');
-    // Fullscreen overlay above the page chrome.
-    expect(panel.className).toContain('fixed');
-    expect(panel).toHaveAttribute('data-expanded', 'true');
-    expect(expand).toHaveAttribute('aria-expanded', 'true');
-    // Same DOM node: expansion must not remount the log, so its scroll
-    // anchoring and hooks survive.
-    expect(screen.getByTestId('event-log-scroll')).toBe(scroller);
-    // The fullscreen markup must give the log a definite height at every
-    // level of its ancestor chain, so the log itself stays the scroll
-    // container (percentage heights collapse to `auto` otherwise and the
-    // overlay would scroll instead — jsdom has no layout, so this class
-    // invariant is the meaningful guard, not a scrollTop assertion).
-    for (const cls of [
-      '[&_[data-testid=events-panel-body]]:flex-col',
-      '[&_[data-testid=events-panel-body]]:flex-1',
-      '[&_[data-testid=events-panel-body]>div]:flex-col',
-      '[&_[data-testid=events-panel-body]>div]:flex-1',
-      '[&_[data-testid=events-panel-body]>div>div:last-child]:flex-1',
-      '[&_[data-testid=event-log-scroll]]:h-full',
-    ]) {
-      expect(panel.className).toContain(cls);
-    }
+    // No fullscreen machinery on events: it is docked furniture inside the
+    // graph box.
+    const graphPanel = screen.getByTestId('graph-panel');
+    expect(graphPanel).toContainElement(panel);
+    expect(panel.className).not.toContain('fixed');
+    expect(screen.queryByTestId('events-panel-expand')).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('button', { name: 'Expand Events panel' })).toHaveLength(0);
 
-    // A live event delivered while expanded flows through the still-mounted
-    // hook and renders in the panel's tail.
+    // A live event flows through the still-mounted hook and renders in the
+    // strip's tail.
     act(() => {
       store.dispatch(
         runsSlice.actions.eventReceived({
@@ -1209,35 +1248,51 @@ describe('RunDetailPage panel fullscreen', () => {
       scroller.dispatchEvent(new Event('scroll'));
     });
     expect(selectRunEvents('run-1')(store.getState())).toHaveLength(31);
-    expect(await within(panel).findByText('{"step":"build","outcome":"success"}')).toBeInTheDocument();
-
-    await userEvent.click(expand);
-    expect(screen.getByTestId('events-panel').className).not.toContain('fixed');
-    // Docked again: none of the fullscreen sizing variants remain.
-    expect(screen.getByTestId('events-panel').className).not.toContain('events-panel-body');
-    expect(screen.getByTestId('events-panel').className).not.toContain('event-log-scroll');
-    expect(screen.getByTestId('events-panel')).toHaveAttribute('data-expanded', 'false');
+    // The new stepOutcome row lands in the strip's tail (its seq cell).
+    expect(await within(panel).findByText('#31')).toBeInTheDocument();
     expect(screen.getByTestId('event-log-scroll')).toBe(scroller);
-    // The watch hook started once for the page mount; expanding and
-    // collapsing must not restart it.
+    // The watch hook started once for the page mount.
     expect(startWatch).toHaveBeenCalledTimes(1);
+
+    // Re-expanding the events panel renders the same virtualized window:
+    // the strip is docked furniture, and the collapse/expand cycle keeps
+    // the log's state in the page's expansion set.
+    const toggle = screen.getByTestId('events-panel-collapse');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 
-  test('Escape collapses the expanded events panel and returns focus to its expand control', async () => {
+  test('the step filter renders inside the events panel and clears there', async () => {
     renderDetail();
 
-    const expand = screen.getByTestId('events-panel-expand');
-    await userEvent.click(expand);
-    expect(screen.getByTestId('events-panel').className).toContain('fixed');
-    // Move focus away from the toggle to prove Escape restores it.
-    expand.blur();
-    expect(expand).not.toHaveFocus();
+    await screen.findByTestId('events-panel');
+    // No filter initially.
+    expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
 
-    await userEvent.keyboard('{Escape}');
+    act(() => {
+      store.dispatch(
+        runsSlice.actions.eventReceived({
+          schemaVersion: 1,
+          runId: 'run-1',
+          seq: 202,
+          type: 'stepOutcome',
+          correlationId: '',
+          payload: { step: 'test', outcome: 'success' },
+        }),
+      );
+    });
+    act(() => {
+      fireEvent.click(document.querySelector('[data-node-id="test"]')!);
+    });
 
-    expect(screen.getByTestId('events-panel').className).not.toContain('fixed');
-    expect(expand).toHaveAttribute('aria-expanded', 'false');
-    expect(expand).toHaveFocus();
+    // The filter chip lives inside the events panel (its own control row).
+    const eventsPanel = screen.getByTestId('events-panel');
+    const filter = within(eventsPanel).getByTestId('step-filter');
+    expect(filter).toHaveTextContent('Filtered to step: test');
+
+    // Clearing removes it and widens the log again.
+    fireEvent.click(within(filter).getByTestId('clear-step-filter'));
+    expect(screen.queryByTestId('step-filter')).not.toBeInTheDocument();
+    expect(within(eventsPanel).getByText('#202')).toBeInTheDocument();
   });
 
   test('expands the graph panel fullscreen and collapses back with the graph intact', async () => {
@@ -1267,28 +1322,29 @@ describe('RunDetailPage panel fullscreen', () => {
     await screen.findByTestId('workflow-graph');
     const tb = screen.getByTestId('orientation-top-bottom');
     const lr = screen.getByTestId('orientation-left-right');
-    // Top-bottom is the default orientation.
-    expect(tb).toHaveAttribute('aria-pressed', 'true');
-    expect(lr).toHaveAttribute('aria-pressed', 'false');
+    // Left-right is the default orientation (entry leftmost, terminals
+    // right); top-bottom stays available via the toggle.
+    expect(lr).toHaveAttribute('aria-pressed', 'true');
+    expect(tb).toHaveAttribute('aria-pressed', 'false');
     const handlePositions = (container: HTMLElement) =>
       Array.from(container.querySelectorAll('.react-flow__handle')).map((el) =>
         el.getAttribute('data-handlepos'),
       );
-    expect(handlePositions(screen.getByTestId('workflow-graph')).filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
-
-    await userEvent.click(lr);
-    expect(lr).toHaveAttribute('aria-pressed', 'true');
-    expect(tb).toHaveAttribute('aria-pressed', 'false');
-    // The orientation remounts the flow; handles move to the right side.
-    await vi.waitFor(() => {
-      const positions = handlePositions(screen.getByTestId('workflow-graph'));
-      expect(positions.filter((pos) => pos === 'right').length).toBeGreaterThan(0);
-      expect(positions.some((pos) => pos === 'bottom')).toBe(false);
-    });
+    expect(handlePositions(screen.getByTestId('workflow-graph')).filter((pos) => pos === 'right').length).toBeGreaterThan(0);
 
     await userEvent.click(tb);
+    expect(tb).toHaveAttribute('aria-pressed', 'true');
+    expect(lr).toHaveAttribute('aria-pressed', 'false');
+    // The orientation remounts the flow; handles move to the bottom side.
     await vi.waitFor(() => {
-      expect(handlePositions(screen.getByTestId('workflow-graph')).filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
+      const positions = handlePositions(screen.getByTestId('workflow-graph'));
+      expect(positions.filter((pos) => pos === 'bottom').length).toBeGreaterThan(0);
+      expect(positions.some((pos) => pos === 'right')).toBe(false);
+    });
+
+    await userEvent.click(lr);
+    await vi.waitFor(() => {
+      expect(handlePositions(screen.getByTestId('workflow-graph')).filter((pos) => pos === 'right').length).toBeGreaterThan(0);
     });
   });
 
@@ -1354,44 +1410,21 @@ describe('RunDetailPage panel fullscreen', () => {
     expect(viewport().style.transform).toBe(paused);
   });
 
-  test('moves the source pane between the graph side and below it, collapsing per placement', async () => {
+  test('the drawer provides the source view the graph node-clicks pair with', async () => {
     renderDetail();
 
-    // Default: source rendered inline under the graph.
-    expect(await screen.findByTestId('source-pane-body')).toBeInTheDocument();
-    expect(screen.queryByTestId('source-dock')).toBeNull();
+    // Default: the source opens inside the drawer (single placement, no
+    // side/under switching, no separate dock).
+    const drawer = await screen.findByTestId('run-detail-drawer');
+    expect(within(drawer).getByTestId('source-drawer')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('workflow-source-view')).toBeInTheDocument();
+  });
 
-    // Side placement swaps the inline body for the right-docked panel.
-    await userEvent.click(screen.getByTestId('source-placement-side'));
-    expect(screen.getByTestId('source-dock')).toBeInTheDocument();
-    expect(within(screen.getByTestId('source-dock')).getByTestId('workflow-source-view')).toBeInTheDocument();
-    expect(screen.queryByTestId('source-pane-body')).toBeNull();
+  test('the layer body swaps in the drawer source when compiled JSON arrives', async () => {
+    renderDetail();
 
-    // The side view starts expanded, and its collapse state is its own:
-    // closing the dock leaves the under placement's expanded state alone.
-    await userEvent.click(within(screen.getByTestId('source-dock')).getByTestId('source-dock-close'));
-    expect(screen.queryByTestId('source-dock')).toBeNull();
-    expect(screen.getByTestId('source-pane-collapse')).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByTestId('source-pane-collapsed')).toBeInTheDocument();
-
-    // Switching to Under keeps a separate state: it was never collapsed.
-    await userEvent.click(screen.getByTestId('source-placement-under'));
-    expect(screen.getByTestId('source-pane-body')).toBeInTheDocument();
-    expect(screen.getByTestId('source-pane-collapse')).toHaveAttribute('aria-expanded', 'true');
-
-    // Collapsing the under view keeps the bar and restores the body on expand.
-    await userEvent.click(screen.getByTestId('source-pane-collapse'));
-    expect(screen.getByTestId('source-pane-collapsed')).toBeInTheDocument();
-    expect(screen.queryByTestId('source-pane-body')).toBeNull();
-    await userEvent.click(screen.getByTestId('source-pane-collapse'));
-    expect(screen.getByTestId('source-pane-body')).toBeInTheDocument();
-
-    // Back to Side: the earlier side collapse is still remembered until
-    // the side placement is expanded again.
-    await userEvent.click(screen.getByTestId('source-placement-side'));
-    expect(screen.queryByTestId('source-dock')).toBeNull();
-    await userEvent.click(screen.getByTestId('source-pane-collapse'));
-    expect(screen.getByTestId('source-dock')).toBeInTheDocument();
+    const drawer = await screen.findByTestId('run-detail-drawer');
+    await within(drawer).findByTestId('workflow-source-view');
   });
 
   test('expands the inspection panel fullscreen and collapses back with data intact', async () => {
@@ -1400,67 +1433,72 @@ describe('RunDetailPage panel fullscreen', () => {
     const inspection = await screen.findByTestId('run-inspection');
     expect(await within(inspection).findByTestId('inspection-current-step')).toHaveTextContent('build');
 
-    const expand = screen.getByTestId('inspection-panel-expand');
-    await userEvent.click(expand);
-
-    const panel = screen.getByTestId('inspection-panel');
-    expect(panel.className).toContain('fixed');
-    expect(panel).toHaveAttribute('data-expanded', 'true');
-    expect(expand).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByTestId('run-inspection')).toBe(inspection);
+    // Inspection is not an expandable panel — it lives as a DetailPanel
+    // section inside the right drawer.
+    const drawer = await screen.findByTestId('run-detail-drawer');
+    expect(within(drawer).getByTestId('run-inspection')).toBe(inspection);
     expect(within(inspection).getByTestId('inspection-current-step')).toHaveTextContent('build');
-
-    await userEvent.click(expand);
-    expect(screen.getByTestId('inspection-panel').className).not.toContain('fixed');
-    expect(screen.getByTestId('run-inspection')).toBe(inspection);
   });
 
-  test('expanding one panel collapses the previously expanded one and keeps both mounted', async () => {
+  test('the graph fullscreen swap leaves the docked events strip untouched', async () => {
     renderDetail();
 
-    const eventsExpand = screen.getByTestId('events-panel-expand');
-    await userEvent.click(eventsExpand);
-    expect(screen.getByTestId('events-panel').className).toContain('fixed');
     const scroller = screen.getByTestId('event-log-scroll');
 
     const graphExpand = screen.getByTestId('graph-panel-expand');
     await userEvent.click(graphExpand);
 
-    // Single-panel swap: events returns to the docked layout while the
-    // graph takes fullscreen, and the log node survives the swap.
-    expect(screen.getByTestId('events-panel').className).not.toContain('fixed');
-    expect(screen.getByTestId('events-panel')).toHaveAttribute('data-expanded', 'false');
+    // The graph takes fullscreen; the events strip stays docked inside it
+    // with the same log node (single mounted tree, no overlay swap).
     expect(screen.getByTestId('graph-panel').className).toContain('fixed');
     expect(screen.getByTestId('graph-panel')).toHaveAttribute('data-expanded', 'true');
     expect(screen.getByTestId('event-log-scroll')).toBe(scroller);
 
-    // Escape now targets the graph overlay and returns focus to its control.
+    // Escape targets the graph overlay and returns focus to its control.
     await userEvent.keyboard('{Escape}');
     expect(screen.getByTestId('graph-panel').className).not.toContain('fixed');
     expect(screen.getByTestId('graph-panel')).toHaveAttribute('data-expanded', 'false');
     expect(graphExpand).toHaveFocus();
   });
 
-  test('panels stay docked by default with expand controls available', async () => {
+  test('shows the workflow source and scope in a collapsible right drawer', async () => {
+    renderDetail();
+
+    // Default: drawer open, source rendered inside it.
+    const drawer = await screen.findByTestId('run-detail-drawer');
+    expect(within(drawer).getByTestId('source-drawer')).toBeInTheDocument();
+    expect(within(drawer).getByText('Workflow source')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('scope-controls-panel')).toBeInTheDocument();
+
+    // The header toggle collapses the drawer; source and scope leave the
+    // DOM together with it.
+    await userEvent.click(screen.getByTestId('run-drawer-toggle'));
+    expect(screen.queryByTestId('run-detail-drawer')).toBeNull();
+    expect(screen.queryByTestId('source-drawer')).toBeNull();
+    expect(screen.queryByTestId('scope-controls-panel')).toBeNull();
+
+    // Re-opening restores the full drawer.
+    await userEvent.click(screen.getByTestId('run-drawer-toggle'));
+    expect(screen.getByTestId('run-detail-drawer')).toBeInTheDocument();
+    expect(screen.getByTestId('source-drawer')).toBeInTheDocument();
+  });
+
+  test('the graph stays the only fullscreen panel and events stay docked inside it', async () => {
     renderDetail();
 
     await screen.findByTestId('events-panel');
 
-    for (const testId of ['events-panel', 'graph-panel', 'inspection-panel']) {
-      const panel = screen.getByTestId(testId);
-      expect(panel.className).not.toContain('fixed');
-      expect(panel).toHaveAttribute('data-expanded', 'false');
-    }
-    for (const [panelId, expandId] of [
-      ['events-panel', 'events-panel-expand'],
-      ['graph-panel', 'graph-panel-expand'],
-      ['inspection-panel', 'inspection-panel-expand'],
-    ] as const) {
-      const expand = screen.getByTestId(expandId);
-      expect(expand).toHaveAttribute('aria-expanded', 'false');
-      expect(expand).toHaveAttribute('aria-controls', panelId);
-      expect(screen.getByTestId(panelId)).toHaveAttribute('id', panelId);
-    }
+    // Only the graph carries fullscreen machinery; events are docked
+    // furniture (collapse chevron, no expand affordance).
+    const graphPanel = screen.getByTestId('graph-panel');
+    const eventsPanel = screen.getByTestId('events-panel');
+    expect(eventsPanel.className).not.toContain('fixed');
+    expect(graphPanel).toContainElement(eventsPanel);
+    const graphExpand = screen.getByTestId('graph-panel-expand');
+    expect(graphExpand).toHaveAttribute('aria-expanded', 'false');
+    expect(graphExpand).toHaveAttribute('aria-controls', 'graph-panel');
+    expect(screen.queryByTestId('events-panel-expand')).not.toBeInTheDocument();
+    expect(screen.getByTestId('events-panel-collapse')).toHaveAttribute('aria-expanded', 'true');
   });
 
   describe('subworkflow drill-down (CRI-257)', () => {
@@ -1556,7 +1594,7 @@ describe('RunDetailPage panel fullscreen', () => {
       );
 
       // The source pane now shows the layer's own module body.
-      const sourceBody = screen.getByTestId('source-pane-body');
+      const sourceBody = within(screen.getByTestId('run-detail-drawer')).getByTestId('workflow-source-view');
       expect(sourceBody.textContent).toContain('initial_state = "triage"');
       expect(sourceBody.textContent).not.toContain('initial_state = "build"');
     });
@@ -1572,9 +1610,11 @@ describe('RunDetailPage panel fullscreen', () => {
       fireEvent.click(screen.getByTestId('layer-crumb-root'));
 
       // Back at the top-level workflow: root nodes are back, the
-      // drill-down chrome is gone.
+      // drill-down chrome is gone (the always-present mini-graph rail
+      // remains with the root thumbnail only).
       expect(screen.queryByTestId('layer-breadcrumb')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('layer-thumbs')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('layer-thumb')).not.toBeInTheDocument();
+      expect(screen.getByTestId('layer-thumb-root')).toBeInTheDocument();
       await vi.waitFor(
         () => {
           const ids = visibleNodeIds();
@@ -1600,7 +1640,7 @@ describe('RunDetailPage panel fullscreen', () => {
 
       // Selecting a layer node highlights its block inside the layer body.
       fireEvent.click(nodeById('triage'));
-      const sourceBody = screen.getByTestId('source-pane-body');
+      const sourceBody = within(screen.getByTestId('run-detail-drawer')).getByTestId('workflow-source-view');
       expect(sourceBody.textContent).toContain('step "triage"');
       // The highlight target is the layer's block, found inside the layer
       // source (the parent body has no such step).
@@ -1611,6 +1651,57 @@ describe('RunDetailPage panel fullscreen', () => {
     // module JSON (the Evidence-B payload shape), not HCL source — the
     // drill-down must still open and the pane must render the body
     // readably.
+    test('follow mode auto-traverses into the layer containing the running step', async () => {
+      renderSubworkflowPage();
+      await screen.findByText('Workflow source');
+      dispatchGraphsEvent(500);
+
+      // Enable follow while the engine is still in the root.
+      await userEvent.click(screen.getByTestId('graph-follow-toggle'));
+      expect(screen.getByTestId('graph-follow-toggle')).toHaveAttribute('aria-pressed', 'true');
+      act(() => {
+        store.dispatch(
+          runsSlice.actions.eventReceived({
+            schemaVersion: 1,
+            runId: 'run-1',
+            seq: 501,
+            type: 'stepEntered',
+            ts: '',
+            correlationId: '',
+            payload: { step: 'build' },
+          }),
+        );
+      });
+      await vi.waitFor(() => {
+        expect(visibleNodeIds()).toContain('build');
+      });
+
+      // The engine enters qa_triage's own step: the view auto-opens the
+      // layer so the follower is never stranded at the parent level.
+      act(() => {
+        store.dispatch(
+          runsSlice.actions.eventReceived({
+            schemaVersion: 1,
+            runId: 'run-1',
+            seq: 502,
+            type: 'stepEntered',
+            ts: '',
+            correlationId: '',
+            payload: { step: 'triage' },
+          }),
+        );
+      });
+      await vi.waitFor(
+        () => {
+          expect(visibleNodeIds()).toContain('triage');
+          expect(visibleNodeIds()).not.toContain('build');
+        },
+        { timeout: 1500 },
+      );
+      // The drill-down chrome reflects the auto-opened stack.
+      expect(screen.getByTestId('layer-breadcrumb')).toBeInTheDocument();
+    });
+
     test('a compiled-JSON layer body opens the drill-down and renders the module body', async () => {
       // Parent module whose step runs the `inner_task` layer (the
       // Evidence-B demo shape).
@@ -1680,8 +1771,8 @@ describe('RunDetailPage panel fullscreen', () => {
 
       // The source pane shows the layer's compiled module body,
       // pretty-printed rather than the compact one-line blob the event
-      // carries.
-      const sourceBody = screen.getByTestId('source-pane-body');
+      // carries. The source lives in the right drawer now.
+      const sourceBody = within(screen.getByTestId('run-detail-drawer')).getByTestId('workflow-source-view');
       expect(JSON.parse(sourceBody.textContent ?? '')).toEqual(JSON.parse(compiledBody));
       expect(sourceBody.textContent).toContain('\n  "name": "inner_task"');
       expect(sourceBody.textContent).not.toContain(compiledBody.slice(0, 40));
@@ -1797,7 +1888,7 @@ describe('RunDetailPage panel fullscreen', () => {
       fixture.data.workflowHash =
         'workflow {\n  name = "linear_develop_v1"\n  initial_state = "build"\n}\nsubworkflow "handler" {\n  source = "../handler"\n}\nstep "build" {\n  outcome "success" { next = step.test }\n}\nstep "test" {\n  target = subworkflow.handler\n  outcome "success" { next = state.done }\n}\nstate "done" {\n  terminal = true\n  success  = true\n}';
       renderDetail();
-      await screen.findByText('Workflow source');
+      await within(screen.getByTestId('run-detail-drawer')).findByTestId('workflow-source-view');
       act(() => {
         store.dispatch(
           runsSlice.actions.eventReceived({
@@ -1898,17 +1989,22 @@ describe('RunDetailPage capabilities', () => {
     renderDetail();
 
     await screen.findByText('Workflow source');
-    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Stop' }).getAttribute('title')).not.toBe(NO_CONTROLS_TOOLTIP);
+    // Scope to the header control row: the graph toolbar now hosts the
+    // view-level motion toggle (Pause/Resume), whose labels would collide
+    // with the engine control row's buttons in a screen-wide query.
+    const actions = within(screen.getByTestId('run-detail-actions'));
+    expect(actions.getByRole('button', { name: 'Pause' })).toBeEnabled();
+    expect(actions.getByRole('button', { name: 'Stop' })).toBeEnabled();
+    expect(actions.getByRole('button', { name: 'Stop' }).getAttribute('title')).not.toBe(NO_CONTROLS_TOOLTIP);
   });
 
   test('renders the control row grayed-out when the host has no control RPC', async () => {
     renderDetail(NO_CONTROL_CAPABILITIES);
 
     await screen.findByText('Workflow source');
+    const actions = within(screen.getByTestId('run-detail-actions'));
     for (const name of ['Pause', 'Resume', 'Stop']) {
-      const button = screen.getByRole('button', { name });
+      const button = actions.getByRole('button', { name });
       // Grayed-out is the contract, not hidden: the row stays visible with
       // the shared tooltip while every control is disabled.
       expect(button).toBeDisabled();

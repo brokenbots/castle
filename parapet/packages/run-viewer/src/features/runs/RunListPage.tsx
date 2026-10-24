@@ -1,13 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { castleApi, useListRunsQuery, type Run } from '../../api/castleApi';
 import { classifyError } from '../../api/errors';
 import type { AppDispatch, RootState } from '../../store';
 import { PageHeader } from '../../components/PageHeader';
 import { PageState } from '../../components/PageState';
-import { RUN_STATUS_TEXT_COLORS, RUN_TERMINAL_STATUSES } from './runStatus';
+import { ColumnVisibilitySelect, StickyTableHead, makeRowClick, useColumnVisibility, type TableColumn } from '../../components/DataTable';
+import { RUN_STATUS_CHIP_CLASSES, RUN_TERMINAL_STATUSES } from './runStatus';
 import { DurationCell, StartedCell, useDocumentVisible, useNow } from './runCells';
+
+// Compact run-id display: the leading block of a UUID is enough to spot a
+// row and match it against a detail URL; the full id stays in the tooltip.
+// Short opaque ids (tests, mock data) pass through unchanged.
+export function shortRunId(id: string): string {
+  if (id.length <= 12) return id;
+  const head = id.slice(0, 8);
+  const tail = id.slice(-4);
+  return `${head}…${tail}`;
+}
+
+const STATUS_CHIP = (status: string): string =>
+  RUN_STATUS_CHIP_CLASSES[status] ?? 'bg-surface-raised text-ink-muted';
+
+const idShortened = (id: string): boolean => id.length > 12;
 
 // Poll cadence while the tab is visible and at least one loaded run is not
 // in a terminal state. When either condition stops holding, pollingInterval
@@ -44,6 +60,21 @@ function statusSearchParams(status: string): URLSearchParams {
 
 export function RunListPage() {
   const dispatch = useDispatch<AppDispatch>();
+  const navigate = useNavigate();
+  // Column selection persists per-table (runs vs agents share the machinery.
+  // not the state).
+  const RUN_COLUMNS: TableColumn[] = useMemo(
+    () => [
+      { id: 'workflow', label: 'Workflow' },
+      { id: 'status', label: 'Status' },
+      { id: 'started', label: 'Started' },
+      { id: 'duration', label: 'Duration' },
+      { id: 'run', label: 'Run' },
+    ],
+    [],
+  );
+  const { visible: visibleColumns, toggle: toggleColumn } = useColumnVisibility('runs', RUN_COLUMNS);
+  const show = (id: string) => visibleColumns.includes(id);
   // The status filter lives in the URL query (`/runs?status=running`) so
   // filtered views are shareable and deep-linkable: the select writes the
   // param, the param is the single source of truth for the filter, and
@@ -109,8 +140,7 @@ export function RunListPage() {
     },
   );
   const firstPageRuns = data?.runs ?? [];
-  const errorKind = error ? classifyError(error) : undefined;
-  // The next "Load more" cursor: once older pages exist, the most recent
+  const errorKind = error ? classifyError(error) : undefined;  // The next "Load more" cursor: once older pages exist, the most recent
   // page's own continuation token is the source of truth (page 1's token is
   // only consumed by the first click). Chain it so every click advances.
   const cursor =
@@ -211,28 +241,36 @@ export function RunListPage() {
       <PageHeader
         title="Runs"
         actions={
-          <label htmlFor="run-status-filter" className="flex items-center gap-2 text-body">
-            Status
-            <select
-              id="run-status-filter"
-              className="rounded-md border border-line bg-surface px-2 py-1 text-body"
-              value={statusFilter}
-              onChange={(e) => setSearchParams(statusSearchParams(e.target.value))}
-            >
-              {/* The filter accepts any status the server knows; when a deep
-                  link carries a status outside the fixed list (e.g. pending
-                  reached via a chip) keep it selectable instead of showing a
-                  blank select. */}
-              {(STATUS_FILTERS.some((f) => f.value === statusFilter)
-                ? STATUS_FILTERS
-                : [...STATUS_FILTERS, { value: statusFilter, label: statusFilter }]
-              ).map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <>
+            <label htmlFor="run-status-filter" className="flex items-center gap-2 text-body">
+              Status
+              <select
+                id="run-status-filter"
+                className="rounded-md border border-line bg-surface px-2 py-1 text-body"
+                value={statusFilter}
+                onChange={(e) => setSearchParams(statusSearchParams(e.target.value))}
+              >
+                {/* The filter accepts any status the server knows; when a deep
+                    link carries a status outside the fixed list (e.g. pending
+                    reached via a chip) keep it selectable instead of showing a
+                    blank select. */}
+                {(STATUS_FILTERS.some((f) => f.value === statusFilter)
+                  ? STATUS_FILTERS
+                  : [...STATUS_FILTERS, { value: statusFilter, label: statusFilter }]
+                ).map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <ColumnVisibilitySelect
+              columns={RUN_COLUMNS}
+              visible={visibleColumns}
+              onToggle={toggleColumn}
+              testId="run-columns"
+            />
+          </>
         }
       />
       {!isLoading && error && data && (
@@ -272,44 +310,82 @@ export function RunListPage() {
           testId="run-list-empty"
         />
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead className="text-slate-400">
-            <tr>
-              <th className="px-2 py-1">ID</th>
-              <th className="px-2 py-1">Workflow</th>
-              <th className="px-2 py-1">Status</th>
-              <th className="px-2 py-1">Started</th>
-              <th className="px-2 py-1">Duration</th>
+        <table className="w-full text-left text-body" data-testid="run-list-table">
+          <StickyTableHead>
+            <tr className="border-b border-line">
+              {show('workflow') && <th className="px-2 py-2 font-medium">Workflow</th>}
+              {show('status') && <th className="px-2 py-2 font-medium">Status</th>}
+              {show('started') && <th className="px-2 py-2 font-medium">Started</th>}
+              {show('duration') && <th className="px-2 py-2 text-right font-medium">Duration</th>}
+              {show('run') && <th className="px-2 py-2 text-right font-medium">Run</th>}
             </tr>
-          </thead>
+          </StickyTableHead>
           <tbody>
             {runs.map((run) => (
-              <tr key={run.runId} className="border-t border-slate-800">
-                <td className="px-2 py-1 font-mono">
-                  <Link className="text-sky-400 hover:underline" to={`/runs/${run.runId}`}>
-                    {run.runId}
-                  </Link>
-                </td>
-                <td className="px-2 py-1">{run.workflowName}</td>
-                <td className="px-2 py-1">
-                  {/* Status chip links into the run list filtered by this
-                      status, so a scan of mixed rows is one click from the
-                      matching filtered view. */}
-                  <Link
-                    to={`/runs?status=${encodeURIComponent(run.status)}`}
-                    className={`inline-flex items-center rounded-full border border-line px-2 py-0.5 text-xs font-semibold hover:bg-surface-raised ${
-                      RUN_STATUS_TEXT_COLORS[run.status] ?? 'text-slate-300'
-                    }`}
-                  >
-                    {run.status}
-                  </Link>
-                </td>
-                <td className="px-2 py-1">
-                  <StartedCell run={run} now={now} />
-                </td>
-                <td className="px-2 py-1">
-                  <DurationCell run={run} />
-                </td>
+              <tr
+                key={run.runId}
+                data-testid="run-list-row"
+                className="cursor-pointer border-t border-line transition-colors hover:bg-surface-raised/50"
+                onClick={makeRowClick(navigate, `/runs/${run.runId}`)}
+              >
+                {show('workflow') && (
+                  <td className="px-2 py-1.5">
+                    <Link
+                      className="text-ink hover:text-accent-strong hover:underline"
+                      to={`/runs/${run.runId}`}
+                    >
+                      {run.workflowName}
+                    </Link>
+                  </td>
+                )}
+                {show('status') && (
+                  <td className="px-2 py-1.5">
+                    {/* Status chip links into the run list filtered by this
+                        status, so a scan of mixed rows is one click from the
+                        matching filtered view. */}
+                    <Link
+                      to={`/runs?status=${encodeURIComponent(run.status)}`}
+                      className={`inline-flex items-center rounded-full border border-line px-2 py-0.5 text-meta font-medium hover:bg-surface-raised ${
+                        STATUS_CHIP(run.status)
+                      }`}
+                    >
+                      {run.status}
+                    </Link>
+                  </td>
+                )}
+                {show('started') && (
+                  <td className="px-2 py-1.5 text-ink-muted">
+                    <StartedCell run={run} now={now} />
+                  </td>
+                )}
+                {show('duration') && (
+                  <td className="px-2 py-1.5 text-right font-mono text-ink-muted">
+                    <DurationCell run={run} />
+                  </td>
+                )}
+                {show('run') && (
+                  <td className="px-2 py-1.5 text-right">
+                    {/* The run id is identity, not the scannable signal — show
+                        a compact short form; the full UUID lives in the title
+                        tooltip and on the detail page. The link carries the
+                        full id as its accessible name so tests and assists
+                        match on it. */}
+                    <Link
+                      className="font-mono text-meta text-ink-faint hover:text-accent-strong hover:underline"
+                      to={`/runs/${run.runId}`}
+                      title={run.runId}
+                    >
+                      {idShortened(run.runId) ? (
+                        <>
+                          <span aria-hidden>{shortRunId(run.runId)}</span>
+                          <span className="sr-only">{run.runId}</span>
+                        </>
+                      ) : (
+                        run.runId
+                      )}
+                    </Link>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -319,13 +395,13 @@ export function RunListPage() {
         <div className="mt-4">
           <button
             type="button"
-            className="rounded border border-slate-600 px-3 py-1 text-sm text-sky-300 hover:bg-slate-800"
+            className="rounded-md border border-line-strong px-3 py-1 text-body text-accent-strong hover:bg-surface-raised disabled:opacity-60"
             onClick={loadMore}
             disabled={loadingMore}
           >
             {loadingMore ? 'Loading…' : 'Load more'}
           </button>
-          {loadMoreError && <p className="mt-2 text-rose-400">Failed to load more runs.</p>}
+          {loadMoreError && <p className="mt-2 text-danger">Failed to load more runs.</p>}
         </div>
       )}
     </div>
