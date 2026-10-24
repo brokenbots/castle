@@ -257,3 +257,72 @@ func (s *Store) IsProjectMember(ctx context.Context, projectID, memberID string)
 	}
 	return true, nil
 }
+
+// GetProjectSettings returns the project's convention-keyed settings doc and
+// its content-addressed etag. ErrNotFound when the project does not exist.
+func (s *Store) GetProjectSettings(ctx context.Context, projectID string) (map[string]string, string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if projectID == "" {
+		return nil, "", errors.New("project id required")
+	}
+	var settings, etag sql.NullString
+	err := s.reader.QueryRowContext(ctx, `
+		SELECT COALESCE(settings,''), COALESCE(settings_etag,'')
+		FROM projects WHERE id=$1`, projectID).Scan(&settings, &etag)
+	if err != nil {
+		return nil, "", store.ErrNotFound
+	}
+	return store.UnmarshalJSONMap(settings.String), etag.String, nil
+}
+
+// SetProjectSettings swaps the whole settings doc under the caller's expected
+// etag. expectedETag "" is accepted only while the current doc is unset; the
+// conditional UPDATE re-checks the etag so a concurrent writer loses the swap
+// and gets ErrSettingsConflict instead of clobbering its neighbor.
+func (s *Store) SetProjectSettings(ctx context.Context, projectID string, settings map[string]string, expectedETag string) (string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	if projectID == "" {
+		return "", errors.New("project id required")
+	}
+	var current string
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(settings_etag,'') FROM projects WHERE id=$1`, projectID).Scan(&current)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", store.ErrNotFound
+		}
+		return "", err
+	}
+	if expectedETag != current {
+		return "", store.ErrSettingsConflict
+	}
+	etag := store.SettingsETag(settings)
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE projects
+		SET settings=$1, settings_etag=$2, updated_at=$3
+		WHERE id=$4 AND settings_etag=$5`,
+		store.MarshalJSONMap(settings), etag, us(time.Now().UTC()),
+		projectID, current)
+	if err != nil {
+		return "", err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if affected == 0 {
+		// Another writer swapped the doc between the read above and this
+		// UPDATE. A writer that landed the identical content (identical
+		// etag) simply won the race before us: treat it as a no-op.
+		var now string
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(settings_etag,'') FROM projects WHERE id=$1`, projectID).Scan(&now); err != nil {
+			return "", err
+		}
+		if now == etag {
+			return etag, nil
+		}
+		return "", store.ErrSettingsConflict
+	}
+	return etag, nil
+}

@@ -779,5 +779,22 @@ type Store interface {
 	// member set. A project that does not exist yields false.
 	IsProjectMember(ctx context.Context, projectID, memberID string) (bool, error)
 
+	// Project settings (KB-324 S1)
+	// GetProjectSettings returns the project's ONE settings doc — the
+	// convention-keyed (per-convention-key JSON entry) map castle persists
+	// verbatim and never interprets — plus the doc's content-addressed
+	// etag (store.SettingsETag). ErrNotFound when the project does not
+	// exist. A fresh project reads as an empty doc with an empty etag.
+	GetProjectSettings(ctx context.Context, projectID string) (map[string]string, string, error)
+	// SetProjectSettings atomically swaps the whole settings doc when the
+	// caller has seen the current one: expectedETag must equal the doc's
+	// current etag, or the empty etag exactly when the project's doc is
+	// still unset (never written, or emptied again). On success it returns
+	// the new etag; any concurrent writer between the caller's read and
+	// this swap fails with ErrSettingsConflict. ErrNotFound when the
+	// project does not exist. Bounds and per-entry JSON validity are the
+	// rpc layer's contract; the store persists the doc verbatim.
+	SetProjectSettings(ctx context.Context, projectID string, settings map[string]string, expectedETag string) (string, error)
+
 	Close() error
 }

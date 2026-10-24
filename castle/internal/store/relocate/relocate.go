@@ -79,7 +79,8 @@ var Tables = []table{
 		cols: []column{
 			{"id", KindText, false}, {"membership_policy", KindText, false},
 			{"default_refire_policy", KindText, false}, {"queues", KindText, false},
-			{"settings", KindText, false}, {"info", KindText, false},
+			{"settings", KindText, false}, {"settings_etag", KindText, false},
+			{"info", KindText, false},
 			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
 		},
 	},
