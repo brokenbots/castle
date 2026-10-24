@@ -33,7 +33,16 @@ var (
 	port uint32
 
 	dbCounter atomic.Uint32
+	// perTest tracks the database name and open handles of each test's
+	// isolated database so Reopen can hand back a second Store over the
+	// same data (restart semantics).
+	perTest sync.Map // testing.TB -> *suiteDB
 )
+
+type suiteDB struct {
+	dsn    string
+	stores []*pg.Store
+}
 
 var dbNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
@@ -94,7 +103,8 @@ func dsn(db string) string {
 
 // Store opens a fresh, fully migrated pg-backed store.Store on an isolated
 // database of the shared ephemeral server. The database is dropped after the
-// test finishes, so each caller starts from empty tables.
+// test finishes, so each caller starts from empty tables. Reopen hands back a
+// second Store over the same database within the same test.
 func Store(t *testing.T) *pg.Store {
 	t.Helper()
 	base := shared(t)
@@ -111,17 +121,52 @@ func Store(t *testing.T) *pg.Store {
 		t.Fatalf("pgtest: create database %s: %v", name, err)
 	}
 
-	s, err := pg.Open(dsn(name))
-	if err != nil {
-		t.Fatalf("pgtest: open store on %s: %v", name, err)
-	}
+	s := open(t, dsn(name))
 	t.Cleanup(func() {
-		s.Close()
+		for _, st := range openStores(t) {
+			_ = st.Close()
+		}
 		// WITH (FORCE) terminates lingering connections instead of failing
 		// the drop after a test leaks one.
 		if _, err := base.Exec(`DROP DATABASE IF EXISTS ` + name + ` WITH (FORCE)`); err != nil {
 			t.Errorf("pgtest: drop database %s: %v", name, err)
 		}
+		perTest.Delete(t)
 	})
+	return s
+}
+
+// Reopen returns a new Store over the same isolated database the test's
+// Store call created, without dropping anything: the restart leg of
+// persistence tests. Handles registered under t are closed by the test's
+// cleanup.
+func Reopen(t *testing.T) *pg.Store {
+	t.Helper()
+	d, ok := perTest.Load(t)
+	if !ok {
+		t.Fatalf("pgtest: Reopen called before Store for this test")
+	}
+	return open(t, d.(*suiteDB).dsn)
+}
+
+func openStores(t *testing.T) []*pg.Store {
+	t.Helper()
+	d, ok := perTest.Load(t)
+	if !ok {
+		return nil
+	}
+	return d.(*suiteDB).stores
+}
+
+func open(t *testing.T, d string) *pg.Store {
+	t.Helper()
+	s, err := pg.Open(d)
+	if err != nil {
+		t.Fatalf("pgtest: open store on %s: %v", d, err)
+	}
+	entry := &suiteDB{dsn: d, stores: []*pg.Store{s}}
+	if prev, loaded := perTest.LoadOrStore(t, entry); loaded {
+		prev.(*suiteDB).stores = append(prev.(*suiteDB).stores, s)
+	}
 	return s
 }

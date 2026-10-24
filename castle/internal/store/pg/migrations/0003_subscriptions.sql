@@ -7,3 +7,6 @@ CREATE TABLE IF NOT EXISTS run_subscriptions (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (subscriber_id, run_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_run_subscriptions_updated
+    ON run_subscriptions(updated_at);

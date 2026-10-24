@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/brokenbots/castle/castle/internal/store"
@@ -18,24 +19,48 @@ import (
 var skipPG = flag.Bool("suite.skip-pg", false, "skip the Postgres engine (for sandboxed runs without the embedded-binary cache)")
 
 type engine struct {
-	name string
-	open func(t *testing.T) store.Store
+	name   string
+	open   func(t *testing.T) store.Store
+	reopen func(t *testing.T) store.Store
 }
 
 func engines(t *testing.T) []engine {
-	eng := []engine{{name: "sqlite", open: openSQLite}}
+	eng := []engine{{name: "sqlite", open: openSQLite, reopen: reopenSQLite}}
 	if !*skipPG {
-		eng = append(eng, engine{name: "pg", open: func(t *testing.T) store.Store { return pgtest.Store(t) }})
+		eng = append(eng, engine{
+			name:   "pg",
+			open:   func(t *testing.T) store.Store { return pgtest.Store(t) },
+			reopen: func(t *testing.T) store.Store { return pgtest.Reopen(t) },
+		})
 	}
 	t.Logf("suite engines: %d", len(eng))
 	return eng
 }
 
+var sqlitePaths sync.Map // path cache keyed by *testing.T
+
 func openSQLite(t *testing.T) store.Store {
 	t.Helper()
-	s, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	p := filepath.Join(t.TempDir(), "test.db")
+	sqlitePaths.Store(t, p)
+	s, err := sqlite.Open(p)
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
+	}
+	return s
+}
+
+// reopenSQLite reopens the same database file the test's open call created,
+// simulating a Castle restart against persistent storage.
+func reopenSQLite(t *testing.T) store.Store {
+	t.Helper()
+	p, ok := sqlitePaths.Load(t)
+	if !ok {
+		t.Fatalf("reopen before open for this test")
+	}
+	s, err := sqlite.Open(p.(string))
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
 	}
 	return s
 }

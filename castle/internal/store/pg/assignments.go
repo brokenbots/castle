@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -460,26 +461,44 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		return nil, nil
 	}
 
-	p := &plf{}
-	ph := ""
+	// Number the IN-list placeholders after the leading state/updated_at
+	// parameters by pre-seeding the factory with them. The nested
+	// `WHERE id IN (...)` subquery cannot infer parameter types, so its
+	// placeholders get an explicit ::text cast.
+	// Number the IN-list placeholders after the leading state/updated_at
+	// parameters by pre-seeding the factory with them. The IN lists cannot
+	// infer parameter types through pgx's renumbering, so every placeholder
+	// gets an explicit ::text cast.
+	p := &plf{args: []any{store.WorkflowAssignmentStateQueued, us(now)}}
+	phs := make([]string, 0, len(ids))
 	for _, id := range ids {
-		ph = orComma(ph, p.next(id))
+		phs = append(phs, p.next(id)+"::text")
 	}
+	casted := strings.Join(phs, ",")
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE workflow_assignments
 		 SET state=$1, leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=$2
-		 WHERE id IN (`+ph+`)`,
-		append([]any{store.WorkflowAssignmentStateQueued, us(now)}, p.args[0:len(ids)]...)...); err != nil {
+		 WHERE id IN (`+casted+`)`,
+		p.args...); err != nil {
 		return nil, err
 	}
 
+	// The runs update is a separate statement and must number its parameters
+	// from $1: the extended protocol parses placeholder references as a dense
+	// sequence, and continuing the first statement's numbering ($3+) leaves a
+	// $1/$2 gap that fails to parse (42P18).
+	p2 := &plf{}
+	phs2 := make([]string, 0, len(ids))
+	for _, id := range ids {
+		phs2 = append(phs2, p2.next(id)+"::text")
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE runs
 		 SET overseer_id=NULL
 		 WHERE id IN (
-		     SELECT run_id FROM workflow_assignments WHERE id IN (`+ph+`)
+		     SELECT run_id FROM workflow_assignments WHERE id IN (`+strings.Join(phs2, ",")+`)
 		 )`,
-		p.args[0:len(ids)]...); err != nil {
+		p2.args...); err != nil {
 		return nil, err
 	}
 
@@ -487,13 +506,6 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		return nil, err
 	}
 	return ids, nil
-}
-
-func orComma(acc, next string) string {
-	if acc == "" {
-		return next
-	}
-	return acc + "," + next
 }
 
 // ListLeasedPendingAssignmentsByCriteriaID returns assignments currently

@@ -34,10 +34,27 @@ CREATE TABLE IF NOT EXISTS workflow_assignment_labels (
     PRIMARY KEY (assignment_id, key)
 );
 
+CREATE INDEX IF NOT EXISTS idx_workflow_assignment_labels_lookup
+    ON workflow_assignment_labels(assignment_id, key, value);
+
 CREATE TABLE IF NOT EXISTS workflow_assignment_leases (
     id            TEXT PRIMARY KEY,
     assignment_id TEXT NOT NULL REFERENCES workflow_assignments(id),
     criteria_id   TEXT NOT NULL REFERENCES overseers(id),
     created_at    TIMESTAMPTZ NOT NULL,
     expires_at    TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_assignment_leases_assignment
+    ON workflow_assignment_leases(assignment_id);
+
+-- Lease attempts (one row per attempted lease).
+CREATE TABLE IF NOT EXISTS workflow_assignment_attempts (
+    assignment_id TEXT NOT NULL REFERENCES workflow_assignments(id),
+    attempt       BIGINT NOT NULL,
+    criteria_id   TEXT,
+    created_at    TIMESTAMPTZ NOT NULL,
+    completed_at  TIMESTAMPTZ,
+    outcome       TEXT,
+    PRIMARY KEY (assignment_id, attempt)
 );

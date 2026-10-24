@@ -12,7 +12,10 @@ import (
 
 // plf is a placeholder factory for building pg queries: each call returns the
 // next numbered placeholder and appends the value, keeping argument order and
-// placeholder numbering in lockstep.
+// placeholder numbering in lockstep. Placeholders must start at $1 and form a
+// dense sequence with no gaps in every statement: the extended protocol
+// parses parameter references as a contiguous range (a statement that only
+// references $3+ fails to parse, 42P18), so reuse a fresh plf per statement.
 type plf struct {
 	args []any
 }
