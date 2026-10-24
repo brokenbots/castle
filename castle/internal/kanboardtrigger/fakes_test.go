@@ -137,6 +137,16 @@ func (fk *fakeKanboard) setCardColumn(taskID int, column string) {
 	}
 }
 
+// decodeParams re-marshals the generic params value and unmarshals it into
+// the concrete target (JSON into `any` yields map[string]interface{}, not
+// json.RawMessage).
+func decodeParams(req kanboard.RPCRequest, p any) {
+	raw, err := json.Marshal(req.Params)
+	if err == nil {
+		_ = json.Unmarshal(raw, p)
+	}
+}
+
 func (fk *fakeKanboard) handle(w http.ResponseWriter, r *http.Request) {
 	var req kanboard.RPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -190,7 +200,7 @@ func (fk *fakeKanboard) handle(w http.ResponseWriter, r *http.Request) {
 		var p struct {
 			TaskID int `json:"task_id"`
 		}
-		_ = json.Unmarshal(req.Params.(json.RawMessage), &p)
+		decodeParams(req, &p)
 		tagMap := map[string]string{}
 		for i, name := range fk.tags[p.TaskID] {
 			tagMap[fmt.Sprintf("%d", i+1)] = name
@@ -200,7 +210,7 @@ func (fk *fakeKanboard) handle(w http.ResponseWriter, r *http.Request) {
 		var p struct {
 			TaskID int `json:"task_id"`
 		}
-		_ = json.Unmarshal(req.Params.(json.RawMessage), &p)
+		decodeParams(req, &p)
 		t, ok := fk.tasks[p.TaskID]
 		if !ok {
 			rpcErr = &kanboard.RPCError{Code: 1, Message: "task not found"}
@@ -217,7 +227,7 @@ func (fk *fakeKanboard) handle(w http.ResponseWriter, r *http.Request) {
 			TaskID   int `json:"task_id"`
 			ColumnID int `json:"column_id"`
 		}
-		_ = json.Unmarshal(req.Params.(json.RawMessage), &p)
+		decodeParams(req, &p)
 		t, ok := fk.tasks[p.TaskID]
 		if !ok {
 			rpcErr = &kanboard.RPCError{Code: 1, Message: "task not found"}
@@ -232,7 +242,7 @@ func (fk *fakeKanboard) handle(w http.ResponseWriter, r *http.Request) {
 			TaskID  int    `json:"task_id"`
 			Content string `json:"content"`
 		}
-		_ = json.Unmarshal(req.Params.(json.RawMessage), &p)
+		decodeParams(req, &p)
 		fk.comments[p.TaskID] = append(fk.comments[p.TaskID], p.Content)
 		result = float64(len(fk.comments[p.TaskID]))
 	default:
