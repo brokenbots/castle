@@ -82,7 +82,7 @@ func (s *ServerServer) CreateProject(ctx context.Context, req *connect.Request[c
 }
 
 func (s *ServerServer) GetProject(ctx context.Context, req *connect.Request[castlev1.GetProjectRequest]) (*connect.Response[castlev1.GetProjectResponse], error) {
-	if err := requireProjectCaller(ctx); err != nil {
+	if err := requireProjectReader(ctx); err != nil {
 		return nil, err
 	}
 	row, err := s.Store.GetProject(ctx, req.Msg.GetProjectId())
@@ -93,7 +93,7 @@ func (s *ServerServer) GetProject(ctx context.Context, req *connect.Request[cast
 }
 
 func (s *ServerServer) ListProjects(ctx context.Context, req *connect.Request[castlev1.ListProjectsRequest]) (*connect.Response[castlev1.ListProjectsResponse], error) {
-	if err := requireProjectCaller(ctx); err != nil {
+	if err := requireProjectReader(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := s.Store.ListProjects(ctx)
@@ -248,13 +248,12 @@ func (s *ServerServer) SubmitProjectAssignment(ctx context.Context, req *connect
 	return connect.NewResponse(resp), nil
 }
 
-// requireProjectCaller enforces the agent-identity posture for the project
-// READ surface (registry reads: CreateProject/GetProject/ListProjects/
-// ListProjectMembers). Console identities reaching a handler despite
-// interceptor policy are rejected here (defense in depth) for the surfaces
-// that are not console-allowed; the console-allowed reads use
-// requireProjectReader instead. Trigger identities are rejected explicitly
-// with PermissionDenied (KB-320).
+// requireProjectCaller enforces the agent-identity posture for
+// CreateProject — the one registry write that stays protocol-token-owned
+// (the agent workspace bootstrap; agents set the membership policy of a
+// project they mint). Reader postures use requireProjectReader; the KB-324
+// writes use requireProjectAdminCaller. Trigger identities are rejected
+// explicitly with PermissionDenied (KB-320).
 func requireProjectCaller(ctx context.Context) error {
 	if auth.CallerTriggerID(ctx) != "" {
 		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))

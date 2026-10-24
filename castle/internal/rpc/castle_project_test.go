@@ -369,15 +369,21 @@ func TestRegistrationMetadataRejected(t *testing.T) {
 	}
 }
 
-// TestProjectServiceAuthorization pins the member-management boundary: a
-// caller may add only itself and only to open projects, and may only leave
-// a project itself. Closed admission and member eviction have no self-service
-// path until authenticated operators arrive.
+// TestProjectServiceAuthorization pins the KB-324 member-management write
+// shape: admitting and evicting members are console-session writes over any
+// project regardless of its join policy or the caller's own membership —
+// protocol tokens cannot touch the surface at all. Reading the registry and
+// the members list stays open to both credential classes.
 func TestProjectServiceAuthorization(t *testing.T) {
-	_, tsrv, oClient, _ := projectTestStack(t)
 	ctx := context.Background()
-
+	ts := newTestStack(t)
+	ts.server.EnableConsoleLogin()
+	if err := ProvisionConsoleUser(ctx, ts.store, "operator", "op-password", nil); err != nil {
+		t.Fatalf("provision console user: %v", err)
+	}
+	tsrv, oClient, _ := ts.startServer(t, connect.WithInterceptors(auth.NewInterceptor(ts.store, false, auth.WithAnonRegister())))
 	pClient := projectClient(tsrv)
+
 	adminReg, err := oClient.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "admin"}))
 	if err != nil {
 		t.Fatalf("register admin: %v", err)
@@ -387,13 +393,26 @@ func TestProjectServiceAuthorization(t *testing.T) {
 		t.Fatalf("register peer: %v", err)
 	}
 	adminToken, peerToken := adminReg.Msg.Token, peerReg.Msg.Token
+	if err := ts.store.UpsertTrigger(ctx, &store.Trigger{
+		ID:        "trigger-kanboard",
+		TokenHash: auth.HashToken("trigger-test-token"),
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("provision trigger identity: %v", err)
+	}
+	consoleLogin, err := consoleClient(tsrv).Login(ctx, connect.NewRequest(&castlev1.LoginRequest{Username: "operator", Password: "op-password"}))
+	if err != nil {
+		t.Fatalf("console login: %v", err)
+	}
+	consoleToken := consoleLogin.Msg.SessionToken
+
 	createProject(t, ctx, pClient, adminToken, "open-pool", castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_OPEN)
 	createProject(t, ctx, pClient, adminToken, "locked-pool", castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_CLOSED)
 
-	join := func(token, projectID, memberID string) error {
+	join := func(token, projectID, memberID string, kind castlev1.ProjectMemberKind) error {
 		t.Helper()
 		_, err := pClient.AddProjectMember(ctx, bearer(&castlev1.AddProjectMemberRequest{
-			ProjectId: projectID, MemberId: memberID, Kind: castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_AI,
+			ProjectId: projectID, MemberId: memberID, Kind: kind,
 		}, token))
 		return err
 	}
@@ -405,51 +424,56 @@ func TestProjectServiceAuthorization(t *testing.T) {
 		return err
 	}
 
-	// Deny: adding another identity is never permitted, open or closed.
-	if err := join(adminToken, "open-pool", peerReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("add other member to open project: got %v, want PermissionDenied", err)
+	// Allow: the operator session admits members into a CLOSED project —
+	// any kind, any policy, no self-service restriction (membership rights
+	// are surface-agnostic; the write SHAPE is the credential class).
+	if err := join(consoleToken, "locked-pool", adminReg.Msg.CriteriaId, castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_AI); err != nil {
+		t.Fatalf("console admits AI member to closed project: %v", err)
 	}
-	if err := join(adminToken, "locked-pool", peerReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("add other member to closed project: got %v, want PermissionDenied", err)
-	}
-
-	// Deny: closed projects admit no one self-service — the creator included.
-	if err := join(adminToken, "locked-pool", adminReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("self-add to closed project: got %v, want PermissionDenied", err)
+	if err := join(consoleToken, "locked-pool", peerReg.Msg.CriteriaId, castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_HUMAN); err != nil {
+		t.Fatalf("console admits human member: %v", err)
 	}
 
-	// Allow: self-joins on an open project (the wire-level mirror of the
-	// registration join), recorded as AI operators.
-	if err := join(adminToken, "open-pool", adminReg.Msg.CriteriaId); err != nil {
-		t.Fatalf("admin self-join: %v", err)
+	// Deny: a protocol token — even a project member's own — cannot write
+	// membership. The agent self-service join of the old surface is gone.
+	if err := join(adminToken, "open-pool", adminReg.Msg.CriteriaId, castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_AI); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("agent self-join: got %v, want PermissionDenied", err)
 	}
-	if err := join(peerToken, "open-pool", peerReg.Msg.CriteriaId); err != nil {
-		t.Fatalf("peer self-join: %v", err)
+	if err := join(peerToken, "locked-pool", peerReg.Msg.CriteriaId, castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_AI); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("peer self-add to closed project: got %v, want PermissionDenied", err)
 	}
-
-	// Deny: a caller cannot evict another member — member removal is
-	// self-service only.
-	if err := remove(adminToken, "open-pool", peerReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("remove other member: got %v, want PermissionDenied", err)
+	if err := join("trigger-test-token", "locked-pool", adminReg.Msg.CriteriaId, castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_AI); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("trigger admission: got %v, want PermissionDenied", err)
 	}
 
-	// Deny the same eviction when the evicting caller is not a member at
-	// all: identity-based deny, no target-existence disclosure.
+	// Deny: protocol tokens cannot evict members either.
 	if err := remove(adminToken, "locked-pool", peerReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("non-member removing a member: got %v, want PermissionDenied", err)
+		t.Fatalf("agent eviction attempt: got %v, want PermissionDenied", err)
 	}
 
-	// Allow: self-leave, even though eviction is otherwise operator-managed.
-	if err := remove(peerToken, "open-pool", peerReg.Msg.CriteriaId); err != nil {
-		t.Fatalf("self-leave: %v", err)
+	// Allow: the operator session evicts a member, and the eviction is
+	// idempotent (a second remove of an absent member is a no-op).
+	if err := remove(consoleToken, "locked-pool", peerReg.Msg.CriteriaId); err != nil {
+		t.Fatalf("console eviction: %v", err)
+	}
+	if err := remove(consoleToken, "locked-pool", peerReg.Msg.CriteriaId); err != nil {
+		t.Fatalf("idempotent eviction: %v", err)
 	}
 
-	// Allow (readability): registered callers read the project registry.
-	if members := listProjectMembers(t, ctx, pClient, adminToken, "open-pool"); len(members) != 1 || members[0].MemberId != adminReg.Msg.CriteriaId {
-		t.Fatalf("members after self-leave = %+v, want [admin]", members)
+	// Allow (readability): both console sessions and agent tokens read the
+	// members list and the project registry.
+	members := listProjectMembers(t, ctx, pClient, adminToken, "locked-pool")
+	if len(members) != 1 || members[0].MemberId != adminReg.Msg.CriteriaId {
+		t.Fatalf("members after eviction = %+v, want [admin]", members)
 	}
-	if _, err := pClient.ListProjects(ctx, bearer(&castlev1.ListProjectsRequest{}, adminToken)); err != nil {
-		t.Fatalf("list projects: %v", err)
+	if _, err := pClient.GetProject(ctx, bearer(&castlev1.GetProjectRequest{ProjectId: "locked-pool"}, consoleToken)); err != nil {
+		t.Fatalf("console GetProject: %v", err)
+	}
+	if _, err := pClient.ListProjects(ctx, bearer(&castlev1.ListProjectsRequest{}, consoleToken)); err != nil {
+		t.Fatalf("console ListProjects: %v", err)
+	}
+	if _, err := pClient.ListProjects(ctx, bearer(&castlev1.ListProjectsRequest{}, peerToken)); err != nil {
+		t.Fatalf("agent ListProjects: %v", err)
 	}
 }
 
