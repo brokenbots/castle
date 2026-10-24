@@ -57,7 +57,16 @@ DECLARE
     upper TIMESTAMPTZ := lower + interval '1 month';
 BEGIN
     PERFORM pg_advisory_xact_lock(hashtext('castle_event_partition_' || part));
-    IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part) THEN
+    -- Resolve the name through the search path and require an actual table
+    -- or partitioned-table relkind: a bare pg_class.relname probe would
+    -- match a same-named index or a relation in another schema and silently
+    -- suppress partition creation, pushing a whole month of rows into
+    -- events_default permanently.
+    IF to_regclass(part) IS NULL OR NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = to_regclass(part)
+          AND relkind IN ('r', 'p')
+    ) THEN
         EXECUTE format('CREATE TABLE %I PARTITION OF events FOR VALUES FROM (%L) TO (%L)', part, lower, upper);
     END IF;
 END $$;

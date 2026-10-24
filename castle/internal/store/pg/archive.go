@@ -22,6 +22,15 @@ const archiveColumns = `archive_key, run_id, job_name, final_phase, ticket, reco
 // History attribution is first-writer-wins per identity: overwriting a
 // record that a different, non-empty identity previously archived fails
 // with ErrArchiveOperatorConflict; rec.Key and rec.Record are required.
+//
+// The whole upsert is one atomic statement: the DO UPDATE guard reproduces
+// the conflict contract exactly (refuse only when the stored identity is
+// non-empty, the incoming identity is non-empty, and the two differ), so a
+// concurrent writer can never observe an absent row that another writer has
+// just claimed. RETURNING (xmax = 0) reports the insert/update branch:
+// xmax is 0 on a freshly inserted tuple and holds the current transaction
+// id on a tuple updated by this statement. No row is returned when the
+// guard refused the overwrite, which is the conflict case.
 func (s *Store) PutRunArchiveRecord(ctx context.Context, rec *store.RunArchiveRecord) (bool, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -31,38 +40,30 @@ func (s *Store) PutRunArchiveRecord(ctx context.Context, rec *store.RunArchiveRe
 	if rec.Record == "" {
 		return false, fmt.Errorf("record body required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	var created bool
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO run_archive(archive_key, run_id, job_name, final_phase, ticket, record, operator_id, archived_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (archive_key) DO UPDATE
+		SET run_id=EXCLUDED.run_id,
+		    job_name=EXCLUDED.job_name,
+		    final_phase=EXCLUDED.final_phase,
+		    ticket=EXCLUDED.ticket,
+		    record=EXCLUDED.record,
+		    operator_id=EXCLUDED.operator_id,
+		    archived_at=EXCLUDED.archived_at
+		WHERE run_archive.operator_id = '' OR EXCLUDED.operator_id = '' OR run_archive.operator_id = EXCLUDED.operator_id
+		RETURNING (xmax = 0)`,
+		rec.Key, rec.RunID, rec.JobName, rec.FinalPhase, rec.Ticket, rec.Record, rec.OperatorID, us(rec.ArchivedAt)).Scan(&created)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// The DO UPDATE guard evaluated false: a different non-empty
+			// identity owns this archive key.
+			return false, fmt.Errorf("%w: %s", store.ErrArchiveOperatorConflict, rec.Key)
+		}
 		return false, err
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	var existed bool
-	var stamped string
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM run_archive WHERE archive_key = $1), COALESCE((SELECT operator_id FROM run_archive WHERE archive_key = $1), '')`,
-		rec.Key).Scan(&existed, &stamped); err != nil {
-		return false, err
-	}
-	if stamped != "" && rec.OperatorID != "" && stamped != rec.OperatorID {
-		return false, fmt.Errorf("%w: %s", store.ErrArchiveOperatorConflict, rec.Key)
-	}
-	if existed {
-		_, err = tx.ExecContext(ctx,
-			`UPDATE run_archive SET run_id=$1, job_name=$2, final_phase=$3, ticket=$4, record=$5, operator_id=$6, archived_at=$7 WHERE archive_key=$8`,
-			rec.RunID, rec.JobName, rec.FinalPhase, rec.Ticket, rec.Record, rec.OperatorID, us(rec.ArchivedAt), rec.Key)
-	} else {
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO run_archive(archive_key, run_id, job_name, final_phase, ticket, record, operator_id, archived_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-			rec.Key, rec.RunID, rec.JobName, rec.FinalPhase, rec.Ticket, rec.Record, rec.OperatorID, us(rec.ArchivedAt))
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return !existed, nil
+	return created, nil
 }
 
 // GetRunArchiveRecord returns the stored archive record for key.

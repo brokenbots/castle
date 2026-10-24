@@ -777,7 +777,13 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 // and redispatches the requeued assignments to connected eligible agents.
 func (s *ServerServer) ExpireLeasesNow(ctx context.Context) error {
 	now := time.Now().UTC()
+	// Expiry, like leasing, mutates lease state; hold the lease mutex so it
+	// cannot interleave with dispatchAssignment's atomic lease acquisition
+	// below. Release BEFORE the dispatch loop: the mutex is not reentrant and
+	// dispatchAssignment takes it for the re-lease it performs.
+	s.controls.LeaseLock()
 	ids, err := s.Store.ExpireWorkflowAssignmentLeases(ctx, now)
+	s.controls.LeaseUnlock()
 	if err != nil {
 		return err
 	}

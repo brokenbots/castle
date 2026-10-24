@@ -7,7 +7,23 @@ import (
 	"time"
 
 	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// uniqueViolation is the pg SQLSTATE class for constraint violations; only
+// idx_events_run_correlation maps to the append idempotency path.
+const uniqueViolation = "23505"
+
+// isCorrelationDedupViolation reports whether err is a unique violation of
+// idx_events_run_correlation. Violations of any other constraint (PK, FK,
+// ...) must surface as real errors, never as the idempotent return path.
+func isCorrelationDedupViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != uniqueViolation {
+		return false
+	}
+	return pgErr.ConstraintName == "idx_events_run_correlation"
+}
 
 func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool, error) {
 	ctx, cancel := s.opCtx(ctx)
@@ -28,10 +44,23 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Serialize per-run append ordering BEFORE any other work: sqlite gets
+	// ordering for free from its single-writer pool; on Postgres concurrent
+	// appends to one run must not race the MAX(seq)+1 assignment or the
+	// (run_id, correlation_id) idempotency check below — both checks running
+	// outside the lock would let two appends of the same event pass. The
+	// advisory transaction lock holds until commit. The partition
+	// bookkeeping below takes its own lock, so the two locks cannot deadlock
+	// ordering-wise.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('castle_event_append_' || $1))`, ev.RunID); err != nil {
+		return 0, false, err
+	}
+
 	// Idempotency on (run_id, correlation_id): if an event with this
 	// correlation id already exists for this run, return its seq without
-	// inserting again. Empty correlation ids skip this check. The partial
-	// unique index (0002) enforces the same at-most-once semantics.
+	// inserting again. Empty correlation ids skip this check. The unique
+	// index idx_events_run_correlation (0002) is the backstop for out-of-band
+	// writers that bypass this lock.
 	if ev.CorrelationID != "" {
 		var existing sql.NullInt64
 		if err := tx.QueryRowContext(ctx,
@@ -46,15 +75,6 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 			ev.Seq = seq
 			return seq, false, nil
 		}
-	}
-
-	// Serialize per-run append ordering. sqlite gets this for free from its
-	// single-writer pool; on Postgres concurrent appends to one run must not
-	// race the MAX(seq)+1 assignment, and the advisory transaction lock holds
-	// until commit. The partition bookkeeping below takes its own lock, so
-	// the two locks cannot deadlock ordering-wise.
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('castle_event_append_' || $1))`, ev.RunID); err != nil {
-		return 0, false, err
 	}
 
 	var lastSeq sql.NullInt64
@@ -75,9 +95,31 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 	if _, err := tx.ExecContext(ctx, `SELECT castle_ensure_event_partition($1::timestamptz)`, ts); err != nil {
 		return 0, false, err
 	}
+	// Payload: protojson escapes control characters before the write, so a
+	// NUL byte arrives as the JSON escape \u0000, which JSONB accepts —
+	// there is no NUL-byte hazard on this path. JSONB normalizes the
+	// document on write (see store.Event.Payload), so pg may return
+	// reformatted-but-equivalent payload text compared with the sqlite
+	// profile; compare semantically, not byte-for-byte.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES($1,$2,$3,$4,$5,$6)`,
 		ev.RunID, next, ev.Type, us(ts), ev.CorrelationID, string(ev.Payload)); err != nil {
+		// Backstop for out-of-band writers that insert without holding this
+		// run's advisory lock: a unique violation of the append-dedup index
+		// means the (run_id, correlation_id) event is already recorded, so
+		// return the existing seq instead of surfacing 23505. A violation of
+		// any other constraint is a real error and must escape.
+		if isCorrelationDedupViolation(err) {
+			var existing sql.NullInt64
+			if qerr := tx.QueryRowContext(ctx,
+				`SELECT seq FROM events WHERE run_id=$1 AND correlation_id=$2 ORDER BY seq LIMIT 1`,
+				ev.RunID, ev.CorrelationID).Scan(&existing); qerr != nil {
+				return 0, false, qerr
+			}
+			seq := uint64(existing.Int64)
+			ev.Seq = seq
+			return seq, false, nil
+		}
 		return 0, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE runs SET last_seq=$1 WHERE id=$2 AND last_seq < $1`, next, ev.RunID); err != nil {

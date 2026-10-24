@@ -1643,40 +1643,69 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		return nil, nil
 	}
 
+	// The re-assertion predicate (state='leased', lease still expired) keeps
+	// the expiry safe when the candidate scan and the UPDATE observe
+	// different snapshots: an assignment that was re-queued and re-leased
+	// after the scan must not be clobbered here. RETURNING yields only the
+	// rows actually transitioned, so the returned ids and the run overseer
+	// cleanup below never reference a candidate that was re-leased instead.
 	placeholders := strings.Repeat("?,", len(ids))
 	placeholders = placeholders[:len(placeholders)-1]
 
-	args := make([]any, 0, len(ids)+2)
+	args := make([]any, 0, len(ids)+3)
 	args = append(args, store.WorkflowAssignmentStateQueued, now.Format(store.TimestampLayout))
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	if _, err := tx.ExecContext(ctx,
+	args = append(args, now.Format(store.TimestampLayout))
+	tRows, err := tx.QueryContext(ctx,
 		`UPDATE workflow_assignments
 		 SET state=?, leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=?
-		 WHERE id IN (`+placeholders+`)`,
-		args...); err != nil {
+		 WHERE id IN (`+placeholders+`)
+		   AND state='leased' AND lease_expires_at < ?
+		 RETURNING id, run_id`,
+		args...)
+	if err != nil {
 		return nil, err
 	}
+	var transitionedIDs, transitionedRunIDs []string
+	for tRows.Next() {
+		var id, runID string
+		if err := tRows.Scan(&id, &runID); err != nil {
+			tRows.Close()
+			return nil, err
+		}
+		transitionedIDs = append(transitionedIDs, id)
+		transitionedRunIDs = append(transitionedRunIDs, runID)
+	}
+	if err := tRows.Err(); err != nil {
+		tRows.Close()
+		return nil, err
+	}
+	tRows.Close()
 
-	runArgs := make([]any, 0, len(ids))
-	for _, id := range ids {
-		runArgs = append(runArgs, id)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE runs
-		 SET overseer_id=NULL
-		 WHERE id IN (
-		     SELECT run_id FROM workflow_assignments WHERE id IN (`+placeholders+`)
-		 )`,
-		runArgs...); err != nil {
-		return nil, err
+	// Clear overseer_id only for runs of assignments actually transitioned
+	// above; a candidate re-leased between scan and update keeps its overseer.
+	if len(transitionedRunIDs) > 0 {
+		runPlaceholders := strings.Repeat("?,", len(transitionedRunIDs))
+		runPlaceholders = runPlaceholders[:len(runPlaceholders)-1]
+		runArgs := make([]any, 0, len(transitionedRunIDs))
+		for _, runID := range transitionedRunIDs {
+			runArgs = append(runArgs, runID)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE runs
+			 SET overseer_id=NULL
+			 WHERE id IN (`+runPlaceholders+")",
+			runArgs...); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return ids, nil
+	return transitionedIDs, nil
 }
 
 // ListLeasedPendingAssignmentsByCriteriaID returns assignments currently

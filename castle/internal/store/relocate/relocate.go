@@ -195,6 +195,11 @@ var Tables = []table{
 			{"archive_key", KindText, false}, {"run_id", KindText, false}, {"job_name", KindText, false},
 			{"final_phase", KindText, false}, {"ticket", KindText, false}, {"record", KindText, false},
 			{"operator_id", KindText, false}, {"archived_at", KindTS, false},
+			// 0014 artifact blob pointers: rows become object-storage
+			// references. Nothing writes them yet, but the freeze-and-import
+			// must not silently drop columns the schema carries — the
+			// registry-vs-schema test pins this list against both engines.
+			{"blob_uri", KindText, false}, {"blob_sha256", KindText, false}, {"blob_size", KindInt, false},
 		},
 	},
 }
@@ -433,7 +438,7 @@ func copyTable(ctx context.Context, src, dst *sql.DB, t table) (int64, error) {
 	last := make([]any, len(t.key))
 	first := true
 	for {
-		rows, err := pageRows(ctx, src, t, read, first, last)
+		rows, err := pageRows(ctx, src, t, read, first, last, pageSize)
 		if err != nil {
 			_ = tx.Rollback()
 			return 0, err
@@ -468,19 +473,21 @@ func copyTable(ctx context.Context, src, dst *sql.DB, t table) (int64, error) {
 }
 
 // pageRows applies the keyset predicate: (k1, ...) > last, or no predicate on
-// the first page. Keyless tables (label rows) always take the full scan once.
-func pageRows(ctx context.Context, src *sql.DB, t table, read string, first bool, last []any) (*sql.Rows, error) {
+// the first page, with an explicit row limit so callers can page by batch
+// size or sample by the requested verify-rows count. Keyless tables (label
+// rows) always take the uncapped full scan once.
+func pageRows(ctx context.Context, src *sql.DB, t table, read string, first bool, last []any, limit int64) (*sql.Rows, error) {
 	if len(t.key) == 0 {
 		// Full scan, uncapped (count verification would catch a partial
 		// copy), in the same all-columns order the target is sampled in.
-		return src.QueryContext(ctx, read+" ORDER BY "+orderBy(t))
+		return src.QueryContext(ctx, read+" ORDER BY "+orderBy(t, false))
 	}
 	if first {
-		return src.QueryContext(ctx, read+" ORDER BY "+orderBy(t)+" LIMIT ?", pageSize)
+		return src.QueryContext(ctx, read+" ORDER BY "+orderBy(t, false)+" LIMIT ?", limit)
 	}
 	q := read + " WHERE " + keyTuple(t) + " > (" + sqlPlaceholders(1, len(t.key)) + ")" +
-		" ORDER BY " + orderBy(t) + " LIMIT ?"
-	args := append(append([]any{}, last...), pageSize)
+		" ORDER BY " + orderBy(t, false) + " LIMIT ?"
+	args := append(append([]any{}, last...), limit)
 	return src.QueryContext(ctx, q, args...)
 }
 
@@ -489,20 +496,51 @@ func keyTuple(t table) string {
 	return colTuple(t.key)
 }
 
+// collate renders a byte-wise collation suffix for ORDER BY: sqlite orders
+// TEXT by bytes while pg orders it under the database's locale collation, so
+// mixed-case keys would page and verify in different orders on the two
+// engines. Relocation forces BINARY on sqlite reads and COLLATE "C" on pg
+// reads (run_archive.archive_key is already declared COLLATE "C" in the pg
+// DDL, so this makes the remaining key columns consistent with it).
+// Non-text kinds need no collation: numeric and timestamp orderings are
+// deterministic. Run against the column's own kind, so only KindText gets a
+// suffix.
+func collate(kind Kind, pgDialect bool) string {
+	if kind != KindText {
+		return ""
+	}
+	if pgDialect {
+		return ` COLLATE "C"`
+	}
+	return " COLLATE BINARY"
+}
+
+// columnKind returns the storage kind of a named column of the table.
+func columnKind(t table, name string) Kind {
+	for _, c := range t.cols {
+		if c.name == name {
+			return c.kind
+		}
+	}
+	panic(fmt.Sprintf("relocate: table %s has no column %s", t.name, name))
+}
+
 // orderBy renders the deterministic row ordering a table is paged and
 // verified in: its key, or all columns for keyless tables. Plain column list,
-// not a row-value tuple — sqlite rejects row values in ORDER BY.
-func orderBy(t table) string {
+// not a row-value tuple — sqlite rejects row values in ORDER BY. pgDialect
+// selects the byte-wise collation per engine (see collate); the source is
+// always sqlite and the target always pg.
+func orderBy(t table, pgDialect bool) string {
 	if len(t.key) == 0 {
 		names := make([]string, len(t.cols))
 		for i, c := range t.cols {
-			names[i] = quoteIdent(c.name)
+			names[i] = quoteIdent(c.name) + collate(c.kind, pgDialect)
 		}
 		return strings.Join(names, ", ")
 	}
 	names := make([]string, len(t.key))
 	for i, k := range t.key {
-		names[i] = quoteIdent(k)
+		names[i] = quoteIdent(k) + collate(columnKind(t, k), pgDialect)
 	}
 	return strings.Join(names, ", ")
 }
@@ -654,7 +692,10 @@ func keysOf(t table, row []any) string {
 // table's deterministic order, decoding pg values (time.Time, []byte JSONB)
 // into the same canonical shapes before comparing.
 func verifySample(ctx context.Context, src, dst *sql.DB, t table, verifyRows int64) error {
-	rows, err := pageRows(ctx, src, t, readPageSQL(t), true, nil)
+	// Both sides read exactly verifyRows rows so the report's claimed
+	// coverage always matches what was actually compared (a larger
+	// --verify-rows must not silently cap at the copy page size).
+	rows, err := pageRows(ctx, src, t, readPageSQL(t), true, nil, verifyRows)
 	if err != nil {
 		return fmt.Errorf("read source sample: %w", err)
 	}
@@ -663,7 +704,7 @@ func verifySample(ctx context.Context, src, dst *sql.DB, t table, verifyRows int
 		return fmt.Errorf("scan source sample: %w", err)
 	}
 
-	q := readPageSQL(t) + ` ORDER BY ` + orderBy(t) + ` LIMIT $1`
+	q := readPageSQL(t) + ` ORDER BY ` + orderBy(t, true) + ` LIMIT $1`
 	drows, err := dst.QueryContext(ctx, q, verifyRows)
 	if err != nil {
 		return fmt.Errorf("read target sample: %w", err)

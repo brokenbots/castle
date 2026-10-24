@@ -463,49 +463,76 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 
 	// Number the IN-list placeholders after the leading state/updated_at
 	// parameters by pre-seeding the factory with them. The nested
-	// `WHERE id IN (...)` subquery cannot infer parameter types, so its
-	// placeholders get an explicit ::text cast.
-	// Number the IN-list placeholders after the leading state/updated_at
-	// parameters by pre-seeding the factory with them. The IN lists cannot
-	// infer parameter types through pgx's renumbering, so every placeholder
-	// gets an explicit ::text cast.
+	// `WHERE id IN (...)` subquery cannot infer parameter types through
+	// pgx's renumbering, so every placeholder gets an explicit ::text cast.
+	//
+	// The re-assertion predicate (state='leased', lease still expired) makes
+	// the expiry safe under READ COMMITTED: the candidate scan above ran
+	// against an earlier snapshot, and the UPDATE re-reads the latest
+	// committed row, so without the predicate an assignment that was
+	// re-queued and re-leased to another agent after the scan would be
+	// clobbered here. The re-assertion reuses $2 for the expiry bound; the
+	// leased state is an inlined literal like r.status='pending' in the scan.
 	p := &plf{args: []any{store.WorkflowAssignmentStateQueued, us(now)}}
 	phs := make([]string, 0, len(ids))
 	for _, id := range ids {
 		phs = append(phs, p.next(id)+"::text")
 	}
 	casted := strings.Join(phs, ",")
-	if _, err := tx.ExecContext(ctx,
+	tRows, err := tx.QueryContext(ctx,
 		`UPDATE workflow_assignments
 		 SET state=$1, leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=$2
-		 WHERE id IN (`+casted+`)`,
-		p.args...); err != nil {
+		 WHERE id IN (`+casted+`)
+		   AND state='leased' AND lease_expires_at < $2
+		 RETURNING id, run_id`,
+		p.args...)
+	if err != nil {
 		return nil, err
 	}
+	// Only the rows actually transitioned: both the returned ids and the
+	// run overseer cleanup below derive from RETURNING, never from the
+	// earlier candidate scan.
+	var transitionedIDs, transitionedRunIDs []string
+	for tRows.Next() {
+		var id, runID string
+		if err := tRows.Scan(&id, &runID); err != nil {
+			tRows.Close()
+			return nil, err
+		}
+		transitionedIDs = append(transitionedIDs, id)
+		transitionedRunIDs = append(transitionedRunIDs, runID)
+	}
+	if err := tRows.Err(); err != nil {
+		tRows.Close()
+		return nil, err
+	}
+	tRows.Close()
 
 	// The runs update is a separate statement and must number its parameters
 	// from $1: the extended protocol parses placeholder references as a dense
 	// sequence, and continuing the first statement's numbering ($3+) leaves a
-	// $1/$2 gap that fails to parse (42P18).
-	p2 := &plf{}
-	phs2 := make([]string, 0, len(ids))
-	for _, id := range ids {
-		phs2 = append(phs2, p2.next(id)+"::text")
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE runs
-		 SET overseer_id=NULL
-		 WHERE id IN (
-		     SELECT run_id FROM workflow_assignments WHERE id IN (`+strings.Join(phs2, ",")+`)
-		 )`,
-		p2.args...); err != nil {
-		return nil, err
+	// $1/$2 gap that fails to parse (42P18). It clears overseer_id only for
+	// runs of assignments actually transitioned above — a candidate that was
+	// re-leased between scan and update keeps its run's overseer.
+	if len(transitionedRunIDs) > 0 {
+		p2 := &plf{}
+		phs2 := make([]string, 0, len(transitionedRunIDs))
+		for _, runID := range transitionedRunIDs {
+			phs2 = append(phs2, p2.next(runID)+"::text")
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE runs
+			 SET overseer_id=NULL
+			 WHERE id IN (`+strings.Join(phs2, ",")+")",
+			p2.args...); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return ids, nil
+	return transitionedIDs, nil
 }
 
 // ListLeasedPendingAssignmentsByCriteriaID returns assignments currently

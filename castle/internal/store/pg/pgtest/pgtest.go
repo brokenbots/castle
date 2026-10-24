@@ -17,6 +17,9 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
+	// The pgx stdlib registration is what the rest of the tree opens with
+	// ("pgx"); lib/pq must stay an indirect dependency.
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/brokenbots/castle/castle/internal/store/pg"
 )
@@ -87,7 +90,7 @@ func shared(t *testing.T) *sql.DB {
 		t.Fatalf("pgtest: boot embedded postgres: %v", err)
 	}
 
-	base, err = sql.Open("postgres", dsn("postgres"))
+	base, err = sql.Open("pgx", dsn("postgres"))
 	if err != nil {
 		t.Fatalf("pgtest: open bootstrap connection: %v", err)
 	}
