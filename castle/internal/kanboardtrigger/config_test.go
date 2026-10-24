@@ -79,23 +79,38 @@ func TestConfigValidatedRejectsIncompleteLanes(t *testing.T) {
 	}
 }
 
-func TestRepoURLTagWinsOverLaneDefault(t *testing.T) {
+func TestRepoURLPrecedence(t *testing.T) {
 	cfg := &Config{
 		BoardProject:    "KB board",
 		CastleProjectID: "kb",
-		Lanes: []Lane{{
-			RouteName: "kb-develop", Class: ClassDevelop,
-			TriggerColumns: []string{"WIP"}, WorkflowSource: "hermes",
-		}},
-		RepoDefault: "default-owner/default-repo",
+		Lanes: []Lane{
+			{
+				RouteName: "kb-develop", Class: ClassDevelop,
+				TriggerColumns: []string{"WIP"}, WorkflowSource: "hermes",
+				RepoDefault: "lane-owner/lane-repo",
+			},
+			{
+				RouteName: "kb-triage", Class: ClassTriage,
+				TriggerColumns: []string{"Backlog"}, WorkflowSource: "hermes",
+			},
+		},
+		RepoDefault: "global-owner/global-repo",
 	}
-	if got := cfg.RepoURL([]string{"repo:own/name", "k8s-run"}); got != "own/name" {
+	develop := &cfg.Lanes[0]
+	triage := &cfg.Lanes[1]
+	if got := cfg.RepoURL(develop, []string{"repo:own/name", "k8s-run"}); got != "own/name" {
 		t.Errorf("RepoURL(tag) = %q, want own/name", got)
 	}
-	if got := cfg.RepoURL([]string{"k8s-run"}); got != "default-owner/default-repo" {
-		t.Errorf("RepoURL(default) = %q, want default-owner/default-repo", got)
+	if got := cfg.RepoURL(develop, []string{"k8s-run"}); got != "lane-owner/lane-repo" {
+		t.Errorf("RepoURL(lane default) = %q, want lane-owner/lane-repo", got)
 	}
-	if got := cfg.RepoURL(nil); got != "default-owner/default-repo" {
-		t.Errorf("RepoURL(no tags) = %q, want lane default", got)
+	if got := cfg.RepoURL(triage, []string{"k8s-run"}); got != "global-owner/global-repo" {
+		t.Errorf("RepoURL(lane without default) = %q, want global-owner/global-repo", got)
+	}
+	if got := cfg.RepoURL(nil, nil); got != "global-owner/global-repo" {
+		t.Errorf("RepoURL(no lane, no tags) = %q, want global default", got)
+	}
+	if got := cfg.RepoURL(triage, []string{"repo:"}); got != "global-owner/global-repo" {
+		t.Errorf("RepoURL(empty repo: tag) = %q, want global default (empty tag does not bind)", got)
 	}
 }

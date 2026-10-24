@@ -36,6 +36,10 @@ type Lane struct {
 	// Inputs are static pass-through input_values (lane-level defaults),
 	// merged under the per-ticket payload keys.
 	Inputs map[string]string `json:"inputs"`
+	// RepoDefault is the lane's optional default repo binding: a card must
+	// carry repo:<owner>/<name> or a default (lane's, else the config's
+	// global RepoDefault), else the fire fails closed (watcher parity).
+	RepoDefault string `json:"repo_default"`
 }
 
 // Config is the adapter's boot configuration (parsed from the lanes JSON
@@ -48,9 +52,10 @@ type Config struct {
 	// TriggerTag gates which cards may fire (the "tag-lane tag"; default
 	// "k8s-run"). Empty disables the gate (board-wide lanes).
 	TriggerTag string `json:"trigger_tag"`
-	// RepoDefault is the lane's optional default repo binding; a card must
-	// carry repo:<owner>/<name> or the lane default, else the fire fails
-	// closed (watcher parity).
+	// RepoDefault is the config's global default repo binding: the backstop
+	// when a card carries no repo:<owner>/<name> tag and its lane declares
+	// no repo_default. Never fire without a repo (fail closed, watcher
+	// parity).
 	RepoDefault string `json:"repo_default"`
 	// ReviewColumn and DoneColumn name the mirror's two move targets
 	// (defaults "Review"/"Done").
@@ -131,12 +136,17 @@ func LoadConfigFile(path string) (*Config, error) {
 const repoTagPrefix = "repo:"
 
 // RepoURL extracts the ticket's repo binding: a repo:<owner>/<name> tag
-// wins, the lane default backs it, and neither means fail closed.
-func (c *Config) RepoURL(tags []string) string {
+// wins, then the lane's default, then the config's global default, and
+// neither means fail closed. A nil lane skips straight to the global
+// default.
+func (c *Config) RepoURL(lane *Lane, tags []string) string {
 	for _, tag := range tags {
 		if binding, ok := strings.CutPrefix(tag, repoTagPrefix); ok && binding != "" {
 			return binding
 		}
+	}
+	if lane != nil && lane.RepoDefault != "" {
+		return lane.RepoDefault
 	}
 	return c.RepoDefault
 }

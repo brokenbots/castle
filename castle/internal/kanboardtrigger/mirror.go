@@ -210,7 +210,7 @@ func (a *Adapter) markMirrored(runID string) {
 	defer a.mu.Unlock()
 	if r := a.runs[runID]; r != nil {
 		r.Mirrored = true
-		a.persistLocked()
+		a.markDirtyLocked()
 	}
 }
 
@@ -336,7 +336,7 @@ func (a *Adapter) postFailureComment(ctx context.Context, taskID int, rec RunRec
 	if r := a.runs[rec.RunID]; r != nil {
 		r.ParkCommented = true
 	}
-	a.persistLocked()
+	a.markDirtyLocked()
 	a.mu.Unlock()
 	a.log.InfoContext(ctx, "posted failure-park comment", "ticket", rec.TicketID, "run", rec.RunID)
 }

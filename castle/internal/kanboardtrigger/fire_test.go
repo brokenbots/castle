@@ -2,6 +2,7 @@ package kanboardtrigger
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
@@ -140,6 +141,58 @@ func TestFireRetryKeepsDeterministicKey(t *testing.T) {
 	}
 }
 
+// TestFireRetrySequencePreservedAcrossFires pins the retry invariant over a
+// ticket's FULL fire history, not just the first fire: a failed submit keeps
+// the durable fire sequence and only resets the entry marker, so fire-2's
+// retry reuses fire-2's key, and a later entry still derives a fresh key.
+func TestFireRetrySequencePreservedAcrossFires(t *testing.T) {
+	fk := newFakeKanboard(t, "KB board", boardColumns()...)
+	fk.addCard(t, 24, "Work in progress", "KB-24", "k8s-run", "repo:own/name")
+	h := newHarness(t, fk, testLaneConfig(), func(sub *fakeSubmitter) {
+		sub.dispState = pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL
+	})
+	h.poll(t) // fire 1: kanboard:KB board:KB-24:1
+
+	// Fire 2 of the card (re-entry after the run settles) fails.
+	fk.setCardColumn(24, "Ready")
+	h.sub.err = errSubmitDenied
+	h.poll(t)
+	calls := h.sub.submitted()
+	if n := len(calls); n != 2 {
+		t.Fatalf("second fire produced %d calls, want 2", n)
+	}
+	if !strings.HasSuffix(calls[1].IdempotencyKey, ":2") {
+		t.Fatalf("fire-2 attempt key = %q, want suffix :2", calls[1].IdempotencyKey)
+	}
+
+	// The retry re-derives the SAME fire-2 key (the sequence survived the
+	// failed submit; only the entry marker reset).
+	h.sub.err = nil
+	h.poll(t)
+	calls = h.sub.submitted()
+	if n := len(calls); n != 3 {
+		t.Fatalf("retry produced %d calls, want 3", n)
+	}
+	if calls[2].IdempotencyKey != calls[1].IdempotencyKey {
+		t.Errorf("retry key = %q, want the failed attempt's %q (no dispatch loss)",
+			calls[2].IdempotencyKey, calls[1].IdempotencyKey)
+	}
+
+	// A later entry derives a third, distinct key — no key reuse across fires.
+	fk.setCardColumn(24, "Work in progress")
+	h.poll(t) // settles run 2 (disposition), then fires run 3
+	calls = h.sub.submitted()
+	if n := len(calls); n != 4 {
+		t.Fatalf("third entry produced %d calls, want 4", n)
+	}
+	if calls[3].IdempotencyKey == calls[2].IdempotencyKey {
+		t.Errorf("third fire reused %q; want a fresh sequence", calls[3].IdempotencyKey)
+	}
+	if !strings.HasSuffix(calls[3].IdempotencyKey, ":3") {
+		t.Errorf("third fire key = %q, want suffix :3", calls[3].IdempotencyKey)
+	}
+}
+
 // TestFirePayloadIsLaneDriven checks the submitted payload: lane route name
 // as workflow name, lane sources, lane inputs merged with ticket_id.
 func TestFirePayloadIsLaneDriven(t *testing.T) {
@@ -196,24 +249,31 @@ func TestLaneCollisionFirstDeclaredWins(t *testing.T) {
 	}
 }
 
-// TestRepoDefaultFiresWithoutTag: a lane repo default satisfies the repo
-// gate without a repo: tag on the card.
+// TestRepoDefaultFiresWithoutTag: the config's global repo default
+// satisfies the repo gate without a repo: tag on the card, and the lane's
+// own default takes precedence over the global one when both would apply.
 func TestRepoDefaultFiresWithoutTag(t *testing.T) {
-	cfg := testLaneConfig()
-	fk := newFakeKanboard(t, "KB board", boardColumns()...)
-	fk.addCard(t, 23, "Backlog", "KB-23", "k8s-run")
-	h := newHarness(t, fk, cfg, nil)
-	h.poll(t)
-	if n := len(h.sub.submitted()); n != 0 {
-		t.Fatalf("no-default fire = %d, want 0", n)
-	}
-	// Add the lane default and re-poll: same column, but the previous poll
-	// recorded the memo without consuming the entry... the gate order means
-	// the card is still on first sighting for the entry check.
-	cfg.RepoDefault = "own/default"
-	h2 := newHarness(t, fk, cfg, nil)
-	h2.poll(t)
-	if n := len(h2.sub.submitted()); n != 1 {
-		t.Fatalf("default-bound fire = %d, want 1", n)
-	}
+	t.Run("global_default_fires", func(t *testing.T) {
+		cfg := testLaneConfig()
+		cfg.RepoDefault = "glob-owner/glob-repo"
+		fk := newFakeKanboard(t, "KB board", boardColumns()...)
+		fk.addCard(t, 23, "Work in progress", "KB-23", "k8s-run")
+		h := newHarness(t, fk, cfg, nil)
+		h.poll(t)
+		if n := len(h.sub.submitted()); n != 1 {
+			t.Fatalf("default-bound fire = %d, want 1", n)
+		}
+	})
+	t.Run("lane_default_fires", func(t *testing.T) {
+		cfg := testLaneConfig()
+		cfg.RepoDefault = "glob-owner/glob-repo"
+		cfg.Lanes[0].RepoDefault = "develop-owner/develop-repo"
+		fk := newFakeKanboard(t, "KB board", boardColumns()...)
+		fk.addCard(t, 25, "Work in progress", "KB-25", "k8s-run")
+		h := newHarness(t, fk, cfg, nil)
+		h.poll(t)
+		if n := len(h.sub.submitted()); n != 1 {
+			t.Fatalf("lane-default fire = %d, want 1", n)
+		}
+	})
 }

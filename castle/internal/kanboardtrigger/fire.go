@@ -2,7 +2,6 @@ package kanboardtrigger
 
 import (
 	"context"
-	"log/slog"
 	"slices"
 	"time"
 
@@ -23,6 +22,7 @@ func (a *Adapter) poll(ctx context.Context) error {
 	a.checkDispositions(ctx)
 	a.reconcileMirrors(ctx, tasks)
 	a.fire(ctx, tasks)
+	a.flush()
 	return nil
 }
 
@@ -36,8 +36,9 @@ func (a *Adapter) poll(ctx context.Context) error {
 //  3. in-flight: the ticket must have no unsettled run (one run at a time;
 //     re-fires after settle, like the outgoing watcher's reconcile).
 //  4. repo: the card must resolve a repo (repo:<owner>/<name> tag, else the
-//     repo-default; never fire without a repo — resolved fire-closed, the
-//     card stays where it is and the poll log carries the explanation).
+//     lane's default if it has one, else the config's repo-default; never
+//     fire without a repo — resolved fail-closed, the card stays where it
+//     is and the poll log carries the explanation).
 //  5. entry: the card must be newly seen in the lane (first sighting or a
 //     column change since the previous poll; KB-302 anti-refire discipline,
 //     durable via the state file).
@@ -69,7 +70,7 @@ func (a *Adapter) fire(ctx context.Context, tasks []kanboard.Task) {
 		if a.hasActiveRun(ticket) {
 			continue
 		}
-		repoURL := a.cfg.RepoURL(task.Tags)
+		repoURL := a.cfg.RepoURL(lane, task.Tags)
 		if repoURL == "" {
 			a.log.WarnContext(ctx, "no repo resolvable for ticket (repo: tag or --repo-default)",
 				"ticket", ticket, "tags", task.Tags, "project", a.cfg.BoardProject)
@@ -79,16 +80,18 @@ func (a *Adapter) fire(ctx context.Context, tasks []kanboard.Task) {
 			continue
 		}
 
-		fireSeq, _ := a.nextFireSeq(ticket)
+		fireSeq := a.nextFireSeq(ticket)
 		runID, err := a.submitAssignment(ctx, ticket, task.ID, lane, fireSeq)
 		if err != nil {
 			a.log.ErrorContext(ctx, "submitting assignment for ticket",
 				"ticket", ticket, "lane", lane.RouteName,
 				"fire_key", fireKey(a.cfg.BoardProject, ticket, fireSeq), "err", err)
-			// Reset the entry memo: the card re-enters next poll and the
-			// fire retries with the same key (an already-accepted
-			// assignment is adopted, never duplicated).
-			a.forgetMemo(ticket)
+			// Reset only the entry marker: the card re-enters next poll and
+			// the fire retries with the SAME key — the deterministic fire
+			// sequence survives the failure. Reverting the whole memo would
+			// alias an older fire's key (silent dispatch loss) or orphan a
+			// run the server already accepted.
+			a.resetEntryMemo(ticket)
 			continue
 		}
 		a.log.InfoContext(ctx, "fired assignment from board event",
@@ -114,9 +117,7 @@ func (a *Adapter) recordRun(ctx context.Context, runID, ticket string, taskID in
 		Class:            class,
 		SubmittedAtMs:    time.Now().UnixMilli(),
 	}
-	if err := (fileStore{a.statePath}).save(&state{Tickets: a.memos, Runs: a.runs}); err != nil {
-		a.log.Error("persisting run record", "err", err)
-	}
+	a.markDirtyLocked()
 	a.mu.Unlock()
 	a.watchRun(ctx, runID)
 }
@@ -136,5 +137,3 @@ func (a *Adapter) isWatching(runID string) bool {
 	defer a.mu.Unlock()
 	return a.watching[runID]
 }
-
-var _ = slog.Default // keep slog import stable if helpers change

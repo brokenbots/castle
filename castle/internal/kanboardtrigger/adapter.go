@@ -64,9 +64,10 @@ type Adapter struct {
 	statePath      string
 	boardProjectID int
 
-	// mu guards all in-memory state (hot authority); persisted snapshots
-	// are written through on mutation.
+	// mu guards all in-memory state (hot authority); poll mutations batch
+	// into one end-of-poll snapshot flush, async settles save immediately.
 	mu       sync.Mutex
+	dirty    bool
 	memos    map[string]*TicketMemo // ticket -> column memo
 	runs     map[string]*RunRecord  // run id -> record
 	watching map[string]bool        // run ids with a live/attempted watch stream
@@ -202,22 +203,20 @@ func (a *Adapter) setMemo(ticket string, columnID int) {
 		a.memos[ticket] = memo
 	}
 	memo.PrevColumnID = columnID
-	if err := (fileStore{a.statePath}).save(&state{Tickets: a.memos, Runs: a.runs}); err != nil {
-		a.log.Error("persisting entry memo state", "err", err)
-	}
+	a.markDirtyLocked()
 }
 
 // nextFireSeq returns the ticket's next fire sequence without committing it:
 // the fire key is deterministic (always seq+1 until a fire succeeds), so a
 // retried fire reuses the same key and idempotently adopts an assignment
 // the first attempt had already created.
-func (a *Adapter) nextFireSeq(ticket string) (int, bool) {
+func (a *Adapter) nextFireSeq(ticket string) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if memo := a.memos[ticket]; memo != nil {
-		return memo.FireSeq + 1, true
+		return memo.FireSeq + 1
 	}
-	return 1, false
+	return 1
 }
 
 // commitFire persists a successful fire: the fire sequence and the entry
@@ -234,22 +233,43 @@ func (a *Adapter) commitFire(ticket string, seq int) {
 	if memo.FireSeq < seq {
 		memo.FireSeq = seq
 	}
-	if err := (fileStore{a.statePath}).save(&state{Tickets: a.memos, Runs: a.runs}); err != nil {
-		a.log.Error("persisting fire sequence", "err", err)
-	}
+	a.markDirtyLocked()
 }
 
-// forgetMemo drops a ticket's entry memo after a failed submit: the next
-// poll re-enters the card (first sighting) and retries the fire with the
-// SAME deterministic key — an assignment accepted by the server before the
-// failure is adopted, never duplicated.
-func (a *Adapter) forgetMemo(ticket string) {
+// resetEntryMemo invalidates a failed fire's entry marker while keeping the
+// durable fire sequence: the next poll re-enters the card and the fire
+// retries with the SAME key (never a reverted sequence — a reverted key
+// would adopt an older fire's assignment and silently drop this entry, or
+// orphan a run the server accepted before the failure).
+func (a *Adapter) resetEntryMemo(ticket string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.memos, ticket)
-	if err := (fileStore{a.statePath}).save(&state{Tickets: a.memos, Runs: a.runs}); err != nil {
-		a.log.Error("resetting entry memo after failed submit", "err", err)
+	memo := a.memos[ticket]
+	if memo == nil {
+		memo = &TicketMemo{}
+		a.memos[ticket] = memo
 	}
+	memo.PrevColumnID = 0 // zero is no real column id: forces re-entry
+	a.markDirtyLocked()
+}
+
+// poll mutations (entry memos, fire commits, run records, mirror marks) are
+// batched: the poll goroutine marks state dirty and flushes one snapshot at
+// poll end. Async settles (watch pumps) save immediately through
+// persistLocked so a settle verdict is durable when it happens.
+func (a *Adapter) markDirtyLocked() { a.dirty = true }
+
+func (a *Adapter) flush() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.dirty {
+		return
+	}
+	if err := (fileStore{a.statePath}).save(&state{Tickets: a.memos, Runs: a.runs}); err != nil {
+		a.log.Error("flushing adapter state", "err", err)
+		return // stay dirty: retried by the next flush
+	}
+	a.dirty = false
 }
 
 // submitAssignment submits one lane fire and records the run (created or
