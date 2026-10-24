@@ -18,8 +18,6 @@ import (
 )
 
 // projectTestStack opens an anon-registration test server and returns the
-// stack with criteria-, server- and project-service clients bound to it.
-// projectTestStack opens an anon-registration test server and returns the
 // stack plus criteria- and server-service clients bound to it (the
 // project-service client is built with projectClient(tsrv)).
 func projectTestStack(t *testing.T) (*testStack, *httptest.Server, criteriav1connect.CriteriaServiceClient, criteriav1connect.ServerServiceClient) {
@@ -79,7 +77,7 @@ func TestProjectRegisterIdentityAndJoin(t *testing.T) {
 	pClient := projectClient(tsrv)
 	createProject(t, ctx, pClient, opReg.Msg.Token, "squad-alpha", castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_OPEN)
 
-	agentID, _ := registerProjectAgent(t, ctx, oClient, "worker", "squad-alpha")
+	agentID, agentToken := registerProjectAgent(t, ctx, oClient, "worker", "squad-alpha")
 
 	// Persisted identity: every block field survives, stored labels untouched.
 	o, err := ts.store.GetOverseer(ctx, agentID)
@@ -91,6 +89,9 @@ func TestProjectRegisterIdentityAndJoin(t *testing.T) {
 	}
 	if o.Identity.Version != "2.7.1" || o.Identity.RepoURL != "https://github.com/example/agent" || o.Identity.BuildDate != "2026-05-11T00:00:00Z" {
 		t.Fatalf("identity scalars not persisted: %+v", o.Identity)
+	}
+	if o.Identity.Name != "worker" {
+		t.Fatalf("identity name = %q, want worker (block = the registration name)", o.Identity.Name)
 	}
 	// Repeated sdk-version headers append; canonical persistence sorts by
 	// component name.
@@ -127,6 +128,40 @@ func TestProjectRegisterIdentityAndJoin(t *testing.T) {
 	}
 	if resp.Msg.Labels["gpu"] != "true" {
 		t.Fatalf("agent labels lost routing entry: %v", resp.Msg.Labels)
+	}
+
+	// The echo rides ListAgents too: every agent read surfaces the block.
+	list, err := sClient.ListAgents(ctx, bearer(&pb.ListAgentsRequest{}, opReg.Msg.Token))
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	var echoed bool
+	for _, a := range list.Msg.Agents {
+		if a.CriteriaId == agentID {
+			echoed = a.Labels[auth.IdentityEchoLabel] == block
+		}
+	}
+	if !echoed {
+		t.Fatalf("ListAgents did not echo identity for %s: %+v", agentID, list.Msg.Agents)
+	}
+
+	// Agent-owned CreateRun stamps the caller's identity for exact-build
+	// traceability (R3): the persisted run block carries name/version/repo,
+	// matching what the lease path stamps.
+	created, err := oClient.CreateRun(ctx, bearer(&pb.CreateRunRequest{WorkflowName: "trace-it"}, agentToken))
+	if err != nil {
+		t.Fatalf("create run as identity agent: %v", err)
+	}
+	runRow, err := ts.store.GetRun(ctx, created.Msg.RunId)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	stamped := store.IdentityFromJSON(runRow.AgentIdentity)
+	if stamped == nil {
+		t.Fatalf("CreateRun did not stamp runs.agent_identity (row %q)", runRow.AgentIdentity)
+	}
+	if stamped.Name != "worker" || stamped.Version != "2.7.1" || stamped.RepoURL != "https://github.com/example/agent" {
+		t.Fatalf("run identity = %+v, want name worker / version 2.7.1 / repo url", stamped)
 	}
 }
 
@@ -176,10 +211,12 @@ func TestProjectAssignmentScopesDispatchToMembers(t *testing.T) {
 		t.Fatalf("state = %v, want QUEUED", first.State)
 	}
 
-	// No lease from the non-member: the assignment stays queued, still
-	// scoped to the project and owned by the submitter. (The definitive
-	// no-delivery check on this stream happens once, at the end of the test:
-	// every call leaves a Receive goroutine parked on the stream.)
+	// No lease from the non-member: its stream gets no workflow assignment
+	// and the queued work stays scoped to the project, owned by the member.
+	// This probe pins the scoping boundary exactly when the assignment first
+	// becomes dispatchable — before the member ever connects. (The helper
+	// parks a Receive goroutine, so this stream is probed exactly once.)
+	expectNoWorkflowAssignment(t, nonMemberCtrl, 500*time.Millisecond)
 	a, err := ts.store.GetWorkflowAssignmentByRunID(ctx, first.RunId)
 	if err != nil {
 		t.Fatalf("get assignment: %v", err)
@@ -227,7 +264,6 @@ func TestProjectAssignmentScopesDispatchToMembers(t *testing.T) {
 	if run.Status != "running" || run.OverseerID != memberID {
 		t.Fatalf("run = %s owned by %s, want running/%s", run.Status, run.OverseerID, memberID)
 	}
-	expectNoWorkflowAssignment(t, nonMemberCtrl, 300*time.Millisecond)
 }
 
 // TestSubmitProjectAssignmentValidation pins the request-shape failures:
@@ -330,6 +366,90 @@ func TestRegistrationMetadataRejected(t *testing.T) {
 				t.Fatalf("got %v, want %v", connect.CodeOf(err), tc.wantCode)
 			}
 		})
+	}
+}
+
+// TestProjectServiceAuthorization pins the member-management boundary: a
+// caller may add only itself and only to open projects, and may only leave
+// a project itself. Closed admission and member eviction have no self-service
+// path until authenticated operators arrive.
+func TestProjectServiceAuthorization(t *testing.T) {
+	_, tsrv, oClient, _ := projectTestStack(t)
+	ctx := context.Background()
+
+	pClient := projectClient(tsrv)
+	adminReg, err := oClient.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "admin"}))
+	if err != nil {
+		t.Fatalf("register admin: %v", err)
+	}
+	peerReg, err := oClient.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "peer"}))
+	if err != nil {
+		t.Fatalf("register peer: %v", err)
+	}
+	adminToken, peerToken := adminReg.Msg.Token, peerReg.Msg.Token
+	createProject(t, ctx, pClient, adminToken, "open-pool", castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_OPEN)
+	createProject(t, ctx, pClient, adminToken, "locked-pool", castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_CLOSED)
+
+	join := func(token, projectID, memberID string) error {
+		t.Helper()
+		_, err := pClient.AddProjectMember(ctx, bearer(&castlev1.AddProjectMemberRequest{
+			ProjectId: projectID, MemberId: memberID, Kind: castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_AI,
+		}, token))
+		return err
+	}
+	remove := func(token, projectID, memberID string) error {
+		t.Helper()
+		_, err := pClient.RemoveProjectMember(ctx, bearer(&castlev1.RemoveProjectMemberRequest{
+			ProjectId: projectID, MemberId: memberID,
+		}, token))
+		return err
+	}
+
+	// Deny: adding another identity is never permitted, open or closed.
+	if err := join(adminToken, "open-pool", peerReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("add other member to open project: got %v, want PermissionDenied", err)
+	}
+	if err := join(adminToken, "locked-pool", peerReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("add other member to closed project: got %v, want PermissionDenied", err)
+	}
+
+	// Deny: closed projects admit no one self-service — the creator included.
+	if err := join(adminToken, "locked-pool", adminReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("self-add to closed project: got %v, want PermissionDenied", err)
+	}
+
+	// Allow: self-joins on an open project (the wire-level mirror of the
+	// registration join), recorded as AI operators.
+	if err := join(adminToken, "open-pool", adminReg.Msg.CriteriaId); err != nil {
+		t.Fatalf("admin self-join: %v", err)
+	}
+	if err := join(peerToken, "open-pool", peerReg.Msg.CriteriaId); err != nil {
+		t.Fatalf("peer self-join: %v", err)
+	}
+
+	// Deny: a caller cannot evict another member — member removal is
+	// self-service only.
+	if err := remove(adminToken, "open-pool", peerReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("remove other member: got %v, want PermissionDenied", err)
+	}
+
+	// Deny the same eviction when the evicting caller is not a member at
+	// all: identity-based deny, no target-existence disclosure.
+	if err := remove(adminToken, "locked-pool", peerReg.Msg.CriteriaId); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("non-member removing a member: got %v, want PermissionDenied", err)
+	}
+
+	// Allow: self-leave, even though eviction is otherwise operator-managed.
+	if err := remove(peerToken, "open-pool", peerReg.Msg.CriteriaId); err != nil {
+		t.Fatalf("self-leave: %v", err)
+	}
+
+	// Allow (readability): registered callers read the project registry.
+	if members := listProjectMembers(t, ctx, pClient, adminToken, "open-pool"); len(members) != 1 || members[0].MemberId != adminReg.Msg.CriteriaId {
+		t.Fatalf("members after self-leave = %+v, want [admin]", members)
+	}
+	if _, err := pClient.ListProjects(ctx, bearer(&castlev1.ListProjectsRequest{}, adminToken)); err != nil {
+		t.Fatalf("list projects: %v", err)
 	}
 }
 

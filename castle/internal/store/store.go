@@ -75,6 +75,7 @@ type AgentSDKVersion struct {
 // persisted verbatim on the overseer row and stamped onto runs leased to
 // that agent for exact-build traceability.
 type AgentIdentity struct {
+	Name        string            `json:"name,omitempty"`
 	Version     string            `json:"version,omitempty"`
 	RepoURL     string            `json:"repo_url,omitempty"`
 	BuildDate   string            `json:"build_date,omitempty"`
@@ -87,7 +88,7 @@ func (i *AgentIdentity) IsZero() bool {
 	if i == nil {
 		return true
 	}
-	return i.Version == "" && i.RepoURL == "" && i.BuildDate == "" &&
+	return i.Name == "" && i.Version == "" && i.RepoURL == "" && i.BuildDate == "" &&
 		len(i.SDKVersions) == 0 && len(i.Extra) == 0
 }
 

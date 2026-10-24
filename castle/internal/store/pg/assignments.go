@@ -663,9 +663,6 @@ func (s *Store) ListLeasedPendingAssignmentsByCriteriaID(ctx context.Context, cr
 			if lockfile.Valid {
 				c.assignment.LockfileSource = lockfile.String
 			}
-			if projectID.Valid {
-				c.assignment.ProjectID = projectID.String
-			}
 			scanAssignmentMaps(projectID, inputValues, targetMetadata, c.assignment)
 			candidates[id] = c
 		}

@@ -35,6 +35,15 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 	// refuses. Dispatch stays restricted to the project's member set while
 	// labels partition within the pool.
 	identity := auth.AgentIdentityFromContext(ctx)
+	if identity == nil && req.Msg.Name != "" {
+		// The workstream identity block includes the agent name; name-only
+		// agents still carry identity traceability ({"name": ...}) instead
+		// of no block at all.
+		identity = &store.AgentIdentity{}
+	}
+	if identity != nil && identity.Name == "" {
+		identity.Name = req.Msg.Name
+	}
 	if projectID := auth.RegisterProjectIDFromContext(ctx); projectID != "" {
 		if err := s.Store.JoinProject(ctx, projectID, criteriaID, store.ProjectMemberKindAI, now); err != nil {
 			return nil, registrationJoinError(err)
@@ -53,6 +62,13 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 		LastSeenAt: now,
 	}
 	if err := s.Store.CreateOverseer(ctx, o); err != nil {
+		// Compensate for the join above so a failed overseer creation leaves
+		// no member row for an agent that never came to exist. Best-effort:
+		// if the row somehow materialises later, the idempotent join re-fires
+		// at the next registration.
+		if projectID := auth.RegisterProjectIDFromContext(ctx); projectID != "" {
+			_ = s.Store.RemoveProjectMember(ctx, projectID, criteriaID)
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	// Durable-before-ack (KB-223): do not hand back a token the CreateRun
@@ -182,6 +198,16 @@ func (s *CriteriaServer) CreateRun(ctx context.Context, req *connect.Request[pb.
 		WorkflowHCL:  req.Msg.WorkflowHash,
 		Status:       "pending",
 		CreatedAt:    now,
+	}
+	// KB-318 exact-build traceability: agent-owned runs stamp the caller's
+	// persisted identity block at creation; the lease path re-stamps the
+	// row from the executing agent's overseer entry. Best-effort at this
+	// path — a caller without an overseer row (interceptor-less direct
+	// calls in tests) simply carries no block.
+	if o, err := s.Store.GetOverseer(ctx, criteriaID); err == nil && o != nil && o.Identity != nil {
+		if block, jsonErr := store.IdentityJSON(o.Identity); jsonErr == nil && block != "" {
+			r.AgentIdentity = block
+		}
 	}
 	if err := s.Store.CreateRun(ctx, r); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

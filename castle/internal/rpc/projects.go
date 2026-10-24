@@ -26,6 +26,13 @@ import (
 // callers for these procedures (they are in neither allow set); the handlers
 // below re-check CallerCriteriaID as defense in depth. Full API auth by
 // project arrives with users (deferred by the KB-318 design).
+//
+// Member management is strictly self-service at this layer: a caller may
+// add only itself, and only to OPEN projects (closed admission is
+// operator-managed and has no self-service join), and may remove only
+// itself. Registered callers may create projects and read the project
+// registry. Human-kind membership and administrator roles arrive with
+// authenticated operators.
 
 var _ castlev1connect.ProjectServiceHandler = (*ServerServer)(nil)
 
@@ -109,18 +116,37 @@ func (s *ServerServer) AddProjectMember(ctx context.Context, req *connect.Reques
 	if err := requireProjectCaller(ctx); err != nil {
 		return nil, err
 	}
-	kind, err := projectKindFromPB(req.Msg.GetKind())
+	// Membership is operator-managed for closed projects and self-service
+	// otherwise: a caller may only register itself, never other identities
+	// (admission tooling for closed projects and human-kind management
+	// arrives with authenticated operators). This is the wire-level mirror
+	// of the registration self-join, rejected identically.
+	callerID := auth.CallerCriteriaID(ctx)
+	memberID := req.Msg.GetMemberId()
+	if memberID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("member_id required"))
+	}
+	if memberID != callerID {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("members may only join themselves"))
+	}
+	if req.Msg.GetKind() == castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_HUMAN {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("human-kind membership is operator-managed"))
+	}
+	policy, err := s.projectMembershipPolicy(ctx, req.Msg.GetProjectId())
 	if err != nil {
 		return nil, err
 	}
+	if policy == store.ProjectMembershipClosed {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("closed project admission is operator-managed"))
+	}
 	m := &store.ProjectMember{
 		ProjectID: req.Msg.GetProjectId(),
-		MemberID:  req.Msg.GetMemberId(),
-		Kind:      kind,
+		MemberID:  memberID,
+		Kind:      store.ProjectMemberKindAI,
 		CreatedAt: time.Now().UTC(),
 	}
-	if err2 := s.Store.AddProjectMember(ctx, m); err2 != nil {
-		return nil, projectStoreError(err2)
+	if err := s.Store.JoinProject(ctx, req.Msg.GetProjectId(), memberID, store.ProjectMemberKindAI, m.CreatedAt); err != nil {
+		return nil, projectStoreError(err)
 	}
 	return connect.NewResponse(&castlev1.AddProjectMemberResponse{Member: mapMember(m)}), nil
 }
@@ -129,7 +155,17 @@ func (s *ServerServer) RemoveProjectMember(ctx context.Context, req *connect.Req
 	if err := requireProjectCaller(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.Store.RemoveProjectMember(ctx, req.Msg.GetProjectId(), req.Msg.GetMemberId()); err != nil {
+	// No administrator role exists yet (user auth arrives later), so the
+	// only permitted member eviction is self-leave; the deny is decided on
+	// caller identity alone, without disclosing whether the target exists.
+	memberID := req.Msg.GetMemberId()
+	if memberID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("member_id required"))
+	}
+	if memberID != auth.CallerCriteriaID(ctx) {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("members may only leave projects themselves"))
+	}
+	if err := s.Store.RemoveProjectMember(ctx, req.Msg.GetProjectId(), memberID); err != nil {
 		return nil, projectStoreError(err)
 	}
 	return connect.NewResponse(&castlev1.RemoveProjectMemberResponse{}), nil
@@ -269,15 +305,14 @@ func projectPolicyToPB(v string) castlev1.ProjectMembershipPolicy {
 	}
 }
 
-func projectKindFromPB(v castlev1.ProjectMemberKind) (string, error) {
-	switch v {
-	case castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_AI:
-		return store.ProjectMemberKindAI, nil
-	case castlev1.ProjectMemberKind_PROJECT_MEMBER_KIND_HUMAN:
-		return store.ProjectMemberKindHuman, nil
-	default:
-		return "", connect.NewError(connect.CodeInvalidArgument, errors.New("member kind required"))
+// projectMembershipPolicy resolves a project's policy, mapping store errors
+// onto wire codes (unknown project → NotFound).
+func (s *ServerServer) projectMembershipPolicy(ctx context.Context, projectID string) (string, error) {
+	row, err := s.Store.GetProject(ctx, projectID)
+	if err != nil {
+		return "", projectStoreError(err)
 	}
+	return row.MembershipPolicy, nil
 }
 
 func projectKindToPB(v string) castlev1.ProjectMemberKind {

@@ -8,6 +8,7 @@ import (
 
 func TestIdentityJSONCanonical(t *testing.T) {
 	base := &AgentIdentity{
+		Name:        "worker-1",
 		Version:     "1.2.3",
 		RepoURL:     "https://git.example/agents/x",
 		BuildDate:   "2026-01-02T03:04:05Z",
@@ -18,7 +19,7 @@ func TestIdentityJSONCanonical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IdentityJSON: %v", err)
 	}
-	want := `{"version":"1.2.3","repo_url":"https://git.example/agents/x","build_date":"2026-01-02T03:04:05Z",` +
+	want := `{"name":"worker-1","version":"1.2.3","repo_url":"https://git.example/agents/x","build_date":"2026-01-02T03:04:05Z",` +
 		`"sdk_versions":[{"name":"adapter","version":"0.3.9"},{"name":"criteria","version":"4.1.0"}],` +
 		`"extra":{"arch":"amd64","os":"linux"}}`
 	if canon != want {
@@ -27,6 +28,7 @@ func TestIdentityJSONCanonical(t *testing.T) {
 
 	// A shuffled copy serialises to identical bytes: canonical stable output.
 	shuffled := &AgentIdentity{
+		Name:        base.Name,
 		Extra:       map[string]string{"arch": "amd64", "os": "linux"},
 		SDKVersions: []AgentSDKVersion{{Name: "adapter", Version: "0.3.9"}, {Name: "criteria", Version: "4.1.0"}},
 		RepoURL:     base.RepoURL,

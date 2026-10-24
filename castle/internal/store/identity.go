@@ -16,7 +16,7 @@ func IdentityJSON(i *AgentIdentity) (string, error) {
 	if i == nil || i.IsZero() {
 		return "", nil
 	}
-	canon := AgentIdentity{Version: i.Version, RepoURL: i.RepoURL, BuildDate: i.BuildDate}
+	canon := AgentIdentity{Name: i.Name, Version: i.Version, RepoURL: i.RepoURL, BuildDate: i.BuildDate}
 	if len(i.SDKVersions) > 0 {
 		canon.SDKVersions = make([]AgentSDKVersion, len(i.SDKVersions))
 		copy(canon.SDKVersions, i.SDKVersions)

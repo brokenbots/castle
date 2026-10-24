@@ -54,14 +54,26 @@ castle-owned surfaces:
 
 ## castle.v1 ProjectService boundary
 
-- `CreateProject` / `AddProjectMember` / `RemoveProjectMember`: orchestrator
-  (operator) identities only.
-- `GetProject` / `ListProjects` / `ListProjectMembers`: orchestrator-readable.
+Implemented posture (pre-user-auth; member management is strictly
+self-service until authenticated operators exist):
+
+- `CreateProject`: any registered caller may create (operators self-serve
+  project bootstrap; operator identities are agents today).
+- `AddProjectMember`: self-join only (`member_id` must equal the caller) and
+  only for OPEN projects — `closed` admission is operator-managed and has no
+  self-service path (PermissionDenied). Self-adds record kind `ai`;
+  human-kind membership is operator-managed and arrives with user auth.
+- `RemoveProjectMember`: self-leave only (`member_id` must equal the caller,
+  PermissionDenied otherwise, decided on caller identity without disclosing
+  whether the target exists).
+- `GetProject` / `ListProjects` / `ListProjectMembers`: readable by
+  registered callers.
 - `SubmitProjectAssignment`: agent identity = owner (same rule as
   criteria.v1 `SubmitWorkflowAssignment`); carries `project_id`,
   `input_values`, `target_metadata` (shape-validated only — sizes capped,
-  castle never interprets values), and composes idempotency per domain as
-  owner + idempotency_key.
+  castle never interprets values and does not resolve them against the
+  tree's interface configSlots; that resolution is criteria territory),
+  and composes idempotency per domain as owner + idempotency_key.
 - Project ids are caller-supplied slugs (`[a-z0-9][a-z0-9-_.]{0,127}`).
 
 ## Acceptance mapping
