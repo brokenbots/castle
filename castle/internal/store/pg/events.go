@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/brokenbots/castle/castle/internal/store"
@@ -17,13 +18,28 @@ const uniqueViolation = "23505"
 // isCorrelationDedupViolation reports whether err is a unique violation of
 // idx_events_run_correlation. Violations of any other constraint (PK, FK,
 // ...) must surface as real errors, never as the idempotent return path.
+// Inserts on a partitioned table report the per-partition child index
+// (events_m<YYYYMM>_run_id_correlation_id_ts_idx), not the parent name, so
+// the deterministic column-derived suffix is what identifies the dedup
+// index here. The index is partial on non-empty correlation ids, so empty
+// ones cannot trip this branch.
 func isCorrelationDedupViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != uniqueViolation {
 		return false
 	}
-	return pgErr.ConstraintName == "idx_events_run_correlation"
+	return pgErr.ConstraintName == "idx_events_run_correlation" ||
+		strings.HasSuffix(pgErr.ConstraintName, "run_id_correlation_id_ts_idx")
 }
+
+// eventAppendHook, when non-nil, runs inside AppendEvent between the
+// correlation dedup check and the row's INSERT, receiving the event and the
+// seq/ts the pending transaction is about to write. Test-only seam: it lets
+// a second, out-of-band writer be injected at the exact race window the
+// idx_events_run_correlation backstop covers — a window the public API
+// cannot hit deterministically, because in-process appends all hold the
+// per-run advisory lock. Production code never sets it.
+var eventAppendHook func(ev *store.Event, seq uint64, ts time.Time)
 
 func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool, error) {
 	ctx, cancel := s.opCtx(ctx)
@@ -101,6 +117,9 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 	// document on write (see store.Event.Payload), so pg may return
 	// reformatted-but-equivalent payload text compared with the sqlite
 	// profile; compare semantically, not byte-for-byte.
+	if eventAppendHook != nil {
+		eventAppendHook(ev, next, ts)
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES($1,$2,$3,$4,$5,$6)`,
 		ev.RunID, next, ev.Type, us(ts), ev.CorrelationID, string(ev.Payload)); err != nil {
@@ -108,15 +127,17 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 		// run's advisory lock: a unique violation of the append-dedup index
 		// means the (run_id, correlation_id) event is already recorded, so
 		// return the existing seq instead of surfacing 23505. A violation of
-		// any other constraint is a real error and must escape.
+		// any other constraint is a real error and must escape. The violation
+		// has aborted this transaction (SQLSTATE 25P02 for anything executed
+		// next on it), so resolveCorrelationSeq rolls the tx back and
+		// re-reads the committed seq on the pool: the append is dropped
+		// without commit and without touching runs.last_seq, mirroring the
+		// sqlite pre-check's (seq, created=false) return.
 		if isCorrelationDedupViolation(err) {
-			var existing sql.NullInt64
-			if qerr := tx.QueryRowContext(ctx,
-				`SELECT seq FROM events WHERE run_id=$1 AND correlation_id=$2 ORDER BY seq LIMIT 1`,
-				ev.RunID, ev.CorrelationID).Scan(&existing); qerr != nil {
-				return 0, false, qerr
+			seq, resolveErr := s.resolveCorrelationSeq(ctx, tx, ev.RunID, ev.CorrelationID)
+			if resolveErr != nil {
+				return 0, false, resolveErr
 			}
-			seq := uint64(existing.Int64)
 			ev.Seq = seq
 			return seq, false, nil
 		}
@@ -131,6 +152,26 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 	ev.Seq = next
 	ev.Ts = us(ts)
 	return next, true, nil
+}
+
+// resolveCorrelationSeq reads the committed seq of a (run_id,
+// correlation_id) event after a duplicate-key violation of
+// idx_events_run_correlation. PostgreSQL aborts the transaction on the
+// violated INSERT — every further statement on it fails with 25P02 "current
+// transaction is aborted" — so the tx is rolled back and the lookup is
+// re-issued on the pool instead. The caller must abandon its insert and
+// return the existing seq without committing or touching runs.last_seq.
+func (s *Store) resolveCorrelationSeq(ctx context.Context, tx *sql.Tx, runID, correlationID string) (uint64, error) {
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return 0, err
+	}
+	var existing sql.NullInt64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT seq FROM events WHERE run_id=$1 AND correlation_id=$2 ORDER BY seq LIMIT 1`,
+		runID, correlationID).Scan(&existing); err != nil {
+		return 0, err
+	}
+	return uint64(existing.Int64), nil
 }
 
 func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*store.Event, error) {
