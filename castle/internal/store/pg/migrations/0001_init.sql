@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS overseers (
 
 CREATE TABLE IF NOT EXISTS runs (
     id            TEXT PRIMARY KEY,
-    overseer_id   TEXT NOT NULL REFERENCES overseers(id),
+    overseer_id   TEXT REFERENCES overseers(id),
     workflow_name TEXT NOT NULL,
     workflow_hcl  TEXT NOT NULL,
     status        TEXT NOT NULL,
