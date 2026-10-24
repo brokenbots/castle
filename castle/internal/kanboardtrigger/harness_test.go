@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/brokenbots/castle/castle/internal/kanboard"
 )
@@ -77,6 +78,7 @@ func newHarness(t *testing.T, fk *fakeKanboard, cfg *Config, tweak func(*fakeSub
 		t.Fatalf("New: %v", err)
 	}
 	a.boardProjectID = 1
+	t.Cleanup(func() { quiescePumps(t, watcher, a) })
 	return &harness{fk: fk, sub: sub, watcher: watcher, colID: fk.columnIDOf, a: a, statePath: statePath}
 }
 
@@ -91,8 +93,9 @@ func (h *harness) poll(t *testing.T) {
 // rebuild returns a fresh Adapter over the same board, submitter and state
 // file, as a process restart would produce.
 func (h *harness) rebuild(t *testing.T, cfg *Config) *harness {
+	watcher := newFakeRunWatcher()
 	kb := kanboard.New(h.fk.srv.URL+"/jsonrpc.php", "test-app-token")
-	a, err := New(cfg, kb, h.sub, h.sub, newFakeRunWatcher(), discardLogger(), Options{
+	a, err := New(cfg, kb, h.sub, h.sub, watcher, discardLogger(), Options{
 		StatePath:    h.statePath,
 		PollInterval: 0,
 		Instance:     "test",
@@ -101,5 +104,23 @@ func (h *harness) rebuild(t *testing.T, cfg *Config) *harness {
 		t.Fatalf("rebuild: %v", err)
 	}
 	a.boardProjectID = 1
-	return &harness{fk: h.fk, sub: h.sub, watcher: newFakeRunWatcher(), colID: h.colID, a: a, statePath: h.statePath}
+	t.Cleanup(func() { quiescePumps(t, watcher, a) })
+	return &harness{fk: h.fk, sub: h.sub, watcher: watcher, colID: h.colID, a: a, statePath: h.statePath}
+}
+
+// quiescePumps releases held streams and waits for watch goroutines to
+// exit, so no pump writes state after the test's TempDir was removed.
+func quiescePumps(t *testing.T, watcher *fakeRunWatcher, a *Adapter) {
+	t.Helper()
+	watcher.releaseAll()
+	done := make(chan struct{})
+	go func() {
+		a.pumps.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Log("kanboardtrigger: watch pumps still live at cleanup")
+	}
 }

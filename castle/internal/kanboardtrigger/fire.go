@@ -18,7 +18,7 @@ func (a *Adapter) poll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	a.adoptWatches(ctx)
+	a.adoptWatches()
 	a.checkDispositions(ctx)
 	a.reconcileMirrors(ctx, tasks)
 	a.fire(ctx, tasks)
@@ -44,8 +44,10 @@ func (a *Adapter) poll(ctx context.Context) error {
 //     durable via the state file).
 //
 // The submitted payload merges the lane's static inputs with ticket_id
-// (the one required run-level input of the develop workflow); repo binding
-// stays a fire GATE, the payload stays lane-driven.
+// (the one required run-level input of the develop workflow) and repo_url
+// (the resolved repo binding above; the per-card resolved value wins over
+// a static lane inputs entry). The lane's route NAME is the routing
+// decision — the fire loop carries no route logic.
 func (a *Adapter) fire(ctx context.Context, tasks []kanboard.Task) {
 	for i := range tasks {
 		task := &tasks[i]
@@ -81,7 +83,7 @@ func (a *Adapter) fire(ctx context.Context, tasks []kanboard.Task) {
 		}
 
 		fireSeq := a.nextFireSeq(ticket)
-		runID, err := a.submitAssignment(ctx, ticket, task.ID, lane, fireSeq)
+		runID, err := a.submitAssignment(ctx, ticket, task.ID, lane, fireSeq, repoURL)
 		if err != nil {
 			a.log.ErrorContext(ctx, "submitting assignment for ticket",
 				"ticket", ticket, "lane", lane.RouteName,
@@ -119,7 +121,7 @@ func (a *Adapter) recordRun(ctx context.Context, runID, ticket string, taskID in
 	}
 	a.markDirtyLocked()
 	a.mu.Unlock()
-	a.watchRun(ctx, runID)
+	a.watchRun(runID)
 }
 
 // markWatched flags a run's stream attempt / drop (watching map) so poll

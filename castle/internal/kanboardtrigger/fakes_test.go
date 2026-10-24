@@ -342,20 +342,53 @@ func (s *fakeRunEvents) Msg() *pb.Envelope {
 func (s *fakeRunEvents) Err() error   { return nil }
 func (s *fakeRunEvents) Close() error { return nil }
 
+// heldRunEvents blocks in Receive until released (the watch is "live, its
+// replay pending") or the stream context is cancelled (shutdown).
+type heldRunEvents struct {
+	events  []*pb.Envelope
+	pos     int
+	release <-chan struct{}
+	ctx     context.Context
+}
+
+func (s *heldRunEvents) Receive() bool {
+	select {
+	case <-s.release:
+		return s.pos < len(s.events)
+	case <-s.ctx.Done():
+		return false
+	}
+}
+func (s *heldRunEvents) Msg() *pb.Envelope {
+	e := s.events[s.pos]
+	s.pos++
+	return e
+}
+func (s *heldRunEvents) Err() error   { return nil }
+func (s *heldRunEvents) Close() error { return nil }
+
 type fakeRunWatcher struct {
 	mu      sync.Mutex
-	streams map[string][]func() RunEventStream
+	streams map[string][]func(context.Context) RunEventStream
+	// captured records the stream context each WatchRun call received.
+	captured map[string]context.Context
+	releases map[string]chan struct{}
 }
 
 func newFakeRunWatcher() *fakeRunWatcher {
-	return &fakeRunWatcher{streams: map[string][]func() RunEventStream{}}
+	return &fakeRunWatcher{
+		streams:  map[string][]func(context.Context) RunEventStream{},
+		captured: map[string]context.Context{},
+		releases: map[string]chan struct{}{},
+	}
 }
 
 func (f *fakeRunWatcher) WatchRun(ctx context.Context, req *connect.Request[pb.WatchRunRequest]) (RunEventStream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.captured[req.Msg.GetRunId()] = ctx
 	if openers := f.streams[req.Msg.GetRunId()]; len(openers) > 0 {
-		s := openers[0]()
+		s := openers[0](ctx)
 		f.streams[req.Msg.GetRunId()] = openers[1:]
 		return s, nil
 	}
@@ -366,7 +399,49 @@ func (f *fakeRunWatcher) setEvents(runID string, events ...*pb.Envelope) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	evs := append([]*pb.Envelope(nil), events...)
-	f.streams[runID] = append(f.streams[runID], func() RunEventStream {
+	f.streams[runID] = append(f.streams[runID], func(context.Context) RunEventStream {
 		return &fakeRunEvents{events: evs}
 	})
+}
+
+// holdEvents parks the run's next watch stream in a blocked Receive: the
+// watch is live but its replay is pending (the "watch adopted, nothing
+// delivered yet" state). release lets the events through afterwards.
+func (f *fakeRunWatcher) holdEvents(runID string, events ...*pb.Envelope) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	evs := append([]*pb.Envelope(nil), events...)
+	rel := make(chan struct{})
+	f.releases[runID] = rel
+	f.streams[runID] = append(f.streams[runID], func(ctx context.Context) RunEventStream {
+		return &heldRunEvents{events: evs, release: rel, ctx: ctx}
+	})
+}
+
+// release lets a held stream deliver its events.
+func (f *fakeRunWatcher) release(runID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if rel, ok := f.releases[runID]; ok {
+		close(rel)
+		delete(f.releases, runID)
+	}
+}
+
+// releaseAll unblocks every held stream (harness cleanup: pump goroutines
+// must not outlive the test's TempDir).
+func (f *fakeRunWatcher) releaseAll() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, rel := range f.releases {
+		close(rel)
+		delete(f.releases, id)
+	}
+}
+
+// streamCtxOf returns the context the run's watch was opened with.
+func (f *fakeRunWatcher) streamCtxOf(runID string) context.Context {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.captured[runID]
 }

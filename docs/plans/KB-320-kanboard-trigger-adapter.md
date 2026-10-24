@@ -91,7 +91,10 @@ Direct port of the watcher's firing loop with route resolution removed:
    `idempotency_key` (`kanboard:<board-project>:<ticket>:<fire-seq>`),
    `input_values` (payload, KB-318 conventions): `ticket_id`
    (`KB-<id>` plus board context keys) merged over the lane's static
-   inputs, delivered downstream as `criteria.input.*` labels. The
+   inputs, delivered downstream as `criteria.input.*` labels. The resolved
+   repo binding is delivered as `repo_url` input: per-card `repo:` tag >
+   lane `repo_default` > config `repo_default`, and the per-card resolved
+   value overrides a static lane `inputs["repo_url"]` entry. The
    castle.v1 project-scoped surface is used because the workstream's
    "(route NAME + project + payload)" is exactly SubmitProjectAssignment's
    shape — the criteria.v1 `SubmitWorkflowAssignment` has no project or

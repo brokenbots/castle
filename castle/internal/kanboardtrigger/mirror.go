@@ -28,8 +28,10 @@ import (
 
 // watchRun spawns one event stream for a run (best effort: a failed watch
 // is retried on the next poll). The request resumes from the server-
-// persisted subscriber cursor so replays after a restart are safe.
-func (a *Adapter) watchRun(ctx context.Context, runID string) {
+// persisted subscriber cursor so replays after a restart are safe. Streams
+// run on the adapter-scoped stream context: they outlive individual poll
+// cycles but are cancelled with the adapter.
+func (a *Adapter) watchRun(runID string) {
 	if a.isWatching(runID) {
 		return
 	}
@@ -37,54 +39,74 @@ func (a *Adapter) watchRun(ctx context.Context, runID string) {
 	a.watchingLocked(runID, true)
 	a.mu.Unlock()
 
-	streamCtx := context.WithoutCancel(ctx) // stream outlives the poll cycle
+	a.pumps.Add(1)
 	go func() {
-		err := a.pumpRun(streamCtx, runID)
+		defer a.pumps.Done()
+		sawTerminal, err := a.pumpRun(a.streamsCtx, runID)
 		a.mu.Lock()
 		a.watchingLocked(runID, false)
 		a.mu.Unlock()
-		if err != nil && streamCtx.Err() == nil {
+		// Shutdown cancels the stream; that is not a watch failure.
+		if err != nil && a.streamsCtx.Err() == nil {
 			a.log.Error("watching run events", "run", runID, "err", err)
+		}
+		// Bounded disposition settle (item: terminal-by-disposition may not
+		// preempt a replayable verdict): if the watch deferred a TERMINAL
+		// disposition and the stream ended WITHOUT delivering a terminal
+		// envelope, finalize the NoVerdict settle now — the record is never
+		// left unsettled forever. Shutdown skips finalization.
+		if !sawTerminal && a.streamsCtx.Err() == nil {
+			a.finalizeNoVerdict(runID)
 		}
 	}()
 }
 
 // pumpRun reads one WatchRun stream until the terminal envelope or a
 // transport error, applying envelopes to the run record as they arrive.
-func (a *Adapter) pumpRun(ctx context.Context, runID string) error {
+// Reports whether a terminal envelope was delivered.
+func (a *Adapter) pumpRun(ctx context.Context, runID string) (bool, error) {
 	stream, err := a.watch.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{
 		RunId:        runID,
 		SubscriberId: a.subscriberID,
 	}))
 	if err != nil {
-		return fmt.Errorf("opening watch stream for run %s: %w", runID, err)
+		return false, fmt.Errorf("opening watch stream for run %s: %w", runID, err)
 	}
+	sawTerminal := false
 	for stream.Receive() {
 		env := stream.Msg()
 		a.applyEnvelope(runID, env)
 		if criteria.IsTerminal(env) {
-			return nil
+			sawTerminal = true
+			return sawTerminal, nil
 		}
 	}
 	if err := stream.Err(); err != nil {
 		if errors.Is(err, io.EOF) || ctx.Err() != nil {
-			return nil
+			return sawTerminal, nil
 		}
-		return fmt.Errorf("reading watch stream for run %s: %w", runID, err)
+		return sawTerminal, fmt.Errorf("reading watch stream for run %s: %w", runID, err)
 	}
-	return nil
+	return sawTerminal, nil
 }
 
 // applyEnvelope applies one run envelope to the run's record (idempotent:
 // a replay of the same envelope rewrites the same verdict). A terminal
-// envelope settles the record; the column move happens on the next poll's
-// reconcileMirrors.
+// envelope is ALWAYS applied, including to a record already settled as
+// NoVerdict (terminal-by-disposition may not preempt a replayable verdict):
+// it clears NoVerdict and re-arms the mirror so the real verdict moves the
+// card on the next poll. Only a record holding a real (non-NoVerdict)
+// verdict may ignore a replayed envelope. The column move happens on the
+// next poll's reconcileMirrors.
 func (a *Adapter) applyEnvelope(runID string, env *criteria.Envelope) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	r := a.runs[runID]
-	if r == nil || r.Settled {
-		return // unknown run (state loss while stream lives) or already judged
+	if r == nil {
+		return // unknown run (state loss or pruned while stream lives)
+	}
+	if r.Settled && !r.NoVerdict {
+		return // already judged with a real verdict: replays are no-ops
 	}
 	r.SeenEvents = true
 	switch {
@@ -93,10 +115,16 @@ func (a *Adapter) applyEnvelope(runID string, env *criteria.Envelope) {
 		r.FailureReason = env.GetRunFailed().GetReason()
 		r.FinalState = "failed"
 		r.Settled = true
+		r.NoVerdict = false
+		r.TerminalByDisposition = false
+		r.Mirrored = false
 	case env.GetRunCompleted() != nil:
 		r.Succeeded = true
 		r.FinalState = env.GetRunCompleted().GetFinalState()
 		r.Settled = true
+		r.NoVerdict = false
+		r.TerminalByDisposition = false
+		r.Mirrored = false
 	}
 	a.persistLocked()
 }
@@ -127,10 +155,17 @@ func (a *Adapter) checkDispositions(ctx context.Context) {
 
 // settleByDisposition marks a run settled when its assignment ended without
 // a run ever streaming observable events: REJECTED (never ran; disposition
-// carries RejectionReason), or TERMINAL with no envelopes seen (already
-// ended before this adapter ever watched). Both settle as NoVerdict — no
-// column move is derived from them, cards stay untouched. A terminal WITH
-// envelopes settles by envelope above.
+// carries RejectionReason) settles immediately as NoVerdict — no replayable
+// verdict can exist for a run that never started — and needs no later board
+// pass (marked mirrored at settle). A TERMINAL disposition may NOT preempt
+// a replayable terminal verdict: while that run's watch is live its replay
+// (gaps are closed in the live phase) can still deliver the actual terminal
+// envelope, so the settle is DEFERRED — the record stays unsettled (the
+// ticket stays fire-blocked) and the disposition is re-read on later polls
+// until the watch either delivers the envelope (which wins) or ends
+// without one (the pump finalizes the NoVerdict settle). When no watch is
+// live no replay can arrive anymore; the run settles as NoVerdict. A
+// terminal WITH a real envelope settles by envelope above.
 func (a *Adapter) settleByDisposition(runID string, st pb.WorkflowAssignmentState, reason string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -145,8 +180,24 @@ func (a *Adapter) settleByDisposition(runID string, st pb.WorkflowAssignmentStat
 		r.FinalState = ""
 		r.Succeeded = false
 		r.NoVerdict = true
+		r.TerminalByDisposition = false
+		// A rejected assignment never streamed events: the record's mirror
+		// cycle ends here (bounded; card untouched).
+		r.Mirrored = true
 	case pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL:
+		if a.watching[runID] { // read the map directly: helpers lock
+			// The watch replay is still pending: stay unsettled (ticket
+			// fire-blocked) until the envelope applies or the pump ends —
+			// a later disposition read completes the settle once the stream
+			// is gone.
+			if !r.TerminalByDisposition {
+				r.TerminalByDisposition = true
+				a.log.Info("deferring disposition settle; watch replay still pending", "run", runID)
+			}
+			break
+		}
 		r.Settled = true
+		r.TerminalByDisposition = false
 		if !r.SeenEvents {
 			r.NoVerdict = true
 		}
@@ -155,6 +206,24 @@ func (a *Adapter) settleByDisposition(runID string, st pb.WorkflowAssignmentStat
 		a.log.Info("settling run by assignment disposition", "run", runID, "state", st.String())
 		a.persistLocked()
 	}
+}
+
+// finalizeNoVerdict settles a deferred terminal-disposition record whose
+// watch ended WITHOUT delivering a terminal envelope: the run reached the
+// disposition's terminal state but its events were never observed — no
+// column move is derived (NoVerdict). Called by the watch goroutine after
+// the stream closes; bounded (one settle, never re-run).
+func (a *Adapter) finalizeNoVerdict(runID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r := a.runs[runID]
+	if r == nil || r.Settled || !r.TerminalByDisposition {
+		return
+	}
+	r.Settled = true
+	r.NoVerdict = true
+	a.log.Info("watch ended without a terminal envelope; settling run by disposition", "run", runID)
+	a.persistLocked()
 }
 
 // activeRunIDs returns the run ids without a settle verdict.
@@ -174,10 +243,10 @@ func (a *Adapter) activeRunIDs() []string {
 // adoptWatches re-spawns event streams for every unsettled run without a
 // live one: boot adoption of persisted state and recovery of streams lost
 // to transport errors. Idempotent via the watching map.
-func (a *Adapter) adoptWatches(ctx context.Context) {
+func (a *Adapter) adoptWatches() {
 	for _, runID := range a.activeRunIDs() {
 		if !a.isWatching(runID) {
-			a.watchRun(ctx, runID)
+			a.watchRun(runID)
 		}
 	}
 }
@@ -257,6 +326,9 @@ func (a *Adapter) reconcileMirrors(ctx context.Context, tasks []kanboard.Task) {
 		}
 		switch {
 		case rec.NoVerdict:
+			if a.isWatching(rec.RunID) {
+				continue // watch still live: a terminal envelope may arrive
+			}
 			a.log.InfoContext(ctx, "assignment settled without observable verdict; card untouched",
 				"ticket", rec.TicketID, "run", rec.RunID)
 			a.markMirrored(rec.RunID)
@@ -294,12 +366,34 @@ var handoffStates = map[string]bool{
 
 // parkFailureReview moves a failed run's card to Review and posts the one
 // failure comment at the move (KB-302). The move is the comment gate: a
-// card already in Review gets no move and no comment; a failed comment is
-// logged, not propagated (the park must not be undone).
+// card already in Review gets no move and no comment (the obligation is
+// waived — it was either discharged by an earlier move or the card was
+// pre-parked), and a comment whose earlier post failed is retried here.
+// The record is marked mirrored only when the comment obligation stands;
+// a failed comment leaves it unmarked (retried next poll; the park must
+// not be undone).
 func (a *Adapter) parkFailureReview(ctx context.Context, task *kanboard.Task, rec RunRecord) {
 	if task.ColumnName == a.cfg.ReviewColumn {
-		a.log.InfoContext(ctx, "failed run's card already parked; no move, no comment",
-			"ticket", rec.TicketID, "run", rec.RunID)
+		// Already parked: either a failed comment from an earlier poll (its
+		// post still owed — exactly-one-comment), or the obligation is
+		// discharged/waived.
+		owesRetry := false
+		a.mu.Lock()
+		if r := a.runs[rec.RunID]; r != nil {
+			switch {
+			case r.ParkCommented:
+				// comment already posted; nothing owed
+			case r.ParkFailed:
+				owesRetry = true // earlier post failed; repost per poll
+			default:
+				r.CommentWaived = true // pre-parked card: never a comment debt
+				a.markDirtyLocked()
+			}
+		}
+		a.mu.Unlock()
+		if owesRetry && !a.postFailureComment(ctx, task.ID, rec) {
+			return // comment still owed: unmarked, retried next poll
+		}
 		a.markMirrored(rec.RunID)
 		return
 	}
@@ -312,33 +406,72 @@ func (a *Adapter) parkFailureReview(ctx context.Context, task *kanboard.Task, re
 	}
 	a.log.InfoContext(ctx, "parked failed run's card in Review",
 		"ticket", rec.TicketID, "task", task.ID, "run", rec.RunID)
-	if !rec.ParkCommented {
-		a.postFailureComment(ctx, task.ID, rec)
+	a.adoptMirrorMove(ctx, task, rec.TicketID)
+	if !a.postFailureComment(ctx, task.ID, rec) {
+		return // comment retry owed: the parked card is re-observed next poll
 	}
 	a.markMirrored(rec.RunID)
 }
 
-// postFailureComment posts the single failure explanation. Best-effort:
-// a failure stays in the log; the park already happened. Only the run's
-// failure reason is echoed into the comment; card content never is.
-func (a *Adapter) postFailureComment(ctx context.Context, taskID int, rec RunRecord) {
+// postFailureComment posts the single failure explanation. Returns whether
+// the comment obligation now stands (posted now or previously); a failed
+// post marks the record ParkFailed so the exactly-one-comment debt is
+// retried on a later poll. Only the run's failure reason is echoed into
+// the comment; card content never is.
+func (a *Adapter) postFailureComment(ctx context.Context, taskID int, rec RunRecord) bool {
 	reason := rec.FailureReason
 	if strings.TrimSpace(reason) == "" {
 		reason = "no reason recorded"
 	}
 	body := fmt.Sprintf("kanboard-trigger-adapter: run %s failed: %s", rec.RunID, reason)
 	if err := a.kb.AddComment(ctx, taskID, body); err != nil {
-		a.log.ErrorContext(ctx, "posting failure-park comment",
-			"ticket", rec.TicketID, "task", taskID, "run", rec.RunID, "err", err)
-		return
+		if ctx.Err() == nil {
+			a.log.ErrorContext(ctx, "posting failure-park comment",
+				"ticket", rec.TicketID, "task", taskID, "run", rec.RunID, "err", err)
+		}
+		a.mu.Lock()
+		if r := a.runs[rec.RunID]; r != nil {
+			r.ParkFailed = true
+			a.markDirtyLocked()
+		}
+		a.mu.Unlock()
+		return false
 	}
 	a.mu.Lock()
 	if r := a.runs[rec.RunID]; r != nil {
 		r.ParkCommented = true
+		r.ParkFailed = false
 	}
 	a.markDirtyLocked()
 	a.mu.Unlock()
 	a.log.InfoContext(ctx, "posted failure-park comment", "ticket", rec.TicketID, "run", rec.RunID)
+	return true
+}
+
+// adoptMirrorMove records the mirror's own move in the ticket's entry memo
+// (KB-302): the memo's prev-column is "the column the adapter observed the
+// card in last", and a mirrored move is an observation — without it an
+// operator reopening a card from Done within one poll interval of the
+// mirror move would be invisible (memo still holding the pre-run column)
+// and the re-entry would never fire. It also updates the poll's task
+// snapshot, which fire compares the memo against: the board was moved
+// after the snapshot was fetched, so leaving the snapshot stale would
+// read the move as a fresh entry and fire a duplicate run. Best effort: a
+// failed refresh leaves the memo and the snapshot untouched; the next
+// poll's fire re-observes the card anyway.
+func (a *Adapter) adoptMirrorMove(ctx context.Context, task *kanboard.Task, ticket string) {
+	t, err := a.kb.GetTask(ctx, task.ID)
+	if err != nil {
+		if ctx.Err() == nil {
+			a.log.ErrorContext(ctx, "observing mirrored card", "task", task.ID, "err", err)
+		}
+		return
+	}
+	a.setMemo(ticket, t.ColumnID)
+	task.ColumnID = t.ColumnID
+	if name := a.kb.TaskColumnName(ctx, t); name != "" {
+		task.ColumnName = name
+	}
 }
 
 // moveCard moves a card to a column and marks the record mirrored (a failed
@@ -358,5 +491,6 @@ func (a *Adapter) moveCard(ctx context.Context, task *kanboard.Task, columnName 
 		return
 	}
 	a.log.InfoContext(ctx, why, "ticket", rec.TicketID, "run", rec.RunID, "column", columnName)
+	a.adoptMirrorMove(ctx, task, rec.TicketID)
 	a.markMirrored(rec.RunID)
 }

@@ -56,6 +56,20 @@ type RunRecord struct {
 	// SubmittedAtMs is the submit time (millis) used to order runs per
 	// ticket. Monotonic across restarts by wall clock.
 	SubmittedAtMs int64 `json:"submitted_at_ms"`
+	// TerminalByDisposition marks a run whose assignment disposition was
+	// TERMINAL while its watch was still live: the mirror defers the
+	// settle until the watch either replays a terminal envelope (which
+	// then wins) or ends without one (which finalizes the NoVerdict
+	// settle). Never combined with Settled.
+	TerminalByDisposition bool `json:"terminal_by_disposition,omitempty"`
+	// CommentWaived marks a failed run whose card was already observed in
+	// Review with the KB-302 comment considered posted (or first seen
+	// parked): the comment obligation never needs a retry.
+	CommentWaived bool `json:"comment_waived,omitempty"`
+	// ParkFailed marks a failed-run comment post that itself failed while
+	// the card was already parked in Review: the comment is retried on a
+	// later poll, so the record must not be marked mirrored yet.
+	ParkFailed bool `json:"park_failed,omitempty"`
 	// TicketKanboardID is the numeric kanboard task id.
 	TicketKanboardID int `json:"ticket_kanboard_id"`
 }

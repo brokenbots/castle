@@ -94,7 +94,7 @@ func TestFireReentryAfterSettle(t *testing.T) {
 	h := newHarness(t, fk, testLaneConfig(), nil)
 	h.poll(t) // fire 1
 	h.sub.dispState = pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL
-	h.poll(t) // settle the first run
+	pollUntil(t, h, func() bool { return !hasRun(h, runIDOf(1)) }) // run-1 settles (watch ended, no replay)
 	fk.setCardColumn(17, "Ready")
 	h.poll(t) // re-entry (different column): fire 2
 	calls := h.sub.submitted()
@@ -153,6 +153,11 @@ func TestFireRetrySequencePreservedAcrossFires(t *testing.T) {
 	})
 	h.poll(t) // fire 1: kanboard:KB board:KB-24:1
 
+	// run-1 settles (terminal disposition, watch ended without a replay)
+	// before the re-entry: the new settle semantics keep the ticket
+	// fire-blocked until the verdict is known.
+	pollUntil(t, h, func() bool { return !hasRun(h, runIDOf(1)) })
+
 	// Fire 2 of the card (re-entry after the run settles) fails.
 	fk.setCardColumn(24, "Ready")
 	h.sub.err = errSubmitDenied
@@ -178,9 +183,13 @@ func TestFireRetrySequencePreservedAcrossFires(t *testing.T) {
 			calls[2].IdempotencyKey, calls[1].IdempotencyKey)
 	}
 
-	// A later entry derives a third, distinct key — no key reuse across fires.
+	// A later entry derives a third, distinct key — no key reuse across
+	// fires. run-2 (the retried fire) settles first; the re-entry happens
+	// after the verdict is known (an entry consumed while blocked stays
+	// consumed, per KB-302 observer-parity).
+	pollUntil(t, h, func() bool { return !hasRun(h, runIDOf(2)) })
 	fk.setCardColumn(24, "Work in progress")
-	h.poll(t) // settles run 2 (disposition), then fires run 3
+	h.poll(t) // re-entry fires run 3
 	calls = h.sub.submitted()
 	if n := len(calls); n != 4 {
 		t.Fatalf("third entry produced %d calls, want 4", n)
@@ -213,6 +222,9 @@ func TestFirePayloadIsLaneDriven(t *testing.T) {
 	}
 	if c.InputValues["ticket_id"] != "KB-21" || c.InputValues["base_branch"] != "main" {
 		t.Errorf("inputs = %v, want ticket_id=KB-21 + base_branch=main", c.InputValues)
+	}
+	if c.InputValues["repo_url"] != "own/name" {
+		t.Errorf("repo_url = %q, want the resolved repo: tag binding \"own/name\"", c.InputValues["repo_url"])
 	}
 	if want := "kanboard:KB board:KB-21:1"; c.IdempotencyKey != want {
 		t.Errorf("fire key = %q, want %q", c.IdempotencyKey, want)
@@ -276,4 +288,68 @@ func TestRepoDefaultFiresWithoutTag(t *testing.T) {
 			t.Fatalf("lane-default fire = %d, want 1", n)
 		}
 	})
+}
+
+// TestFirePayloadCarriesRepoURL pins the resolved repo binding in the
+// assignment payload: per-card repo: tag > lane repo_default > config
+// repo_default, and the per-card value wins over a static lane
+// inputs["repo_url"] entry. The fire gate still fails closed on no
+// binding, so a submitted repo_url is never empty.
+func TestFirePayloadCarriesRepoURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutCfg  func(*Config)
+		tagsIn  []string
+		wantURL string
+	}{
+		{
+			name:    "card_repo_tag",
+			tagsIn:  []string{"k8s-run", "repo:own/name"},
+			wantURL: "own/name",
+		},
+		{
+			name: "lane_repo_default",
+			mutCfg: func(c *Config) {
+				c.Lanes[0].RepoDefault = "develop-owner/develop-repo"
+			},
+			tagsIn:  []string{"k8s-run"},
+			wantURL: "develop-owner/develop-repo",
+		},
+		{
+			name: "config_repo_default",
+			mutCfg: func(c *Config) {
+				c.RepoDefault = "glob-owner/glob-repo"
+			},
+			tagsIn:  []string{"k8s-run"},
+			wantURL: "glob-owner/glob-repo",
+		},
+		{
+			name: "card_tag_overrides_static_lane_input",
+			mutCfg: func(c *Config) {
+				c.Lanes[0].Inputs["repo_url"] = "static/repo"
+			},
+			tagsIn:  []string{"k8s-run", "repo:tag/tag"},
+			wantURL: "tag/tag",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			card := 50
+			cfg := testLaneConfig()
+			if tc.mutCfg != nil {
+				tc.mutCfg(cfg)
+			}
+			fk := newFakeKanboard(t, "KB board", boardColumns()...)
+			fk.addCard(t, card, "Work in progress", fmt.Sprintf("KB-%d", card), tc.tagsIn...)
+			h := newHarness(t, fk, cfg, nil)
+			h.poll(t)
+			calls := h.sub.submitted()
+			if n := len(calls); n != 1 {
+				t.Fatalf("fired %d times, want 1", n)
+			}
+			if got := calls[0].InputValues["repo_url"]; got != tc.wantURL {
+				t.Errorf("repo_url = %q, want %q", got, tc.wantURL)
+			}
+		})
+	}
 }

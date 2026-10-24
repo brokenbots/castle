@@ -71,6 +71,16 @@ type Adapter struct {
 	memos    map[string]*TicketMemo // ticket -> column memo
 	runs     map[string]*RunRecord  // run id -> record
 	watching map[string]bool        // run ids with a live/attempted watch stream
+
+	// streamsCtx outlives individual poll cycles (streams must not die when
+	// a poll's request context ends) but is cancelled with the adapter:
+	// Run derives it from the caller context, so watch goroutines exit on
+	// shutdown. Direct-poll tests use the Background default.
+	streamsCtx    context.Context
+	streamsCancel context.CancelFunc
+	// pumps tracks live watch goroutines so tests (and shutdown
+	// verification) can wait for stream teardown.
+	pumps sync.WaitGroup
 }
 
 // Options configures New.
@@ -106,23 +116,29 @@ func New(cfg *Config, kb *kanboard.Client, submit Submitter, dispose AssignmentR
 		opts.Instance = "default"
 	}
 	return &Adapter{
-		cfg:          cfg,
-		kb:           kb,
-		submit:       submit,
-		dispose:      dispose,
-		watch:        runWatch,
-		log:          log,
-		interval:     opts.PollInterval,
-		subscriberID: "kanboard-trigger-adapter:" + opts.Instance,
-		statePath:    opts.StatePath,
-		memos:        st.Tickets,
-		runs:         st.Runs,
-		watching:     map[string]bool{},
+		cfg:           cfg,
+		kb:            kb,
+		submit:        submit,
+		dispose:       dispose,
+		watch:         runWatch,
+		log:           log,
+		interval:      opts.PollInterval,
+		subscriberID:  "kanboard-trigger-adapter:" + opts.Instance,
+		statePath:     opts.StatePath,
+		memos:         st.Tickets,
+		runs:          st.Runs,
+		watching:      map[string]bool{},
+		streamsCtx:    context.Background(),
+		streamsCancel: func() {},
 	}, nil
 }
 
 // Run drives the poll loop until ctx is cancelled.
 func (a *Adapter) Run(ctx context.Context) error {
+	// Watch streams span poll cycles but live with the adapter: cancelled
+	// when Run returns, so the goroutines exit on shutdown.
+	a.streamsCtx, a.streamsCancel = context.WithCancel(context.WithoutCancel(ctx))
+	defer a.streamsCancel()
 	if err := a.initBoard(ctx); err != nil {
 		return err
 	}
@@ -262,6 +278,9 @@ func (a *Adapter) markDirtyLocked() { a.dirty = true }
 func (a *Adapter) flush() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if dropped := a.pruneSettledLocked(); dropped > 0 {
+		a.markDirtyLocked()
+	}
 	if !a.dirty {
 		return
 	}
@@ -272,13 +291,45 @@ func (a *Adapter) flush() {
 	a.dirty = false
 }
 
+// pruneSettledLocked drops settled-and-mirrored run records before the
+// snapshot is written: once the verdict is applied (and any owed failure
+// comment stands) the record serves no purpose — hasActiveRun ignores
+// settled records and anti-refire is keyed on the ticket memos. Pruning
+// before the save means the pruned run reappears neither in memory nor in
+// the state file, so a restart cannot replay a second card move. Never
+// prunes an unsettled record, a settled-but-unmirrored record (its verdict
+// still owes a board move), or a record whose KB-302 failure comment has
+// not been posted at the move.
+func (a *Adapter) pruneSettledLocked() int {
+	dropped := 0
+	for runID, r := range a.runs {
+		if !r.Settled || !r.Mirrored || a.failureCommentPending(r) {
+			continue
+		}
+		delete(a.runs, runID)
+		dropped++
+	}
+	return dropped
+}
+
+// failureCommentPending reports whether a failed run still owes its KB-302
+// review comment (so the record must not yet be pruned).
+func (a *Adapter) failureCommentPending(r *RunRecord) bool {
+	return r.Settled && !r.Succeeded && !r.NoVerdict &&
+		!r.ParkCommented && !r.CommentWaived
+}
+
 // submitAssignment submits one lane fire and records the run (created or
-// adopted). Returns the response run id.
-func (a *Adapter) submitAssignment(ctx context.Context, ticket string, taskID int, lane *Lane, fireSeq int) (string, error) {
-	inputs := make(map[string]string, len(lane.Inputs)+1)
+// adopted). repoURL is the resolved repo binding (repo: tag > lane
+// repo_default > config repo_default; the fire gate guarantees non-empty) —
+// the per-card resolved value wins over a static lane inputs entry.
+// Returns the response run id.
+func (a *Adapter) submitAssignment(ctx context.Context, ticket string, taskID int, lane *Lane, fireSeq int, repoURL string) (string, error) {
+	inputs := make(map[string]string, len(lane.Inputs)+2)
 	for k, v := range lane.Inputs {
 		inputs[k] = v
 	}
+	inputs["repo_url"] = repoURL
 	inputs["ticket_id"] = ticket
 	resp, err := a.submit.SubmitProjectAssignment(ctx, connect.NewRequest(&castlev1.SubmitProjectAssignmentRequest{
 		ProjectId:      a.cfg.CastleProjectID,
