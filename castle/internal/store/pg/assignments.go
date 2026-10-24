@@ -58,7 +58,7 @@ func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowA
 	if err != nil {
 		return nil, false, err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }()
 
 	existing, err := scanAssignmentTx(ctx, tx, `
 		SELECT `+assignmentColumns+`
@@ -218,7 +218,7 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }()
 
 	// Transactionally expire stale leases for unstarted runs back to a leasable
 	// queued state. Runs that have already emitted RunStarted (status='running')
@@ -429,7 +429,7 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.id

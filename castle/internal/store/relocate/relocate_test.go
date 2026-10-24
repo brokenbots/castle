@@ -3,6 +3,7 @@ package relocate
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -301,8 +302,151 @@ func TestImportRefusesNonEmpty(t *testing.T) {
 	}
 	// Override succeeds only when explicitly requested; the identical source
 	// is already present so the sample compare and counts agree again.
-	if _, err := Import(ctx, src, dst, 100, true); err != nil {
+	reports2, err := Import(ctx, src, dst, 100, true)
+	if err != nil {
 		t.Fatalf("overridden import: %v", err)
+	}
+	for _, rep := range reports2 {
+		if !rep.Verified {
+			t.Errorf("%s: converged re-run should verify: %s", rep.Name, rep.Detail)
+		}
+	}
+}
+
+// TestImportDetectsTargetDrift pins the verification-failure path: an
+// override re-run that heals a deleted target row reports that table as NOT
+// verified (a converged re-import must be a no-op), while untouched tables
+// stay verified — so a silently-passing verifier cannot hide tampering.
+func TestImportDetectsTargetDrift(t *testing.T) {
+	ctx := context.Background()
+	srcPath := filepath.Join(t.TempDir(), "castle.db")
+	sst, err := sqlite.Open(srcPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	agentRunID, _ := seedSource(t, sst)
+	if err := sst.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+	src, err := OpenSource(srcPath)
+	if err != nil {
+		t.Fatalf("OpenSource: %v", err)
+	}
+	defer src.Close()
+
+	pgDSN := pgtest.DSN(t)
+	migrated, err := pg.Open(pgDSN)
+	if err != nil {
+		t.Fatalf("migrate target: %v", err)
+	}
+	if err := migrated.Close(); err != nil {
+		t.Fatalf("close migrated target: %v", err)
+	}
+	dst, err := OpenTarget(pgDSN)
+	if err != nil {
+		t.Fatalf("OpenTarget: %v", err)
+	}
+	defer dst.Close()
+
+	if _, err := Import(ctx, src, dst, 100, false); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	// Tamper: drop the agent run row from the target behind the importer's
+	// back. The overridden re-run heals it (upserts the source copy back),
+	// which the drift check must catch on the runs table.
+	if _, err := dst.ExecContext(ctx, `DELETE FROM runs WHERE id = $1`, agentRunID); err != nil {
+		t.Fatalf("delete target run: %v", err)
+	}
+	reports, err := Import(ctx, src, dst, 100, true)
+	if err != nil {
+		t.Fatalf("overridden re-run: %v", err)
+	}
+	tampered := false
+	for _, rep := range reports {
+		switch {
+		case rep.Name == "runs":
+			if rep.Verified {
+				t.Errorf("runs: want Verified=false after healed deletion, got verified")
+			}
+			if !strings.Contains(rep.Detail, "target drifted from 1 to 2 rows") {
+				t.Errorf("runs: Detail should name the count delta, got: %s", rep.Detail)
+			}
+			tampered = true
+		case !rep.Verified:
+			t.Errorf("%s: untouched table must stay verified, got: %s", rep.Name, rep.Detail)
+		}
+	}
+	if !tampered {
+		t.Fatalf("runs table report missing: %+v", reports)
+	}
+}
+
+// TestImportDetectsForeignRow pins the count-equality branch: a target row
+// the source no longer has survives the convergence copy (upserts only write
+// source rows), and verification must report the table unverified instead of
+// passing on rows-copied-this-run.
+func TestImportDetectsForeignRow(t *testing.T) {
+	ctx := context.Background()
+	srcPath := filepath.Join(t.TempDir(), "castle.db")
+	sst, err := sqlite.Open(srcPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	agentRunID, _ := seedSource(t, sst)
+	if err := sst.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+	src, err := OpenSource(srcPath)
+	if err != nil {
+		t.Fatalf("OpenSource: %v", err)
+	}
+	defer src.Close()
+
+	pgDSN := pgtest.DSN(t)
+	migrated, err := pg.Open(pgDSN)
+	if err != nil {
+		t.Fatalf("migrate target: %v", err)
+	}
+	if err := migrated.Close(); err != nil {
+		t.Fatalf("close migrated target: %v", err)
+	}
+	dst, err := OpenTarget(pgDSN)
+	if err != nil {
+		t.Fatalf("OpenTarget: %v", err)
+	}
+	defer dst.Close()
+
+	if _, err := Import(ctx, src, dst, 100, false); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	// The source loses the agent run after the first import (quiesced source
+	// between cutover attempts); the target keeps it — an unaccounted row.
+	if _, err := src.ExecContext(ctx, `DELETE FROM runs WHERE id = ?`, agentRunID); err != nil {
+		t.Fatalf("delete source run: %v", err)
+	}
+	reports, err := Import(ctx, src, dst, 100, true)
+	if err != nil {
+		t.Fatalf("overridden re-run: %v", err)
+	}
+	tampered := false
+	for _, rep := range reports {
+		switch {
+		case rep.Name == "runs":
+			if rep.Verified {
+				t.Errorf("runs: want Verified=false for unaccounted target row")
+			}
+			if !strings.Contains(rep.Detail, "row count mismatch: source 1, target 2") {
+				t.Errorf("runs: Detail should name the count delta, got: %s", rep.Detail)
+			}
+			tampered = true
+		case !rep.Verified:
+			t.Errorf("%s: untouched table must stay verified, got: %s", rep.Name, rep.Detail)
+		}
+	}
+	if !tampered {
+		t.Fatalf("runs table report missing: %+v", reports)
 	}
 }
 

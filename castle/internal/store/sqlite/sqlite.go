@@ -19,6 +19,9 @@ import (
 	"github.com/brokenbots/castle/castle/internal/store/reap"
 )
 
+// Compile-time pin: the sqlite profile must satisfy the whole store contract.
+var _ store.Store = (*Store)(nil)
+
 type Store struct {
 	db *sql.DB
 	// reader is a dedicated read handle on the same WAL database (CRI-143).

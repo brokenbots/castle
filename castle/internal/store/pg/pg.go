@@ -10,8 +10,12 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/brokenbots/castle/castle/internal/store"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+// Compile-time pin: the pg profile must satisfy the whole store contract.
+var _ store.Store = (*Store)(nil)
 
 type Store struct {
 	db *sql.DB

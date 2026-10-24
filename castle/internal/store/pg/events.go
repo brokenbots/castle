@@ -26,7 +26,7 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 	if err != nil {
 		return 0, false, err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }()
 
 	// Idempotency on (run_id, correlation_id): if an event with this
 	// correlation id already exists for this run, return its seq without

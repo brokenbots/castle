@@ -204,6 +204,9 @@ var Tables = []table{
 const TimestampLayout = time.RFC3339Nano
 
 // TableReport is the per-table import outcome surfaced to the operator.
+// Imported is the row count this run wrote; Verified is true when the target
+// actually holds what the source holds (count equality, no drift on override
+// re-runs) and the row-for-row sample compared equal.
 type TableReport struct {
 	Name     string
 	Source   int64
@@ -262,24 +265,38 @@ func OpenTarget(dsn string) (*sql.DB, error) {
 // Import copies every table from src to dst and verifies the result.
 // The freeze contract is checked internally: source counts are taken before
 // and after the copy and must agree.
+//
+// Verification against a re-run (--allow-non-empty-pg) is stricter than
+// against a fresh target: the copy upserts, so a converged target must be a
+// no-op — any target row-count drift during the re-run (a deleted or foreign
+// row the copy healed) fails that table's verification instead of silently
+// passing. Counts compare against what the target actually holds after the
+// copy, so anything the copy cannot account for is surfaced to the operator.
 func Import(ctx context.Context, src, dst *sql.DB, verifyRows int64, allowNonEmpty bool) ([]TableReport, error) {
 	if verifyRows <= 0 {
 		verifyRows = verifyCap
+	}
+
+	// Pre-copy target counts: refusal gate for fresh-target imports, and the
+	// baseline an override re-run is verified against.
+	pre := make(map[string]int64, len(Tables))
+	for _, t := range Tables {
+		var n int64
+		if err := dst.QueryRowContext(ctx,
+			`SELECT count(*) FROM `+quoteIdent(t.name)).Scan(&n); err != nil {
+			return nil, fmt.Errorf("relocate: probe target %s: %w", t.name, err)
+		}
+		pre[t.name] = n
 	}
 
 	// Refuse a non-empty target: the cutover is born-on-pg for all new
 	// orchestrator tables, and a mixed-history target would corrupt replay.
 	if !allowNonEmpty {
 		for _, t := range Tables {
-			var n int64
-			if err := dst.QueryRowContext(ctx,
-				`SELECT count(*) FROM `+quoteIdent(t.name)).Scan(&n); err != nil {
-				return nil, fmt.Errorf("relocate: probe target %s: %w", t.name, err)
-			}
-			if n != 0 {
+			if pre[t.name] != 0 {
 				return nil, fmt.Errorf(
-					"relocate: target table %s already holds %d rows; imports run against an empty pg database only (discard the partial target and start from a fresh one, or override with --allow-non-empty-pg)",
-					t.name, n)
+					"relocate: target table %s already holds %d rows; imports run against an empty pg database only (discard the target and start from a fresh one, or re-run on a converged target with --allow-non-empty-pg)",
+					t.name, pre[t.name])
 			}
 		}
 	}
@@ -311,26 +328,47 @@ func Import(ctx context.Context, src, dst *sql.DB, verifyRows int64, allowNonEmp
 		}
 	}
 
-	// Verify: count equality plus a row-for-row decoded sample.
+	// Post-copy actual target row counts. Verification compares the source
+	// against what the target actually holds — not against the row count this
+	// run wrote — so rows the copy cannot account for (a foreign row, a source
+	// row dropped between runs) fail verification instead of passing.
+	post := make(map[string]int64, len(Tables))
+	for _, t := range Tables {
+		var n int64
+		if err := dst.QueryRowContext(ctx,
+			`SELECT count(*) FROM `+quoteIdent(t.name)).Scan(&n); err != nil {
+			return nil, fmt.Errorf("relocate: count target %s after copy: %w", t.name, err)
+		}
+		post[t.name] = n
+	}
+
+	// Verify: count equality, override-run target stability, and a row-for-row
+	// decoded sample.
 	reports := make([]TableReport, 0, len(Tables))
 	for _, t := range Tables {
 		rep := TableReport{Name: t.name, Source: after[t.name], Imported: imported[t.name]}
-		if rep.Source != rep.Imported {
-			rep.Detail = fmt.Sprintf("row count mismatch: source %d, target %d", rep.Source, rep.Imported)
-			reports = append(reports, rep)
-			continue
-		}
-		if rep.Source == 0 {
+		switch {
+		case allowNonEmpty && pre[t.name] != post[t.name]:
+			// An override re-run converges an already-imported target, so it
+			// must not change its row counts; drift means the state between
+			// runs is not the identical source — fail loudly.
+			delta := post[t.name] - pre[t.name]
+			rep.Detail = fmt.Sprintf(
+				"target drifted from %d to %d rows (%+d) during the override re-run; a converged re-import must be a no-op — discard the target and re-run the cutover from a fresh one",
+				pre[t.name], post[t.name], delta)
+		case rep.Source != post[t.name]:
+			rep.Detail = fmt.Sprintf(
+				"row count mismatch: source %d, target %d (copied %d)",
+				rep.Source, post[t.name], rep.Imported)
+		case post[t.name] == 0:
 			rep.Verified = true
-			reports = append(reports, rep)
-			continue
+		default:
+			if err := verifySample(ctx, src, dst, t, verifyRows); err != nil {
+				rep.Detail = err.Error()
+			} else {
+				rep.Verified = true
+			}
 		}
-		if err := verifySample(ctx, src, dst, t, verifyRows); err != nil {
-			rep.Detail = err.Error()
-			reports = append(reports, rep)
-			continue
-		}
-		rep.Verified = true
 		reports = append(reports, rep)
 	}
 	return reports, nil
