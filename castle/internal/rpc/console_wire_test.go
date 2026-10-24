@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
+	"github.com/brokenbots/castle/castle/internal/store"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"                // import-lint:allow castle service bindings (W08: move to castle-proto)
 	"github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect" // import-lint:allow castle service bindings (W08: move to castle-proto)
 
@@ -428,6 +429,233 @@ func TestConsoleWire_ApprovalResumeEndToEnd(t *testing.T) {
 	h.authHeader(staleReq)
 	if _, err := h.consoleClient.ResolveResume(ctx, staleReq); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("stale console resolve must be failed_precondition, got %v", err)
+	}
+}
+
+// TestConsoleWire_LogoutInvalidatesImmediately covers the KB-325 acceptance
+// path: login -> authenticated call -> Logout -> the same token stops
+// authenticating on the very next request. Only the killed session dies; a
+// fresh login issues a NEW session that keeps working and whose ledger shows
+// the revoked row with its stamp.
+func TestConsoleWire_LogoutInvalidatesImmediately(t *testing.T) {
+	h := newConsoleWireHarness(t, false)
+	ctx := context.Background()
+
+	// Pre-logout: a read with the session token authenticates.
+	readReq := connect.NewRequest(&pb.ListRunsRequest{})
+	h.authHeader(readReq)
+	if _, err := h.cClient.ListRuns(ctx, readReq); err != nil {
+		t.Fatalf("live session must authenticate: %v", err)
+	}
+
+	// Logout over the wire with the session token.
+	logoutReq := connect.NewRequest(&castlev1.LogoutRequest{})
+	h.authHeader(logoutReq)
+	logout, err := h.consoleClient.Logout(ctx, logoutReq)
+	if err != nil {
+		t.Fatalf("console Logout: %v", err)
+	}
+	if logout.Msg.RevokedAt == nil {
+		t.Fatal("Logout must return the revocation stamp")
+	}
+
+	// The SAME token is unauthenticated on the very next request — both on a
+	// read and on a retry of the ledger surface.
+	sameTokReq := connect.NewRequest(&castlev1.ListSessionsRequest{})
+	h.authHeader(sameTokReq)
+	if _, err := h.consoleClient.ListSessions(ctx, sameTokReq); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("logout must invalidate the session immediately, got %v", err)
+	}
+	readAgain := connect.NewRequest(&pb.ListRunsRequest{})
+	h.authHeader(readAgain)
+	if _, err := h.cClient.ListRuns(ctx, readAgain); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("revoked token must be unauthenticated on reads, got %v", err)
+	}
+
+	// Logout with the dead token is unauthenticated, not double-revocation.
+	logoutAgain := connect.NewRequest(&castlev1.LogoutRequest{})
+	h.authHeader(logoutAgain)
+	if _, err := h.consoleClient.Logout(ctx, logoutAgain); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("retrying Logout with a revoked token must be unauthenticated, got %v", err)
+	}
+
+	// A fresh login issues a NEW live session (rotation unaffected) whose
+	// ledger lists the killed row as revoked.
+	login2, err := h.consoleClient.Login(ctx, connect.NewRequest(&castlev1.LoginRequest{Username: "operator", Password: "op-password"}))
+	if err != nil {
+		t.Fatalf("re-login after logout: %v", err)
+	}
+	listReq := connect.NewRequest(&castlev1.ListSessionsRequest{})
+	listReq.Header().Set("Authorization", "Bearer "+login2.Msg.SessionToken)
+	sessions, err := h.consoleClient.ListSessions(ctx, listReq)
+	if err != nil {
+		t.Fatalf("ListSessions after re-login: %v", err)
+	}
+	if sessions.Msg == nil || len(sessions.Msg.Sessions) != 2 {
+		t.Fatalf("expected two ledger rows (revoked + live), got %v", sessions.Msg)
+	}
+	revoked := 0
+	for _, s := range sessions.Msg.Sessions {
+		if s.RevokedAt != nil {
+			revoked++
+			if s.Kind != castlev1.SessionKind_SESSION_KIND_CONSOLE {
+				t.Fatalf("revoked row kind must be console session, got %v", s.Kind)
+			}
+		}
+	}
+	if revoked != 1 {
+		t.Fatalf("exactly one row must be revoked, got %d", revoked)
+	}
+
+	// A live row's RevokedAt stays nil.
+	liveReq := connect.NewRequest(&castlev1.ListSessionsRequest{})
+	liveReq.Header().Set("Authorization", "Bearer "+login2.Msg.SessionToken)
+	live, err := h.consoleClient.ListSessions(ctx, liveReq)
+	if err != nil {
+		t.Fatalf("ListSessions as live session: %v", err)
+	}
+	liveRows := 0
+	for _, s := range live.Msg.Sessions {
+		if s.RevokedAt == nil {
+			liveRows++
+			if s.CreatedAt == nil {
+				t.Fatal("live row must carry its issue stamp")
+			}
+		}
+	}
+	if liveRows != 1 {
+		t.Fatalf("exactly one row must be live, got %d", liveRows)
+	}
+}
+
+// TestConsoleWire_ListSessionsShowsKindAndMembership covers the KB-325
+// "sessions visible in ListSessions with kind+membership" acceptance: entries
+// carry the console-session credential kind and the issue-time membership
+// snapshot — the project set read from the ONE shared membership set at
+// login — and logout timestamps show up on the revoked row.
+func TestConsoleWire_ListSessionsShowsKindAndMembership(t *testing.T) {
+	h := newConsoleWireHarness(t, false)
+	ctx := context.Background()
+
+	// Seed one project membership for the console user, then issue a FRESH
+	// session so the snapshot is taken with the membership present (the
+	// harness login predates the seed and carries an empty snapshot).
+	proj := &store.Project{ID: "proj-ledger", MembershipPolicy: store.ProjectMembershipOpen, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := h.ts.store.CreateProject(ctx, proj); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := h.ts.store.AddProjectMember(ctx, &store.ProjectMember{
+		ProjectID: proj.ID, MemberID: ConsoleDefaultUserID, Kind: store.ProjectMemberKindHuman, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("add console member: %v", err)
+	}
+	login2, err := h.consoleClient.Login(ctx, connect.NewRequest(&castlev1.LoginRequest{Username: "operator", Password: "op-password"}))
+	if err != nil {
+		t.Fatalf("second login: %v", err)
+	}
+
+	listReq := connect.NewRequest(&castlev1.ListSessionsRequest{})
+	listReq.Header().Set("Authorization", "Bearer "+login2.Msg.SessionToken)
+	sessions, err := h.consoleClient.ListSessions(ctx, listReq)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+
+	foundSnapshot := false
+	for _, s := range sessions.Msg.Sessions {
+		if s.Kind != castlev1.SessionKind_SESSION_KIND_CONSOLE {
+			t.Fatalf("every ledger row is a console session, got kind %v", s.Kind)
+		}
+		// The fresh session carries the membership snapshot taken at its
+		// issue time; the harness's earlier login predates the seed.
+		if s.Membership != nil && len(s.Membership) == 1 && s.Membership[0] == proj.ID {
+			foundSnapshot = true
+		}
+	}
+	if !foundSnapshot {
+		t.Fatalf("no ledger row carries the issue-time membership snapshot: %v", sessions.Msg.Sessions)
+	}
+
+	// Logout the fresh session: the ledger row then carries the revocation
+	// stamp (and keeps its snapshot — revocation is a tombstone, not a wipe).
+	logoutReq := connect.NewRequest(&castlev1.LogoutRequest{})
+	logoutReq.Header().Set("Authorization", "Bearer "+login2.Msg.SessionToken)
+	revoked, err := h.consoleClient.Logout(ctx, logoutReq)
+	if err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+
+	// Re-login and inspect the tombstoned row through the new session.
+	login3, err := h.consoleClient.Login(ctx, connect.NewRequest(&castlev1.LoginRequest{Username: "operator", Password: "op-password"}))
+	if err != nil {
+		t.Fatalf("third login: %v", err)
+	}
+	afterReq := connect.NewRequest(&castlev1.ListSessionsRequest{})
+	afterReq.Header().Set("Authorization", "Bearer "+login3.Msg.SessionToken)
+	after, err := h.consoleClient.ListSessions(ctx, afterReq)
+	if err != nil {
+		t.Fatalf("ListSessions after revoke: %v", err)
+	}
+	tombstoned := false
+	for _, s := range after.Msg.Sessions {
+		if s.RevokedAt != nil {
+			// The tombstoned row keeps its issue-time membership snapshot.
+			tombstoned = true
+			if len(s.Membership) != 1 || s.Membership[0] != proj.ID {
+				t.Fatalf("revocation must keep the membership snapshot, got %v", s.Membership)
+			}
+			if !s.RevokedAt.AsTime().Equal(revoked.Msg.RevokedAt.AsTime()) {
+				t.Fatalf("revocation stamp mismatch: want %v got %v", revoked.Msg.RevokedAt, s.RevokedAt)
+			}
+		}
+	}
+	if !tombstoned {
+		t.Fatalf("revoked row with stamp must remain in the ledger: %v", after.Msg.Sessions)
+	}
+}
+
+// TestConsoleWire_ProtocolTokensDeniedOnSessionLedger pins the credential
+// class boundary (KB-325): protocol-token callers — agent, orchestrator,
+// trigger — have no console login session to end and no ledger row to list,
+// so Logout and ListSessions are permission_denied for them regardless of
+// token validity.
+func TestConsoleWire_ProtocolTokensDeniedOnSessionLedger(t *testing.T) {
+	h := newConsoleWireHarness(t, false)
+	ctx := context.Background()
+
+	// Agent token (passes the interceptor — agents self-guard their surfaces
+	// — so the denial must come from the handler's credential-class check).
+	agentLogout := connect.NewRequest(&castlev1.LogoutRequest{})
+	agentLogout.Header().Set("Authorization", "Bearer "+h.agentToken)
+	if _, err := h.consoleClient.Logout(ctx, agentLogout); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("agent token Logout must be permission_denied, got %v", err)
+	}
+	agentList := connect.NewRequest(&castlev1.ListSessionsRequest{})
+	agentList.Header().Set("Authorization", "Bearer "+h.agentToken)
+	if _, err := h.consoleClient.ListSessions(ctx, agentList); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("agent token ListSessions must be permission_denied, got %v", err)
+	}
+
+	// Orchestrator and trigger tokens are denied by their allowlists.
+	const orchestratorToken = "orchestrator-token-1"
+	provisionOrchestratorIdentity(t, h.ts.store, "orchestrator-operator", orchestratorToken)
+	orchLogout := connect.NewRequest(&castlev1.LogoutRequest{})
+	orchLogout.Header().Set("Authorization", "Bearer "+orchestratorToken)
+	if _, err := h.consoleClient.Logout(ctx, orchLogout); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("orchestrator token Logout must be permission_denied, got %v", err)
+	}
+	orchList := connect.NewRequest(&castlev1.ListSessionsRequest{})
+	orchList.Header().Set("Authorization", "Bearer "+orchestratorToken)
+	if _, err := h.consoleClient.ListSessions(ctx, orchList); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("orchestrator token ListSessions must be permission_denied, got %v", err)
+	}
+
+	// The console session ledger is untouched by denied protocol-token calls:
+	// the operator's session still authenticates.
+	consoleList := connect.NewRequest(&castlev1.ListSessionsRequest{})
+	h.authHeader(consoleList)
+	if _, err := h.consoleClient.ListSessions(ctx, consoleList); err != nil {
+		t.Fatalf("console ListSessions must keep working, got %v", err)
 	}
 }
 

@@ -163,7 +163,9 @@ func (s *ServerServer) Logout(ctx context.Context, req *connect.Request[castlev1
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
+	// The stamp is microsecond-truncated: both engines persist timestamps at
+	// µs precision, so the returned stamp and the ledger row must agree.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	if err := s.Store.RevokeConsoleSession(ctx, sessionID, now); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("revoke console session: %w", err))
 	}

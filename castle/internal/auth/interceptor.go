@@ -141,6 +141,16 @@ var consoleProjectAdminProcedures = map[string]struct{}{
 	castlev1connect.ProjectServiceCreateProjectProcedure:       {},
 }
 
+// consoleSessionProcedures are the KB-325 session-ledger surfaces: a console
+// session may log itself out and list its user's session ledger in-handler.
+// Both are self-scoped — the handler denies protocol-token callers and
+// filters the ledger to the calling console user — so the credential class,
+// not the interceptor map, stays the authority on who can serve them.
+var consoleSessionProcedures = map[string]struct{}{
+	castlev1connect.ConsoleServiceLogoutProcedure:       {},
+	castlev1connect.ConsoleServiceListSessionsProcedure: {},
+}
+
 // isConsoleAllowed reports whether a console identity may invoke the
 // procedure (CRI-195, extended by CRI-196 and KB-324). Console identities
 // are human operators viewing the Parapet console: they get the read-only
@@ -159,6 +169,9 @@ func isConsoleAllowed(procedure string) bool {
 		return true
 	}
 	if _, ok := consoleRunControlProcedures[procedure]; ok {
+		return true
+	}
+	if _, ok := consoleSessionProcedures[procedure]; ok {
 		return true
 	}
 	_, ok := consoleProjectAdminProcedures[procedure]
