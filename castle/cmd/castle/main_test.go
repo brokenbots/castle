@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/pg/pgtest"
+	"github.com/brokenbots/castle/castle/internal/store/refire"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 )
 
@@ -303,4 +305,187 @@ func TestOpenStoreProfile_Rejects(t *testing.T) {
 	if _, err := openStoreProfile("mysql", "unused.db", ""); err == nil {
 		t.Fatal("unknown profile: want error, got nil")
 	}
+}
+
+// TestRefireBootstrapOnce pins the refire policy boot wiring (KB-321): the
+// built-in default policy is seeded exactly once into an empty table, an
+// operator-tuned default row is never overwritten at boot, the policy seed
+// file's entries are upserted under their parsed (project_id, route) keys,
+// and a malformed or missing policy file aborts boot without applying any
+// file row.
+func TestRefireBootstrapOnce(t *testing.T) {
+	newStore := func(t *testing.T) store.Store {
+		t.Helper()
+		s, err := sqlite.Open(t.TempDir() + "/castle.db")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { s.Close() })
+		return s
+	}
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(testWriter{}, nil))
+
+	// defaultRows asserts the table's exact policy-row shape (and returns
+	// its parsed default slot) so each subtest pins the whole table, not
+	// just the row it cares about.
+	defaultRows := func(t *testing.T, s store.Store) (refire.Policy, []store.RefirePolicyRow) {
+		t.Helper()
+		rows, err := s.ListRefirePolicies(ctx)
+		if err != nil {
+			t.Fatalf("ListRefirePolicies: %v", err)
+		}
+		for _, r := range rows {
+			if r.ProjectID == "" && r.Route == "" {
+				p, err := refire.ParsePolicy(r.Policy)
+				if err != nil {
+					t.Fatalf("parse default row: %v", err)
+				}
+				return p, rows
+			}
+		}
+		return refire.Policy{}, rows
+	}
+
+	t.Run("empty table seeds default exactly once", func(t *testing.T) {
+		s := newStore(t)
+		if err := refireBootstrapOnce(ctx, s, log, ""); err != nil {
+			t.Fatalf("refireBootstrapOnce: %v", err)
+		}
+		p, rows := defaultRows(t, s)
+		if len(rows) != 1 {
+			t.Fatalf("rows = %d, want exactly the default row", len(rows))
+		}
+		want := refire.DefaultPolicyDoc()
+		if p.MaxAttempts != want.MaxAttempts || p.Backoff != want.Backoff {
+			t.Fatalf("seeded default = %+v, want %+v", p, want)
+		}
+		if len(p.Parks) == 0 || p.Parks[0] != "need_help" {
+			t.Fatalf("seeded parks vocabulary = %v, want the human-gate vocabulary first", p.Parks)
+		}
+		// A second boot over the seeded table must not duplicate the row.
+		if err := refireBootstrapOnce(ctx, s, log, ""); err != nil {
+			t.Fatalf("second refireBootstrapOnce: %v", err)
+		}
+		if _, rows := defaultRows(t, s); len(rows) != 1 {
+			t.Fatalf("rows after second boot = %d, want 1", len(rows))
+		}
+	})
+
+	t.Run("tuned default survives boot", func(t *testing.T) {
+		s := newStore(t)
+		tuned := refire.DefaultPolicyDoc()
+		tuned.MaxAttempts = 7
+		tuned.Backoff = 5 * time.Minute
+		if err := s.UpsertRefirePolicy(ctx, "", "",
+			refire.MustMarshalPolicy(tuned), time.Now().UTC()); err != nil {
+			t.Fatalf("tune default row: %v", err)
+		}
+		if err := refireBootstrapOnce(ctx, s, log, ""); err != nil {
+			t.Fatalf("refireBootstrapOnce: %v", err)
+		}
+		p, rows := defaultRows(t, s)
+		if len(rows) != 1 {
+			t.Fatalf("rows = %d, want exactly the tuned default row", len(rows))
+		}
+		if p.MaxAttempts != 7 || p.Backoff != 5*time.Minute {
+			t.Fatalf("default row = %+v, want the tuned %+v (boot clobbered the operator)", p, tuned)
+		}
+	})
+
+	t.Run("policy file upserts parsed keys", func(t *testing.T) {
+		s := newStore(t)
+		path := filepath.Join(t.TempDir(), "refire-policy.json")
+		file := `[
+			{"policy": {"max_attempts": 5, "backoff_seconds": 10,
+			 "transient": ["stall"], "parks": ["need_help"], "cosmetics": []}},
+			{"project_id": "proj-1", "route": "kb-deploy",
+			 "policy": {"max_attempts": 2, "backoff_seconds": 0,
+			  "transient": [], "parks": ["need_assistance"], "cosmetics": ["emit race"]}}
+		]`
+		if err := os.WriteFile(path, []byte(file), 0o644); err != nil {
+			t.Fatalf("write policy file: %v", err)
+		}
+		if err := refireBootstrapOnce(ctx, s, log, path); err != nil {
+			t.Fatalf("refireBootstrapOnce: %v", err)
+		}
+		rows, err := s.ListRefirePolicies(ctx)
+		if err != nil {
+			t.Fatalf("ListRefirePolicies: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("rows = %d, want default slot + scoped row: %+v", len(rows), rows)
+		}
+		p, _ := defaultRows(t, s)
+		if p.MaxAttempts != 5 || p.Backoff != 10*time.Second {
+			t.Fatalf("file default slot = %+v, want the file's override", p)
+		}
+		var scoped *store.RefirePolicyRow
+		for i := range rows {
+			if rows[i].ProjectID == "proj-1" && rows[i].Route == "kb-deploy" {
+				scoped = &rows[i]
+			}
+		}
+		if scoped == nil {
+			t.Fatalf("rows = %+v, want the (proj-1, kb-deploy) row", rows)
+		}
+		sp, err := refire.ParsePolicy(scoped.Policy)
+		if err != nil {
+			t.Fatalf("parse scoped row: %v", err)
+		}
+		if sp.MaxAttempts != 2 || sp.Backoff != 0 || len(sp.Cosmetics) != 1 || sp.Cosmetics[0] != "emit race" {
+			t.Fatalf("scoped policy = %+v, want the file's scoped row", sp)
+		}
+	})
+
+	t.Run("malformed file aborts boot with no file rows", func(t *testing.T) {
+		s := newStore(t)
+		path := filepath.Join(t.TempDir(), "refire-policy.json")
+		// The first entry is valid, the second is mistyped: whole-file
+		// parsing must reject the file before any file row is applied.
+		file := `[
+			{"policy": {"max_attempts": 9, "backoff_seconds": 0,
+			 "transient": [], "parks": [], "cosmetics": []}},
+			{"policy": {"max_attempt": 9}}
+		]`
+		if err := os.WriteFile(path, []byte(file), 0o644); err != nil {
+			t.Fatalf("write policy file: %v", err)
+		}
+		if err := refireBootstrapOnce(ctx, s, log, path); err == nil {
+			t.Fatal("refireBootstrapOnce(malformed file) = nil, want boot-abort error")
+		}
+		p, rows := defaultRows(t, s)
+		if len(rows) != 1 {
+			t.Fatalf("rows = %+v, want only the seeded default (no partially applied file row)", rows)
+		}
+		if p.MaxAttempts != refire.DefaultPolicyDoc().MaxAttempts {
+			t.Fatalf("default row = %+v, want the built-in seed (the file's valid entry must also be un-applied)", p)
+		}
+	})
+
+	t.Run("missing policy file aborts boot", func(t *testing.T) {
+		s := newStore(t)
+		missing := filepath.Join(t.TempDir(), "absent.json")
+		if err := refireBootstrapOnce(ctx, s, log, missing); err == nil {
+			t.Fatal("refireBootstrapOnce(missing file) = nil, want boot-abort error")
+		}
+		p, rows := defaultRows(t, s)
+		if len(rows) != 1 || p.MaxAttempts != refire.DefaultPolicyDoc().MaxAttempts {
+			t.Fatalf("rows = %+v default = %+v, want the untouched seed", rows, p)
+		}
+	})
+
+	t.Run("unreadable policy file aborts boot", func(t *testing.T) {
+		s := newStore(t)
+		path := filepath.Join(t.TempDir(), "unreadable.json")
+		if err := os.WriteFile(path, []byte(`[]`), 0o000); err != nil {
+			t.Fatalf("write policy file: %v", err)
+		}
+		if _, err := refire.LoadPolicyFile(path); err == nil {
+			t.Skip("unreadable-by-0o000 is not reproducible under this uid; missing-path subtest covers the error leg")
+		}
+		if err := refireBootstrapOnce(ctx, s, log, path); err == nil {
+			t.Fatal("refireBootstrapOnce(unreadable file) = nil, want boot-abort error")
+		}
+	})
 }
