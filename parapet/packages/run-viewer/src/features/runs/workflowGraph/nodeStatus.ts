@@ -76,9 +76,15 @@ export function selectNodeOverlay(events: EventEnvelope[]): NodeOverlay {
       }
       case 'stepTransition': {
         // Fallback for streams that only carry transitions: the from-node
-        // moved on, so it completed. A failure verdict is never downgraded.
+        // moved on, so it completed; the to-node is REACHED (this is the
+        // only event a terminal state node ever gets — no stepEntered
+        // fires for state nodes — so it must light here). Later events
+        // win: an immediately following stepEntered overrides to running,
+        // and a failed verdict is never downgraded.
         const from = str(p?.from);
         if (from && statuses[from] !== 'failed') statuses[from] = 'succeeded';
+        const to = str(p?.to);
+        if (to && statuses[to] !== 'failed') statuses[to] = 'succeeded';
         break;
       }
       case 'forEachEntered': {
@@ -133,10 +139,11 @@ export function selectNodeOverlay(events: EventEnvelope[]): NodeOverlay {
       }
       case 'runFailed': {
         const step = str(p?.step);
-        if (step) {
-          statuses[step] = 'failed';
-          break;
-        }
+        if (step) statuses[step] = 'failed';
+        // A run that ends in a failure-named terminal state marks that node
+        // even though no stepEntered event ever fires for terminal states.
+        const failState = str(p?.finalState) ?? str(p?.final_state);
+        if (failState) statuses[failState] = 'failed';
         // The terminal event may not name a step; fail whatever is running.
         for (const [id, status] of Object.entries(statuses)) {
           if (status === 'running') statuses[id] = 'failed';
@@ -144,6 +151,12 @@ export function selectNodeOverlay(events: EventEnvelope[]): NodeOverlay {
         break;
       }
       case 'runCompleted': {
+        // Terminal states are never entered (no stepEntered fires for a
+        // state node), so the reached final state must light from the
+        // terminal event itself: mark it succeeded alongside everything
+        // still running.
+        const finalState = str(p?.finalState) ?? str(p?.final_state) ?? str(p?.state);
+        if (finalState) statuses[finalState] = 'succeeded';
         for (const [id, status] of Object.entries(statuses)) {
           if (status === 'running') statuses[id] = 'succeeded';
         }

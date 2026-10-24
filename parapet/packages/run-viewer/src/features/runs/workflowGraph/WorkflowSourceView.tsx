@@ -26,11 +26,24 @@ export function WorkflowSourceView({ source, highlight = null, testId = 'workflo
   }, [highlight?.start, highlight?.end]);
 
   return (
-    <pre data-testid={testId} className="text-xs font-mono bg-slate-900 rounded p-3 overflow-auto max-h-[32vh]">
+    <pre data-testid={testId} className="text-xs font-mono bg-surface rounded p-3 overflow-auto max-h-[32vh] text-ink-muted">
       {valid ? (
         <>
           {source.slice(0, highlight!.start)}
-          <mark ref={markRef} data-testid="workflow-source-highlight" className="bg-sky-500/30 text-sky-100 rounded-sm">
+          <mark
+            ref={markRef}
+            data-testid="workflow-source-highlight"
+            // Literal styling: <mark>'s UA default (yellow/black) shows
+            // through whenever the token class fails to generate, so the
+            // highlight never risks the unreadable white-on-yellow state.
+            style={{
+              background: 'rgba(14, 165, 233, 0.24)',
+              color: '#e2e8f0',
+              fontWeight: 600,
+              outline: '1px solid rgba(14, 165, 233, 0.55)',
+              borderRadius: 4,
+            }}
+          >
             {source.slice(highlight!.start, highlight!.end)}
           </mark>
           {source.slice(highlight!.end)}

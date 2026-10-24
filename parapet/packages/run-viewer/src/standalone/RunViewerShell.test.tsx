@@ -112,9 +112,12 @@ describe('RunViewerShell', () => {
     const layout = await screen.findByTestId('run-detail-layout');
     // Capability probe: the standalone host renders every control disabled
     // with the shared tooltip — grayed-out is the contract, not hidden.
+    // Scoped to the header control row so the view-level motion toggle
+    // (Pause/Resume) in the graph toolbar doesn't collide.
     await waitFor(() => {
+      const actions = within(layout).getByTestId('run-detail-actions');
       const buttons = [/Paus/, 'Resume', 'Stop'].map((name) =>
-        within(layout).getByRole('button', { name }),
+        within(actions).getByRole('button', { name }),
       );
       for (const button of buttons) {
         expect(button).toBeDisabled();

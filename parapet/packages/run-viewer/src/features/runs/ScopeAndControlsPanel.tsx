@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { EventEnvelope } from '../../api/castleApi';
+import { DetailPanel } from '../../components/DetailPanel';
 import { RunControls } from './RunControls';
 import { PauseAffordance } from './eventLog/PauseAffordance';
 import { RunScopePanel } from './scopePanel/RunScopePanel';
@@ -17,6 +18,13 @@ interface ScopeAndControlsPanelProps {
    * RPCs exist. Hosts without them render the controls grayed-out.
    */
   capabilities?: RunCapabilities;
+  /**
+   * When the host page renders RunControls elsewhere (e.g. the static run
+   * detail header), the panel renders the pause affordance and scope only —
+   * duplicating the control row would put two copies of Pause/Resume/Stop
+   * on the page.
+   */
+  showControls?: boolean;
 }
 
 /**
@@ -32,43 +40,36 @@ export function ScopeAndControlsPanel({
   events,
   onRefresh,
   capabilities = CASTLE_RUN_CAPABILITIES,
+  showControls = true,
 }: ScopeAndControlsPanelProps) {
   const [expanded, setExpanded] = useState(true);
   return (
-    <section data-testid="scope-controls-panel">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-lg font-semibold">Scope &amp; controls</h3>
-        <button
-          type="button"
-          data-testid="scope-controls-collapse"
-          aria-expanded={expanded}
-          aria-controls="scope-controls-body"
-          onClick={() => setExpanded((v) => !v)}
-          className="rounded-md border border-line-strong px-2 py-1 text-xs text-ink-muted hover:bg-surface-raised hover:text-ink"
-        >
-          {expanded ? 'Collapse' : 'Expand'}
-        </button>
-      </div>
-      {expanded ? (
-        <div id="scope-controls-body" data-testid="scope-controls-body" className="space-y-3">
+    <DetailPanel
+      id="scope-controls-panel"
+      idToggle="scope-controls-collapse"
+      title="Scope & controls"
+      collapsed={!expanded}
+      onToggle={() => setExpanded((v) => !v)}
+      bodyIdOverride="scope-controls-body"
+      collapsedTestId="scope-controls-collapsed"
+      collapsedNote="Scope & controls collapsed."
+    >
+      <div className="space-y-3">
+        {showControls && (
           <div data-testid="scope-controls-row">
             <RunControls runId={runId} status={status} pauseState={pauseState} capabilities={capabilities} />
           </div>
-          {pauseState.isPaused && pauseState.pauseEvent && (
-            <PauseAffordance
-              runId={runId}
-              pauseEvent={pauseState.pauseEvent}
-              onRefresh={onRefresh}
-              capabilities={capabilities}
-            />
-          )}
-          <RunScopePanel events={events} />
-        </div>
-      ) : (
-        <p className="text-sm text-ink-muted" data-testid="scope-controls-collapsed">
-          Scope &amp; controls collapsed.
-        </p>
-      )}
-    </section>
+        )}
+        {pauseState.isPaused && pauseState.pauseEvent && (
+          <PauseAffordance
+            runId={runId}
+            pauseEvent={pauseState.pauseEvent}
+            onRefresh={onRefresh}
+            capabilities={capabilities}
+          />
+        )}
+        <RunScopePanel events={events} />
+      </div>
+    </DetailPanel>
   );
 }

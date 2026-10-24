@@ -3,8 +3,9 @@ import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { clearAuthToken } from '../authToken';
 import { server } from '@castle/run-viewer/src/test/mocks/server';
 
-vi.stubGlobal('AbortController', window.AbortController);
-vi.stubGlobal('AbortSignal', window.AbortSignal);
+// Abort primitives: the custom jsdom-with-node-fetch environment provides Node's
+// fetch/Request/AbortController so msw's interceptor and connect-web agree on
+// one class set — no JS-side stubs needed here.
 
 // @xyflow/react (workflow graph) uses ResizeObserver, which jsdom does not
 // provide. React Flow only renders edges once nodes report their measured

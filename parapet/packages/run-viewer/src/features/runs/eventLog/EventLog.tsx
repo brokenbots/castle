@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { EventEnvelope } from '../../../api/castleApi';
-import { BranchDecisionEntry } from './BranchDecisionEntry';
-import { renderPayloadText } from './payloadText';
+import { FollowButton } from '../../../components/FollowButton';
+import { formatAbsoluteTime } from '../time';
+import {
+  eventSummaryParts,
+  expandedValueText,
+  fieldLabel,
+  toneForKey,
+  type EventSummaryTone,
+} from './payloadText';
 import {
   coalesceStepLogs,
   itemEndSeq,
@@ -20,6 +27,12 @@ interface EventLogProps {
   hasEarlier: boolean;
   loadingEarlier: boolean;
   onLoadEarlier: () => void;
+  /**
+   * `strip` renders the log as a fixed ~10-row tail strip pinned to the
+   * bottom of the workspace pane (the page never scrolls; the strip's
+   * virtualized scroller does). `full` is the tall standalone variant.
+   */
+  variant?: 'full' | 'strip';
 }
 
 const LINE_HEIGHT_PX = 16; // tailwind text-xs line height
@@ -28,6 +41,31 @@ const SOFT_WRAP_CHARS_PER_LINE = 120;
 /** Distance from the bottom within which the view counts as pinned. */
 const BOTTOM_THRESHOLD_PX = 48;
 
+// Expansion key of a plain event row: the envelope's seq is unique within
+// a run's log, so it is the row identity (same value the rows use as key).
+function eventKey(event: EventEnvelope): string {
+  return `event-${event.seq}`;
+}
+
+// Wall-clock time an event landed at, local HH:MM:SS; unreadable stamps
+// degrade to a dash instead of `Invalid Date`.
+function formatEventTime(ts: string | undefined): string {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '—';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+const TONE_CLASSES: Record<EventSummaryTone, string> = {
+  mono: 'font-mono text-ink',
+  success: 'text-success',
+  danger: 'text-danger',
+  warning: 'text-warning',
+  muted: 'text-ink-muted',
+  plain: 'text-ink',
+};
+
 function textLines(text: string): number {
   const hardLines = text === '' ? 1 : text.split('\n').length;
   const softLines = Math.ceil(text.length / SOFT_WRAP_CHARS_PER_LINE);
@@ -35,50 +73,43 @@ function textLines(text: string): number {
 }
 
 /**
- * Row height estimate. Payloads vary wildly (one-line heartbeats vs
- * multi-line stepLog chunks vs long single-line JSON), so scale the estimate
- * with hard newlines plus a wrap heuristic for unbroken strings (break-all
- * visually wraps those at the container width).
+ * Row height estimate. Every collapsed row is a uniform single-line strip:
+ * fixed-width seq/time/type cells plus a clipped (nowrap) one-line summary,
+ * so collapsed rows are a constant height regardless of payload size. Only
+ * expanded bodies are free-form; the virtualizer measures their real boxes.
  */
-export function estimateEventHeight(event: EventEnvelope): number {
-  return ROW_BASE_PX + textLines(renderPayloadText(event)) * LINE_HEIGHT_PX;
+export function estimateEventHeight(_event: EventEnvelope): number {
+  return ROW_BASE_PX + LINE_HEIGHT_PX;
 }
 
 /**
- * Height estimate of a log item (plain event row or stepLog block). A block
- * adds one header line; its payload text is the tail when collapsed and the
- * full output when expanded.
+ * Height estimate of a log item (plain event row or stepLog block). A
+ * collapsed item is the uniform single-line strip; an expanded block's body
+ * is the full joined output, so its estimate scales with its line count
+ * (measurement corrects the remainder).
  */
 export function estimateItemHeight(item: EventLogItem, expanded: boolean): number {
   if (item.kind === 'event') return estimateEventHeight(item.event);
-  return ROW_BASE_PX + (1 + textLines(expanded ? item.fullText : item.tailText)) * LINE_HEIGHT_PX;
+  if (!expanded) return estimateEventHeight(item.events[0]);
+  return ROW_BASE_PX + textLines(item.fullText) * LINE_HEIGHT_PX;
 }
 
 /**
  * Scroll offset to add after older events are prepended, so the reader's
- * position stays anchored at the previously-first row. Items that now end
- * entirely above that row are new content; the item containing it is a
- * boundary: for a block, the content above the old first row is the block
- * header (only when the row was not already a block header — an absorbed
- * block keeps its header) plus the chunks that moved in front of it.
+ * position stays anchored at the previously-first row. All collapsed rows
+ * are the uniform strip, so the shift is simply the summed strip heights of
+ * the items that moved entirely in front of it.
  */
-function estimatePrependShift(
-  prevFirstSeq: number,
-  prevFirstWasBlock: boolean,
-  items: EventLogItem[],
-  expandedKeys: ReadonlySet<string>,
-): number {
+function estimatePrependShift(prevFirstSeq: number, items: EventLogItem[]): number {
   let shift = 0;
   for (const item of items) {
     if (itemEndSeq(item) < prevFirstSeq) {
-      const expanded = item.kind === 'stepLogBlock' && expandedKeys.has(item.key);
-      shift += estimateItemHeight(item, expanded);
+      shift += estimateItemHeight(item, false);
       continue;
     }
     if (item.kind === 'event') break;
     const boundaryIndex = item.events.findIndex((e) => e.seq === prevFirstSeq);
     if (boundaryIndex > 0) {
-      if (!prevFirstWasBlock) shift += LINE_HEIGHT_PX;
       for (let i = 0; i < boundaryIndex; i++) shift += estimateEventHeight(item.events[i]);
     }
     break;
@@ -86,7 +117,7 @@ function estimatePrependShift(
   return shift;
 }
 
-export function EventLog({ events, running, hasEarlier, loadingEarlier, onLoadEarlier }: EventLogProps) {
+export function EventLog({ events, running, hasEarlier, loadingEarlier, onLoadEarlier, variant = 'full' }: EventLogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const items = useMemo(() => coalesceStepLogs(events), [events]);
   const [expandedKeys, setExpandedKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -147,8 +178,8 @@ export function EventLog({ events, running, hasEarlier, loadingEarlier, onLoadEa
     const prevFirstSeq = itemStartSeq(prevFirst);
     const firstSeq = itemStartSeq(first);
     if (firstSeq >= prevFirstSeq) return;
-    el.scrollTop += estimatePrependShift(prevFirstSeq, prevFirst.kind === 'stepLogBlock', items, expandedKeys);
-  }, [items, expandedKeys]);
+    el.scrollTop += estimatePrependShift(prevFirstSeq, items);
+  }, [items]);
 
   // Live tail: while pinned to the bottom, follow every new item.
   useLayoutEffect(() => {
@@ -219,29 +250,28 @@ export function EventLog({ events, running, hasEarlier, loadingEarlier, onLoadEa
             type="button"
             onClick={onLoadEarlier}
             disabled={loadingEarlier}
-            className="text-xs font-semibold text-sky-400 hover:text-sky-300 disabled:text-slate-500 disabled:cursor-not-allowed"
+            className="text-meta font-semibold text-accent-strong hover:underline disabled:text-ink-faint disabled:cursor-not-allowed"
           >
             {loadingEarlier ? 'Loading earlier events…' : 'Load earlier events'}
           </button>
         ) : (
           <span />
         )}
-        <label className="flex items-center gap-2 text-xs text-slate-400 select-none">
-          <input
-            type="checkbox"
-            data-testid="auto-follow-toggle"
-            checked={tail.autoFollow}
-            onChange={(e) => handleAutoFollowChange(e.target.checked)}
-            className="accent-sky-500"
-          />
-          Auto-follow
-        </label>
+        {/* The standard follow widget (same button everywhere): auto-follow
+            pins the log tail to the newest events. */}
+        <FollowButton
+          label="Auto-follow"
+          pressed={tail.autoFollow}
+          testId="auto-follow-toggle"
+          title={tail.autoFollow ? 'Auto-follow is on — the tail pins to the newest events' : 'Turn on auto-follow to pin the tail to the newest events'}
+          onToggle={() => handleAutoFollowChange(!tail.autoFollow)}
+        />
       </div>
       <div className="relative">
         <div
           ref={scrollRef}
           data-testid="event-log-scroll"
-          className="font-mono text-xs bg-slate-900 rounded p-3 h-[60vh] overflow-auto"
+          className={`font-mono text-xs bg-surface rounded p-3 overflow-auto ${variant === 'strip' ? 'h-[274px] shrink-0' : 'h-[60vh]'}`}
         >
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
             {virtualizer.getVirtualItems().map((row) => {
@@ -265,7 +295,7 @@ export function EventLog({ events, running, hasEarlier, loadingEarlier, onLoadEa
                     overflow: 'hidden',
                     transform: `translateY(${row.start}px)`,
                   }}
-                  className="border-b border-slate-800/60 py-1 flex gap-3"
+                  className="border-b border-line py-1"
                 >
                   {item.kind === 'stepLogBlock' ? (
                     <StepLogBlockRow
@@ -273,16 +303,12 @@ export function EventLog({ events, running, hasEarlier, loadingEarlier, onLoadEa
                       expanded={expandedKeys.has(item.key)}
                       onToggle={() => toggleBlock(item.key)}
                     />
-                  ) : item.event.type === 'branchEvaluated' ? (
-                    <BranchDecisionRow event={item.event} />
                   ) : (
-                    <>
-                      <span className="text-slate-500 w-12 shrink-0">#{item.event.seq}</span>
-                      <span className="text-sky-400 w-40 shrink-0">{item.event.type}</span>
-                      <span className="whitespace-pre-wrap break-all min-w-0">
-                        {renderPayloadText(item.event)}
-                      </span>
-                    </>
+                    <EventRow
+                      event={item.event}
+                      expanded={expandedKeys.has(eventKey(item.event))}
+                      onToggle={() => toggleBlock(eventKey(item.event))}
+                    />
                   )}
                 </div>
               );
@@ -294,7 +320,7 @@ export function EventLog({ events, running, hasEarlier, loadingEarlier, onLoadEa
             type="button"
             data-testid="jump-to-latest"
             onClick={jumpToLatest}
-            className="absolute bottom-3 right-3 rounded bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow hover:bg-sky-500"
+            className="absolute bottom-3 right-3 rounded bg-accent px-3 py-1.5 text-meta font-semibold text-white shadow hover:bg-accent-strong"
           >
             {tail.unseen > 0 ? `Jump to latest (${tail.unseen} unseen)` : 'Jump to latest'}
           </button>
@@ -314,31 +340,145 @@ function StepLogBlockRow({
   onToggle: () => void;
 }) {
   return (
-    <div className="w-full min-w-0">
-      <button
-        type="button"
-        data-testid="step-log-toggle"
-        aria-expanded={expanded}
-        onClick={onToggle}
-        className="flex gap-3 text-left font-semibold text-sky-400 hover:text-sky-300"
-      >
-        <span className="text-slate-500 w-12 shrink-0">#{block.startSeq}</span>
-        <span className="shrink-0">
-          {block.step || 'stepLog'} ×{block.events.length} {expanded ? '▾' : '▸'}
+    <EventRowShell
+      seq={block.startSeq}
+      ts={block.events[0]?.ts ?? ''}
+      label={`${block.step || 'stepLog'} ×${block.events.length}`}
+      labelTone="accent"
+      expanded={expanded}
+      onToggle={onToggle}
+    >
+      {expanded ? (
+        <span className="whitespace-pre-wrap break-all">{block.fullText}</span>
+      ) : (
+        <span className="text-ink-muted whitespace-nowrap">{block.tailText.split('\n')[0] || '(empty output)'}</span>
+      )}
+    </EventRowShell>
+  );
+}
+
+/**
+ * Uniform collapsed/expandable row for every event type. Collapsed: the
+ * payload's top-level key-value pairs. Expanded: the same fields as a
+ * labeled list (the branch-decision rendering, generalized), then the full
+ * record as pretty JSON — still inside the single row so the virtualizer
+ * keeps measuring it like any other item.
+ */
+function EventRow({
+  event,
+  expanded,
+  onToggle,
+}: {
+  event: EventEnvelope;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const parts = eventSummaryParts(event);
+  return (
+    <EventRowShell
+      seq={event.seq}
+      ts={event.ts}
+      label={event.type}
+      expanded={expanded}
+      onToggle={onToggle}
+    >
+      {expanded ? (
+        <ExpandedFields event={event} />
+      ) : (
+        <span className="min-w-0 flex items-baseline gap-3 overflow-hidden whitespace-nowrap">
+          {parts.map((part, i) => (
+            <span key={i} className="flex items-baseline gap-1">
+              <span className="text-meta uppercase tracking-wide text-ink-faint">{part.label}</span>
+              <span className={`text-xs ${TONE_CLASSES[part.tone ?? 'plain']}`}>{part.text}</span>
+            </span>
+          ))}
         </span>
-      </button>
-      <div className="whitespace-pre-wrap break-all min-w-0">{expanded ? block.fullText : block.tailText}</div>
+      )}
+    </EventRowShell>
+  );
+}
+
+/**
+ * Expanded body: the branch-decision field list generalized to any payload
+ * — one labeled line per top-level key (long values pretty-print), then
+ * the complete record as pretty JSON for reference.
+ */
+function ExpandedFields({ event }: { event: EventEnvelope }) {
+  const p = event.payload as Record<string, unknown> | undefined;
+  const entries =
+    p && typeof p === 'object' && !Array.isArray(p) ? Object.entries(p) : [];
+  return (
+    <div className="w-full min-w-0">
+      {entries.length > 0 && (
+        <div className="font-mono text-xs space-y-1 py-1">
+          {entries.map(([key, value]) => (
+            <div key={key} className="flex gap-2 items-baseline min-w-0">
+              <span className="text-ink-faint shrink-0">{fieldLabel(key)}:</span>
+              <span
+                className={`whitespace-pre-wrap break-all min-w-0 ${TONE_CLASSES[toneForKey(key, value)]}`}
+              >
+                {expandedValueText(value)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      <pre className="whitespace-pre-wrap break-all text-ink-faint font-mono text-xs mt-1 border-t border-line pt-1">
+        {JSON.stringify(p ?? null, null, 2)}
+      </pre>
     </div>
   );
 }
 
-function BranchDecisionRow({ event }: { event: EventEnvelope }) {
-  return (
-    <div className="flex gap-3 min-w-0">
-      <span className="text-slate-500 w-12 shrink-0">#{event.seq}</span>
-      <span className="min-w-0">
-        <BranchDecisionEntry event={event} />
+function EventRowShell({
+  seq,
+  ts,
+  label,
+  labelTone = 'plain',
+  expanded = false,
+  onToggle,
+  children,
+}: {
+  seq: number;
+  ts: string | undefined;
+  label: string;
+  labelTone?: 'plain' | 'accent';
+  expanded?: boolean;
+  onToggle?: () => void;
+  children: ReactNode;
+}) {
+  const summaryLine = (
+    <div className="flex w-full min-w-0 items-baseline gap-3 overflow-hidden">
+      <span className="text-ink-faint w-12 shrink-0">#{seq}</span>
+      <span className="text-ink-faint w-16 shrink-0 font-mono" title={formatAbsoluteTime(ts ?? '')} data-testid="event-time">
+        {formatEventTime(ts)}
       </span>
+      <span
+        className={`w-36 shrink-0 truncate ${labelTone === 'accent' ? 'text-accent-strong' : 'text-ink'}`}
+      >
+        {label}
+      </span>
+      <span className="min-w-0 flex-1 text-xs text-ink">{children}</span>
+      {onToggle && (
+        <span aria-hidden className="text-ink-faint shrink-0">{expanded ? '▾' : '▸'}</span>
+      )}
     </div>
+  );
+  if (!onToggle)
+    return (
+      <div role="group" className="w-full">
+        {summaryLine}
+      </div>
+    );
+  return (
+    <button
+      type="button"
+      data-testid={labelTone === 'accent' ? 'step-log-toggle' : 'event-log-toggle'}
+      aria-expanded={expanded}
+      onClick={onToggle}
+      className="w-full text-left"
+    >
+      {summaryLine}
+    </button>
   );
 }

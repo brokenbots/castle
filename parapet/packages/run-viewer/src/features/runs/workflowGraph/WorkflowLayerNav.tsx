@@ -1,153 +1,260 @@
-import { useMemo } from 'react';
+import { useEffect, useState } from 'react';
+import type { WorkflowGraph } from './parseWorkflowHcl';
+import { layoutWithElk, ELK_NODE_W, ELK_NODE_H } from './elkLayout';
 import { layoutWorkflow } from './layout';
 import type { SubworkflowLayer } from './layers';
 
 /**
- * Subworkflow drill-down navigation (CRI-257): a breadcrumb over the open
- * layer stack plus a thumbnail rail of the open layers. Thumbnails are
- * always laid out left-to-right regardless of the main graph's
- * orientation, so they read as consistent miniatures.
+ * Subworkflow drill-down navigation (CRI-257): a rail of mini-graphs above
+ * the step graph. Minis share the main graph's layout engine (elkjs), so a
+ * thumbnail reads as a true miniature of the same picture — identical
+ * layered arrangement and the same node-avoiding orthogonal edge routes.
+ * Worker-less environments (jsdom) fall back to the legacy sync geometry,
+ * so the older test contracts keep passing.
  */
 
 export interface WorkflowLayerNavProps {
   /** Root workflow display name (the run's workflow). */
   rootName: string;
+  /** The root workflow graph itself (for the always-present miniature). */
+  rootGraph: WorkflowGraph | null;
   /** Open layers from root → deepest. */
   stack: SubworkflowLayer[];
   /** Navigates to a stack depth: 0 returns to the root workflow. */
   onNavigate: (depth: number) => void;
+  /**
+   * Live engine-state tint per miniature: maps a stack chain (empty string
+   * = the root graph, otherwise the layer name) to the node ids of that
+   * graph currently carrying process state (running / last completed), so
+   * the rail shows where the process is.
+   */
+  activeIdsByLayer?: Map<string, ReadonlySet<string>>;
 }
 
-/** Thumbnail node box + spacing (logical SVG units). */
-const THUMB_NODE_W = 96;
-const THUMB_NODE_H = 28;
-const THUMB_X_GAP = 44;
-const THUMB_Y_GAP = 20;
+interface ThumbGeometry {
+  coords: Array<{ id: string; x: number; y: number }>;
+  edges: Array<{ key: string; d: string }>;
+  width: number;
+  height: number;
+}
 
-/** Static left-to-right miniature of a layer graph: plain SVG, no ReactFlow. */
-export function WorkflowLayerThumb({ layer }: { layer: SubworkflowLayer }) {
-  const thumb = useMemo(() => {
-    if (!layer.graph || layer.graph.nodes.length === 0) return null;
-    const positions = layoutWorkflow(layer.graph, {
-      orientation: 'left-right',
-      xGap: THUMB_NODE_W + THUMB_X_GAP,
-      yGap: THUMB_NODE_H + THUMB_Y_GAP,
-    });
-    const coords = layer.graph.nodes.map((node) => {
-      const p = positions.get(node.id) ?? { x: 0, y: 0 };
-      return { id: node.id, x: p.x, y: p.y };
-    });
-    // Layer positions center each layer around 0 (y can be negative);
-    // normalize everything to a top-left-origin viewBox.
-    const minX = Math.min(...coords.map((c) => c.x));
-    const minY = Math.min(...coords.map((c) => c.y));
-    for (const c of coords) {
-      c.x -= minX;
-      c.y -= minY;
+/** Fallback (no Worker): legacy sync layout, straight mid-to-mid edges. */
+function legacyThumbGeometry(graph: WorkflowGraph): ThumbGeometry {
+  const NODE_W = 64;
+  const NODE_H = 22;
+  const positions = layoutWorkflow(graph, {
+    orientation: 'left-right',
+    xGap: NODE_W + 44,
+    yGap: NODE_H + 20,
+  });
+  const coords = graph.nodes.map((node) => {
+    const p = positions.get(node.id) ?? { x: 0, y: 0 };
+    return { id: node.id, x: p.x, y: p.y };
+  });
+  if (coords.length === 0) {
+    return { coords, edges: [], width: NODE_W, height: NODE_H };
+  }
+  const minX = Math.min(...coords.map((c) => c.x));
+  const minY = Math.min(...coords.map((c) => c.y));
+  for (const c of coords) {
+    c.x -= minX;
+    c.y -= minY;
+  }
+  const byId = new Map(coords.map((c) => [c.id, c]));
+  const edges = graph.edges
+    .map((edge, i) => {
+      const from = byId.get(edge.from);
+      const to = byId.get(edge.to);
+      if (!from || !to) return null;
+      return {
+        key: `t${i}`,
+        d: `M ${from.x + NODE_W} ${from.y + NODE_H / 2} L ${to.x} ${to.y + NODE_H / 2}`,
+      };
+    })
+    .filter((e): e is NonNullable<typeof e> => e !== null);
+  return {
+    coords,
+    edges,
+    width: Math.max(...coords.map((c) => c.x)) + NODE_W,
+    height: Math.max(...coords.map((c) => c.y)) + NODE_H,
+  };
+}
+
+/** ELK thumbnail geometry: identical layout family + orthogonal routes. */
+async function elkThumbGeometry(graph: WorkflowGraph): Promise<ThumbGeometry> {
+  const { positions, edgePoints } = await layoutWithElk(graph, { orientation: 'left-right' });
+  const coords = graph.nodes.map((node) => {
+    const p = positions.get(node.id) ?? { x: 0, y: 0 };
+    return { id: node.id, x: p.x, y: p.y };
+  });
+  if (coords.length === 0) {
+    return { coords, edges: [], width: ELK_NODE_W, height: ELK_NODE_H };
+  }
+  // Normalize to a small top-left-origin viewBox (the same scale shift the
+  // main graph's fitView performs visually).
+  const minX = Math.min(...coords.map((c) => c.x));
+  const minY = Math.min(...coords.map((c) => c.y));
+  let width = 0;
+  let height = 0;
+  for (const c of coords) {
+    c.x -= minX;
+    c.y -= minY;
+    width = Math.max(width, c.x + ELK_NODE_W);
+    height = Math.max(height, c.y + ELK_NODE_H);
+  }
+  const edges = graph.edges
+    .map((_edge, i) => {
+      const points = edgePoints.get(i);
+      if (!points || points.length < 2) return null;
+      return {
+        key: `t${i}`,
+        d: points.map((p, j) => `${j === 0 ? 'M' : 'L'} ${p.x - minX} ${p.y - minY}`).join(' '),
+      };
+    })
+    .filter((e): e is NonNullable<typeof e> => e !== null);
+  return { coords, edges, width, height };
+}
+
+function useThumbGeometry(graph: WorkflowGraph | null | undefined): ThumbGeometry | null {
+  const [thumb, setThumb] = useState<ThumbGeometry | null>(null);
+  useEffect(() => {
+    if (!graph || graph.nodes.length === 0) {
+      setThumb(null);
+      return;
     }
-    const width = Math.max(...coords.map((c) => c.x)) + THUMB_NODE_W;
-    const height = Math.max(...coords.map((c) => c.y)) + THUMB_NODE_H;
-    const byId = new Map(coords.map((c) => [c.id, c]));
-    const edges = layer.graph.edges
-      .map((edge, i) => {
-        const from = byId.get(edge.from);
-        const to = byId.get(edge.to);
-        if (!from || !to) return null;
-        return {
-          key: `t${i}`,
-          x1: from.x + THUMB_NODE_W,
-          y1: from.y + THUMB_NODE_H / 2,
-          x2: to.x,
-          y2: to.y + THUMB_NODE_H / 2,
-        };
-      })
-      .filter((e): e is NonNullable<typeof e> => e !== null);
-    return { coords, edges, width, height };
-  }, [layer]);
+    if (typeof Worker === 'undefined') {
+      setThumb(legacyThumbGeometry(graph));
+      return;
+    }
+    let cancelled = false;
+    setThumb(null);
+    void elkThumbGeometry(graph).then((t) => {
+      if (!cancelled) setThumb(t);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [graph]);
+  return thumb;
+}
 
+/**
+ * The miniature SVG: identical engine geometry to the main graph,
+ * rendered as static SVG (no ReactFlow machinery).
+ */
+export function MiniGraph({
+  graph,
+  label,
+  activeIds,
+}: {
+  graph: WorkflowGraph | null | undefined;
+  label: string;
+  activeIds?: ReadonlySet<string>;
+}) {
+  const thumb = useThumbGeometry(graph);
   if (!thumb) {
-    return <span className="text-[10px] text-slate-500">no graph</span>;
+    return <div className="flex h-12 items-center justify-center text-[10px] text-ink-faint">no graph</div>;
   }
   return (
-    <svg
-      viewBox={`0 0 ${thumb.width} ${thumb.height}`}
-      className="h-10 w-full"
-      role="img"
-      aria-label={`${layer.name} thumbnail`}
-    >
+    <svg viewBox={`0 0 ${thumb.width} ${thumb.height}`} className="h-12 w-full" role="img" aria-label={label}>
       {thumb.edges.map((edge) => (
-        <line
-          key={edge.key}
-          x1={edge.x1}
-          y1={edge.y1}
-          x2={edge.x2}
-          y2={edge.y2}
-          stroke="#475569"
-          strokeWidth={1.5}
-        />
+        <path key={edge.key} d={edge.d} fill="none" stroke="#475569" strokeWidth={1.2} />
       ))}
-      {thumb.coords.map((node) => (
-        <g key={node.id}>
-          <rect
-            x={node.x}
-            y={node.y}
-            width={THUMB_NODE_W}
-            height={THUMB_NODE_H}
-            rx={4}
-            fill="#0f172a"
-            stroke="#334155"
-          />
-          <text
-            x={node.x + THUMB_NODE_W / 2}
-            y={node.y + THUMB_NODE_H / 2 + 3}
-            textAnchor="middle"
-            fill="#94a3b8"
-            fontSize={9}
-            fontFamily="monospace"
-          >
-            {node.id}
-          </text>
-        </g>
-      ))}
+      {thumb.coords.map((node) => {
+        const active = activeIds?.has(node.id) ?? false;
+        return (
+          <g key={node.id}>
+            <rect
+              x={node.x}
+              y={node.y}
+              width={ELK_NODE_W}
+              height={ELK_NODE_H}
+              rx={4}
+              fill={active ? '#0ea5e9' : '#0f172a'}
+              stroke={active ? '#7dd3fc' : '#334155'}
+            />
+            <text
+              x={node.x + ELK_NODE_W / 2}
+              y={node.y + ELK_NODE_H / 2 + 3}
+              textAnchor="middle"
+              fill={active ? '#e0f2fe' : '#94a3b8'}
+              fontSize={8}
+              fontFamily="monospace"
+            >
+              {node.id}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
 
-export function WorkflowLayerNav({ rootName, stack, onNavigate }: WorkflowLayerNavProps) {
+/** A layer thumbnail (same geometry engine as the root mini). */
+export function WorkflowLayerThumb({
+  layer,
+  activeIds,
+}: {
+  layer: SubworkflowLayer;
+  activeIds?: ReadonlySet<string>;
+}) {
+  return <MiniGraph graph={layer.graph} label={`${layer.name} thumbnail`} activeIds={activeIds} />;
+}
+
+export function WorkflowLayerNav({ rootName, rootGraph, stack, onNavigate, activeIdsByLayer }: WorkflowLayerNavProps) {
   const deepest = stack.length;
   return (
     <div className="space-y-1">
-      <nav aria-label="Subworkflow layers" data-testid="layer-breadcrumb">
-        <ol className="flex items-center gap-1 text-xs text-ink-muted flex-wrap">
-          <li>
-            <button
-              type="button"
-              data-testid="layer-crumb-root"
-              title="Back to the top-level workflow"
-              onClick={() => onNavigate(0)}
-              className={deepest === 0 ? 'text-ink font-semibold' : 'hover:text-ink'}
-            >
-              {rootName}
-            </button>
-          </li>
-          {stack.map((layer, index) => (
-            <li key={layer.name} className="flex items-center gap-1">
-              <span aria-hidden="true">›</span>
+      {stack.length > 0 && (
+        <nav aria-label="Subworkflow layers" data-testid="layer-breadcrumb">
+          <ol className="flex flex-wrap items-center gap-1 text-xs text-ink-muted">
+            <li>
               <button
                 type="button"
-                data-testid="layer-crumb"
-                title={layer.sourcePath ? `Open ${layer.name} (${layer.sourcePath})` : `Open ${layer.name}`}
-                aria-current={index + 1 === deepest ? 'page' : undefined}
-                onClick={() => onNavigate(index + 1)}
-                className={index + 1 === deepest ? 'text-ink font-semibold' : 'hover:text-ink'}
+                data-testid="layer-crumb-root"
+                title="Back to the top-level workflow"
+                onClick={() => onNavigate(0)}
+                className={deepest === 0 ? 'text-ink font-semibold' : 'hover:text-ink'}
               >
-                {layer.name}
+                {rootName}
               </button>
             </li>
-          ))}
-        </ol>
-      </nav>
-      <div className="flex gap-2" data-testid="layer-thumbs">
+            {stack.map((layer, index) => (
+              <li key={layer.name} className="flex items-center gap-1">
+                <span aria-hidden="true">›</span>
+                <button
+                  type="button"
+                  data-testid="layer-crumb"
+                  title={layer.sourcePath ? `Open ${layer.name} (${layer.sourcePath})` : `Open ${layer.name}`}
+                  aria-current={index + 1 === deepest ? 'page' : undefined}
+                  onClick={() => onNavigate(index + 1)}
+                  className={index + 1 === deepest ? 'text-ink font-semibold' : 'hover:text-ink'}
+                >
+                  {layer.name}
+                </button>
+              </li>
+            ))}
+          </ol>
+        </nav>
+      )}
+      <div className="flex gap-2 overflow-x-auto" data-testid="layer-thumbs">
+        {/* The root miniature is always present so the rail exists from first
+            paint; clicking it returns to the root workflow. */}
+        <button
+          type="button"
+          data-testid="layer-thumb-root"
+          title={`Open ${rootName}`}
+          aria-pressed={deepest === 0}
+          onClick={() => onNavigate(0)}
+          className="w-48 shrink-0 rounded border border-line-strong bg-surface p-1 hover:border-accent-strong"
+        >
+          <MiniGraph
+            graph={rootGraph}
+            label={`${rootName} thumbnail`}
+            activeIds={activeIdsByLayer?.get('')}
+          />
+          <p className="truncate text-[10px] text-ink-muted">{rootName}</p>
+        </button>
         {stack.map((layer, index) => (
           <button
             key={layer.name}
@@ -156,10 +263,15 @@ export function WorkflowLayerNav({ rootName, stack, onNavigate }: WorkflowLayerN
             title={`Open ${layer.name}`}
             aria-pressed={index + 1 === deepest}
             onClick={() => onNavigate(index + 1)}
-            className="w-40 rounded border border-slate-700 bg-slate-900 p-1 hover:border-sky-500"
+            className="w-48 shrink-0 rounded border border-line-strong bg-surface p-1 hover:border-accent-strong"
           >
-            <WorkflowLayerThumb layer={layer} />
-            <p className="truncate text-[10px] text-slate-400">{layer.name}</p>
+            <WorkflowLayerThumb layer={layer} activeIds={activeIdsByLayer?.get(layer.name)} />
+            {/* Path from the root: the drill-down chain, deepest emphasized. */}
+            <p className="truncate text-[10px] text-ink-faint">
+              {rootName}
+              {' › '}
+              {stack.slice(0, index + 1).map((l) => l.name).join(' › ')}
+            </p>
           </button>
         ))}
       </div>

@@ -5,14 +5,17 @@
 html, body, #root { height: 100%; }
 
 /*
- * Parapet design tokens — dark theme first.
+ * Parapet design tokens — dark theme (default) and light theme.
  *
  * Single source of truth for palette, typography and spacing. The Tailwind
  * theme (tailwind.config.js) exposes these variables through `theme.extend`,
  * so utilities like `bg-canvas`, `text-ink` or `p-4` resolve through the
- * tokens. Values intentionally mirror the slate/sky ramp the UI already
- * uses, so pages can migrate from raw `slate-*` utilities to the semantic
- * tokens without visual drift.
+ * tokens. The dark ramp intentionally mirrors the slate/sky ramp the UI
+ * historically used; the light theme is the same semantic system re-mapped.
+ *
+ * Theme switching: [data-theme="light"|"dark"] on <html>. Parapet's
+ * applyTheme() (src/theme.ts) persists the choice and keeps the attribute
+ * (plus the native color-scheme) in sync.
  */
 :root {
   color-scheme: dark;
@@ -54,4 +57,26 @@ html, body, #root { height: 100%; }
   --parapet-space-8: 2rem;
   --parapet-space-10: 2.5rem;
   --parapet-space-12: 3rem;
+}
+
+/* Light theme: same semantics, inverted surface/ink ramps. Accent shades
+   darken for contrast on white; status colors deepen for text-on-light. */
+[data-theme='light'] {
+  color-scheme: light;
+
+  --parapet-canvas: #f8fafc;          /* app background (slate-50) */
+  --parapet-surface: #ffffff;         /* panels and cards */
+  --parapet-surface-raised: #e2e8f0;  /* raised surfaces, hovers (slate-200) */
+  --parapet-border: #e2e8f0;          /* hairline borders (slate-200) */
+  --parapet-border-strong: #cbd5e1;   /* emphasized borders (slate-300) */
+  --parapet-ink: #0f172a;             /* primary text (slate-900) */
+  --parapet-ink-muted: #475569;       /* secondary text (slate-600) */
+  --parapet-ink-faint: #94a3b8;       /* tertiary text, placeholders (slate-400) */
+  --parapet-accent: #0284c7;          /* primary interactive (sky-600) */
+  --parapet-accent-strong: #0369a1;   /* hover state (sky-700) */
+  --parapet-accent-soft: #e0f2fe;     /* tinted accent background (sky-100) */
+  --parapet-accent-border: #bae6fd;   /* accent borders (sky-300) */
+  --parapet-success: #059669;         /* healthy/online (emerald-600) */
+  --parapet-warning: #d97706;         /* transitional states (amber-600) */
+  --parapet-danger: #e11d48;          /* errors/offline (rose-600) */
 }

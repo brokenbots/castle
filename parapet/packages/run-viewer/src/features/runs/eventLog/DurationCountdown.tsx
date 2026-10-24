@@ -58,19 +58,19 @@ export function DurationCountdown({ enteredAt, duration }: DurationCountdownProp
 
   if (remaining === 0) {
     return (
-      <div className="bg-slate-800 rounded px-4 py-3 border border-slate-700">
-        <p className="text-sm text-slate-300">
-          <span className="text-sky-400 font-semibold">Wait elapsed</span> — duration complete, resuming...
+      <div className="bg-surface rounded px-4 py-3 border border-line text-ink">
+        <p className="text-sm text-ink-muted">
+          <span className="text-accent-strong font-semibold">Wait elapsed</span> — duration complete, resuming…
         </p>
       </div>
     );
   }
 
   return (
-    <div className="bg-slate-800 rounded px-4 py-3 border border-slate-700">
-      <p className="text-sm text-slate-300">
-        <span className="text-sky-400 font-semibold">Waiting</span> — resuming in{' '}
-        <span className="font-mono text-lg text-white">{timeString}</span>
+    <div className="bg-surface rounded px-4 py-3 border border-line text-ink">
+      <p className="text-sm text-ink-muted">
+        <span className="text-accent-strong font-semibold">Waiting</span> — resuming in{' '}
+        <span className="font-mono text-lg text-ink">{timeString}</span>
       </p>
     </div>
   );

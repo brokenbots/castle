@@ -7,6 +7,7 @@ import { store } from './store';
 import { App } from './App';
 import { AgentListPage } from './features/agents/AgentListPage';
 import { AgentDetailPage } from './features/agents/AgentDetailPage';
+import { initTheme } from './theme';
 import './index.css';
 
 // The runs feature lives in the @castle/run-viewer workspace package and is
@@ -26,6 +27,8 @@ function RouteFallback() {
     </div>
   );
 }
+
+initTheme();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

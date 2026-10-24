@@ -1,5 +1,5 @@
 import type { EventEnvelope } from '../../../api/castleApi';
-import { renderPayloadText } from './payloadText';
+import { adapterStreamKey, streamChunkText } from './payloadText';
 
 /**
  * A single non-coalesced event, rendered as one row like before.
@@ -41,8 +41,12 @@ export type EventLogItem = EventItem | StepLogBlock;
  * steps.
  */
 export function stepLogGroupKey(e: EventEnvelope): string {
-  if (e.type !== 'stepLog') return '';
-  return blockStep(e) || e.correlationId;
+  if (e.type === 'stepLog') return blockStep(e) || e.correlationId;
+  // Adapter delta streams (agent.message / tool.invocation partials) fold
+  // into the same coalescing pipeline: one block per adapter+kind run, the
+  // joined delta text reads back as the complete message.
+  if (e.type === 'adapterEvent') return adapterStreamKey(e);
+  return '';
 }
 
 /**
@@ -69,15 +73,18 @@ export function coalesceStepLogs(events: EventEnvelope[]): EventLogItem[] {
     } else {
       const first = pending[0];
       const last = pending[pending.length - 1];
+      // stepLog chunks are separate log lines; adapter delta fragments are
+      // byte-stream continuations of one text.
+      const separator = first.type === 'stepLog' ? '\n' : '';
       items.push({
         kind: 'stepLogBlock',
         key: stepLogGroupKey(first),
-        step: blockStep(first),
+        step: blockStepOrStreamLabel(first),
         events: pending,
         startSeq: first.seq,
         endSeq: last.seq,
-        fullText: pending.map(renderPayloadText).join('\n'),
-        tailText: renderPayloadText(last),
+        fullText: pending.map(streamChunkText).join(separator),
+        tailText: streamChunkText(last),
       });
     }
     pending = [];
@@ -107,4 +114,12 @@ export function itemEndSeq(item: EventLogItem): number {
 
 function blockStep(e: EventEnvelope): string {
   return (e.payload as { step?: string } | undefined)?.step ?? '';
+}
+
+/** Collapsed block label: stepLog's step node, or the adapter stream's identity. */
+function blockStepOrStreamLabel(e: EventEnvelope): string {
+  if (e.type === 'stepLog') return blockStep(e);
+  const p = (e.payload ?? {}) as { adapter?: string; kind?: string };
+  if (p.adapter && p.kind) return `${p.adapter} · ${p.kind}`;
+  return p.adapter || p.kind || '';
 }

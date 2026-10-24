@@ -109,7 +109,7 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
                         ? 'Run has not started yet'
                         : 'Pause the run'
           }
-          className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
+          className="px-3 py-1.5 bg-surface-raised hover:bg-line-strong disabled:bg-surface disabled:text-ink-faint disabled:cursor-not-allowed rounded text-sm font-semibold text-ink"
         >
           {pauseMeta.isLoading ? 'Pausing…' : 'Pause'}
         </button>
@@ -128,7 +128,7 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
                     ? 'Resume the run'
                     : 'Run is not paused'
           }
-          className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
+          className="px-3 py-1.5 bg-success/80 hover:bg-success disabled:bg-surface disabled:text-ink-faint disabled:cursor-not-allowed rounded text-sm font-semibold text-canvas"
         >
           {resumeMeta.isLoading ? 'Resuming…' : 'Resume'}
         </button>
@@ -151,14 +151,14 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
                         ? 'Run is already stopped'
                         : 'Run has not started yet'
           }
-          className="px-3 py-1.5 bg-rose-700 hover:bg-rose-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
+          className="px-3 py-1.5 bg-danger/80 hover:bg-danger disabled:bg-surface disabled:text-ink-faint disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
         >
           Stop
         </button>
       </div>
 
       {stopRequestedAt && (
-        <p className="text-xs text-amber-400" data-testid="stop-requested">
+        <p className="text-xs text-warning" data-testid="stop-requested">
           Stop requested at {stopRequestedAt} — waiting for the run to park as
           stopped; it can be resumed afterwards, and status updates arrive via
           the event stream.
@@ -166,17 +166,17 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
       )}
 
       {pauseMeta.error && (
-        <p className="text-xs text-rose-400" data-testid="pause-error">
+        <p className="text-xs text-danger" data-testid="pause-error">
           {describeError('Pause failed', pauseMeta.error as ControlError)}
         </p>
       )}
       {resumeMeta.error && (
-        <p className="text-xs text-rose-400" data-testid="resume-error">
+        <p className="text-xs text-danger" data-testid="resume-error">
           {describeError('Resume failed', resumeMeta.error as ControlError)}
         </p>
       )}
       {stopMeta.error && (
-        <p className="text-xs text-rose-400" data-testid="stop-error">
+        <p className="text-xs text-danger" data-testid="stop-error">
           {describeError('Stop failed', stopMeta.error as ControlError)}
         </p>
       )}
@@ -190,15 +190,15 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
             role="dialog"
             aria-modal="true"
             aria-labelledby="stop-run-confirm-title"
-            className="bg-slate-800 border border-rose-700/60 rounded-lg p-5 max-w-md w-full mx-4 shadow-xl"
+            className="bg-surface border border-danger/60 rounded-lg p-5 max-w-md w-full mx-4 shadow-xl text-ink"
           >
             <h4
               id="stop-run-confirm-title"
-              className="text-lg font-semibold text-white"
+              className="text-lg font-semibold text-ink"
             >
               Stop run?
             </h4>
-            <p className="text-sm text-slate-300 mt-2">
+            <p className="text-sm text-ink-muted mt-2">
               This stops run <span className="font-mono">{runId}</span>. The
               agent tears down in-flight work and the run parks as{" "}
               <span className="font-semibold">stopped</span> on the same run
@@ -212,7 +212,7 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
                 ref={cancelRef}
                 type="button"
                 onClick={closeConfirm}
-                className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-sm font-semibold text-white"
+                className="px-3 py-1.5 bg-surface-raised hover:bg-line-strong rounded text-sm font-semibold text-ink"
               >
                 Cancel
               </button>
@@ -220,7 +220,7 @@ export function RunControls({ runId, status, pauseState, capabilities }: RunCont
                 type="button"
                 onClick={() => void handleConfirmStop()}
                 disabled={stopMeta.isLoading}
-                className="px-3 py-1.5 bg-rose-700 hover:bg-rose-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
+                className="px-3 py-1.5 bg-danger hover:bg-danger/80 disabled:bg-surface-raised disabled:cursor-not-allowed rounded text-sm font-semibold text-white"
               >
                 {stopMeta.isLoading ? 'Stopping…' : 'Stop run'}
               </button>
