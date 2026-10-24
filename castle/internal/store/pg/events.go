@@ -111,18 +111,22 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 	if _, err := tx.ExecContext(ctx, `SELECT castle_ensure_event_partition($1::timestamptz)`, ts); err != nil {
 		return 0, false, err
 	}
-	// Payload: protojson escapes control characters before the write, so a
-	// NUL byte arrives as the JSON escape \u0000, which JSONB accepts —
-	// there is no NUL-byte hazard on this path. JSONB normalizes the
-	// document on write (see store.Event.Payload), so pg may return
-	// reformatted-but-equivalent payload text compared with the sqlite
-	// profile; compare semantically, not byte-for-byte.
+	// Payload: JSONB cannot represent U+0000 — PostgreSQL rejects the
+	// \u0000 escape with SQLSTATE 22P05 ("unsupported Unicode escape
+	// sequence", while a payload as plain text or ::json would store it) —
+	// so a step.log chunk carrying a raw NUL would abort this append.
+	// Normalize the payload the same way the sqlite driver does at its own
+	// write boundary: every NUL becomes U+FFFD (store.NormalizeEventPayload),
+	// leaving the decoded document equal across engines. JSONB still
+	// normalizes the document text on write (key order, whitespace, number
+	// formats; see store.Event.Payload), so compare payloads semantically,
+	// not byte-for-byte.
 	if eventAppendHook != nil {
 		eventAppendHook(ev, next, ts)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES($1,$2,$3,$4,$5,$6)`,
-		ev.RunID, next, ev.Type, us(ts), ev.CorrelationID, string(ev.Payload)); err != nil {
+		ev.RunID, next, ev.Type, us(ts), ev.CorrelationID, string(store.NormalizeEventPayload(ev.Payload))); err != nil {
 		// Backstop for out-of-band writers that insert without holding this
 		// run's advisory lock: a unique violation of the append-dedup index
 		// means the (run_id, correlation_id) event is already recorded, so

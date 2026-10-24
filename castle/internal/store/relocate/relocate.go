@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brokenbots/castle/castle/internal/store"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -424,6 +426,18 @@ func copyTable(ctx context.Context, src, dst *sql.DB, t table) (int64, error) {
 
 	var total int64
 	insert := func(row []any) error {
+		// JSON payloads are bound through a ::jsonb cast, and JSONB cannot
+		// represent U+0000 (PostgreSQL rejects the \u0000 escape with 22P05):
+		// normalize legacy source rows exactly like the runtime AppendEvent
+		// paths do, or a single NUL in a copied payload aborts the freeze.
+		for j, c := range t.cols {
+			if c.kind != KindJSON {
+				continue
+			}
+			if s, ok := row[j].(string); ok {
+				row[j] = string(store.NormalizeEventPayload([]byte(s)))
+			}
+		}
 		if t.name == "events" {
 			// ts sits at index 3 of the events registry; mirror
 			// pg/events.go by ensuring the month partition exists.
@@ -790,17 +804,20 @@ func equalValue(src, dst any, kind Kind) bool {
 	case KindInt:
 		return src.(int64) == dst.(int64)
 	case KindJSON:
-		// JSONB normalizes key order and whitespace, so compare decoded
-		// values, not raw text.
+		// JSONB normalizes key order and whitespace and cannot hold U+0000
+		// (both drivers normalize NUL to U+FFFD at the write boundary), so
+		// compare normalized decoded values, not raw text — and normalize
+		// BOTH sides, since the sqlite source legitimately still carries
+		// the raw \u0000 on events rows written before this boundary.
 		var a, b any
-		if err := json.Unmarshal([]byte(src.(string)), &a); err != nil {
+		if err := json.Unmarshal(store.NormalizeEventPayload([]byte(src.(string))), &a); err != nil {
 			return false
 		}
 		raw, ok := dstValue(dst)
 		if !ok {
 			return false
 		}
-		if err := json.Unmarshal([]byte(raw), &b); err != nil {
+		if err := json.Unmarshal(store.NormalizeEventPayload([]byte(raw)), &b); err != nil {
 			return false
 		}
 		return reflect.DeepEqual(a, b)

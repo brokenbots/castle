@@ -1,7 +1,9 @@
 package suite
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -178,6 +180,67 @@ func TestEventStepLogsAndLatest(t *testing.T) {
 
 		if _, err := s.GetLatestStepEnteredEvent(ctx, "run-missing"); err != store.ErrNotFound {
 			t.Fatalf("latest on missing run = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// TestEventPayloadNULNormalized is the engine-parity leg for the JSONB NUL
+// hazard: JSONB cannot represent U+0000 (PostgreSQL rejects the \u0000
+// escape with 22P05), so AppendEvent must normalize NUL to U+FFFD on BOTH
+// engines — the protojson escape form and a raw 0x00 byte inside the string
+// both decode to the same value on either profile, and the step filter in
+// ListStepLogs keeps matching after normalization.
+func TestEventPayloadNULNormalized(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		const escaped = `{"step":"s1","chunk":"a\u0000b"}`     // protojson form
+		const raw = `{"step":"s1","chunk":"a` + "\x00" + `b"}` // legacy/binary form
+
+		now := microUTC(time.Now())
+		newOverseer(t, s, "ov-nul", now, nil)
+		newRun(t, s, &store.Run{ID: "run-nul", OverseerID: "ov-nul", WorkflowName: "wf", Status: "running", CreatedAt: now})
+
+		esc := ev("run-nul", "step.log", now, "corr-nul-esc", escaped)
+		rawEv := ev("run-nul", "step.log", now.Add(time.Second), "corr-nul-raw", raw)
+		if _, inserted, err := s.AppendEvent(ctx, esc); err != nil || !inserted {
+			t.Fatalf("escaped append: inserted=%v err=%v", inserted, err)
+		}
+		if _, inserted, err := s.AppendEvent(ctx, rawEv); err != nil || !inserted {
+			t.Fatalf("raw append: inserted=%v err=%v", inserted, err)
+		}
+
+		events, err := s.ListEvents(ctx, "run-nul", 0, 0)
+		if err != nil || len(events) != 2 {
+			t.Fatalf("ListEvents = %d rows err=%v", len(events), err)
+		}
+		for i, got := range events {
+			wantCorr := "corr-nul-esc"
+			if i == 1 {
+				wantCorr = "corr-nul-raw"
+			}
+			if got.CorrelationID != wantCorr {
+				t.Fatalf("event %d correlation = %q, want %q", i, got.CorrelationID, wantCorr)
+			}
+			if bytes.IndexByte(got.Payload, 0x00) >= 0 {
+				t.Fatalf("event %d payload still contains a raw 0x00 byte: %q", i, got.Payload)
+			}
+			if bytes.Contains(got.Payload, []byte(`\u0000`)) {
+				t.Fatalf("event %d payload still contains the \\u0000 escape: %q", i, got.Payload)
+			}
+			var decoded struct {
+				Step  string `json:"step"`
+				Chunk string `json:"chunk"`
+			}
+			if err := json.Unmarshal(got.Payload, &decoded); err != nil {
+				t.Fatalf("event %d payload not valid JSON: %v (%q)", i, err, got.Payload)
+			}
+			if decoded.Step != "s1" || decoded.Chunk != "a\uFFFDb" {
+				t.Fatalf("event %d decoded = step %q chunk %q, want chunk with U+FFFD", i, decoded.Step, decoded.Chunk)
+			}
+		}
+
+		logs, err := s.ListStepLogs(ctx, "run-nul", "s1", 0, 10)
+		if err != nil || len(logs) != 2 {
+			t.Fatalf("ListStepLogs after normalization = %d rows err=%v", len(logs), err)
 		}
 	})
 }

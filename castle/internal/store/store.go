@@ -96,9 +96,14 @@ type Event struct {
 	// write (number formatting, duplicate keys dropped, invalid UTF-8
 	// replaced with U+FFFD), while sqlite stores the exact protojson text:
 	// payloads must be compared semantically across engines, not
-	// byte-for-byte. Control characters are not a concern on either engine —
-	// protojson escapes them, so a NUL byte reaches the column as the JSON
-	// escape \u0000, which JSONB stores and returns verbatim.
+	// byte-for-byte. Control characters: protojson escapes them (a NUL
+	// becomes the 6-byte escape \u0000), but JSONB cannot represent U+0000
+	// (PostgreSQL rejects the \u0000 escape with SQLSTATE 22P05 "unsupported
+	// Unicode escape sequence"), so both drivers replace every NUL in the
+	// payload with U+FFFD at the write boundary
+	// (store.NormalizeEventPayload) — the decoded payload is then identical
+	// across engines, and pg additionally normalizes the document text;
+	// compare semantically.
 	Payload []byte
 }
 

@@ -1,8 +1,10 @@
 package relocate
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -576,4 +578,136 @@ func setDelta(want, got map[string]bool) string {
 	sort.Strings(missing)
 	sort.Strings(extra)
 	return fmt.Sprintf("  registry missing (present in schema): %v\n  registry extra (absent from schema): %v", missing, extra)
+}
+
+// TestImportNormalizesNULPayload pins the importer half of the JSONB NUL
+// contract: legacy sqlite events rows can still carry the \u0000 escape (or
+// a raw 0x00 byte) in payload, and JSONB rejects both with SQLSTATE 22P05 —
+// the copy path must normalize to U+FFFD, and the sample verification must
+// compare normalized-vs-normalized so a legacy row does not report a false
+// "column payload differs" and abort the freeze-and-import.
+func TestImportNormalizesNULPayload(t *testing.T) {
+	ctx := context.Background()
+	srcPath := filepath.Join(t.TempDir(), "castle.db")
+
+	sst, err := sqlite.Open(srcPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	runID := "run-nul-import"
+	if err := sst.CreateOverseer(ctx, &store.Overseer{
+		ID: "ov-nul", Name: "agent-nul", Hostname: "host-nul", Version: "v1",
+		TokenHash: "hash-nul", Status: "online", CreatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatalf("CreateOverseer: %v", err)
+	}
+	if err := sst.CreateRun(ctx, &store.Run{
+		ID: runID, OverseerID: "ov-nul", WorkflowName: "wf-nul", Status: "running", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, inserted, err := sst.AppendEvent(ctx, &store.Event{
+		SchemaVersion: store.EventSchemaVersion, RunID: runID, Type: "step.log",
+		Ts: now, Payload: []byte(`{"step":"s1","chunk":"ok"}`),
+	}); err != nil || !inserted {
+		t.Fatalf("seed event: inserted=%v err=%v", inserted, err)
+	}
+	if err := sst.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	// Forge the legacy rows the boundary predates: two events carrying a NUL
+	// in payload, written straight into the sqlite source after the store
+	// (and its normalization) is closed.
+	raw, err := sql.Open("sqlite", srcPath)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO events(run_id, seq, type, ts, correlation_id, payload) VALUES (?, 2, 'step.log', ?, 'corr-esc', ?)`,
+		runID, now.Add(time.Second).Format(store.TimestampLayout), `{"step":"s1","chunk":"a\u0000b"}`,
+	); err != nil {
+		t.Fatalf("seed legacy escaped NUL row: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO events(run_id, seq, type, ts, correlation_id, payload) VALUES (?, 3, 'step.log', ?, 'corr-raw', ?)`,
+		runID, now.Add(2*time.Second).Format(store.TimestampLayout), `{"step":"s1","chunk":"a`+"\x00"+`b"}`,
+	); err != nil {
+		t.Fatalf("seed legacy raw NUL row: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw sqlite: %v", err)
+	}
+
+	src, err := OpenSource(srcPath)
+	if err != nil {
+		t.Fatalf("OpenSource: %v", err)
+	}
+	defer src.Close()
+
+	pgDSN := pgtest.DSN(t)
+	migrated, err := pg.Open(pgDSN)
+	if err != nil {
+		t.Fatalf("migrate target: %v", err)
+	}
+	if err := migrated.Close(); err != nil {
+		t.Fatalf("close migrated target: %v", err)
+	}
+	dst, err := OpenTarget(pgDSN)
+	if err != nil {
+		t.Fatalf("OpenTarget: %v", err)
+	}
+	defer dst.Close()
+
+	reports, err := Import(ctx, src, dst, 1000, false)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	seen := map[string]TableReport{}
+	for _, rep := range reports {
+		if !rep.Verified {
+			t.Errorf("%s: not verified: %s", rep.Name, rep.Detail)
+		}
+		seen[rep.Name] = rep
+	}
+	if rep := seen["events"]; rep.Source != 3 || rep.Imported != 3 {
+		t.Errorf("events: source %d imported %d", rep.Source, rep.Imported)
+	}
+
+	target, err := pg.Open(pgDSN)
+	if err != nil {
+		t.Fatalf("pg.Open after import: %v", err)
+	}
+	defer target.Close()
+
+	evs, err := target.ListEvents(ctx, runID, 0, 100)
+	if err != nil {
+		t.Fatalf("ListEvents on imported db: %v", err)
+	}
+	if len(evs) != 3 {
+		t.Fatalf("imported events: got %d rows, want 3", len(evs))
+	}
+	for _, got := range evs {
+		if bytes.IndexByte(got.Payload, 0x00) >= 0 {
+			t.Errorf("event seq %d payload still has a raw 0x00 byte: %q", got.Seq, got.Payload)
+		}
+		if bytes.Contains(got.Payload, []byte(`\u0000`)) {
+			t.Errorf("event seq %d payload still has the \\u0000 escape: %q", got.Seq, got.Payload)
+		}
+		var decoded struct {
+			Step  string `json:"step"`
+			Chunk string `json:"chunk"`
+		}
+		if err := json.Unmarshal(got.Payload, &decoded); err != nil {
+			t.Fatalf("event seq %d payload not valid JSON: %v (%q)", got.Seq, err, got.Payload)
+		}
+		want := "ok"
+		if got.Seq != 1 {
+			want = "a\uFFFDb"
+		}
+		if decoded.Chunk != want {
+			t.Errorf("event seq %d decoded chunk = %q, want %q", got.Seq, decoded.Chunk, want)
+		}
+	}
 }

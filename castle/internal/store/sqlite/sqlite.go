@@ -946,9 +946,14 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 	if ts.IsZero() {
 		ts = time.Now().UTC()
 	}
+	// Normalize the payload the same way the pg driver does before its
+	// JSONB write: every NUL becomes U+FFFD on both engines, so the decoded
+	// payload stays equal across them (JSONB cannot hold U+0000; see
+	// store.Event.Payload).
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES(?,?,?,?,?,?)`,
-		ev.RunID, next, ev.Type, ts.Format(store.TimestampLayout), ev.CorrelationID, string(ev.Payload))
+		ev.RunID, next, ev.Type, ts.Format(store.TimestampLayout), ev.CorrelationID,
+		string(store.NormalizeEventPayload(ev.Payload)))
 	if err != nil {
 		return 0, false, err
 	}
