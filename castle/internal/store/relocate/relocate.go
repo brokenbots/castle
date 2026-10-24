@@ -245,9 +245,12 @@ func isPlainIdent(name string) bool {
 	if name == "" {
 		return false
 	}
-	for _, r := range name {
+	for i, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r == '_':
+		// Digits are valid from the second character on (blob_sha256 in
+		// the registry is the first digit-bearing column).
+		case r >= '0' && r <= '9' && i > 0:
 		default:
 			return false
 		}
