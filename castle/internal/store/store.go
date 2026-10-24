@@ -524,6 +524,24 @@ type Store interface {
 	// returned token is "" when no further page exists. A non-empty token
 	// that cannot be decoded fails with ErrInvalidCursor.
 	ListRuns(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*Run, string, error)
+	// ListRunsVisibleTo pages runs under the membership read scope (KB-324
+	// S1): the criteria caller C (agent id / overseer id) may read
+	//
+	//   - runs it leases (runs.overseer_id = C),
+	//   - runs it owns via a workflow assignment (the assignment that minted
+	//     the run carries owner_criteria_id = C), and
+	//   - runs whose project lists C as a member (the same project_members
+	//     EXISTS predicate the assignment lease scan consults).
+	//
+	// Unscoped runs (project_id NULL) are not returned to criteria callers;
+	// they stay console-operator-visible through ListRuns. Paging, ordering
+	// and cursor semantics match ListRuns exactly.
+	ListRunsVisibleTo(ctx context.Context, criteriaID, status string, limit int, pageToken string) ([]*Run, string, error)
+	// IsRunVisibleTo reports whether the criteria caller C may read the run
+	// under the membership read scope above. An invisible or missing run is
+	// (false, nil) — callers surface that as ErrNotFound so denied runs do
+	// not leak their existence through error classes.
+	IsRunVisibleTo(ctx context.Context, runID, criteriaID string) (bool, error)
 	UpdateRun(ctx context.Context, r *Run) error
 	// SetRunMetadata promotes non-empty metadata values (ticket, repo_url,
 	// pr_url) onto the run record without touching run status (CRI-131). Empty

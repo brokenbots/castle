@@ -110,6 +110,86 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit i
 	return out, next, nil
 }
 
+// ListRunsVisibleTo is the pg implementation of the membership read scope
+// (KB-324 S1); the predicate mirrors the project_members EXISTS clause the
+// assignment lease scan consults. See the sqlite implementation for the
+// contract documentation.
+func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	p := &plf{}
+	q := `SELECT ` + runColumns + ` FROM runs WHERE (
+		overseer_id = ` + p.next(criteriaID) + `
+		OR EXISTS (SELECT 1 FROM workflow_assignments wa
+		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = ` + p.next(criteriaID) + `)
+		OR EXISTS (SELECT 1 FROM project_members pm
+		           WHERE pm.project_id = runs.project_id AND pm.member_id = ` + p.next(criteriaID) + `))`
+	if status != "" {
+		q += " AND status=" + p.next(status)
+	}
+	cursorCreated, cursorID, err := store.DecodeRunCursor(pageToken)
+	if err != nil {
+		return nil, "", err
+	}
+	if cursorCreated != "" {
+		cursorTS, err := store.DecodeRunCursorCreated(cursorCreated)
+		if err != nil {
+			return nil, "", err
+		}
+		q += " AND (created_at, id) < (" + p.next(cursorTS) + "::timestamptz, " + p.next(cursorID) + ")"
+	}
+	q += " ORDER BY created_at DESC, id DESC"
+	if limit > 0 {
+		q += " LIMIT " + p.next(limit+1)
+	}
+	rows, err := s.reader.QueryContext(ctx, q, p.args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var out []*store.Run
+	for rows.Next() {
+		r, err := scanRun(rows.Scan)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if limit > 0 && len(out) > limit {
+		last := out[limit-1]
+		next = store.EncodeRunCursorFromTime(last.CreatedAt, last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
+}
+
+func (s *Store) IsRunVisibleTo(ctx context.Context, runID, criteriaID string) (bool, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	p := &plf{}
+	var one any
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM runs WHERE id = `+p.next(runID)+` AND (
+		overseer_id = `+p.next(criteriaID)+`
+		OR EXISTS (SELECT 1 FROM workflow_assignments wa
+		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = `+p.next(criteriaID)+`)
+		OR EXISTS (SELECT 1 FROM project_members pm
+		           WHERE pm.project_id = runs.project_id AND pm.member_id = `+p.next(criteriaID)+`)
+		)
+		LIMIT 1`, p.args...).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func scanRun(scan func(...any) error) (*store.Run, error) {
 	var r store.Run
 	var created time.Time

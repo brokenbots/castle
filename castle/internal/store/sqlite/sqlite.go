@@ -744,6 +744,88 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit i
 	return out, next, nil
 }
 
+// runVisibilityScope is the read-visibility predicate for criteria callers
+// (KB-324 S1): the caller sees runs it leases (overseer_id), runs it owns via
+// a minting assignment, and runs belonging to a project whose member set
+// contains it — the same project_members EXISTS clause the assignment lease
+// scan consults. Unscoped runs (project_id NULL) are never returned here;
+// they stay console-operator-visible.
+func (s *Store) ListRunsVisibleTo(ctx context.Context, criteriaID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	q := `SELECT ` + runColumns + ` FROM runs WHERE (
+		overseer_id = ?
+		OR EXISTS (SELECT 1 FROM workflow_assignments wa
+		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = ?)
+		OR EXISTS (SELECT 1 FROM project_members pm
+		           WHERE pm.project_id = runs.project_id AND pm.member_id = ?)
+	)`
+	args := []any{criteriaID, criteriaID, criteriaID}
+	if status != "" {
+		q += ` AND status=?`
+		args = append(args, status)
+	}
+	cursorCreated, cursorID, err := store.DecodeRunCursor(pageToken)
+	if err != nil {
+		return nil, "", err
+	}
+	if cursorCreated != "" {
+		q += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, cursorCreated, cursorCreated, cursorID)
+	}
+	q += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit+1)
+	}
+	rows, err := s.reader.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var out []*store.Run
+	for rows.Next() {
+		r, err := scanRun(rows.Scan)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if limit > 0 && len(out) > limit {
+		last := out[limit-1]
+		next = store.EncodeRunCursor(last.CreatedAt.Format(store.TimestampLayout), last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
+}
+
+func (s *Store) IsRunVisibleTo(ctx context.Context, runID, criteriaID string) (bool, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	var one any
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM runs WHERE id = ? AND (
+		overseer_id = ?
+		OR EXISTS (SELECT 1 FROM workflow_assignments wa
+		           WHERE wa.run_id = runs.id AND wa.owner_criteria_id = ?)
+		OR EXISTS (SELECT 1 FROM project_members pm
+		           WHERE pm.project_id = runs.project_id AND pm.member_id = ?)
+		)
+		LIMIT 1`,
+		runID, criteriaID, criteriaID, criteriaID).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func scanRun(scan func(...any) error) (*store.Run, error) {
 	var r store.Run
 	var created string
