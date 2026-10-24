@@ -364,6 +364,12 @@ type Run struct {
 	// assignment lease time (and directly at CreateRun for agent-owned
 	// runs) for exact-build traceability. Empty when unknown.
 	AgentIdentity string
+	// ProjectID names the project the run belongs to (KB-324 S1), stamped
+	// at CreateRun: assignment-dispatched runs inherit the assignment's
+	// project, standalone runs stay unscoped (empty) and remain
+	// console-operator-visible only. Read visibility consults the same
+	// project_members membership predicate the lease scan uses.
+	ProjectID string
 }
 
 // RunStatusAwaitingHuman is the parked status of a run whose engine reached

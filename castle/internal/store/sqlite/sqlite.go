@@ -661,7 +661,7 @@ func (s *Store) DeleteConsoleSessionsByUser(ctx context.Context, userID string) 
 
 // runColumns is the projection scanned by run row readers; keep in sync with
 // scanRun and the migration that last altered the runs table.
-const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason,agent_identity"
+const runColumns = "id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ended_at,variable_scope,pending_signal,paused_at,ticket,repo_url,pr_url,failure_reason,agent_identity,project_id"
 
 func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 	ctx, cancel := s.opCtx(ctx)
@@ -671,9 +671,9 @@ func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 		started = r.StartedAt.Format(store.TimestampLayout)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url,agent_identity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url,agent_identity,project_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(store.TimestampLayout),
-		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL), r.AgentIdentity)
+		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL), r.AgentIdentity, nullText(r.ProjectID))
 	return err
 }
 
@@ -757,7 +757,8 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	var repoURL sql.NullString
 	var prURL sql.NullString
 	var failureReason sql.NullString
-	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason, &r.AgentIdentity)
+	var projectID sql.NullString
+	err := scan(&r.ID, &overseerID, &r.WorkflowName, &r.WorkflowHCL, &r.Status, &r.CurrentStep, &r.LastSeq, &created, &started, &ended, &variableScope, &pendingSignal, &pausedAt, &ticket, &repoURL, &prURL, &failureReason, &r.AgentIdentity, &projectID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -797,6 +798,9 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	}
 	if failureReason.Valid {
 		r.FailureReason = failureReason.String
+	}
+	if projectID.Valid {
+		r.ProjectID = projectID.String
 	}
 	return &r, nil
 }
@@ -1495,9 +1499,9 @@ func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowA
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO runs(id, overseer_id, workflow_name, workflow_hcl, status, current_step, last_seq, created_at)
-		 VALUES(?, NULL, ?, ?, 'pending', '', 0, ?)`,
-		a.RunID, a.WorkflowName, a.WorkflowSource, a.CreatedAt.Format(store.TimestampLayout)); err != nil {
+		`INSERT INTO runs(id, overseer_id, workflow_name, workflow_hcl, status, current_step, last_seq, created_at, project_id)
+		 VALUES(?, NULL, ?, ?, 'pending', '', 0, ?, ?)`,
+		a.RunID, a.WorkflowName, a.WorkflowSource, a.CreatedAt.Format(store.TimestampLayout), nullText(a.ProjectID)); err != nil {
 		return nil, false, err
 	}
 

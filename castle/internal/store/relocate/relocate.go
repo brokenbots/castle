@@ -116,6 +116,7 @@ var Tables = []table{
 			{"failure_reason", KindText, true}, {"started_at", KindTS, true},
 			{"agent_identity", KindText, false},
 			{"refire_disposition", KindText, true},
+			{"project_id", KindText, true},
 		},
 	},
 	{

@@ -82,9 +82,9 @@ func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowA
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO runs(id, overseer_id, workflow_name, workflow_hcl, status, current_step, last_seq, created_at)
-		 VALUES($1, NULL, $2, $3, 'pending', '', 0, $4)`,
-		a.RunID, a.WorkflowName, a.WorkflowSource, us(a.CreatedAt)); err != nil {
+		`INSERT INTO runs(id, overseer_id, workflow_name, workflow_hcl, status, current_step, last_seq, created_at, project_id)
+		 VALUES($1, NULL, $2, $3, 'pending', '', 0, $4, $5)`,
+		a.RunID, a.WorkflowName, a.WorkflowSource, us(a.CreatedAt), nonEmpty(a.ProjectID)); err != nil {
 		return nil, false, err
 	}
 
