@@ -214,6 +214,10 @@ var Tables = []table{
 		cols: []column{
 			{"id", KindText, false}, {"user_id", KindText, false},
 			{"token_hash", KindText, false}, {"created_at", KindTS, false},
+			// 0021 session ledger (KB-325): the revocation tombstone (NULL
+			// while the session is live) and the issue-time membership
+			// snapshot (empty text = no projects).
+			{"revoked_at", KindTS, true}, {"membership", KindText, false},
 		},
 	},
 	{

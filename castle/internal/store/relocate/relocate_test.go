@@ -101,6 +101,17 @@ func seedSource(t *testing.T, st store.Store) (agentRunID, stubRunID string) {
 	}); err != nil {
 		t.Fatalf("CreateConsoleSession: %v", err)
 	}
+	// Session ledger (KB-325): a live row with a membership snapshot plus a
+	// tombstoned row — freeze/import must preserve both new columns.
+	if err := st.CreateConsoleSession(ctx, &store.ConsoleSession{
+		ID: "cs-2", UserID: u.ID, TokenHash: "tokhash-2", CreatedAt: now,
+		Membership: []string{"proj-x"},
+	}); err != nil {
+		t.Fatalf("CreateConsoleSession cs-2: %v", err)
+	}
+	if err := st.RevokeConsoleSession(ctx, "cs-2", now); err != nil {
+		t.Fatalf("RevokeConsoleSession: %v", err)
+	}
 	if _, err := st.PutRunArchiveRecord(ctx, &store.RunArchiveRecord{
 		Key: "run-archive/" + stubRunID, RunID: stubRunID, JobName: "brief",
 		FinalPhase: "done", Ticket: "KB-1", Record: `{"k":1,"z":9}`,
@@ -123,6 +134,21 @@ func TestImportRoundTrip(t *testing.T) {
 		t.Fatalf("open sqlite store: %v", err)
 	}
 	agentRunID, stubRunID := seedSource(t, sst)
+	// Capture the source-side revocation stamp so the import assertion
+	// compares like-for-like values.
+	var seededRevokedAt time.Time
+	srcSess, err := sst.ListConsoleSessions(ctx)
+	if err != nil {
+		t.Fatalf("list source sessions: %v", err)
+	}
+	for _, s := range srcSess {
+		if s.ID == "cs-2" {
+			if s.RevokedAt == nil {
+				t.Fatal("expected cs-2 to be seeded as revoked")
+			}
+			seededRevokedAt = *s.RevokedAt
+		}
+	}
 	if err := sst.Close(); err != nil {
 		t.Fatalf("close sqlite store: %v", err)
 	}
@@ -252,8 +278,21 @@ func TestImportRoundTrip(t *testing.T) {
 		t.Fatalf("GetConsoleUser on imported db: %v", err)
 	}
 	sess, err := target.ListConsoleSessions(ctx)
-	if err != nil || len(sess) != 1 || sess[0].TokenHash != "tokhash" {
-		t.Fatalf("ListConsoleSessions on imported db: %v", err)
+	if err != nil || len(sess) != 2 {
+		t.Fatalf("ListConsoleSessions on imported db: %v sessions=%+v", err, sess)
+	}
+	byID := map[string]*store.ConsoleSession{}
+	for _, s := range sess {
+		byID[s.ID] = s
+	}
+	if byID["cs-1"].TokenHash != "tokhash" || byID["cs-1"].RevokedAt != nil {
+		t.Fatalf("live session row not preserved: %+v", byID["cs-1"])
+	}
+	if byID["cs-2"].RevokedAt == nil || !byID["cs-2"].RevokedAt.Equal(seededRevokedAt) {
+		t.Fatalf("revocation tombstone not preserved: %+v", byID["cs-2"])
+	}
+	if len(byID["cs-2"].Membership) != 1 || byID["cs-2"].Membership[0] != "proj-x" {
+		t.Fatalf("membership snapshot not preserved: %+v", byID["cs-2"].Membership)
 	}
 	rec, err := target.GetRunArchiveRecord(ctx, "run-archive/"+stubRunID)
 	if err != nil || rec == nil {
