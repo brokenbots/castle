@@ -533,11 +533,13 @@ type Store interface {
 	//   - runs whose project lists C as a member (the same project_members
 	//     EXISTS predicate the assignment lease scan consults).
 	//
-	// Unscoped runs (project_id NULL) are not returned to criteria callers;
-	// they stay console-operator-visible through ListRuns. An optional
-	// criteriaID ("" = any) narrows the page to that overseer's runs, e.g.
-	// an agent asking for its own slice of its visible set. Paging, ordering
-	// and cursor semantics match ListRuns exactly.
+	// The owned/leased arms include standalone runs (project_id NULL): a
+	// caller observes the work it owns. Any other unscoped run (project_id
+	// NULL, neither leased nor owned by C) stays invisible to criteria
+	// callers and remains console-operator-visible through ListRuns. An
+	// optional criteriaID ("" = any) narrows the page to that overseer's
+	// runs, e.g. an agent asking for its own slice of its visible set.
+	// Paging, ordering and cursor semantics match ListRuns exactly.
 	ListRunsVisibleTo(ctx context.Context, criteriaID, overseerID, status string, limit int, pageToken string) ([]*Run, string, error)
 	// IsRunVisibleTo reports whether the criteria caller C may read the run
 	// under the membership read scope above. An invisible or missing run is

@@ -56,6 +56,14 @@ func (s *ServerServer) CreateProject(ctx context.Context, req *connect.Request[c
 	if err != nil {
 		return nil, err
 	}
+	// KB-324 write shape: the settings doc is a console-session write, so
+	// only console sessions (or the unwired direct-call path) may seed
+	// settings at creation. The registry write itself stays
+	// protocol-token-owned — only the settings seed is restricted.
+	if len(settings) > 0 &&
+		(auth.CallerCriteriaID(ctx) != "" || auth.CallerOrchestratorID(ctx) != "") {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("protocol tokens cannot seed the project settings doc; use SetProjectSettings from a console session"))
+	}
 	info, err := shapeValidateStringMap("info", p.GetInfo())
 	if err != nil {
 		return nil, err
@@ -248,17 +256,18 @@ func (s *ServerServer) SubmitProjectAssignment(ctx context.Context, req *connect
 	return connect.NewResponse(resp), nil
 }
 
-// requireProjectCaller enforces the agent-identity posture for
-// CreateProject — the one registry write that stays protocol-token-owned
-// (the agent workspace bootstrap; agents set the membership policy of a
-// project they mint). Reader postures use requireProjectReader; the KB-324
-// writes use requireProjectAdminCaller. Trigger identities are rejected
-// explicitly with PermissionDenied (KB-320).
+// requireProjectCaller enforces CreateProject's caller posture: the registry
+// write stays protocol-token-owned (agent bootstrap) and console sessions
+// are admitted as well, because KB-324 makes the settings seed a
+// console-session write — which caller may carry that seed is enforced in
+// the handler where the settings map is shaped. Reader postures use
+// requireProjectReader; the other KB-324 writes use requireProjectAdminCaller.
+// Trigger identities are rejected explicitly with PermissionDenied (KB-320).
 func requireProjectCaller(ctx context.Context) error {
 	if auth.CallerTriggerID(ctx) != "" {
 		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))
 	}
-	if auth.CallerCriteriaID(ctx) == "" {
+	if auth.CallerCriteriaID(ctx) == "" && auth.CallerConsoleUserID(ctx) == "" {
 		return connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
 	}
 	return nil
@@ -513,7 +522,7 @@ func (s *ServerServer) GetRefirePolicy(ctx context.Context, req *connect.Request
 		Policy:    mapRefirePolicy(&policy),
 		UpdatedAt: timestamppb.New(row.UpdatedAt),
 	}
-	if resp.UpdatedAt == nil || row.UpdatedAt.IsZero() {
+	if row.UpdatedAt.IsZero() {
 		resp.UpdatedAt = nil
 	}
 	return connect.NewResponse(resp), nil
@@ -530,6 +539,12 @@ func (s *ServerServer) SetRefirePolicy(ctx context.Context, req *connect.Request
 	if projectID != "" {
 		if err := store.ValidateProjectID(projectID); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		// A policy row keys to a project; rejecting unknown projects here
+		// keeps a typo from minting policy rows for nonexistent projects.
+		// The empty project id plants the global default and skips this.
+		if _, err := s.Store.GetProject(ctx, projectID); err != nil {
+			return nil, projectStoreError(err)
 		}
 	}
 	route, err := validateRefireRoute(route)

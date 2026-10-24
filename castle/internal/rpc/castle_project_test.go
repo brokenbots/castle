@@ -477,6 +477,77 @@ func TestProjectServiceAuthorization(t *testing.T) {
 	}
 }
 
+// TestCreateProjectSettingsSeedPosture (review round 1) pins the settings
+// seed at project creation to the KB-324 write shape: a console session may
+// seed the doc (and reads it back with the derived etag; a stale ""-
+// expected swap loses), while protocol tokens keep registry ownership but
+// cannot seed settings at creation.
+func TestCreateProjectSettingsSeedPosture(t *testing.T) {
+	ts, tsrv, oClient, sClient := projectTestStack(t)
+	ctx := context.Background()
+	_ = sClient
+	pClient := projectClient(tsrv)
+
+	agentReg, err := oClient.Register(ctx, connect.NewRequest(&pb.RegisterRequest{Name: "seeder-agent"}))
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	consoleToken := consoleOperatorSession(t, ts, tsrv, "operator", "op-password")
+
+	seed := map[string]string{
+		"retention.runs": `{"days":14}`,
+	}
+	created, err := pClient.CreateProject(ctx, bearer(&castlev1.CreateProjectRequest{Project: &castlev1.Project{
+		Id:               "console-seeded",
+		MembershipPolicy: castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_OPEN,
+		Settings:         seed,
+	}}, consoleToken))
+	if err != nil {
+		t.Fatalf("console CreateProject with settings seed: %v", err)
+	}
+	_ = created
+	read, err := pClient.GetProjectSettings(ctx, bearer(&castlev1.GetProjectSettingsRequest{ProjectId: "console-seeded"}, consoleToken))
+	if err != nil {
+		t.Fatalf("GetProjectSettings seeded: %v", err)
+	}
+	if read.Msg.GetSettings()["retention.runs"] != seed["retention.runs"] || read.Msg.GetEtag() == "" {
+		t.Fatalf("seeded read: doc %q etag %q, want seeded body + non-empty etag", read.Msg.GetSettings(), read.Msg.GetEtag())
+	}
+
+	// The persisted etag is real: an "empty" expected swap loses to it.
+	if _, err := pClient.SetProjectSettings(ctx, bearer(&castlev1.SetProjectSettingsRequest{
+		ProjectId: "console-seeded", Settings: map[string]string{"x": "1"}, ExpectedEtag: "",
+	}, consoleToken)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("stale empty-expected swap: got %v, want FailedPrecondition", err)
+	}
+	// And a swap against the derived etag lands and re-reads.
+	nextETag, err := pClient.SetProjectSettings(ctx, bearer(&castlev1.SetProjectSettingsRequest{
+		ProjectId: "console-seeded", Settings: map[string]string{"x": "1"}, ExpectedEtag: read.Msg.GetEtag(),
+	}, consoleToken))
+	if err != nil {
+		t.Fatalf("etag-matched swap: %v", err)
+	}
+	if got := nextETag.Msg.GetEtag(); got == "" || got == read.Msg.GetEtag() {
+		t.Fatalf("swap etag = %q, want a new non-empty etag", got)
+	}
+
+	// Protocol tokens cannot seed settings at creation...
+	if _, err := pClient.CreateProject(ctx, bearer(&castlev1.CreateProjectRequest{Project: &castlev1.Project{
+		Id:               "agent-seeded",
+		MembershipPolicy: castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_OPEN,
+		Settings:         seed,
+	}}, agentReg.Msg.Token)); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("agent CreateProject with settings: got %v, want PermissionDenied", err)
+	}
+	// ...but the registry write itself stays protocol-token-owned.
+	if _, err := pClient.CreateProject(ctx, bearer(&castlev1.CreateProjectRequest{Project: &castlev1.Project{
+		Id:               "agent-plain",
+		MembershipPolicy: castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_OPEN,
+	}}, agentReg.Msg.Token)); err != nil {
+		t.Fatalf("agent CreateProject without settings: %v", err)
+	}
+}
+
 func createProject(t *testing.T, ctx context.Context, pClient castlev1connect.ProjectServiceClient, token, id string, policy castlev1.ProjectMembershipPolicy) *castlev1.Project {
 	t.Helper()
 	resp, err := pClient.CreateProject(ctx, bearer(&castlev1.CreateProjectRequest{Project: &castlev1.Project{

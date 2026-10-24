@@ -159,13 +159,14 @@ func (s *Store) CreateProject(ctx context.Context, p *store.Project) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO projects (id, membership_policy, default_refire_policy, queues, settings, info, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO projects (id, membership_policy, default_refire_policy, queues, settings, settings_etag, info, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID,
 		p.MembershipPolicy,
 		p.DefaultRefirePolicy,
 		queuesJSON,
 		store.MarshalJSONMap(p.Settings),
+		store.SettingsETag(p.Settings),
 		store.MarshalJSONMap(p.Info),
 		p.CreatedAt.UTC().Format(store.TimestampLayout),
 		p.UpdatedAt.UTC().Format(store.TimestampLayout))

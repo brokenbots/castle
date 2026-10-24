@@ -123,10 +123,11 @@ var consoleRunControlProcedures = map[string]struct{}{
 // surfaces a console identity reaches: the membership writes (the KB-324
 // write shape moves admission and eviction to console sessions — protocol
 // tokens carry assignment/run writes only), the ONE settings doc
-// (Get/SetProjectSettings with its etag swap), and the refire policy rows
+// (Get/SetProjectSettings with its etag swap), the refire policy rows
 // (Get/SetRefirePolicy over the KB-321 store methods), plus the registry
-// reads an admin context needs. Every other ProjectService procedure
-// (CreateProject, SubmitProjectAssignment) stays agent-owned.
+// reads an admin context needs. CreateProject is admitted for the settings
+// seed (a console-session write; the handler gates the seed per caller) and
+// SubmitProjectAssignment stays agent-owned.
 var consoleProjectAdminProcedures = map[string]struct{}{
 	castlev1connect.ProjectServiceGetProjectProcedure:          {},
 	castlev1connect.ProjectServiceListProjectsProcedure:        {},
@@ -137,6 +138,7 @@ var consoleProjectAdminProcedures = map[string]struct{}{
 	castlev1connect.ProjectServiceSetProjectSettingsProcedure:  {},
 	castlev1connect.ProjectServiceGetRefirePolicyProcedure:     {},
 	castlev1connect.ProjectServiceSetRefirePolicyProcedure:     {},
+	castlev1connect.ProjectServiceCreateProjectProcedure:       {},
 }
 
 // isConsoleAllowed reports whether a console identity may invoke the

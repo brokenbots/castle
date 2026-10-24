@@ -43,13 +43,14 @@ func (s *Store) CreateProject(ctx context.Context, p *store.Project) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO projects (id, membership_policy, default_refire_policy, queues, settings, info, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		INSERT INTO projects (id, membership_policy, default_refire_policy, queues, settings, settings_etag, info, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		p.ID,
 		p.MembershipPolicy,
 		p.DefaultRefirePolicy,
 		queuesJSON,
 		store.MarshalJSONMap(p.Settings),
+		store.SettingsETag(p.Settings),
 		store.MarshalJSONMap(p.Info),
 		us(p.CreatedAt), us(p.UpdatedAt))
 	if err != nil {

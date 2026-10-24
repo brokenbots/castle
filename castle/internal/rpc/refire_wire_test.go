@@ -113,6 +113,22 @@ func TestRefireWirePolicyGetSet(t *testing.T) {
 		t.Fatalf("empty vocabulary entry: got %v, want InvalidArgument", err)
 	}
 
+	// A policy row keys to a real project: an unknown project id is
+	// NotFound instead of minting a row for a nonexistent project.
+	if _, err := f.pClient.SetRefirePolicy(ctx, bearer(&castlev1.SetRefirePolicyRequest{
+		ProjectId: "no-such-project", Route: "adapter.shell",
+		Policy: &castlev1.RefirePolicy{MaxAttempts: 3, BackoffSeconds: 30},
+	}, f.consoleToken)); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("unknown project policy set: got %v, want NotFound", err)
+	}
+	// The global path (empty project id) still upserts through the wire.
+	if _, err := f.pClient.SetRefirePolicy(ctx, bearer(&castlev1.SetRefirePolicyRequest{
+		Route:  "adapter.oci",
+		Policy: policyToWire(refire.Policy{MaxAttempts: 4, Backoff: 10 * time.Second}),
+	}, f.consoleToken)); err != nil {
+		t.Fatalf("global policy set (empty project id): %v", err)
+	}
+
 	// Wrong credential class on the write; reads stay open.
 	if _, err := f.pClient.SetRefirePolicy(ctx, bearer(&castlev1.SetRefirePolicyRequest{
 		ProjectId: f.projectID, Route: "adapter.shell",

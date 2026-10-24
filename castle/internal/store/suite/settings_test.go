@@ -107,3 +107,58 @@ func TestProjectSettingsETagSwap(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateProjectSeedsSettingsETag (review round 1) pins the etag
+// invariant at mint time: a project created with a populated settings map
+// must persist the derived etag alongside the doc, so the first
+// SetProjectSettings swap cannot silently overwrite the seeded doc.
+func TestCreateProjectSeedsSettingsETag(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		now := microUTC(time.Date(2026, 2, 18, 9, 40, 0, 0, time.UTC))
+		doc := map[string]string{
+			"relocation.mode": `{"mode":"detached"}`,
+			"retention.runs":  `{"days":14}`,
+		}
+		if err := s.CreateProject(ctx, &store.Project{
+			ID:               "seeded-project",
+			MembershipPolicy: store.ProjectMembershipOpen,
+			Settings:         doc,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}); err != nil {
+			t.Fatalf("CreateProject seeded: %v", err)
+		}
+
+		got, etag, err := s.GetProjectSettings(ctx, "seeded-project")
+		if err != nil {
+			t.Fatalf("GetProjectSettings: %v", err)
+		}
+		if len(got) != len(doc) || got["retention.runs"] != doc["retention.runs"] {
+			t.Fatalf("seeded doc = %q, want %q", got, doc)
+		}
+		if etag == "" || etag != store.SettingsETag(doc) {
+			t.Fatalf("seeded etag = %q, want computed %q", etag, store.SettingsETag(doc))
+		}
+
+		// The seeded doc is authoritative: a writer that saw the "empty"
+		// doc loses against it instead of overwriting it.
+		if _, err := s.SetProjectSettings(ctx, "seeded-project", map[string]string{"x": "1"}, ""); err != store.ErrSettingsConflict {
+			t.Fatalf("empty-expected swap over seeded doc: got %v, want ErrSettingsConflict", err)
+		}
+		// ...but a writer that re-reads first wins.
+		nextETag, err := s.SetProjectSettings(ctx, "seeded-project", map[string]string{"x": "1"}, etag)
+		if err != nil {
+			t.Fatalf("etag-matched swap: %v", err)
+		}
+		if nextETag != store.SettingsETag(map[string]string{"x": "1"}) {
+			t.Fatalf("next etag %q mismatched", nextETag)
+		}
+
+		// A project created without settings keeps the empty etag, so the
+		// very first empty-expected swap still succeeds.
+		newProject(t, ctx, s, "unseeded-project", store.ProjectMembershipOpen, now)
+		if _, err := s.SetProjectSettings(ctx, "unseeded-project", map[string]string{"k": "v"}, ""); err != nil {
+			t.Fatalf("first swap on unseeded project: %v", err)
+		}
+	})
+}
