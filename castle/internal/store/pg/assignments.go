@@ -17,7 +17,8 @@ import (
 const assignmentColumns = `
 	id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
 	idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
-	created_at, updated_at, project_id, input_values, target_metadata`
+	created_at, updated_at, project_id, input_values, target_metadata,
+	refire_root_run_id, refire_attempt`
 
 // expireLeasesHook is test-only mutable state: a hook fired by
 // ExpireWorkflowAssignmentLeases after the candidate scan and before the
@@ -173,7 +174,8 @@ func scanAssignmentRow(scan func(...any) error) (*store.WorkflowAssignment, erro
 	err := scan(
 		&a.ID, &a.OwnerCriteriaID, &a.RunID, &a.WorkflowName, &a.WorkflowSource, &lockfile,
 		&a.IdempotencyKey, &a.State, &terminalReason, &leasedID, &expires,
-		&created, &updated, &projectID, &inputValues, &targetMetadata)
+		&created, &updated, &projectID, &inputValues, &targetMetadata,
+		&a.RefireRootRunID, &a.RefireAttempt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound

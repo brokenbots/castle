@@ -115,6 +115,7 @@ var Tables = []table{
 			{"ticket", KindText, true}, {"repo_url", KindText, true}, {"pr_url", KindText, true},
 			{"failure_reason", KindText, true}, {"started_at", KindTS, true},
 			{"agent_identity", KindText, false},
+			{"refire_disposition", KindText, true},
 		},
 	},
 	{
@@ -157,6 +158,7 @@ var Tables = []table{
 			{"leased_criteria_id", KindText, true}, {"lease_expires_at", KindTS, true},
 			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
 			{"project_id", KindText, true}, {"input_values", KindText, true}, {"target_metadata", KindText, true},
+			{"refire_root_run_id", KindText, false}, {"refire_attempt", KindInt, false},
 		},
 	},
 	{
