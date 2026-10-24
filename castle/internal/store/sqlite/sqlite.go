@@ -5,8 +5,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/reap"
 )
 
 type Store struct {
@@ -119,22 +118,16 @@ func (s *Store) opCtx(ctx context.Context) (context.Context, context.CancelFunc)
 	return context.WithTimeout(context.WithoutCancel(ctx), storeOpTimeout)
 }
 
-const (
-	tsLayout               = time.RFC3339Nano
-	ListEventsDefaultLimit = 500
-	ListEventsMaxLimit     = 2048
-)
-
 func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	labels, err := marshalLabels(o.Labels)
+	labels, err := store.MarshalLabels(o.Labels)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, o.CreatedAt.Format(tsLayout), o.LastSeenAt.Format(tsLayout))
+		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, o.CreatedAt.Format(store.TimestampLayout), o.LastSeenAt.Format(store.TimestampLayout))
 	if err == nil {
 		s.freshness.recordWrite(o.CreatedAt)
 	}
@@ -154,9 +147,9 @@ func (s *Store) GetOverseer(ctx context.Context, id string) (*store.Overseer, er
 		}
 		return nil, err
 	}
-	o.CreatedAt, _ = time.Parse(tsLayout, created)
-	o.LastSeenAt, _ = time.Parse(tsLayout, seen)
-	o.Labels = unmarshalLabels(labels.String)
+	o.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
+	o.LastSeenAt, _ = time.Parse(store.TimestampLayout, seen)
+	o.Labels = store.UnmarshalLabels(labels.String)
 	return &o, nil
 }
 
@@ -218,9 +211,9 @@ func (s *Store) scanOverseers(ctx context.Context, db *sql.DB) ([]*store.Oversee
 		if err := rows.Scan(&o.ID, &o.Name, &o.Hostname, &o.Version, &o.TokenHash, &o.Status, &labels, &created, &seen); err != nil {
 			return nil, err
 		}
-		o.CreatedAt, _ = time.Parse(tsLayout, created)
-		o.LastSeenAt, _ = time.Parse(tsLayout, seen)
-		o.Labels = unmarshalLabels(labels.String)
+		o.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
+		o.LastSeenAt, _ = time.Parse(store.TimestampLayout, seen)
+		o.Labels = store.UnmarshalLabels(labels.String)
 		out = append(out, &o)
 	}
 	return out, rows.Err()
@@ -229,7 +222,7 @@ func (s *Store) scanOverseers(ctx context.Context, db *sql.DB) ([]*store.Oversee
 func (s *Store) UpdateOverseerSeen(ctx context.Context, id string, ts time.Time) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE overseers SET last_seen_at=?, status='online' WHERE id=?`, ts.Format(tsLayout), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE overseers SET last_seen_at=?, status='online' WHERE id=?`, ts.Format(store.TimestampLayout), id)
 	return err
 }
 
@@ -243,7 +236,7 @@ func (s *Store) UpdateOverseerStatus(ctx context.Context, id, status string) err
 func (s *Store) MarkOfflineBefore(ctx context.Context, before time.Time) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE overseers SET status='offline' WHERE last_seen_at < ? AND status='online'`, before.Format(tsLayout))
+	_, err := s.db.ExecContext(ctx, `UPDATE overseers SET status='offline' WHERE last_seen_at < ? AND status='online'`, before.Format(store.TimestampLayout))
 	return err
 }
 
@@ -281,7 +274,7 @@ func (s *Store) UpsertOrchestrator(ctx context.Context, o *store.Orchestrator) e
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO orchestrators(id,name,token_hash,created_at) VALUES(?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, token_hash=excluded.token_hash`,
-		o.ID, o.Name, o.TokenHash, o.CreatedAt.Format(tsLayout))
+		o.ID, o.Name, o.TokenHash, o.CreatedAt.Format(store.TimestampLayout))
 	return err
 }
 
@@ -300,7 +293,7 @@ func (s *Store) ListOrchestrators(ctx context.Context) ([]*store.Orchestrator, e
 		if err := rows.Scan(&o.ID, &o.Name, &o.TokenHash, &created); err != nil {
 			return nil, err
 		}
-		o.CreatedAt, _ = time.Parse(tsLayout, created)
+		o.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
 		out = append(out, &o)
 	}
 	return out, rows.Err()
@@ -324,7 +317,7 @@ func (s *Store) UpsertConsoleUser(ctx context.Context, u *store.ConsoleUser) err
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO console_users(id,username,password_hash,created_at,updated_at) VALUES(?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET username=excluded.username, password_hash=excluded.password_hash, updated_at=excluded.updated_at`,
-		u.ID, u.Username, u.PasswordHash, u.CreatedAt.Format(tsLayout), u.UpdatedAt.Format(tsLayout))
+		u.ID, u.Username, u.PasswordHash, u.CreatedAt.Format(store.TimestampLayout), u.UpdatedAt.Format(store.TimestampLayout))
 	return err
 }
 
@@ -341,8 +334,8 @@ func (s *Store) GetConsoleUser(ctx context.Context, username string) (*store.Con
 		}
 		return nil, err
 	}
-	u.CreatedAt, _ = time.Parse(tsLayout, created)
-	u.UpdatedAt, _ = time.Parse(tsLayout, updated)
+	u.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
+	u.UpdatedAt, _ = time.Parse(store.TimestampLayout, updated)
 	return &u, nil
 }
 
@@ -360,7 +353,7 @@ func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSes
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO console_sessions(id,user_id,token_hash,created_at) VALUES(?,?,?,?)`,
-		sess.ID, sess.UserID, sess.TokenHash, sess.CreatedAt.Format(tsLayout))
+		sess.ID, sess.UserID, sess.TokenHash, sess.CreatedAt.Format(store.TimestampLayout))
 	return err
 }
 
@@ -379,7 +372,7 @@ func (s *Store) ListConsoleSessions(ctx context.Context) ([]*store.ConsoleSessio
 		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &created); err != nil {
 			return nil, err
 		}
-		sess.CreatedAt, _ = time.Parse(tsLayout, created)
+		sess.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
 		out = append(out, &sess)
 	}
 	return out, rows.Err()
@@ -410,11 +403,11 @@ func (s *Store) CreateRun(ctx context.Context, r *store.Run) error {
 	defer cancel()
 	var started any
 	if r.StartedAt != nil {
-		started = r.StartedAt.Format(tsLayout)
+		started = r.StartedAt.Format(store.TimestampLayout)
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO runs(id,overseer_id,workflow_name,workflow_hcl,status,current_step,last_seq,created_at,started_at,ticket,repo_url,pr_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(tsLayout),
+		r.ID, r.OverseerID, r.WorkflowName, r.WorkflowHCL, r.Status, r.CurrentStep, r.LastSeq, r.CreatedAt.Format(store.TimestampLayout),
 		started, nonEmpty(r.Ticket), nonEmpty(r.RepoURL), nonEmpty(r.PRURL))
 	return err
 }
@@ -424,37 +417,6 @@ func (s *Store) GetRun(ctx context.Context, id string) (*store.Run, error) {
 	defer cancel()
 	row := s.db.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id)
 	return scanRun(row.Scan)
-}
-
-// runCursor is the opaque ListRuns continuation token: the (created_at, id)
-// sort key of the last row of the previous page, base64url-encoded so the
-// client can neither read nor forge meaningful values.
-type runCursor struct {
-	CreatedAt string `json:"created_at"`
-	ID        string `json:"id"`
-}
-
-func encodeRunCursor(created, id string) string {
-	b, _ := json.Marshal(runCursor{CreatedAt: created, ID: id})
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
-func decodeRunCursor(token string) (created, id string, err error) {
-	if token == "" {
-		return "", "", nil
-	}
-	b, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
-		return "", "", fmt.Errorf("%w: %s", store.ErrInvalidCursor, err)
-	}
-	var c runCursor
-	if err := json.Unmarshal(b, &c); err != nil {
-		return "", "", fmt.Errorf("%w: %s", store.ErrInvalidCursor, err)
-	}
-	if c.CreatedAt == "" || c.ID == "" {
-		return "", "", fmt.Errorf("%w: missing sort key fields", store.ErrInvalidCursor)
-	}
-	return c.CreatedAt, c.ID, nil
 }
 
 // ListRuns pages runs newest-first. limit > 0 fetches at most limit rows and
@@ -475,7 +437,7 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit i
 		q += ` AND status=?`
 		args = append(args, status)
 	}
-	cursorCreated, cursorID, err := decodeRunCursor(pageToken)
+	cursorCreated, cursorID, err := store.DecodeRunCursor(pageToken)
 	if err != nil {
 		return nil, "", err
 	}
@@ -511,7 +473,7 @@ func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit i
 		last := out[limit-1]
 		// Format reproduces the stored text exactly (RFC3339Nano round-trips
 		// through parse), so the cursor key matches the ORDER BY values.
-		next = encodeRunCursor(last.CreatedAt.Format(tsLayout), last.ID)
+		next = store.EncodeRunCursor(last.CreatedAt.Format(store.TimestampLayout), last.ID)
 		out = out[:limit]
 	}
 	return out, next, nil
@@ -540,13 +502,13 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 	if overseerID.Valid {
 		r.OverseerID = overseerID.String
 	}
-	r.CreatedAt, _ = time.Parse(tsLayout, created)
+	r.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
 	if started.Valid {
-		t, _ := time.Parse(tsLayout, started.String)
+		t, _ := time.Parse(store.TimestampLayout, started.String)
 		r.StartedAt = &t
 	}
 	if ended.Valid {
-		t, _ := time.Parse(tsLayout, ended.String)
+		t, _ := time.Parse(store.TimestampLayout, ended.String)
 		r.EndedAt = &t
 	}
 	if variableScope.Valid {
@@ -556,7 +518,7 @@ func scanRun(scan func(...any) error) (*store.Run, error) {
 		r.PendingSignal = pendingSignal.String
 	}
 	if pausedAt.Valid {
-		t, _ := time.Parse(tsLayout, pausedAt.String)
+		t, _ := time.Parse(store.TimestampLayout, pausedAt.String)
 		r.PausedAt = &t
 	}
 	if ticket.Valid {
@@ -579,11 +541,11 @@ func (s *Store) UpdateRun(ctx context.Context, r *store.Run) error {
 	defer cancel()
 	var ended any
 	if r.EndedAt != nil {
-		ended = r.EndedAt.Format(tsLayout)
+		ended = r.EndedAt.Format(store.TimestampLayout)
 	}
 	var started any
 	if r.StartedAt != nil {
-		started = r.StartedAt.Format(tsLayout)
+		started = r.StartedAt.Format(store.TimestampLayout)
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status=?, current_step=?, last_seq=?, ended_at=?, started_at=COALESCE(started_at, ?), failure_reason=COALESCE(NULLIF(?, ''), failure_reason) WHERE id=?`,
@@ -650,7 +612,7 @@ func (s *Store) SetRunPaused(ctx context.Context, runID, pendingSignal string, p
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status='paused', pending_signal=?, paused_at=? WHERE id=? AND status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped')`,
-		pendingSignal, pausedAt.Format(tsLayout), runID)
+		pendingSignal, pausedAt.Format(store.TimestampLayout), runID)
 	return err
 }
 
@@ -713,32 +675,10 @@ func (s *Store) MarkRunUnstarted(ctx context.Context, runID string, requeuedAt t
 	defer cancel()
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status='pending', started_at=NULL, created_at=? WHERE id=? AND status='stopped'`,
-		requeuedAt.Format(tsLayout), runID)
+		requeuedAt.Format(store.TimestampLayout), runID)
 	return err
 }
 
-// ReapStaleAgentRuns classifies heartbeat-stale runs in status pending or
-// running (CRI-142) from each run's own record and stamps the verdict
-// (KB-226). A candidate whose engine reached a human gate — the
-// awaiting_human (or, post-rename, need_assistance — KB-270) terminal
-// completion, a human approval request, a human pause or a signal-mode wait
-// in its last persisted event — has no live heartbeat by design: it is
-// parked, not failed. Its status is reclassified
-// to RunStatusAwaitingHuman (no ended_at, no failure_reason, no
-// workflow-assignment change, stays resumable) and the outcome carries
-// Parked true plus the reclassification reason. A candidate with no
-// human-gate ending in its record — an agent vanishing mid-flight — is
-// stamped failed with reason ReapReasonAgentHeartbeatLost and its workflow
-// assignment is marked terminal so dead-agent work is never re-dispatched.
-// Runs without an owning agent (queued assignment work), paused runs and
-// stopped runs (CRI-207: reaper-exempt regardless of heartbeat age) are left
-// alone; terminal runs are never rewritten. Returns one RunReapOutcome per
-// stamped run.
-//
-// CRI-143: the staleness scan runs on the dedicated reader connection and the
-// writes go through one short transaction on the serialized writer pool, so a
-// reaper pass can never hold — or wedge — the connection RPC traffic shares.
-// Transient sqlite faults are retried with backoff (retry.go).
 func (s *Store) ReapStaleAgentRuns(ctx context.Context, now time.Time, staleBefore time.Time) ([]store.RunReapOutcome, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -777,52 +717,30 @@ func (s *Store) reapStaleAgentRunsAttempt(ctx context.Context, now time.Time, st
 	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)
 	defer cancel()
 
-	const reapReason = store.ReapReasonAgentHeartbeatLost
-
 	// Stopped runs are deliberately absent from the scan (CRI-207): a run an
 	// operator parked as stopped has no live agent heartbeat by design and is
 	// never reaped regardless of how old its agent's last heartbeat is.
 	// Reaper semantics for genuinely dead agents are unchanged.
-	rows, err := s.reader.QueryContext(ctx, `
-		SELECT r.id
-		FROM runs r
-		JOIN overseers o ON o.id = r.overseer_id
-		WHERE r.status IN ('pending', 'running') AND o.last_seen_at < ?
-		ORDER BY r.created_at ASC, r.id ASC`,
-		staleBefore.Format(tsLayout))
+	ids, err := reap.StaleCandidates(ctx, s.reader, reap.SQLite, staleBefore, nil)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-
 	if len(ids) == 0 {
 		return nil, nil
 	}
 
-	return s.reapRunIDs(ctx, now, staleBefore, ids, reapReason)
+	return s.reapRunIDs(ctx, now, staleBefore, ids, store.ReapReasonAgentHeartbeatLost)
 }
 
 // reapRunIDs stamps the given candidates on the serialized writer pool. The
 // candidates were picked from a reader snapshot that may already be stale, so
-// the transaction re-validates staleness and reapability against current data:
-// runs whose agent heartbeated or reached a terminal state in between are
-// never clobbered (CRI-142 terminal invariants hold even under the
-// scan-then-write split). Classification and stamping are delegated to the
-// shared verdict stage (KB-226), which reads the candidate's own record inside
-// this transaction.
+// the transaction re-validates staleness and reapability against current data
+// (the same shared candidate predicate, scoped to an IN-list): runs whose
+// agent heartbeated or reached a terminal state in between are never
+// clobbered (CRI-142 terminal invariants hold even under the scan-then-write
+// split). Classification and stamping are delegated to the shared verdict
+// stage (KB-226), which reads the candidate's own record inside this
+// transaction.
 func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.Time, candidates []string, reapReason string) ([]store.RunReapOutcome, error) {
 	// Nothing to reap: return before opening the transaction. The candidate
 	// placeholder list cannot even be derived from zero ids, so an empty
@@ -836,333 +754,25 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	placeholders := strings.Repeat("?,", len(candidates))
-	placeholders = placeholders[:len(placeholders)-1]
-
 	// Re-validate inside the write transaction against the same staleness
 	// criteria as the scan: only still-active runs of agents whose heartbeat
 	// is still older than staleBefore survive into the UPDATE. Stopped runs
 	// are reaper-exempt (CRI-207) and never enter this scan either.
-	revalidateArgs := make([]any, 0, len(candidates)+1)
-	revalidateArgs = append(revalidateArgs, staleBefore.Format(tsLayout))
-	for _, id := range candidates {
-		revalidateArgs = append(revalidateArgs, id)
-	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT r.id
-		FROM runs r
-		JOIN overseers o ON o.id = r.overseer_id
-		WHERE r.status IN ('pending', 'running') AND o.last_seen_at < ?
-		AND r.id IN (`+placeholders+`)
-		ORDER BY r.created_at ASC, r.id ASC`,
-		revalidateArgs...)
+	ids, err := reap.StaleCandidates(ctx, tx, reap.SQLite, staleBefore, candidates)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-
 	if len(ids) == 0 {
 		_ = tx.Rollback()
 		return nil, nil
 	}
 
-	outcomes, err := stampReapVerdicts(ctx, tx, now, reapReason, ids)
+	outcomes, err := reap.StampVerdicts(ctx, tx, reap.SQLite, now, reapReason, ids)
 	if err != nil {
 		return nil, err
 	}
 	return outcomes, tx.Commit()
 }
-
-// stampReapVerdicts is the final write stage shared by both reapers. The ids
-// were already re-validated by the caller's transaction (heartbeat staleness
-// or the never-started rule), so this stage classifies each candidate from its
-// own record and stamps the verdict:
-//
-//   - Candidates whose latest persisted event parks at a human gate (KB-226)
-//     are reclassified to awaiting_human: the engine reached the gate, so
-//     stamping "agent heartbeat lost" would fail completed work. The
-//     reclassification touches nothing but status — no ended_at, no
-//     failure_reason, no workflow-assignment change — so the parked run stays
-//     resumable. Classification happens here, inside the write transaction,
-//     so a human-gate completion appended between the candidate scan and this
-//     write can never be reaped.
-//   - The remaining candidates are stamped terminal-failed with the calling
-//     reaper's verdict reason and their workflow assignments marked terminal
-//     (CRI-142).
-//
-// Returns one RunReapOutcome per stamped run, in the ids order.
-func stampReapVerdicts(ctx context.Context, tx *sql.Tx, now time.Time, reapReason string, ids []string) ([]store.RunReapOutcome, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-
-	parked, err := humanGateParkedReasons(ctx, tx, ids)
-	if err != nil {
-		return nil, err
-	}
-
-	parkedIDs := make([]string, 0, len(parked))
-	reapedIDs := make([]string, 0, len(ids))
-	outcomes := make([]store.RunReapOutcome, 0, len(ids))
-	for _, id := range ids {
-		if reason, ok := parked[id]; ok {
-			parkedIDs = append(parkedIDs, id)
-			outcomes = append(outcomes, store.RunReapOutcome{
-				RunID:  id,
-				Parked: true,
-				Status: store.RunStatusAwaitingHuman,
-				Reason: reason,
-			})
-			continue
-		}
-		reapedIDs = append(reapedIDs, id)
-		outcomes = append(outcomes, store.RunReapOutcome{
-			RunID:  id,
-			Status: "failed",
-			Reason: reapReason,
-		})
-	}
-
-	if err := stampParkedRunsAwaitingHuman(ctx, tx, parkedIDs); err != nil {
-		return nil, err
-	}
-	if err := stampReapedRunsTerminal(ctx, tx, now, reapReason, reapedIDs); err != nil {
-		return nil, err
-	}
-	return outcomes, nil
-}
-
-// stampReapedRunsTerminal is the failed-stamp stage of the shared reaper
-// verdict pass: the given ids were re-validated on this transaction and carry
-// no human-gate ending, so they are stamped terminal-failed with
-// (ended_at, failure_reason) and their still queued or leased workflow
-// assignments are marked terminal so reaped work is never re-queued or
-// redelivered. The placeholder lists are derived from the
-// re-validated ids — never from earlier, larger candidate lists — keeping
-// placeholders and args in lockstep (CRI-143 regression: a stale placeholder
-// list failed the whole pass with "missing argument with index N" whenever
-// re-validation dropped a candidate). The status guard is defense in depth:
-// terminal runs are never rewritten, even if a concurrent writer committed
-// between the tx snapshot and the UPDATE.
-func stampReapedRunsTerminal(ctx context.Context, tx *sql.Tx, now time.Time, reapReason string, ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	idPlaceholders := strings.Repeat("?,", len(ids))
-	idPlaceholders = idPlaceholders[:len(idPlaceholders)-1]
-
-	args := make([]any, 0, len(ids)+2)
-	args = append(args, now.Format(tsLayout), reapReason)
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE runs
-		 SET status='failed', ended_at=?, failure_reason=?
-		 WHERE id IN (`+idPlaceholders+`) AND status IN ('pending', 'running')`,
-		args...); err != nil {
-		return err
-	}
-
-	asgArgs := make([]any, 0, len(ids)+5)
-	asgArgs = append(asgArgs,
-		store.WorkflowAssignmentStateTerminal, reapReason, now.Format(tsLayout))
-	for _, id := range ids {
-		asgArgs = append(asgArgs, id)
-	}
-	asgArgs = append(asgArgs,
-		store.WorkflowAssignmentStateQueued, store.WorkflowAssignmentStateLeased)
-	_, err := tx.ExecContext(ctx,
-		`UPDATE workflow_assignments
-		 SET state=?, terminal_reason=?, updated_at=?
-		 WHERE run_id IN (`+idPlaceholders+`) AND state IN (?, ?)`,
-		asgArgs...)
-	return err
-}
-
-// Human-gate verdict reasons (KB-226): the reclassification reasons the
-// skipped-run log line and the RunReapOutcome carry for parked candidates.
-const (
-	awaitingHumanGateVerdictReason = "engine reached terminal human gate awaiting_human"
-	approvalGateVerdictReason      = "engine parked at human approval gate"
-	humanPauseGateVerdictReason    = "engine parked at human pause gate"
-	signalWaitGateVerdictReason    = "engine parked at human signal wait"
-)
-
-// Last-event type names the human-gate classifier keys on. The strings mirror
-// the criteria SDK event types (Envelope_RunCompleted -> "run.completed" and
-// friends); the store layer stays independent of the generated protobuf types,
-// so they are matched by name here.
-const (
-	evTypeRunCompleted      = "run.completed"
-	evTypeApprovalRequested = "approval.requested"
-	evTypeRunPaused         = "run.paused"
-	evTypeWaitEntered       = "wait.entered"
-)
-
-// needAssistanceFinalStates are the engine-side FinalState values a
-// run.completed carries when the workflow parked at a human gate (KB-270).
-// The engine renamed its awaiting_human label to need_assistance (card 269);
-// tree pins move independently of castle's release, so during the transition
-// window either spelling can land in the event log and both classify
-// identically. This is the engine-side label only: the run STATUS castle
-// stamps stays RunStatusAwaitingHuman — that name is castle's own vocabulary
-// (Parapet consumers, reaper exclusion, run watchers).
-var needAssistanceFinalStates = map[string]struct{}{
-	store.RunStatusAwaitingHuman: {},
-	"need_assistance":            {},
-}
-
-// humanGateEventPayload carries the fields the human-gate classifier may need
-// from a last event's payload. FinalState accepts both JSON spellings:
-// engine-originated payloads are protojson (finalState), while older rows may
-// carry snake_case.
-type humanGateEventPayload struct {
-	FinalState      string `json:"final_state"`
-	FinalStateCamel string `json:"finalState"`
-	Mode            string `json:"mode"`
-	Signal          string `json:"signal"`
-	Actor           string `json:"actor"`
-}
-
-// lastEventParksHumanGate classifies a run's most recent persisted event for
-// the KB-226 reaper verdict: some events mean the engine reached a human gate
-// — the awaiting_human (or, post-rename, need_assistance — KB-270) terminal
-// completion, a human approval request, a human pause or a signal-mode wait —
-// so the run is parked, not failed, however old its heartbeat is. Returns the
-// reclassification reason when the event parks the run.
-//
-// A event whose verdict depends on a payload field that is missing or
-// undecodable never parks: the conservative choice keeps the legacy CRI-142
-// verdict ("agent heartbeat lost") for rows this classifier cannot read. An
-// approval request is the exception — its type alone carries the verdict.
-func lastEventParksHumanGate(evType string, payload []byte) (bool, string) {
-	switch evType {
-	case evTypeRunCompleted:
-		var p humanGateEventPayload
-		if json.Unmarshal(payload, &p) != nil {
-			return false, ""
-		}
-		if _, ok := needAssistanceFinalStates[firstNonEmpty(p.FinalState, p.FinalStateCamel)]; ok {
-			return true, awaitingHumanGateVerdictReason
-		}
-		return false, ""
-	case evTypeApprovalRequested:
-		return true, approvalGateVerdictReason
-	case evTypeRunPaused:
-		var p humanGateEventPayload
-		if json.Unmarshal(payload, &p) != nil {
-			return false, ""
-		}
-		// A duration pause at a wait node resumes on its own — a dead agent
-		// waiting out a timer is genuinely dead, so it stays reapable. Signal
-		// and external pauses park for a human or a control surface.
-		if p.Mode == "signal" || p.Mode == "external" || p.Actor != "" {
-			return true, humanPauseGateVerdictReason
-		}
-		return false, ""
-	case evTypeWaitEntered:
-		var p humanGateEventPayload
-		if json.Unmarshal(payload, &p) != nil {
-			return false, ""
-		}
-		// A duration wait resumes on its own; a signal wait parks until a
-		// human fires the signal.
-		if p.Mode == "signal" || p.Signal != "" {
-			return true, signalWaitGateVerdictReason
-		}
-		return false, ""
-	}
-	return false, ""
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
-
-// humanGateParkedReasons classifies the re-validated candidates inside the
-// write transaction: the latest persisted event per run decides whether the
-// run parks at a human gate (KB-226). Runs without events are absent from the
-// result and follow the legacy reap path.
-func humanGateParkedReasons(ctx context.Context, tx *sql.Tx, ids []string) (map[string]string, error) {
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT e.run_id, e.type, e.payload
-		FROM events e
-		JOIN (SELECT run_id, MAX(seq) AS seq FROM events WHERE run_id IN (`+placeholders+`) GROUP BY run_id) l
-		  ON l.run_id = e.run_id AND l.seq = e.seq`,
-		args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	parked := make(map[string]string, len(ids))
-	for rows.Next() {
-		var runID, evType string
-		var payload []byte
-		if err := rows.Scan(&runID, &evType, &payload); err != nil {
-			return nil, err
-		}
-		if isParked, reason := lastEventParksHumanGate(evType, payload); isParked {
-			parked[runID] = reason
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return parked, nil
-}
-
-// stampParkedRunsAwaitingHuman reclassifies human-gate-parked candidates to
-// the parked status (KB-226). The status guard keeps the write from
-// clobbering a competing transition on this transaction's snapshot: only
-// still-active runs move to awaiting_human, and the stamp touches nothing
-// else — no ended_at, no failure_reason, no workflow-assignment change — so
-// the parked run stays resumable.
-func stampParkedRunsAwaitingHuman(ctx context.Context, tx *sql.Tx, ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, store.RunStatusAwaitingHuman)
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	_, err := tx.ExecContext(ctx,
-		`UPDATE runs
-		 SET status=?
-		 WHERE id IN (`+placeholders+`) AND status IN ('pending', 'running')`,
-		args...)
-	return err
-}
-
-// createdNeverStartedReason names the KB-233 rule-2 verdict: the run was
-// created but execution never began. It is both the run's failure_reason and
-// the workflow assignment's terminal_reason.
-const createdNeverStartedReason = "created_never_started"
 
 // ReapNeverStartedRuns stamps runs in status pending or running as failed with
 // reason "created_never_started" (KB-233 rule 2) when started_at is still NULL
@@ -1204,33 +814,10 @@ func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, 
 	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)
 	defer cancel()
 
-	// Paused and stopped runs are deliberately absent: a run an operator or
-	// agent parked is reaper-exempt regardless of age, because park states
-	// have no live execution by design (CRI-207) and stay resumable.
-	rows, err := s.reader.QueryContext(ctx, `
-		SELECT id
-		FROM runs
-		WHERE status IN ('pending', 'running') AND started_at IS NULL AND created_at < ?
-		ORDER BY created_at ASC, id ASC`,
-		createdBefore.Format(tsLayout))
+	ids, err := reap.NeverStartedCandidates(ctx, s.reader, reap.SQLite, createdBefore, nil)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -1257,48 +844,19 @@ func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, creat
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	placeholders := strings.Repeat("?,", len(candidates))
-	placeholders = placeholders[:len(placeholders)-1]
-
 	// Re-validate inside the write transaction against the same criteria as
 	// the scan: only still-unstarted, still-active runs older than
 	// createdBefore survive into the UPDATE.
-	revalidateArgs := make([]any, 0, len(candidates)+1)
-	revalidateArgs = append(revalidateArgs, createdBefore.Format(tsLayout))
-	for _, id := range candidates {
-		revalidateArgs = append(revalidateArgs, id)
-	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id
-		FROM runs
-		WHERE status IN ('pending', 'running') AND started_at IS NULL AND created_at < ?
-		AND id IN (`+placeholders+`)
-		ORDER BY created_at ASC, id ASC`,
-		revalidateArgs...)
+	ids, err := reap.NeverStartedCandidates(ctx, tx, reap.SQLite, createdBefore, candidates)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-
 	if len(ids) == 0 {
 		_ = tx.Rollback()
 		return nil, nil
 	}
 
-	outcomes, err := stampReapVerdicts(ctx, tx, now, createdNeverStartedReason, ids)
+	outcomes, err := reap.StampVerdicts(ctx, tx, reap.SQLite, now, reap.ReasonCreatedNeverStarted, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -1318,7 +876,7 @@ func (s *Store) CancelRun(ctx context.Context, runID, reason string, now time.Ti
 		`UPDATE runs
 		 SET status='cancelled', ended_at=?, failure_reason=COALESCE(NULLIF(?, ''), failure_reason)
 		 WHERE id=? AND status NOT IN ('succeeded', 'failed', 'cancelled')`,
-		now.Format(tsLayout), nonEmpty(reason), runID)
+		now.Format(store.TimestampLayout), nonEmpty(reason), runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1387,7 +945,7 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO events(run_id,seq,type,ts,correlation_id,payload) VALUES(?,?,?,?,?,?)`,
-		ev.RunID, next, ev.Type, ts.Format(tsLayout), ev.CorrelationID, string(ev.Payload))
+		ev.RunID, next, ev.Type, ts.Format(store.TimestampLayout), ev.CorrelationID, string(ev.Payload))
 	if err != nil {
 		return 0, false, err
 	}
@@ -1405,7 +963,7 @@ func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool,
 func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limit int) ([]*store.Event, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	normalized, err := normalizeListLimit(limit)
+	normalized, err := store.NormalizeListLimit(limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1422,7 +980,7 @@ func (s *Store) ListEvents(ctx context.Context, runID string, since uint64, limi
 func (s *Store) ListStepLogs(ctx context.Context, runID, step string, since uint64, limit int) ([]*store.Event, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	normalized, err := normalizeListLimit(limit)
+	normalized, err := store.NormalizeListLimit(limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1496,7 +1054,7 @@ func (s *Store) RecordAttemptStart(ctx context.Context, ra *store.RunAttempt) er
 		INSERT INTO run_attempts(run_id, step, attempt, started_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(run_id, step, attempt) DO NOTHING`,
-		ra.RunID, ra.Step, ra.Attempt, ra.StartedAt.UTC().Format(tsLayout))
+		ra.RunID, ra.Step, ra.Attempt, ra.StartedAt.UTC().Format(store.TimestampLayout))
 	return err
 }
 
@@ -1506,7 +1064,7 @@ func (s *Store) RecordAttemptComplete(ctx context.Context, runID, step string, a
 	if runID == "" || step == "" || attempt <= 0 {
 		return errors.New("run_id, step, and attempt > 0 required")
 	}
-	now := time.Now().UTC().Format(tsLayout)
+	now := time.Now().UTC().Format(store.TimestampLayout)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE run_attempts SET completed_at=?, outcome=?
 		WHERE run_id=? AND step=? AND attempt=?`,
@@ -1536,25 +1094,15 @@ func (s *Store) GetLatestAttempt(ctx context.Context, runID, step string) (*stor
 		}
 		return nil, err
 	}
-	ra.StartedAt, _ = time.Parse(tsLayout, started)
+	ra.StartedAt, _ = time.Parse(store.TimestampLayout, started)
 	if completed.Valid {
-		t, _ := time.Parse(tsLayout, completed.String)
+		t, _ := time.Parse(store.TimestampLayout, completed.String)
 		ra.CompletedAt = &t
 	}
 	if outcome.Valid {
 		ra.Outcome = outcome.String
 	}
 	return &ra, nil
-}
-
-func normalizeListLimit(limit int) (int, error) {
-	if limit <= 0 {
-		return ListEventsDefaultLimit, nil
-	}
-	if limit > ListEventsMaxLimit {
-		return 0, fmt.Errorf("%w: limit %d exceeds maximum %d", store.ErrInvalidLimit, limit, ListEventsMaxLimit)
-	}
-	return limit, nil
 }
 
 func scanEvent(seq int64, typ, ts string, corr sql.NullString, payload string, runID string) *store.Event {
@@ -1565,7 +1113,7 @@ func scanEvent(seq int64, typ, ts string, corr sql.NullString, payload string, r
 		Type:          typ,
 		Payload:       []byte(payload),
 	}
-	if parsed, err := time.Parse(tsLayout, ts); err == nil {
+	if parsed, err := time.Parse(store.TimestampLayout, ts); err == nil {
 		ev.Ts = parsed
 	}
 	if corr.Valid {
@@ -1621,28 +1169,6 @@ func (s *Store) GetLatestStepEnteredEvent(ctx context.Context, runID string) (*s
 		`SELECT seq,type,ts,correlation_id,payload FROM events WHERE run_id=? AND type='step.entered' ORDER BY seq DESC LIMIT 1`,
 		runID)
 	return scanEventRow(row, runID)
-}
-
-func marshalLabels(m map[string]string) (string, error) {
-	if len(m) == 0 {
-		return "", nil
-	}
-	b, err := json.Marshal(m)
-	if err != nil {
-		return "", fmt.Errorf("marshal labels: %w", err)
-	}
-	return string(b), nil
-}
-
-func unmarshalLabels(s string) map[string]string {
-	if s == "" {
-		return nil
-	}
-	var m map[string]string
-	if err := json.Unmarshal([]byte(s), &m); err != nil {
-		return nil
-	}
-	return m
 }
 
 func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowAssignment) (*store.WorkflowAssignment, bool, error) {
@@ -1703,7 +1229,7 @@ func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowA
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO runs(id, overseer_id, workflow_name, workflow_hcl, status, current_step, last_seq, created_at)
 		 VALUES(?, NULL, ?, ?, 'pending', '', 0, ?)`,
-		a.RunID, a.WorkflowName, a.WorkflowSource, a.CreatedAt.Format(tsLayout)); err != nil {
+		a.RunID, a.WorkflowName, a.WorkflowSource, a.CreatedAt.Format(store.TimestampLayout)); err != nil {
 		return nil, false, err
 	}
 
@@ -1712,7 +1238,7 @@ func (s *Store) CreateWorkflowAssignment(ctx context.Context, a *store.WorkflowA
 		                                   idempotency_key, state, created_at, updated_at)
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.OwnerCriteriaID, a.RunID, a.WorkflowName, a.WorkflowSource, a.LockfileSource,
-		a.IdempotencyKey, a.State, a.CreatedAt.Format(tsLayout), a.UpdatedAt.Format(tsLayout)); err != nil {
+		a.IdempotencyKey, a.State, a.CreatedAt.Format(store.TimestampLayout), a.UpdatedAt.Format(store.TimestampLayout)); err != nil {
 		return nil, false, err
 	}
 
@@ -1777,8 +1303,8 @@ func (s *Store) scanAssignment(ctx context.Context, row *sql.Row) (*store.Workfl
 		}
 		return nil, err
 	}
-	a.CreatedAt, _ = time.Parse(tsLayout, created)
-	a.UpdatedAt, _ = time.Parse(tsLayout, updated)
+	a.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
+	a.UpdatedAt, _ = time.Parse(store.TimestampLayout, updated)
 	if lockfile.Valid {
 		a.LockfileSource = lockfile.String
 	}
@@ -1789,7 +1315,7 @@ func (s *Store) scanAssignment(ctx context.Context, row *sql.Row) (*store.Workfl
 		a.LeasedCriteriaID = leasedID.String
 	}
 	if expires.Valid {
-		t, _ := time.Parse(tsLayout, expires.String)
+		t, _ := time.Parse(store.TimestampLayout, expires.String)
 		a.LeaseExpiresAt = &t
 	}
 	labels, err := s.loadAssignmentLabels(ctx, a.ID)
@@ -1815,8 +1341,8 @@ func scanAssignmentTx(ctx context.Context, tx *sql.Tx, query string, args ...any
 		}
 		return nil, err
 	}
-	a.CreatedAt, _ = time.Parse(tsLayout, created)
-	a.UpdatedAt, _ = time.Parse(tsLayout, updated)
+	a.CreatedAt, _ = time.Parse(store.TimestampLayout, created)
+	a.UpdatedAt, _ = time.Parse(store.TimestampLayout, updated)
 	if lockfile.Valid {
 		a.LockfileSource = lockfile.String
 	}
@@ -1827,7 +1353,7 @@ func scanAssignmentTx(ctx context.Context, tx *sql.Tx, query string, args ...any
 		a.LeasedCriteriaID = leasedID.String
 	}
 	if expires.Valid {
-		t, _ := time.Parse(tsLayout, expires.String)
+		t, _ := time.Parse(store.TimestampLayout, expires.String)
 		a.LeaseExpiresAt = &t
 	}
 	return &a, nil
@@ -1879,8 +1405,8 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		 WHERE state=? AND lease_expires_at < ? AND run_id IN (
 		     SELECT id FROM runs WHERE status='pending'
 		 )`,
-		store.WorkflowAssignmentStateQueued, now.Format(tsLayout),
-		store.WorkflowAssignmentStateLeased, now.Format(tsLayout)); err != nil {
+		store.WorkflowAssignmentStateQueued, now.Format(store.TimestampLayout),
+		store.WorkflowAssignmentStateLeased, now.Format(store.TimestampLayout)); err != nil {
 		return nil, err
 	}
 	// Clear the stale overseer_id for any runs whose lease just expired.
@@ -2007,8 +1533,8 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 			`UPDATE workflow_assignments
 			 SET state=?, leased_criteria_id=?, lease_expires_at=?, updated_at=?
 			 WHERE id=? AND state=?`,
-			store.WorkflowAssignmentStateLeased, criteriaID, expiresAt.Format(tsLayout),
-			now.Format(tsLayout), c.assignment.ID, store.WorkflowAssignmentStateQueued)
+			store.WorkflowAssignmentStateLeased, criteriaID, expiresAt.Format(store.TimestampLayout),
+			now.Format(store.TimestampLayout), c.assignment.ID, store.WorkflowAssignmentStateQueued)
 		if err != nil {
 			return nil, err
 		}
@@ -2024,7 +1550,7 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO workflow_assignment_leases(id, assignment_id, criteria_id, created_at, expires_at)
 			 VALUES(?, ?, ?, ?, ?)`,
-			leaseID, c.assignment.ID, criteriaID, now.Format(tsLayout), expiresAt.Format(tsLayout)); err != nil {
+			leaseID, c.assignment.ID, criteriaID, now.Format(store.TimestampLayout), expiresAt.Format(store.TimestampLayout)); err != nil {
 			return nil, err
 		}
 		var attempt int
@@ -2036,7 +1562,7 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO workflow_assignment_attempts(assignment_id, attempt, criteria_id, created_at)
 			 VALUES(?, ?, ?, ?)`,
-			c.assignment.ID, attempt, criteriaID, now.Format(tsLayout)); err != nil {
+			c.assignment.ID, attempt, criteriaID, now.Format(store.TimestampLayout)); err != nil {
 			return nil, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -2067,7 +1593,7 @@ func labelsSatisfy(agentLabels, required map[string]string) bool {
 }
 
 func mustParseTime(s string) time.Time {
-	t, _ := time.Parse(tsLayout, s)
+	t, _ := time.Parse(store.TimestampLayout, s)
 	return t
 }
 
@@ -2090,7 +1616,7 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		JOIN runs r ON r.id = a.run_id
 		WHERE a.state = ? AND a.lease_expires_at < ? AND r.status = 'pending'
 		ORDER BY a.created_at ASC, a.id ASC`,
-		store.WorkflowAssignmentStateLeased, now.Format(tsLayout))
+		store.WorkflowAssignmentStateLeased, now.Format(store.TimestampLayout))
 	if err != nil {
 		return nil, err
 	}
@@ -2118,7 +1644,7 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	placeholders = placeholders[:len(placeholders)-1]
 
 	args := make([]any, 0, len(ids)+2)
-	args = append(args, store.WorkflowAssignmentStateQueued, now.Format(tsLayout))
+	args = append(args, store.WorkflowAssignmentStateQueued, now.Format(store.TimestampLayout))
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -2243,7 +1769,7 @@ func (s *Store) RecordWorkflowAssignmentLease(ctx context.Context, lease *store.
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO workflow_assignment_leases(id, assignment_id, criteria_id, created_at, expires_at)
 		 VALUES(?, ?, ?, ?, ?)`,
-		lease.ID, lease.AssignmentID, lease.CriteriaID, lease.CreatedAt.Format(tsLayout), lease.ExpiresAt.Format(tsLayout))
+		lease.ID, lease.AssignmentID, lease.CriteriaID, lease.CreatedAt.Format(store.TimestampLayout), lease.ExpiresAt.Format(store.TimestampLayout))
 	return err
 }
 
@@ -2256,7 +1782,7 @@ func (s *Store) RecordWorkflowAssignmentAttempt(ctx context.Context, attempt *st
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO workflow_assignment_attempts(assignment_id, attempt, criteria_id, created_at)
 		 VALUES(?, ?, ?, ?)`,
-		attempt.AssignmentID, attempt.Attempt, attempt.CriteriaID, attempt.CreatedAt.Format(tsLayout))
+		attempt.AssignmentID, attempt.Attempt, attempt.CriteriaID, attempt.CreatedAt.Format(store.TimestampLayout))
 	return err
 }
 
@@ -2266,7 +1792,7 @@ func (s *Store) CompleteWorkflowAssignmentAttempt(ctx context.Context, assignmen
 	if assignmentID == "" || attempt <= 0 {
 		return errors.New("assignment_id and attempt > 0 required")
 	}
-	now := time.Now().UTC().Format(tsLayout)
+	now := time.Now().UTC().Format(store.TimestampLayout)
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE workflow_assignment_attempts SET completed_at=?, outcome=?
 		 WHERE assignment_id=? AND attempt=?`,
@@ -2285,7 +1811,7 @@ func (s *Store) MarkWorkflowAssignmentTerminal(ctx context.Context, runID, reaso
 		`UPDATE workflow_assignments
 		 SET state=?, terminal_reason=?, updated_at=?
 		 WHERE run_id=? AND state IN (?, ?)`,
-		store.WorkflowAssignmentStateTerminal, reason, now.Format(tsLayout),
+		store.WorkflowAssignmentStateTerminal, reason, now.Format(store.TimestampLayout),
 		runID, store.WorkflowAssignmentStateQueued, store.WorkflowAssignmentStateLeased)
 	return err
 }

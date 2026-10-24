@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/brokenbots/castle/castle/internal/store/migrate"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -259,14 +261,14 @@ func TestMigrate_TransactionRollback(t *testing.T) {
 func discoveredRuntimeMigrationVersions(t *testing.T) []int {
 	t.Helper()
 
-	migrations, err := pendingMigrations(migrationsFS, map[int]struct{}{})
+	migrations, err := migrate.Discover(migrationsFS)
 	if err != nil {
 		t.Fatalf("discover runtime migrations: %v", err)
 	}
 
 	versions := make([]int, 0, len(migrations))
 	for _, m := range migrations {
-		versions = append(versions, m.version)
+		versions = append(versions, m.Version)
 	}
 	sort.Ints(versions)
 	return versions

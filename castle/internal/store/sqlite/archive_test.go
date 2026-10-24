@@ -2,8 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -304,7 +302,7 @@ func TestListRunArchives_KeysetPaging(t *testing.T) {
 	}
 
 	// Cursor beyond the last row terminates without error.
-	page, next, err = s.ListRunArchives(ctx, "", "", 2, encodeArchiveCursor("zzz"))
+	page, next, err = s.ListRunArchives(ctx, "", "", 2, store.EncodeArchiveCursor("zzz"))
 	if err != nil || len(page) != 0 || next != "" {
 		t.Fatalf("cursor past end: err=%v len=%d next=%q", err, len(page), next)
 	}
@@ -322,11 +320,11 @@ func TestListRunArchives_Limits(t *testing.T) {
 	}
 
 	recs, next, err := s.ListRunArchives(ctx, "", "", 0, "")
-	if err != nil || len(recs) != ListRunArchivesDefaultLimit || next == "" {
+	if err != nil || len(recs) != store.ListRunArchivesDefaultLimit || next == "" {
 		t.Fatalf("default limit page: err=%v len=%d next=%q", err, len(recs), next)
 	}
 
-	recs, next, err = s.ListRunArchives(ctx, "", "", ListRunArchivesMaxLimit*2, "")
+	recs, next, err = s.ListRunArchives(ctx, "", "", store.ListRunArchivesMaxLimit*2, "")
 	if err != nil {
 		t.Fatalf("clamped list: %v", err)
 	}
@@ -337,7 +335,7 @@ func TestListRunArchives_Limits(t *testing.T) {
 	}
 
 	recs, _, err = s.ListRunArchives(ctx, "", "", -5, "")
-	if err != nil || len(recs) != ListRunArchivesDefaultLimit {
+	if err != nil || len(recs) != store.ListRunArchivesDefaultLimit {
 		t.Fatalf("negative limit falls back to default: err=%v len=%d", err, len(recs))
 	}
 }
@@ -395,51 +393,11 @@ func TestListRunArchives_InvalidCursor(t *testing.T) {
 	for _, c := range []struct{ name, token string }{
 		{"not-base64", "!!not-base64!!"},
 		{"not-json", "aGVsbG8"},
-		{"missing-run-id", encodeArchiveCursor("")},
+		{"missing-run-id", store.EncodeArchiveCursor("")},
 	} {
 		_, _, err := s.ListRunArchives(context.Background(), "", "", 10, c.token)
 		if !errors.Is(err, store.ErrInvalidCursor) {
 			t.Errorf("%s: expected ErrInvalidCursor, got %v", c.name, err)
-		}
-	}
-}
-
-func TestDecodeArchiveCursor_RoundTrip(t *testing.T) {
-	// Empty token means "no cursor": a fresh listing, not an error.
-	if id, err := decodeArchiveCursor(""); err != nil || id != "" {
-		t.Fatalf("empty cursor must stay a fresh listing: id=%q err=%v", id, err)
-	}
-
-	if got, err := decodeArchiveCursor(encodeArchiveCursor("run-9")); err != nil || got != "run-9" {
-		t.Fatalf("round trip: got=%q err=%v", got, err)
-	}
-
-	// A token whose payload has an empty run_id cannot advance paging.
-	emptyJSON, err := json.Marshal(archiveCursor{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tok := base64.RawURLEncoding.EncodeToString(emptyJSON)
-	if _, err := decodeArchiveCursor(tok); !errors.Is(err, store.ErrInvalidCursor) {
-		t.Fatalf("empty-run_id cursor: expected ErrInvalidCursor, got %v", err)
-	}
-}
-
-func TestPrefixUpperBound(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"abc", "abd"},
-		{"run", "ruo"},
-		{"run-1", "run-2"},
-		{"a\x7f", "a\x80"},
-		{"\xff", ""},
-		{"a\xff\xff", "b"},
-		{"", ""}, // empty prefix never reaches this helper
-	}
-	for _, tc := range cases {
-		if got := prefixUpperBound(tc.in); got != tc.want {
-			t.Errorf("prefixUpperBound(%q)=%q want %q", tc.in, got, tc.want)
 		}
 	}
 }

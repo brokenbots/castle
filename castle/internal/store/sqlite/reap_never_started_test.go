@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/reap"
 )
 
 // neverStartedFixture drives the KB-233 rule-2 reaper tests. createdBefore is
@@ -372,8 +373,8 @@ func TestReapNeverStartedRuns_AwaitingHumanParksNotFails(t *testing.T) {
 	if o.RunID != "r-gated-never" || !o.Parked || o.Status != store.RunStatusAwaitingHuman {
 		t.Fatalf("parked verdict: %+v", o)
 	}
-	if o.Reason != awaitingHumanGateVerdictReason {
-		t.Fatalf("reclassification reason = %q, want %q", o.Reason, awaitingHumanGateVerdictReason)
+	if o.Reason != reap.AwaitingHumanGateVerdictReason {
+		t.Fatalf("reclassification reason = %q, want %q", o.Reason, reap.AwaitingHumanGateVerdictReason)
 	}
 
 	r := f.getRun(t, "r-gated-never")
