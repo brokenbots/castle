@@ -3,6 +3,7 @@ package kanboardtrigger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -146,6 +147,9 @@ func decodeParams(req kanboard.RPCRequest, p any) {
 		_ = json.Unmarshal(raw, p)
 	}
 }
+
+// errSubmitDenied is the submit-side failure used in retry tests.
+var errSubmitDenied = connect.NewError(connect.CodePermissionDenied, errors.New("trigger identity denied"))
 
 func (fk *fakeKanboard) handle(w http.ResponseWriter, r *http.Request) {
 	var req kanboard.RPCRequest
