@@ -176,9 +176,10 @@ func TestProjectAssignmentScopesDispatchToMembers(t *testing.T) {
 		t.Fatalf("state = %v, want QUEUED", first.State)
 	}
 
-	// No lease from the non-member: its stream stays idle and the assignment
-	// stays queued, still scoped to the project and owned by the submitter.
-	expectNoWorkflowAssignment(t, nonMemberCtrl, 500*time.Millisecond)
+	// No lease from the non-member: the assignment stays queued, still
+	// scoped to the project and owned by the submitter. (The definitive
+	// no-delivery check on this stream happens once, at the end of the test:
+	// every call leaves a Receive goroutine parked on the stream.)
 	a, err := ts.store.GetWorkflowAssignmentByRunID(ctx, first.RunId)
 	if err != nil {
 		t.Fatalf("get assignment: %v", err)
