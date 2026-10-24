@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -94,11 +95,14 @@ func WithRegisterProjectID(ctx context.Context, id string) context.Context {
 // absence of the headers is valid (no block, no join). The returned identity
 // is non-nil even when every field is absent; handlers treat the zero value
 // as "no block".
-func ParseAgentRegistration(headers map[string][]string) (*store.AgentIdentity, string, error) {
+func ParseAgentRegistration(header http.Header) (*store.AgentIdentity, string, error) {
 	identity := &store.AgentIdentity{}
 
 	single := func(name string) (string, error) {
-		values := headers[name]
+		// http.Header keys are MIME-canonical ("X-Criteria-Agent-Version"),
+		// so lookups must canonicalize too; lowercase constants stay stable
+		// public surface for agents.
+		values := header.Values(name)
 		switch {
 		case len(values) > 1:
 			return "", invalidArg("%s must not repeat", name)
@@ -122,10 +126,10 @@ func ParseAgentRegistration(headers map[string][]string) (*store.AgentIdentity, 
 		return nil, "", err
 	}
 
-	if len(headers[HeaderAgentSDKVersion]) > identitySDKVersionMax {
+	if len(header.Values(HeaderAgentSDKVersion)) > identitySDKVersionMax {
 		return nil, "", invalidArg("%s exceeds %d entries", HeaderAgentSDKVersion, identitySDKVersionMax)
 	}
-	for _, v := range headers[HeaderAgentSDKVersion] {
+	for _, v := range header.Values(HeaderAgentSDKVersion) {
 		name, version, err := splitPair(v, identitySDKVersionField, identitySDKVersionField, "sdk version")
 		if err != nil {
 			return nil, "", err
@@ -133,12 +137,12 @@ func ParseAgentRegistration(headers map[string][]string) (*store.AgentIdentity, 
 		identity.SDKVersions = append(identity.SDKVersions, store.AgentSDKVersion{Name: name, Version: version})
 	}
 
-	if len(headers[HeaderAgentExtra]) > identityExtraMax {
+	if len(header.Values(HeaderAgentExtra)) > identityExtraMax {
 		return nil, "", invalidArg("%s exceeds %d entries", HeaderAgentExtra, identityExtraMax)
 	}
-	if len(headers[HeaderAgentExtra]) > 0 {
-		identity.Extra = make(map[string]string, len(headers[HeaderAgentExtra]))
-		for _, v := range headers[HeaderAgentExtra] {
+	if len(header.Values(HeaderAgentExtra)) > 0 {
+		identity.Extra = make(map[string]string, len(header.Values(HeaderAgentExtra)))
+		for _, v := range header.Values(HeaderAgentExtra) {
 			key, value, err := splitPair(v, identityExtraKeyMax, identityExtraValueMax, "extra")
 			if err != nil {
 				return nil, "", err
