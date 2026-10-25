@@ -22,6 +22,7 @@ import (
 
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/hub"
+	"github.com/brokenbots/castle/castle/internal/provision"
 	"github.com/brokenbots/castle/castle/internal/rpc"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/pg"
@@ -103,6 +104,27 @@ func flagWasSet(name string) bool {
 	return set
 }
 
+// agentProjectTokens collects repeated --agent-project-token flag values
+// (KB-337 per-project agent credentials). Each value is one
+// "<project>:<token>" entry; the entries parse with the shared grammar in
+// the provision package together with CASTLE_AGENT_PROJECT_TOKENS.
+type agentProjectTokens []string
+
+func (a *agentProjectTokens) String() string {
+	if a == nil || len(*a) == 0 {
+		return ""
+	}
+	return strings.Join(*a, ",")
+}
+
+func (a *agentProjectTokens) Set(v string) error {
+	if strings.TrimSpace(v) == "" {
+		return errors.New("agent-project-token entry is empty")
+	}
+	*a = append(*a, v)
+	return nil
+}
+
 // anonReadsFlag registers --allow-anon-reads on fs with the KB-326 S3
 // resolution: explicit flag value > the CASTLE_ALLOW_ANON_READS env override
 // (left in for local dev) > off. main passes flag.CommandLine, which is why
@@ -144,6 +166,15 @@ func main() {
 	// env and persisted as a SHA-256 hash; it is never logged. An empty value
 	// REVOKES the trigger identity, disabling board-trigger auth.
 	triggerToken := flag.String("trigger-token", envOrDefault("CASTLE_TRIGGER_TOKEN", ""), "accept token for the kanboard trigger identity (or CASTLE_TRIGGER_TOKEN); empty revokes the previously provisioned trigger identity (disables board-trigger auth)")
+	// Per-project agent credentials (KB-337). Each project's operator uses a
+	// castle_criteria_token scoped to ITS project: entries "<project>:<token>"
+	// (comma or newline separated, "project" or "project:" revokes) provision
+	// or rotate the DISTINCT operator-<project> row carrying
+	// {role: agent, project: <project>}. Deployments resolve openbao
+	// (criteria/data/<project>/castle/agent_token) into this configuration;
+	// token material is persisted as a SHA-256 hash and never logged.
+	agentProjectTokensFlag := &agentProjectTokens{}
+	flag.Var(agentProjectTokensFlag, "agent-project-token", "per-project agent credential entry \"<project>:<token>\" (KB-337); repeatable; comma/newline separated; empty token or bare \"<project>\" revokes that project's credential; CASTLE_AGENT_PROJECT_TOKENS carries the same grammar")
 	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
@@ -274,6 +305,29 @@ func main() {
 		if err := st.DeleteTrigger(context.Background(), "trigger-kanboard"); err != nil {
 			log.Error("revoke trigger identity", "err", err)
 			os.Exit(1)
+		}
+	}
+
+	// Provision or revoke the per-project agent credentials (KB-337). The env
+	// var carries the same grammar as the flag; both sources configure one
+	// combined entry set (env first, flags after). Entries provision or
+	// rotate the operator-<project> credential for their project and a bare
+	// "<project>" or "<project>:" entry revokes it — a retired credential
+	// stops authenticating immediately.
+	agentProjectEntries, err := parseAgentProjectConfig(envOrDefault("CASTLE_AGENT_PROJECT_TOKENS", ""), *agentProjectTokensFlag)
+	if err != nil {
+		log.Error("agent project credential configuration", "err", err)
+		os.Exit(1)
+	}
+	if err := provision.ApplyAgentProjectTokens(context.Background(), st, agentProjectEntries, time.Now().UTC()); err != nil {
+		log.Error("provision agent project credentials", "err", err)
+		os.Exit(1)
+	}
+	for _, e := range agentProjectEntries {
+		if e.Revoke() {
+			log.Info("agent project credential revoked", "project", e.Project)
+		} else {
+			log.Info("agent project credential provisioned", "project", e.Project)
 		}
 	}
 
