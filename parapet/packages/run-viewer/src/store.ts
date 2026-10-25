@@ -13,14 +13,18 @@ import { runsSlice } from './features/runs/runsSlice';
 // the session expired so hosts render their re-auth prompt (parapet's app
 // gate shows the login page again) instead of leaving stuck failure states
 // behind. Condition-rejected requests (aborts, subscription churn) carry no
-// queryFn error payload and are ignored.
-export function createUnauthenticatedErrorMiddleware(): Middleware {
+// queryFn error payload and are ignored. Hosts with their own RTK api slices
+// pass their reducer paths so the same gate covers those requests.
+export function createUnauthenticatedErrorMiddleware(
+  apiPaths: string[] = [RUN_VIEWER_API_REDUCER_PATH],
+): Middleware {
+  const prefixes = [...new Set(apiPaths.filter((p) => p !== ''))].map((p) => `${p}/`);
   return (api) => (next) => (action) => {
     const result = next(action);
     if (
       isAction(action) &&
-      action.type.startsWith(`${RUN_VIEWER_API_REDUCER_PATH}/`) &&
       action.type.endsWith('/rejected') &&
+      prefixes.some((p) => action.type.startsWith(p)) &&
       isUnauthenticatedError((action as { payload?: unknown }).payload)
     ) {
       api.dispatch(sessionExpired());
@@ -35,19 +39,32 @@ export interface RunViewerStoreOptions {
    * collide with `castleApi`, `runs`, or `session`.
    */
   extraReducers?: ReducersMapObject;
+  /**
+   * Host middleware concat after the run-viewer middleware — e.g. the
+   * middleware of a host-owned RTK api slice whose reducer rode in via
+   * `extraReducers`.
+   */
+  extraMiddleware?: Middleware[];
+  /**
+   * Extra RTK api reducer paths whose unauthenticated rejections mark the
+   * session expired alongside `castleApi` — the paths of the host api
+   * slices riding in via `extraMiddleware`.
+   */
+  extraApiPaths?: string[];
 }
 
 /**
  * Builds a self-contained store hosting the run-viewer feature: the RTK api,
  * the runs state, and the session-expiry flag the re-auth affordances drive.
  * Hosts call this once at boot; hosts with their own reducers merge them via
- * `extraReducers`.
+ * `extraReducers` and wire their api middleware via `extraMiddleware`.
  */
 export function createRunViewerStore(options: RunViewerStoreOptions = {}) {
   const extra = options.extraReducers ?? {};
   if ('castleApi' in extra || 'runs' in extra || 'session' in extra) {
     throw new Error("run-viewer reserves the 'castleApi', 'runs' and 'session' reducer keys");
   }
+  const extraMiddleware = options.extraMiddleware ?? [];
   return configureStore({
     reducer: {
       [castleApi.reducerPath]: castleApi.reducer,
@@ -56,7 +73,11 @@ export function createRunViewerStore(options: RunViewerStoreOptions = {}) {
       ...extra,
     },
     middleware: (getDefault) =>
-      getDefault().concat(castleApi.middleware, createUnauthenticatedErrorMiddleware()),
+      getDefault().concat(
+        castleApi.middleware,
+        ...extraMiddleware,
+        createUnauthenticatedErrorMiddleware([RUN_VIEWER_API_REDUCER_PATH, ...(options.extraApiPaths ?? [])]),
+      ),
   });
 }
 
