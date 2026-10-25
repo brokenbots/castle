@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
+	"github.com/brokenbots/castle/castle/internal/store"
 
 	castlev1 "github.com/brokenbots/castle/castle/gen/castle/v1"
 )
@@ -218,6 +221,76 @@ func TestProvisionConsoleUser_RotatesUsernameOnSameFixedID(t *testing.T) {
 	users, err := ts.store.ListConsoleSessions(ctx) // sanity: no sessions yet
 	if err != nil || len(users) != 0 {
 		t.Fatalf("unexpected sessions: %d (err=%v)", len(users), err)
+	}
+}
+
+// TestProvisionConsoleUser_ConvergesAttributedRow pins the KB-331
+// desired-state boot reseed: a deployment row seeded by the pre-KB-331
+// build (role=admin only, no display attribution) converges to the
+// attributed shape at the next boot WITHOUT a password change — the
+// converged rewrite must not rotate the hash (so issued sessions survive)
+// and the convergence must be idempotent.
+func TestProvisionConsoleUser_ConvergesAttributedRow(t *testing.T) {
+	ts := newTestStack(t)
+	ts.server.EnableConsoleLogin()
+	ctx := context.Background()
+
+	// Seed the KB-330 shape directly on the operators row: admin role, no
+	// display attribute.
+	hash, err := auth.HashPassword("op-password")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := ts.store.UpsertOperator(ctx, &store.Operator{
+		ID:           ConsoleDefaultUserID,
+		Name:         "operator",
+		DisplayName:  "operator",
+		PasswordHash: &hash,
+		Attributes:   map[string]string{store.OperatorAttributeRole: store.OperatorRoleAdmin},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("seed pre-KB-331 row: %v", err)
+	}
+
+	// The login works against the old row; capture its session token.
+	resp, err := ts.server.Login(ctx, loginRequest("operator", "op-password"))
+	if err != nil {
+		t.Fatalf("login against pre-KB-331 row: %v", err)
+	}
+
+	// Boot re-provision with the SAME credentials converges the attributed
+	// shape without revoking anything.
+	if err := ProvisionConsoleUser(ctx, ts.store, "operator", "op-password", nil); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	op, err := ts.store.GetOperator(ctx, ConsoleDefaultUserID)
+	if err != nil {
+		t.Fatalf("get operator: %v", err)
+	}
+	if want := store.ConsoleOperatorAttributes("operator"); !maps.Equal(op.Attributes, want) {
+		t.Fatalf("attributes = %v, want %v (KB-331 display attribution missing)", op.Attributes, want)
+	}
+	if op.Role() != store.OperatorRoleAdmin || op.DisplayName != "operator" {
+		t.Fatalf("operator row = role %q display %q, want admin/operator", op.Role(), op.DisplayName)
+	}
+	if !auth.VerifyPassword(*op.PasswordHash, "op-password") {
+		t.Fatal("convergence must not rotate the stored hash")
+	}
+	if sess, err := auth.ResolveConsoleSession(ctx, ts.store, resp.Msg.SessionToken); sess == nil || err != nil {
+		t.Fatalf("issued session must survive attribute convergence (sess=%v err=%v)", sess, err)
+	}
+	if _, err := ts.store.GetConsoleUser(ctx, "operator"); err != nil {
+		t.Fatalf("console projection must keep resolving: %v", err)
+	}
+
+	// Second boot over the converged row: same credentials, already desired.
+	if err := ProvisionConsoleUser(ctx, ts.store, "operator", "op-password", nil); err != nil {
+		t.Fatalf("second converge: %v", err)
+	}
+	if sess, err := auth.ResolveConsoleSession(ctx, ts.store, resp.Msg.SessionToken); sess == nil || err != nil {
+		t.Fatalf("session must survive the second boot (sess=%v err=%v)", sess, err)
 	}
 }
 
