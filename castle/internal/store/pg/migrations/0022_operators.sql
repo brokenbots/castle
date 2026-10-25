@@ -14,7 +14,11 @@
 
 CREATE TABLE operators (
     id            TEXT PRIMARY KEY,
-    name          TEXT NOT NULL UNIQUE,
+    -- The login namespace: unique among password-carrying rows only (see
+    -- the partial unique index below). Token-only operators may share a
+    -- name with a password operator — alias rows keep their legacy
+    -- class-local names, and login resolves against password rows only.
+    name          TEXT NOT NULL,
     display_name  TEXT NOT NULL DEFAULT '',
     -- Password carries the bcrypt hash of password-authenticated operators
     -- (console logins); token-only operators (agents, orchestrators,
@@ -26,6 +30,10 @@ CREATE TABLE operators (
     created_at    TIMESTAMPTZ NOT NULL,
     updated_at    TIMESTAMPTZ NOT NULL
 );
+
+-- Login-name uniqueness applies among password-carrying operators only.
+CREATE UNIQUE INDEX operators_name_login_uq
+    ON operators(name) WHERE password_hash IS NOT NULL;
 
 -- Operator-issued bearer tokens (KB-330): the credential space for tokens
 -- castle mints directly. Legacy class tokens keep resolving through their

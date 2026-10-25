@@ -14,7 +14,11 @@
 
 CREATE TABLE operators (
     id            TEXT PRIMARY KEY,
-    name          TEXT NOT NULL UNIQUE,
+    -- The login namespace: unique among password-carrying rows only (see
+    -- the partial unique index below). Token-only operators may share a
+    -- name with a password operator — alias rows keep their legacy
+    -- class-local names, and login resolves against password rows only.
+    name          TEXT NOT NULL,
     display_name  TEXT NOT NULL DEFAULT '',
     -- Password carries the bcrypt hash of password-authenticated operators
     -- (console logins); token-only operators (agents, orchestrators,
@@ -27,6 +31,10 @@ CREATE TABLE operators (
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
+
+-- Login-name uniqueness applies among password-carrying operators only.
+CREATE UNIQUE INDEX operators_name_login_uq
+    ON operators(name) WHERE password_hash IS NOT NULL;
 
 -- Operator-issued bearer tokens (KB-330): the credential space for tokens
 -- castle mints directly. Legacy class tokens keep resolving through their
@@ -53,16 +61,19 @@ INSERT INTO operators(id,name,display_name,password_hash,attributes,created_at,u
 INSERT INTO operators(id,name,display_name,password_hash,attributes,created_at,updated_at)
     SELECT id, name, name, NULL, '{"role":"agent"}', created_at, created_at
     FROM overseers
+    WHERE true
     ON CONFLICT(id) DO NOTHING;
 
 INSERT INTO operators(id,name,display_name,password_hash,attributes,created_at,updated_at)
     SELECT id, name, name, NULL, '{"role":"orchestrator"}', created_at, created_at
     FROM orchestrators
+    WHERE true
     ON CONFLICT(id) DO NOTHING;
 
 INSERT INTO operators(id,name,display_name,password_hash,attributes,created_at,updated_at)
     SELECT id, id, id, NULL, '{"role":"trigger"}', created_at, created_at
     FROM triggers
+    WHERE true
     ON CONFLICT(id) DO NOTHING;
 
 -- Alias columns: every legacy identity row now points at its operator row.
