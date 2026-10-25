@@ -556,31 +556,6 @@ func testNegativeAuth(t *testing.T) {
 				},
 			},
 			{
-				name: "GetRun",
-				call: func() error {
-					_, err := sClient.GetRun(ctx, connect.NewRequest(&pb.GetRunRequest{RunId: "x"}))
-					return err
-				},
-			},
-			{
-				name: "ListRunEvents",
-				call: func() error {
-					_, err := sClient.ListRunEvents(ctx, connect.NewRequest(&pb.ListRunEventsRequest{RunId: "x"}))
-					return err
-				},
-			},
-			{
-				name: "WatchRun",
-				call: func() error {
-					stream, err := sClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: "x"}))
-					if err != nil {
-						return err
-					}
-					_ = stream.Receive()
-					return stream.Err()
-				},
-			},
-			{
 				name: "StopRun",
 				call: func() error {
 					_, err := sClient.StopRun(ctx, connect.NewRequest(&pb.StopRunRequest{RunId: "x"}))
@@ -598,13 +573,6 @@ func testNegativeAuth(t *testing.T) {
 				name: "ResumeRun",
 				call: func() error {
 					_, err := sClient.ResumeRun(ctx, connect.NewRequest(&pb.ResumeRunRequest{RunId: "x"}))
-					return err
-				},
-			},
-			{
-				name: "InspectRun",
-				call: func() error {
-					_, err := sClient.InspectRun(ctx, connect.NewRequest(&pb.InspectRunRequest{RunId: "x"}))
 					return err
 				},
 			},
@@ -633,6 +601,58 @@ func testNegativeAuth(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				assertCode(t, tc.call(), connect.CodeUnauthenticated)
+			})
+		}
+	})
+
+	// KB-326 S3: the per-run reads no longer refuse at the credential gate.
+	// A tokenless call passes through (marked anonymous) and the handler
+	// answers with the SAME NotFound a missing run gets — scoped runs are
+	// never anonymously readable and a fresh castle has neither the dev flag
+	// nor a per-project grant open.
+	t.Run("AnonymousPerRunReadsRefused", func(t *testing.T) {
+		_, _, _, sClient := startConformanceServer(t, conformanceBootstrapToken)
+
+		perRunCases := []struct {
+			name string
+			call func() error
+		}{
+			{
+				name: "GetRun",
+				call: func() error {
+					_, err := sClient.GetRun(ctx, connect.NewRequest(&pb.GetRunRequest{RunId: "x"}))
+					return err
+				},
+			},
+			{
+				name: "ListRunEvents",
+				call: func() error {
+					_, err := sClient.ListRunEvents(ctx, connect.NewRequest(&pb.ListRunEventsRequest{RunId: "x"}))
+					return err
+				},
+			},
+			{
+				name: "WatchRun",
+				call: func() error {
+					stream, err := sClient.WatchRun(ctx, connect.NewRequest(&pb.WatchRunRequest{RunId: "x"}))
+					if err != nil {
+						return err
+					}
+					_ = stream.Receive()
+					return stream.Err()
+				},
+			},
+			{
+				name: "InspectRun",
+				call: func() error {
+					_, err := sClient.InspectRun(ctx, connect.NewRequest(&pb.InspectRunRequest{RunId: "x"}))
+					return err
+				},
+			},
+		}
+		for _, tc := range perRunCases {
+			t.Run(tc.name, func(t *testing.T) {
+				assertCode(t, tc.call(), connect.CodeNotFound)
 			})
 		}
 	})
