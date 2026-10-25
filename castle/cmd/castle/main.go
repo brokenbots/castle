@@ -103,6 +103,16 @@ func flagWasSet(name string) bool {
 	return set
 }
 
+// anonReadsFlag registers --allow-anon-reads on fs with the KB-326 S3
+// resolution: explicit flag value > the CASTLE_ALLOW_ANON_READS env override
+// (left in for local dev) > off. main passes flag.CommandLine, which is why
+// the flag set is a parameter — the resolution lives here so tests can
+// exercise it without running main.
+func anonReadsFlag(fs *flag.FlagSet) *bool {
+	return fs.Bool("allow-anon-reads", envOrDefaultBool("CASTLE_ALLOW_ANON_READS", false),
+		"allow anonymous read RPCs for legacy unscoped runs (default false; CASTLE_ALLOW_ANON_READS=true for local dev)")
+}
+
 func buildInterceptorOpts(bootstrapToken string, allowAnonRegister bool) []auth.InterceptorOption {
 	var opts []auth.InterceptorOption
 	if allowAnonRegister {
@@ -137,7 +147,13 @@ func main() {
 	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
-	allowAnonReads := flag.Bool("allow-anon-reads", envOrDefaultBool("CASTLE_ALLOW_ANON_READS", !tlsDefault), "allow anonymous ServerService read RPCs")
+	// KB-326 (S3): the anonymous-read default flipped to false — the flip the
+	// pre-split deprecation notice promised. anonReadsFlag owns the
+	// resolution (explicit flag value > CASTLE_ALLOW_ANON_READS env override
+	// for local dev > false). Project-scoped runs are never anonymously
+	// readable regardless of this switch; the per-project
+	// allow_anonymous_reads setting grants only the legacy unscoped space.
+	allowAnonReads := anonReadsFlag(flag.CommandLine)
 	eventBufferCapacity := flag.Int("event-buffer-capacity", envOrDefaultInt("CASTLE_EVENT_BUFFER_CAPACITY", hub.DefaultEventBufferCapacity), "in-memory events retained per run for WatchRun replay")
 	agentHeartbeatInterval := flag.Duration("agent-heartbeat-interval", envOrDefaultDuration("CASTLE_AGENT_HEARTBEAT_INTERVAL", 10*time.Second), "nominal criteria agent heartbeat cadence (or CASTLE_AGENT_HEARTBEAT_INTERVAL); the run reaper multiplies this to derive staleness")
 	runReapMultiplier := flag.Int("run-reap-multiplier", envOrDefaultInt("CASTLE_RUN_REAP_MULTIPLIER", 6), "reap pending/running runs whose agent heartbeat is older than this multiple of the heartbeat interval (or CASTLE_RUN_REAP_MULTIPLIER); 0 disables run reaping")
@@ -150,9 +166,10 @@ func main() {
 	if !flagWasSet("grpc-reflection") {
 		*grpcReflection = !tlsEnabled
 	}
-	if !flagWasSet("allow-anon-reads") {
-		*allowAnonReads = !tlsEnabled
-	}
+	// KB-326 (S3): the allow-anon-reads TLS-mode recompute is retired — the
+	// flag decision is CLI > CASTLE_ALLOW_ANON_READS env > false, so the env
+	// override actually works when no CLI flag is passed. The
+	// --grpc-reflection default keeps its TLS-mode recompute.
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if *eventBufferCapacity <= 0 {
@@ -177,12 +194,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Deprecation notice: --allow-anon-reads and --grpc-reflection default to
-	// true in non-TLS (dev) mode. These defaults will be flipped to false in the
-	// next overlord phase (post-split cleanup). Operators relying on these
-	// defaults should set the flags explicitly before upgrading.
-	if *allowAnonReads && !tlsEnabled {
-		log.Warn("dev-mode default: --allow-anon-reads=true; this default will be flipped to false in a future release")
+	// KB-326 (S3): --allow-anon-reads defaults to false everywhere. When anon
+	// reads are enabled (CLI flag or env), warn that it is a dev-only escape
+	// hatch: anonymous reads reach only legacy unscoped runs and the
+	// observation surfaces — project-scoped runs stay dark.
+	if *allowAnonReads {
+		log.Warn("anonymous reads enabled: --allow-anon-reads is a dev-only escape hatch (CASTLE_ALLOW_ANON_READS); project-scoped runs are never anonymously readable")
 	}
 	if *grpcReflection && !tlsEnabled {
 		log.Warn("dev-mode default: --grpc-reflection=true; this default will be flipped to false in a future release")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,41 @@ import (
 	"github.com/brokenbots/castle/castle/internal/store/refire"
 	"github.com/brokenbots/castle/castle/internal/store/sqlite"
 )
+
+// anonReadsFlagDefault pins the KB-326 (S3) flag resolution: off by default
+// (a fresh castle refuses anonymous reads), on via the
+// CASTLE_ALLOW_ANON_READS env override for local dev, off again when an
+// explicit CLI flag overrides the env, and fallback on unparseable env
+// values. The resolution lives in anonReadsFlag (main.go) so the flag
+// assembly does not have to be re-created here.
+func TestAnonReadsFlagDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		args []string
+		want bool
+	}{
+		{name: "fresh default is off", env: "", args: nil, want: false},
+		{name: "env override enables", env: "true", args: nil, want: true},
+		{name: "env override parses 1", env: "1", args: nil, want: true},
+		{name: "unparseable env falls back off", env: "yes-please", args: nil, want: false},
+		{name: "explicit flag wins over env enable", env: "true", args: []string{"--allow-anon-reads=false"}, want: false},
+		{name: "explicit flag wins over env disable", env: "false", args: []string{"--allow-anon-reads"}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CASTLE_ALLOW_ANON_READS", tc.env)
+			fs := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+			anon := anonReadsFlag(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("parse %v: %v", tc.args, err)
+			}
+			if *anon != tc.want {
+				t.Fatalf("anon reads = %v, want %v (env=%q args=%v)", *anon, tc.want, tc.env, tc.args)
+			}
+		})
+	}
+}
 
 // TestReapStaleRunsOnce pins the main.go reaper wiring (CRI-142): the
 // staleness passed by the ticker must be subtracted from now (not added), and
