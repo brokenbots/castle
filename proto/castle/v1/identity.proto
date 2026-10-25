@@ -1,0 +1,83 @@
+// IdentityService — castle-owned operator identity surface (KB-333). The
+// console (Parapet) no longer infers an operator's privileges from the
+// credential class the request traveled as (login session vs protocol
+// token); instead it reads the operator's unified attributes (KB-330) —
+// role, display, and the project membership set the shared membership
+// predicate holds for it — so admin gating and scoped-view messaging key on
+// OPERATOR attributes, not the credential. Castle is the orchestrator of
+// record and Parapet is its console; upstream criteria deliberately does
+// not ship an operator identity RPC, so this surface lives under the
+// castle.v1 package and keeps the criteria.v1 wire contract an exact
+// mirror of the released SDK.
+syntax = "proto3";
+
+package castle.v1;
+
+option go_package = "github.com/brokenbots/castle/castle/gen/castle/v1;castlev1";
+
+service IdentityService {
+  // GetCallerIdentity returns the calling operator's own identity (KB-333):
+  // its operator attributes (role etc. from the unified `operators` table)
+  // and the membership projection of the shared project membership set.
+  //
+  // This is a strictly SELF-scoped read: an authenticated caller may fetch
+  // only its OWN identity, and the response carries nothing beyond what the
+  // caller could already observe through its own views — the membership
+  // field is the same membership set the run read scope and assignment
+  // lease scan consult, and membership_scoped states whether the caller's
+  // views are membership-scoped. Admin and orchestrator roles are the only
+  // unscoped memberships; their membership field is reported for display
+  // but their views are never scoped by it.
+  //
+  // The console uses this to render the identity badge (display + role) and
+  // to gate project-administration surfaces on the admin ROLE attribute.
+  // Authorization is never served from this response: servers keep
+  // authorizing every procedure live, so a stale identity view can never
+  // widen authority.
+  //
+  // Any authenticated operator (console session or registered protocol
+  // token) may call it for itself; anonymous callers are denied with
+  // UNAUTHENTICATED. No role is denied: the read is self-scoped for every
+  // role, agent included.
+  rpc GetCallerIdentity(GetCallerIdentityRequest) returns (GetCallerIdentityResponse);
+}
+
+message GetCallerIdentityRequest {}
+
+// GetCallerIdentityResponse carries the caller's own operator identity.
+message GetCallerIdentityResponse {
+  // operator_id is the caller's stable operator id (the unified operators
+  // table row; a synthesized legacy id when the call resolves through a
+  // pre-merge direct credential instead of an operator row).
+  string operator_id = 1;
+  // name is the operator's registered identity name (e.g. the login name
+  // for console-seeded operators, the registration name for protocol
+  // tokens).
+  string name = 2;
+  // display_name is the operator's display attribute — the console-facing
+  // label. It falls back to the login name when the operator carries no
+  // display attribute.
+  string display_name = 3;
+  // role is the operator's resolved role attribute value (e.g. "admin",
+  // "agent", "orchestrator", "trigger"). It keys the console's admin
+  // gating: project-administration surfaces are enabled for "admin".
+  string role = 4;
+  // attributes is the operator's full attribute map (KB-330 unified
+  // attributes), including the "role" and "display" entries. The map is
+  // echoed verbatim; the console renders from it instead of assuming
+  // privileges from a credential class.
+  map<string, string> attributes = 5;
+  // membership_scoped states whether the caller's views are membership
+  // scoped (agent and trigger roles, the same semantics the run read
+  // scope applies). When true the caller observes only runs inside its
+  // membership project ids; when false (admin, orchestrator) its views
+  // cover every run and agent and membership is display metadata.
+  bool membership_scoped = 6;
+  // membership is the project ids of the shared project membership set
+  // for the caller (the set the run read scope and assignment lease scan
+  // consult), sorted ascending. An operator with no membership rows
+  // yields an empty list — the console's runs-list empty-state diagnostic
+  // distinguishes that case ("no membership rows") from a scoped view
+  // whose projects simply hold no runs.
+  repeated string membership = 7;
+}
