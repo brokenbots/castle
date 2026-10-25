@@ -15,10 +15,10 @@ describe('SideNav', () => {
   test('renders the grouped sections with router links', () => {
     renderSideNav(false);
 
-    // The nav owns two sections: Runs and Agents, each a labelled group
-    // carrying its route as a router link; the complete-link-set regression
-    // test below enforces that every destination stays inside parapet's
-    // router.
+    // The nav owns three sections: Runs, Agents and the Settings console,
+    // each a labelled group carrying its route as a router link; the
+    // complete-link-set regression test below enforces that every
+    // destination stays inside parapet's router.
     const runsGroup = screen.getByRole('list', { name: 'Runs' });
     expect(runsGroup).toBeInTheDocument();
     const runsLink = screen.getByRole('link', { name: /all runs/i });
@@ -33,6 +33,18 @@ describe('SideNav', () => {
     );
   });
 
+  test('carries the settings console as its own nav area', () => {
+    // KB-327: the settings console is a separate area from the run-viewer —
+    // its own labelled section with the projects route inside it.
+    renderSideNav(false);
+
+    const settingsGroup = screen.getByRole('list', { name: 'Settings console' });
+    expect(settingsGroup).toBeInTheDocument();
+    expect(
+      within(settingsGroup).getByRole('link', { name: /projects/i }),
+    ).toHaveAttribute('href', '/settings/projects');
+  });
+
   test('keeps the section labels accessible while collapsed', () => {
     renderSideNav(true);
 
@@ -43,6 +55,8 @@ describe('SideNav', () => {
     expect(screen.getByText('Agents')).toHaveClass('sr-only');
     expect(screen.getByRole('link', { name: /all runs/i })).toHaveAttribute('title', 'All runs');
     expect(screen.getByRole('link', { name: /all agents/i })).toHaveAttribute('title', 'All agents');
+    expect(screen.getByText('Settings console')).toHaveClass('sr-only');
+    expect(screen.getByRole('link', { name: /projects/i })).toHaveAttribute('title', 'Projects');
   });
 
   test('offers no castle-hosted standalone run-viewer entry', () => {
@@ -61,6 +75,7 @@ describe('SideNav', () => {
     expect(within(nav).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual([
       '/runs',
       '/agents',
+      '/settings/projects',
     ]);
   });
 });

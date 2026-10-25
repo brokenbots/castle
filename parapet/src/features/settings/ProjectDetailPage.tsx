@@ -265,6 +265,9 @@ function SettingsEditor({ projectId }: { projectId: string }) {
                 data-testid="project-settings-reload"
                 onClick={() => {
                   resetSave();
+                  // "Reload current doc" abandons the in-flight local draft
+                  // and re-anchors the form to the fetched doc.
+                  setDraft(null);
                   void refetch();
                 }}
                 className="mt-1 rounded-md border border-line px-2 py-1 text-body text-ink hover:bg-surface"

@@ -19,6 +19,15 @@ export function projectPath(method: string): string {
   return `/castle.v1.ProjectService/${method}`;
 }
 
+// Connect-web writes protojson with lowerCamelCase JSON names while these
+// mocks speak the proto field names (snake_case); read a parsed body field
+// under either spelling. User-owned map keys (Project.settings) are passed
+// through untouched — only message field names get an alias.
+function readField<T>(record: Record<string, unknown>, protoName: string): T | undefined {
+  const jsonName = protoName.replace(/_([a-z0-9])/g, (_match, c: string) => c.toUpperCase());
+  return (record[protoName] ?? record[jsonName]) as T | undefined;
+}
+
 // Mutable mirror of castle's project rows for settings-console tests. The
 // etag mirrors castle's content-addressed scheme loosely: any stable string
 // distinct across doc states works, since tests drive swaps through the
@@ -73,19 +82,19 @@ const projectHandlers = [
     HttpResponse.json({ projects: Object.values(projectRows).map(({ settingsSeq, etag, ...p }) => p) }),
   ),
   http.post(projectPath('GetProject'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as { project_id?: string };
-    const row = body.project_id ? projectRows[body.project_id] : undefined;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const row = projectId ? projectRows[projectId] : undefined;
     if (!row) {
       return HttpResponse.json({ code: 'not_found', message: 'project not found' }, { status: 404 });
     }
     const { settingsSeq, etag, ...p } = row;
-    return HttpResponse.json(p);
+    return HttpResponse.json({ project: p });
   }),
   http.post(projectPath('CreateProject'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as {
-      project?: { id?: string; membership_policy?: string };
-    };
-    const id = body.project?.id ?? '';
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const project = (readField<Record<string, unknown>>(body, 'project') ?? {}) as Record<string, unknown>;
+    const id = (readField<string>(project, 'id') ?? '') as string;
     if (!/^[a-z0-9][a-z0-9-_.]{0,127}$/.test(id)) {
       return HttpResponse.json(
         { code: 'invalid_argument', message: 'project id must be a lowercase slug' },
@@ -101,7 +110,7 @@ const projectHandlers = [
     projectRows[id] = {
       id,
       membership_policy:
-        body.project?.membership_policy === 'PROJECT_MEMBERSHIP_POLICY_CLOSED'
+        readField<string>(project, 'membership_policy') === 'PROJECT_MEMBERSHIP_POLICY_CLOSED'
           ? 'PROJECT_MEMBERSHIP_POLICY_CLOSED'
           : 'PROJECT_MEMBERSHIP_POLICY_OPEN',
       default_refire_policy: 'refire-default',
@@ -117,45 +126,45 @@ const projectHandlers = [
     return HttpResponse.json({ project: { id, membership_policy: projectRows[id].membership_policy } });
   }),
   http.post(projectPath('GetProjectSettings'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as { project_id?: string };
-    const row = body.project_id ? projectRows[body.project_id] : undefined;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const row = projectId ? projectRows[projectId] : undefined;
     if (!row) {
       return HttpResponse.json({ code: 'not_found', message: 'project not found' }, { status: 404 });
     }
     return HttpResponse.json({ settings: row.settings, etag: row.etag });
   }),
   http.post(projectPath('SetProjectSettings'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as {
-      project_id?: string;
-      settings?: Record<string, string>;
-      expected_etag?: string;
-    };
-    const row = body.project_id ? projectRows[body.project_id] : undefined;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const row = projectId ? projectRows[projectId] : undefined;
     if (!row) {
       return HttpResponse.json({ code: 'not_found', message: 'project not found' }, { status: 404 });
     }
-    if ((body.expected_etag ?? '') !== row.etag) {
+    const expectedEtag = readField<string>(body, 'expected_etag');
+    if ((expectedEtag ?? '') !== row.etag) {
       return HttpResponse.json(
         { code: 'failed_precondition', message: 'settings were modified concurrently' },
         { status: 412 },
       );
     }
-    const anon = body.settings?.allow_anonymous_reads;
+    const settings = (readField<Record<string, string>>(body, 'settings') ?? {}) as Record<string, string>;
+    const anon = settings.allow_anonymous_reads;
     if (anon !== undefined && anon !== '' && anon !== 'true' && anon !== 'false') {
       return HttpResponse.json(
         { code: 'invalid_argument', message: 'allow_anonymous_reads must be a JSON boolean' },
         { status: 400 },
       );
     }
-    row.settings = { ...(body.settings ?? {}) };
+    row.settings = { ...settings };
     row.settingsSeq += 1;
     row.etag = `etag-${row.id}-${row.settingsSeq}`;
     row.updated_at = new Date().toISOString();
     return HttpResponse.json({ etag: row.etag });
   }),
   http.post(projectPath('GetRefirePolicy'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as { project_id?: string; route?: string };
-    const key = `${body.project_id ?? ''}/${body.route ?? ''}`;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const key = `${readField<string>(body, 'project_id') ?? ''}/${readField<string>(body, 'route') ?? ''}`;
     const row = refireRows[key];
     if (!row) {
       return HttpResponse.json({ code: 'not_found', message: 'refire policy not set' }, { status: 404 });
@@ -163,77 +172,76 @@ const projectHandlers = [
     return HttpResponse.json({ policy: row, updated_at: new Date().toISOString() });
   }),
   http.post(projectPath('SetRefirePolicy'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as {
-      project_id?: string;
-      route?: string;
-      policy?: { max_attempts?: number; backoff_seconds?: number; transient?: string[]; parks?: string[]; cosmetics?: string[] };
-    };
-    const key = `${body.project_id ?? ''}/${body.route ?? ''}`;
-    const policy = body.policy ?? {};
-    if (
-      (policy.max_attempts ?? 0) < 0 ||
-      (policy.backoff_seconds ?? 0) < 0
-    ) {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const key = `${readField<string>(body, 'project_id') ?? ''}/${readField<string>(body, 'route') ?? ''}`;
+    const policy = (readField<Record<string, unknown>>(body, 'policy') ?? {}) as Record<string, unknown>;
+    const maxAttempts = readField<number>(policy, 'max_attempts') ?? 0;
+    const backoffSeconds = readField<number>(policy, 'backoff_seconds') ?? 0;
+    if (maxAttempts < 0 || backoffSeconds < 0) {
       return HttpResponse.json(
         { code: 'invalid_argument', message: 'refire budgets must be non-negative' },
         { status: 400 },
       );
     }
     refireRows[key] = {
-      max_attempts: policy.max_attempts ?? 0,
-      backoff_seconds: policy.backoff_seconds ?? 0,
-      transient: policy.transient ?? [],
-      parks: policy.parks ?? [],
-      cosmetics: policy.cosmetics ?? [],
+      max_attempts: maxAttempts,
+      backoff_seconds: backoffSeconds,
+      transient: (readField<string[]>(policy, 'transient') ?? []) as string[],
+      parks: (readField<string[]>(policy, 'parks') ?? []) as string[],
+      cosmetics: (readField<string[]>(policy, 'cosmetics') ?? []) as string[],
     };
     return HttpResponse.json({ updated_at: new Date().toISOString() });
   }),
   http.post(projectPath('ListProjectMembers'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as { project_id?: string };
-    const row = body.project_id ? projectRows[body.project_id] : undefined;
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const row = projectId ? projectRows[projectId] : undefined;
     if (!row) {
       return HttpResponse.json({ code: 'not_found', message: 'project not found' }, { status: 404 });
     }
-    return HttpResponse.json({ members: memberRows[body.project_id ?? ''] ?? [] });
+    return HttpResponse.json({ members: memberRows[projectId] ?? [] });
   }),
   http.post(projectPath('AddProjectMember'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as { project_id?: string; member_id?: string; kind?: string };
-    const projectId = body.project_id ?? '';
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
     const row = projectRows[projectId];
     if (!row) {
       return HttpResponse.json({ code: 'not_found', message: 'project not found' }, { status: 404 });
     }
+    const memberId = readField<string>(body, 'member_id') ?? '';
     // Test hook for the console's denied-write surface (castle denies
     // settings/refire/membership writes to protocol credentials).
-    if (body.member_id === 'denied') {
+    if (memberId === 'denied') {
       return HttpResponse.json(
         { code: 'permission_denied', message: 'requires project admin credentials' },
         { status: 403 },
       );
     }
     const members = memberRows[projectId];
-    if (members.some((m) => m.member_id === body.member_id)) {
+    if (members.some((m) => m.member_id === memberId)) {
       return HttpResponse.json(
         { code: 'already_exists', message: 'member already admitted' },
         { status: 409 },
       );
     }
-    if (!body.member_id) {
+    if (!memberId) {
       return HttpResponse.json({ code: 'invalid_argument', message: 'member_id is required' }, { status: 400 });
     }
     const member = {
       project_id: projectId,
-      member_id: body.member_id,
-      kind: body.kind === 'PROJECT_MEMBER_KIND_HUMAN' ? ('PROJECT_MEMBER_KIND_HUMAN' as const) : ('PROJECT_MEMBER_KIND_AI' as const),
+      member_id: memberId,
+      kind: readField<string>(body, 'kind') === 'PROJECT_MEMBER_KIND_HUMAN' ? ('PROJECT_MEMBER_KIND_HUMAN' as const) : ('PROJECT_MEMBER_KIND_AI' as const),
       created_at: new Date().toISOString(),
     };
     members.push(member);
     return HttpResponse.json({ member });
   }),
   http.post(projectPath('RemoveProjectMember'), async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as { project_id?: string; member_id?: string };
-    const members = memberRows[body.project_id ?? ''] ?? [];
-    const idx = members.findIndex((m) => m.member_id === body.member_id);
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const memberId = readField<string>(body, 'member_id') ?? '';
+    const members = memberRows[projectId] ?? [];
+    const idx = members.findIndex((m) => m.member_id === memberId);
     if (idx >= 0) members.splice(idx, 1);
     return HttpResponse.json({});
   }),

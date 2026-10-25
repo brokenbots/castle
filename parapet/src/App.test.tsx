@@ -1,7 +1,7 @@
 import { render, screen, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { delay, http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App';
@@ -13,8 +13,11 @@ import { RunListPage } from '@castle/run-viewer';
 import { RunDetailPage } from '@castle/run-viewer';
 import { AgentListPage } from './features/agents/AgentListPage';
 import { AgentDetailPage } from './features/agents/AgentDetailPage';
+import { ProjectListPage } from './features/settings/ProjectListPage';
+import { ProjectDetailPage } from './features/settings/ProjectDetailPage';
+import { settingsApi } from './features/settings/settingsApi';
 import { server } from '@castle/run-viewer/src/test/mocks/server';
-import { serverPath } from '@castle/run-viewer/src/test/mocks/handlers';
+import { serverPath, projectPath } from '@castle/run-viewer/src/test/mocks/handlers';
 // Vite's ?raw import inlines the shipped index.html so the document title
 // can be asserted against the real markup.
 import indexHtml from '../index.html?raw';
@@ -40,6 +43,9 @@ function renderApp(initialPath = '/') {
             <Route path="runs/:id" element={<RunDetailPage />} />
             <Route path="agents" element={<AgentListPage />} />
             <Route path="agents/:criteriaId" element={<AgentDetailPage />} />
+            <Route path="settings" element={<Navigate to="/settings/projects" replace />} />
+            <Route path="settings/projects" element={<ProjectListPage />} />
+            <Route path="settings/projects/:projectId" element={<ProjectDetailPage />} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -65,6 +71,7 @@ beforeEach(() => {
   // flag a previous test left behind so the gate starts neutral.
   store.dispatch(sessionRecovered());
   store.dispatch(castleApi.util.resetApiState());
+  store.dispatch(settingsApi.util.resetApiState());
 });
 
 describe('App login gate', () => {
@@ -231,6 +238,23 @@ describe('App shell', () => {
     const outlet = screen.getByTestId('shell-outlet');
     expect(await within(outlet).findByTestId('agent-detail')).toBeInTheDocument();
     expect(within(outlet).getByTestId('agent-criteria-id')).toHaveTextContent('agent-1');
+  });
+
+  // KB-327: the settings console is its own area; /settings lands on the
+  // projects list inside the same shell.
+  test('routes the settings console projects page inside the shell outlet', async () => {
+    renderApp('/settings/projects');
+
+    const outlet = screen.getByTestId('shell-outlet');
+    expect(await within(outlet).findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+    expect((await within(outlet).findAllByTestId('project-list-row')).length).toBeGreaterThan(0);
+  });
+
+  test('redirects the bare settings route to the projects list', async () => {
+    renderApp('/settings');
+
+    const outlet = screen.getByTestId('shell-outlet');
+    expect(await within(outlet).findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
   });
 
   test('collapses and expands the nav rail', async () => {
