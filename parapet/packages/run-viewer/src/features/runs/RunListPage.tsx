@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { castleApi, useListRunsQuery, type Run } from '../../api/castleApi';
+import { castleApi, useGetCallerIdentityQuery, useListRunsQuery, type Run } from '../../api/castleApi';
 import { classifyError } from '../../api/errors';
 import type { AppDispatch, RootState } from '../../store';
 import { PageHeader } from '../../components/PageHeader';
@@ -139,6 +139,12 @@ export function RunListPage() {
         visible && hasActiveRuns ? RUN_LIST_POLL_INTERVAL_MS : 0,
     },
   );
+  // The caller's own identity (KB-333) words the runs-list empty state: a
+  // membership-scoped identity that sees zero runs gets a scope diagnostic
+  // instead of an unqualified "no runs", so an empty list is never again
+  // mistaken for breakage. Read-only: identity never gates visibility here.
+  const { data: identity } = useGetCallerIdentityQuery();
+  const identityMembership = identity?.membership ?? [];
   const firstPageRuns = data?.runs ?? [];
   const errorKind = error ? classifyError(error) : undefined;  // The next "Load more" cursor: once older pages exist, the most recent
   // page's own continuation token is the source of truth (page 1's token is
@@ -300,6 +306,22 @@ export function RunListPage() {
             title="Failed to load runs."
             detail="Castle is unreachable or failed to answer. Try again."
             onRetry={() => void refetch()}
+          />
+        )
+      ) : runs.length === 0 && identity?.membershipScoped && statusFilter === '' ? (
+        identityMembership.length === 0 ? (
+          <PageState
+            empty
+            title="No runs, and no project membership."
+            detail="This identity has no membership rows, so the scope this list covers is empty: nothing is reachable to show, now or later, until a project admin admits it to a project. The list answered normally — this is scope, not breakage."
+            testId="run-list-empty-scoped-no-membership"
+          />
+        ) : (
+          <PageState
+            empty
+            title="No runs in your scoped view."
+            detail={`This identity's view is scoped to its project membership (${identityMembership.join(', ')}); none of those projects have runs yet. Runs outside this membership are never visible from this identity, so an empty list is scope, not breakage.`}
+            testId="run-list-empty-scoped"
           />
         )
       ) : runs.length === 0 ? (

@@ -50,6 +50,7 @@ function fakeDataSource(): RunDataSource {
     listAgents: vi.fn(async () => [AGENT]),
     getAgent: vi.fn(async () => AGENT),
     connectionStatus: vi.fn(async () => undefined),
+    identity: vi.fn(async () => null),
     resume: vi.fn(async () => ({})),
     pauseRun: vi.fn(async () => ({})),
     stopRun: vi.fn(async () => ({})),

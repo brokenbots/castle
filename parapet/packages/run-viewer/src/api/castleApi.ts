@@ -7,6 +7,7 @@ import { connectCodeName } from './errors';
 import type { Run as PbRun } from '../gen/criteria/v1/criteria_pb';
 import type { Agent as PbAgent, InspectRunResponse as PbInspectRunResponse } from '../gen/criteria/v1/server_pb';
 import type { Envelope } from '../gen/criteria/v1/events_pb';
+import type { GetCallerIdentityResponse } from '../gen/castle/v1/identity_pb';
 
 export interface Run {
   runId: string;
@@ -102,6 +103,38 @@ export function mapRunInspection(r: PbInspectRunResponse): RunInspection {
     pendingPermissions: Number(r.pendingPermissions),
     lastActivityAt: tsToIso(r.lastActivityAt),
     stateJson: r.stateJson ?? '',
+  };
+}
+
+/**
+ * The caller's own operator identity (KB-333): the unified operator
+ * attributes (role etc.) plus the membership projection of the shared
+ * membership set. The console renders its badge, gates project-administration
+ * surfaces, and words its runs-list empty state from this — never from the
+ * credential class the request traveled as. Authorization stays server-side:
+ * the console only displays and pre-gates on role.
+ */
+export interface CallerIdentity {
+  operatorId: string;
+  name: string;
+  displayName: string;
+  role: string;
+  attributes: Record<string, string>;
+  /** True when the caller's views (e.g. ListRuns) are membership-scoped. */
+  membershipScoped: boolean;
+  /** Project ids of the shared membership set, sorted. */
+  membership: string[];
+}
+
+export function mapCallerIdentity(r: GetCallerIdentityResponse): CallerIdentity {
+  return {
+    operatorId: r.operatorId,
+    name: r.name,
+    displayName: r.displayName,
+    role: r.role,
+    attributes: { ...r.attributes },
+    membershipScoped: r.membershipScoped,
+    membership: [...r.membership],
   };
 }
 
@@ -248,6 +281,20 @@ export const castleApi = createApi({
         }
       },
     }),
+    // Single-operator identity read (KB-333): the self-scoped response the
+    // console renders (badge, admin pre-gating, scoped empty state).
+    // Deliberately untagged like getConnectionStatus — identity is read-once
+    // display and pre-gate metadata; real authorization stays live on the
+    // server for every procedure, so nothing invalidates it.
+    getCallerIdentity: b.query<CallerIdentity | null, void>({
+      queryFn: async () => {
+        try {
+          return { data: await getRunDataSource().identity() };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+    }),
     resume: b.mutation<
       { issuedAt?: string },
       { runId: string; signal?: string; payload?: Record<string, string> }
@@ -297,6 +344,7 @@ export const {
   useListAgentsQuery,
   useGetAgentQuery,
   useGetConnectionStatusQuery,
+  useGetCallerIdentityQuery,
   useResumeMutation,
   usePauseRunMutation,
   useStopRunMutation,

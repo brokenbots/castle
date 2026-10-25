@@ -1,12 +1,14 @@
 import { ConnectError } from '@connectrpc/connect';
-import { server, consoleClient } from './client';
+import { server, consoleClient, identityClient } from './client';
 import {
   mapAgent,
+  mapCallerIdentity,
   mapEnvelope,
   mapRun,
   mapRunInspection,
   RUNS_PAGE_LIMIT,
   tsToIso,
+  type CallerIdentity,
   type EventEnvelope,
   type InspectRunArgs,
   type ListRunsArgs,
@@ -73,6 +75,14 @@ export const castleRunDataSource: RunDataSource = {
 
   async connectionStatus(): Promise<void> {
     await server.listAgents({ limit: 1 });
+  },
+
+  /**
+   * castle.v1.IdentityService/GetCallerIdentity (KB-333): the caller's own
+   * operator identity, mapped onto the plain-JSON shape.
+   */
+  async identity(): Promise<CallerIdentity | null> {
+    return mapCallerIdentity(await identityClient.getCallerIdentity({}));
   },
 
   async resume({ runId, signal, payload }: ResumeArgs) {

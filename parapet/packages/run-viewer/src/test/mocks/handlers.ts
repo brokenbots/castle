@@ -19,6 +19,10 @@ export function projectPath(method: string): string {
   return `/castle.v1.ProjectService/${method}`;
 }
 
+export function identityPath(method: string): string {
+  return `/castle.v1.IdentityService/${method}`;
+}
+
 // Connect-web writes protojson with lowerCamelCase JSON names while these
 // mocks speak the proto field names (snake_case); read a parsed body field
 // under either spelling. User-owned map keys (Project.settings) are passed
@@ -76,6 +80,24 @@ function seedProject(id: string, policy: 'OPEN' | 'CLOSED', members: string[]) {
 
 seedProject('alpha', 'OPEN', ['ov-1']);
 seedProject('beta', 'CLOSED', ['ov-2', 'human-ops']);
+
+// The mock caller's identity (KB-333): an admin console operator with both
+// seeded projects as membership — the same shape castle answers for the
+// console-default operator the login mock admits. Scoped-identity tests
+// override this handler with server.use; keep it consistent with login.
+const identityHandlers = [
+  http.post(identityPath('GetCallerIdentity'), () =>
+    HttpResponse.json({
+      operator_id: 'console-default',
+      name: 'operator',
+      display_name: 'operator',
+      role: 'admin',
+      attributes: { role: 'admin', display: 'operator' },
+      membership_scoped: false,
+      membership: ['alpha', 'beta'],
+    }),
+  ),
+];
 
 const projectHandlers = [
   http.post(projectPath('ListProjects'), () =>
@@ -248,6 +270,7 @@ const projectHandlers = [
 ];
 
 export const handlers = [
+  ...identityHandlers,
   ...projectHandlers,
   // CRI-195: default console login (castle.v1.ConsoleService). Successful
   // credentials return a session token; wrong credentials are unauthenticated

@@ -29,6 +29,7 @@ export {
   mapRun,
   mapAgent,
   mapRunInspection,
+  mapCallerIdentity,
   tsToIso,
   RUNS_PAGE_LIMIT,
   RUN_VIEWER_API_REDUCER_PATH,
@@ -38,6 +39,7 @@ export {
   useListAgentsQuery,
   useGetAgentQuery,
   useGetConnectionStatusQuery,
+  useGetCallerIdentityQuery,
   useResumeMutation,
   usePauseRunMutation,
   useStopRunMutation,
@@ -48,6 +50,7 @@ export {
   type EventEnvelope,
   type ListRunsArgs,
   type RunsPage,
+  type CallerIdentity,
 } from './api/castleApi';
 export { connectCodeName, isUnauthenticatedError, classifyError, type PageErrorKind } from './api/errors';
 export { castleRunDataSource } from './api/castleDataSource';
@@ -56,7 +59,8 @@ export { castleRunDataSource } from './api/castleDataSource';
 // The console login + decision surface lives on castle.v1.ConsoleService
 // (CRI-195/196): criteria.v1 stays an exact mirror of the released SDK.
 // The project administration surface (KB-324) rides castle.v1.ProjectService.
-export { server, consoleClient, projectsClient, getRuntimeCodec, type Codec } from './api/client';
+// The self-scoped identity read (KB-333) rides castle.v1.IdentityService.
+export { server, consoleClient, projectsClient, identityClient, getRuntimeCodec, type Codec } from './api/client';
 
 // Generated castle.v1 wire types, re-exported through the package boundary
 // so host slices (e.g. the KB-327 settings console) ride the package surface
