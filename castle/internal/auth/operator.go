@@ -65,9 +65,8 @@ func ResolveOperatorToken(ctx context.Context, st store.Store, token string) (*s
 	if err != nil {
 		return nil, err
 	}
-	hash := HashToken(token)
 	for _, tok := range tokens {
-		if ConstantTimeEqual(hash, tok.TokenHash) {
+		if ConstantTimeEqual(token, tok.TokenHash) {
 			return tok, nil
 		}
 	}
