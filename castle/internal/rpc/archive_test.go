@@ -707,8 +707,10 @@ func newArchiveAuthHarness(t *testing.T, allowAnonReads bool) *archiveAuthHarnes
 
 	// Seed the castle run behind the matrix record under the registered
 	// agent's ownership so the agent matrix row satisfies the per-run
-	// ownership gate (KB-308 ArchiveRun authorization); other identities
-	// are already token-class-denied before the gate.
+	// ownership gate (KB-308 ArchiveRun authorization); console stays
+	// token-class-denied before the gate, and the orchestrator (KB-334)
+	// reaches the handler with no per-run gate, adopting the identity-less
+	// row below.
 	if err := ts.store.CreateRun(context.Background(), &store.Run{
 		ID: archiveRunID, OverseerID: h.agentID, Status: "failed",
 		CreatedAt: now,
@@ -830,7 +832,10 @@ func TestArchiveRunAuthMatrix(t *testing.T) {
 	t.Run("orchestrator", func(t *testing.T) {
 		h := newArchiveAuthHarness(t, false)
 		ctx := context.Background()
-		if err := archiveCall(ctx, h.client, "archive", h.orchToken); archiveCodeOf(t, err) != connect.CodePermissionDenied {
+		// KB-334: ArchiveRun is the orchestrator role's own write — the
+		// operator's KB-308 terminal-archive leg — so the interceptor must
+		// admit it; console stays denied (row below).
+		if err := archiveCall(ctx, h.client, "archive", h.orchToken); err != nil {
 			t.Fatalf("archive: %v", err)
 		}
 		if err := archiveCall(ctx, h.client, "get", h.orchToken); err != nil {
@@ -838,6 +843,20 @@ func TestArchiveRunAuthMatrix(t *testing.T) {
 		}
 		if err := archiveCall(ctx, h.client, "list", h.orchToken); err != nil {
 			t.Fatalf("list: %v", err)
+		}
+		// Provenance stamp: the orchestrator identity is recorded for the
+		// CR-side archive-id audit, exactly like the agent stamp source.
+		stampReq := connect.NewRequest(&castlev1.ListRunArchivesRequest{KeyPrefix: archiveRunID})
+		stampReq.Header().Set("Authorization", "Bearer "+h.orchToken)
+		list, err := h.client.ListRunArchives(ctx, stampReq)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(list.Msg.GetArchives()) != 1 {
+			t.Fatalf("archives = %d, want 1", len(list.Msg.GetArchives()))
+		}
+		if got, want := list.Msg.GetArchives()[0].GetOperatorId(), "orchestrator/orch-1"; got != want {
+			t.Fatalf("operator_id = %q want %q", got, want)
 		}
 	})
 	t.Run("console", func(t *testing.T) {

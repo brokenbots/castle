@@ -73,10 +73,11 @@ const syntheticArchiveKeyPrefix = "cr-uid/"
 // run_id to that run id, so no caller can key after a run it owns while
 // claiming another identity's run (or a ghost id) in the body. A run-id-less
 // record must keep the documented CR-derived "cr-uid/" namespace, so run
-// ids cannot be minted as squat-able keys. Orchestrator and console
-// identities keep today's behavior: their records are run-id-less
-// synthetic-keyed and protected by the store's first-writer-wins
-// provenance gate.
+// ids cannot be minted as squat-able keys. Orchestrator identities (admitted
+// under the KB-330 attribute model since KB-334 as the operator's own
+// terminal-archive leg) and console identities carry no per-run ownership
+// gate here: the handler relies on the interceptor's role boundaries plus
+// the store's first-writer-wins provenance gate.
 func (s *ServerServer) ArchiveRun(ctx context.Context, req *connect.Request[castlev1.ArchiveRunRequest]) (*connect.Response[castlev1.ArchiveRunResponse], error) {
 	r := req.Msg.GetRecord()
 	if r == nil {

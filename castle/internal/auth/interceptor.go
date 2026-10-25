@@ -96,20 +96,29 @@ var orchestratorProcedures = map[string]struct{}{
 	criteriav1connect.OrchestratorServiceListActiveRunsProcedure:     {},
 }
 
-// orchestratorWriteProcedures are OrchestratorService RPCs that mutate run
-// state on the operator's behalf (CRI-142 CancelRun). Orchestrator and agent
-// identities may invoke them, but — unlike the read surfaces above — they are
-// never exempted by dev-mode anonymous reads, so unauthenticated callers
-// cannot mutate run state even with --allow-anon-reads.
+// orchestratorWriteProcedures are the orchestrator-role write surfaces:
+// OrchestratorService.CancelRun (CRI-142) mutates run state on the operator's
+// behalf, and RunArchiveService.ArchiveRun (KB-308) is the operator's own
+// terminal-archive leg (KB-334): it mutates no agent state — it stores the
+// operator's CR-evidence archive record keyed by run id / CR-uid archive
+// key — so the operator's archive reconcile must reach it under the KB-330
+// attribute model rather than be denied like an agent-owned procedure.
+// Orchestrator and agent identities may invoke them, but — unlike the read
+// surfaces above — they are never exempted by dev-mode anonymous reads, so
+// unauthenticated callers cannot mutate run state even with
+// --allow-anon-reads.
 var orchestratorWriteProcedures = map[string]struct{}{
 	criteriav1connect.OrchestratorServiceCancelRunProcedure: {},
+	castlev1connect.RunArchiveServiceArchiveRunProcedure:    {},
 }
 
 // runArchiveReadProcedures are the RunArchiveService read RPCs (KB-308): the
 // pre-retention archive record store the operator writes before CR retention
 // deletes a terminal run. Reads are observation surfaces (console identities
 // and dev-mode anonymous reads reach them like the ServerService reads); the
-// write (ArchiveRun) is never exempt and stays denied for console identities.
+// write (ArchiveRun) is never exempt — it rides orchestratorWriteProcedures
+// so the orchestrator role lands the archive reconcile — and stays denied
+// for console and trigger identities.
 var runArchiveReadProcedures = map[string]struct{}{
 	castlev1connect.RunArchiveServiceGetRunArchiveProcedure:   {},
 	castlev1connect.RunArchiveServiceListRunArchivesProcedure: {},
@@ -117,9 +126,9 @@ var runArchiveReadProcedures = map[string]struct{}{
 
 // isOrchestratorAllowed reports whether an orchestrator identity may invoke
 // the procedure (CRI-133). Orchestrators get the read-only ServerService
-// surface, OrchestratorService (including CRI-142 CancelRun), and nothing
-// else: every agent-owned write procedure (CriteriaService, ServerService
-// writes) is denied.
+// surface, OrchestratorService (including CRI-142 CancelRun), the operator's
+// own KB-308 terminal-archive write, and nothing else: every agent-owned
+// write procedure (CriteriaService, ServerService writes) is denied.
 func isOrchestratorAllowed(procedure string) bool {
 	if _, ok := orchestratorProcedures[procedure]; ok {
 		return true
