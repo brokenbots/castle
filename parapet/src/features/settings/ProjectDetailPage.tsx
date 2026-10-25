@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { PageHeader, PageState, StickyTableHead, classifyError, useGetCallerIdentityQuery } from '@castle/run-viewer';
+import { PageHeader, PageState, StickyTableHead, classifyError, useCallerIdentity } from '@castle/run-viewer';
 import {
   useGetProjectQuery,
   useGetProjectSettingsQuery,
@@ -42,7 +42,7 @@ import {
 // `resolved` is false while the read is in flight; a failed read keeps the
 // gate closed (fail-closed) with a distinct wording available via isError.
 function useOperatorAdminGate(): { resolved: boolean; isAdmin: boolean; failed: boolean } {
-  const { data, isError } = useGetCallerIdentityQuery();
+  const { data, isError } = useCallerIdentity();
   return { resolved: data !== undefined || isError, isAdmin: data?.role === 'admin', failed: isError };
 }
 

@@ -39,7 +39,7 @@ export {
   useListAgentsQuery,
   useGetAgentQuery,
   useGetConnectionStatusQuery,
-  useGetCallerIdentityQuery,
+  useCallerIdentity,
   useResumeMutation,
   usePauseRunMutation,
   useStopRunMutation,

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useGetCallerIdentityQuery } from '@castle/run-viewer';
+import { useCallerIdentity } from '@castle/run-viewer';
 import { getAuthToken } from '../authToken';
 import { applyTheme, readStoredTheme, type ParapetTheme } from '../theme';
 
@@ -33,7 +33,7 @@ export function TokenMenu({ onLogout }: TokenMenuProps) {
   const [open, setOpen] = useState(false);
   const [theme, setTheme] = useState<ParapetTheme>(() => readStoredTheme());
   const rootRef = useRef<HTMLDivElement>(null);
-  const { data: identity } = useGetCallerIdentityQuery();
+  const { data: identity } = useCallerIdentity();
 
   useEffect(() => {
     if (!open) return;

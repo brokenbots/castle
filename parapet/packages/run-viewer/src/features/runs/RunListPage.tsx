@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { castleApi, useGetCallerIdentityQuery, useListRunsQuery, type Run } from '../../api/castleApi';
+import { castleApi, useCallerIdentity, useListRunsQuery, type Run } from '../../api/castleApi';
 import { classifyError } from '../../api/errors';
 import type { AppDispatch, RootState } from '../../store';
 import { PageHeader } from '../../components/PageHeader';
@@ -143,7 +143,7 @@ export function RunListPage() {
   // membership-scoped identity that sees zero runs gets a scope diagnostic
   // instead of an unqualified "no runs", so an empty list is never again
   // mistaken for breakage. Read-only: identity never gates visibility here.
-  const { data: identity, isError: identityFailed } = useGetCallerIdentityQuery();
+  const { data: identity, isError: identityFailed } = useCallerIdentity();
   // While the identity read is unresolved, hold the unfiltered empty state
   // below rather than flashing the generic one first: an empty scope and an
   // unscoped identity look identical until the read settles. `undefined`

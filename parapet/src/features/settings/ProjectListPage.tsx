@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { PageHeader, PageState, StickyTableHead, classifyError, useGetCallerIdentityQuery } from '@castle/run-viewer';
+import { PageHeader, PageState, StickyTableHead, classifyError, useCallerIdentity } from '@castle/run-viewer';
 import { useCreateProjectMutation, useListProjectsQuery } from './settingsApi';
 import { validateProjectID } from './validation';
 
@@ -17,7 +17,7 @@ export function ProjectListPage() {
   const { data, isLoading, error, refetch } = useListProjectsQuery();
   const errorKind = error ? classifyError(error) : undefined;
   const [createProject, { isLoading: creating }] = useCreateProjectMutation();
-  const { data: identity, isError: identityFailed } = useGetCallerIdentityQuery();
+  const { data: identity, isError: identityFailed } = useCallerIdentity();
   const isAdmin = identity?.role === 'admin';
 
   const [slug, setSlug] = useState('');

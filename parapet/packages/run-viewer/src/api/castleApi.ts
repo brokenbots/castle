@@ -290,7 +290,6 @@ export const castleApi = createApi({
     // Deliberately untagged like getConnectionStatus — real authorization
     // stays live on the server for every procedure regardless of this view.
     getCallerIdentity: b.query<CallerIdentity | null, void>({
-      refetchOnMountOrArgChange: true,
       queryFn: async () => {
         try {
           return { data: await getRunDataSource().identity() };
@@ -353,3 +352,12 @@ export const {
   usePauseRunMutation,
   useStopRunMutation,
 } = castleApi;
+
+// Every identity subscriber opts back in on mount (see the endpoint comment
+// above): identity is credential-bound, and refetch-on-mount is what lets a
+// new session re-read it — including recovering a read the previous
+// credential left in the error state. Consumer code goes through this
+// wrapper, not the raw hook.
+export function useCallerIdentity() {
+  return useGetCallerIdentityQuery(undefined, { refetchOnMountOrArgChange: true });
+}
