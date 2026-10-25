@@ -1,10 +1,10 @@
 // Client-side shape validation for the settings console (KB-327). The rules
 // mirror castle's server-side validation exactly (castle/internal/store
-// project.go, rpc convention limits, anon_reads allow_anonymous_reads, refire
-// policy budgets) so a form that passes here cannot be bounced by the server
-// for shape reasons — the client never interprets entry contents, only the
-// ONE interpreted settings key (allow_anonymous_reads) is checked for JSON
-// boolean shape, same as the server.
+// project.go, the rpc convention limits, refire budgets and vocabularies) so
+// a form that passes here cannot be bounced by the server for shape reasons:
+// non-empty setting values must parse as JSON, the ONE interpreted key
+// (allow_anonymous_reads) must be a JSON boolean, and refire entries are
+// bounded to the same per-value byte budget the server enforces.
 export const SETTING_KEY_MAX_BYTES = 256;
 export const SETTING_VALUE_MAX_BYTES = 16 * 1024;
 export const SETTING_MAX_ENTRIES = 256;

@@ -20,6 +20,7 @@ import {
   validateProjectID,
   validateRefirePolicy,
   validateRefireRoute,
+  validateRefireVocabulary,
   validateSettingsDoc,
 } from './validation';
 
@@ -38,7 +39,10 @@ interface Entry {
 
 export function ProjectDetailPage() {
   const params = useParams();
-  const projectId = decodeURIComponent(params.projectId ?? '');
+  // react-router already percent-decodes path params per segment; decoding
+  // again would throw URIError on a stray '%' (e.g. deep link /settings/
+  // projects/100%25). validateProjectID below rejects malformed slugs.
+  const projectId = params.projectId ?? '';
 
   const { data, isLoading, error, refetch } = useGetProjectQuery(projectId, {
     skip: projectId === '',
@@ -308,19 +312,41 @@ function RefireEditor({ projectId }: { projectId: string }) {
   const [draft, setDraft] = useState<RefirePolicyDoc | null>(null);
   const [saved, setSaved] = useState(false);
 
+  const deniedSave = errorOf(saveError) === 'permission_denied';
+  // Castle rejects shape violations (over-budget vocabularies, negative
+  // budgets) with invalid_argument; surface them instead of swallowing.
+  const saveFailure = saveError !== undefined && !deniedSave ? saveError : null;
+  const saveMessage = (() => {
+    const { data: message } = (saveFailure ?? {}) as { data?: unknown };
+    return message ? String(message) : 'Saving the refire policy failed. Try again.';
+  })();
+
   const unset = errorOf(error) === 'not_found';
   const policy = draft ?? data?.policy ?? EMPTY_POLICY;
 
+  // The saved banner is owned by the save lifecycle (cleared when the next
+  // save starts or the route key changes), not by refetches — the
+  // invalidation refetch after a successful save would otherwise clear it
+  // before the operator reads it.
   useEffect(() => {
     setDraft(null);
     setSaved(false);
-  }, [data?.updatedAt, args.route, args.projectId]);
+  }, [args.route, args.projectId]);
 
   const policyError = validateRefirePolicy(policy);
-  const routeError = custom ? validateRefireRoute(route) : null;
+  const vocabError =
+    validateRefireVocabulary('transient', policy.transient) ??
+    validateRefireVocabulary('parks', policy.parks) ??
+    validateRefireVocabulary('cosmetics', policy.cosmetics);
+  // An empty custom route would silently target the project default row;
+  // require the operator to settle the key they asked for.
+  const routeError = custom
+    ? validateRefireRoute(route) ?? (route === '' ? 'Route key is required.' : null)
+    : null;
 
   async function save() {
-    if (policyError || routeError) return;
+    if (policyError || vocabError || routeError) return;
+    setSaved(false);
     try {
       await setPolicy({ ...args, policy }).unwrap();
       setSaved(true);
@@ -453,21 +479,26 @@ function RefireEditor({ projectId }: { projectId: string }) {
               />
             </label>
           </div>
-          {policyError && (
-            <p role="alert" data-testid="refire-policy-error" className="mb-2 text-body text-danger">
-              {policyError}
+          {(policyError || vocabError) && (
+            <p role="alert" data-testid={policyError ? 'refire-policy-error' : 'refire-vocab-error'} className="mb-2 text-body text-danger">
+              {policyError ?? vocabError}
             </p>
           )}
-          {errorOf(saveError) === 'permission_denied' && (
+          {deniedSave && (
             <p role="alert" data-testid="refire-denied" className="mb-2 text-body text-danger">
               Castle denied the write: this console session lacks project admin credentials.
+            </p>
+          )}
+          {saveFailure && (
+            <p role="alert" data-testid="refire-save-error" className="mb-2 text-body text-danger">
+              Castle rejected the save: {saveMessage}
             </p>
           )}
           <button
             type="button"
             data-testid="refire-save"
             onClick={() => void save()}
-            disabled={saving || policyError !== null || routeError !== null}
+            disabled={saving || policyError !== null || vocabError !== null || routeError !== null}
             className="rounded-md bg-accent px-3 py-1.5 text-body font-medium text-white hover:bg-accent-strong disabled:opacity-60"
           >
             {saving ? 'Saving…' : 'Save refire policy'}
@@ -491,6 +522,7 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
   const [memberId, setMemberId] = useState('');
   const [kind, setKind] = useState<'ai' | 'human'>('ai');
   const [formError, setFormError] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const members = useMemo(() => data ?? [], [data]);
 
@@ -510,11 +542,16 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
   }
 
   async function remove(id: string) {
+    setRemoveError(null);
     try {
       await removeMember({ projectId, memberId: id }).unwrap();
-    } catch {
-      // Refresh surfaces the truth: removal is idempotent server-side.
-      void refetch();
+    } catch (err) {
+      const { status } = (err ?? {}) as { status?: unknown };
+      setRemoveError(
+        status === 'permission_denied'
+          ? 'Castle denied the write: this console session lacks project admin credentials.'
+          : `Removing ${id} failed. Try again.`,
+      );
     }
   }
 
@@ -624,6 +661,11 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
         {formError && (
           <p role="alert" data-testid="member-add-error" className="w-full text-body text-danger">
             {formError}
+          </p>
+        )}
+        {removeError && (
+          <p role="alert" data-testid="member-remove-error" className="w-full text-body text-danger">
+            {removeError}
           </p>
         )}
       </form>

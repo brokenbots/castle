@@ -24,19 +24,30 @@ describe('createRunViewerStore', () => {
     ).not.toThrow();
   });
 
-  test('concats host middleware after the viewer middleware', () => {
-    const hostActions: string[] = [];
-    const spy: Middleware = () => (next) => (action) => {
+  test('concats host middleware between the viewer api and the unauth gate', () => {
+    const seen: string[] = [];
+    const hostRelay: Middleware = () => (next) => (action) => {
       if (typeof action === 'object' && action !== null && 'type' in action) {
-        hostActions.push(String((action as { type: string }).type));
+        seen.push(String((action as { type: string }).type));
+      }
+      // A host middleware sitting AFTER the viewer gate would never be
+      // reached by next(action) before the reducers, so this relayed
+      // unauthenticated rejection only flips the session when the host
+      // middleware sits ahead of the viewer's gate middleware.
+      if (seen[seen.length - 1] === 'host/probe') {
+        return next({
+          type: `${RUN_VIEWER_API_REDUCER_PATH}/probe/rejected`,
+          payload: { status: 'unauthenticated', data: 'relay probe' },
+        });
       }
       return next(action);
     };
-    const store = createRunViewerStore({ extraMiddleware: [spy] });
+    const store = createRunViewerStore({ extraMiddleware: [hostRelay] });
 
     store.dispatch({ type: 'host/probe' });
 
-    expect(hostActions).toContain('host/probe');
+    expect(store.getState().session.authExpired).toBe(true);
+    expect(seen).toContain('host/probe');
   });
 });
 

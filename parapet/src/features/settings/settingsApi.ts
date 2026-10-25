@@ -6,11 +6,8 @@ import type {
   Project as PbProject,
   ProjectMember as PbProjectMember,
   RefirePolicy as PbRefirePolicy,
-} from '@castle/run-viewer/src/gen/castle/v1/projects_pb';
-import {
-  ProjectMemberKind,
-  ProjectMembershipPolicy,
-} from '@castle/run-viewer/src/gen/castle/v1/projects_pb';
+} from '@castle/run-viewer';
+import { ProjectMemberKind, ProjectMembershipPolicy } from '@castle/run-viewer';
 
 // The settings console rides castle.v1.ProjectService (KB-324): projects,
 // settings (etag swap), refire policies and membership. The console session

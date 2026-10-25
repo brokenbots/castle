@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -52,6 +52,16 @@ describe('ProjectDetailPage overview', () => {
     renderProjectDetail('missing-project');
 
     expect(await screen.findByTestId('project-detail-error')).toBeInTheDocument();
+  });
+
+  test('renders the invalid state for a percent-bearing deep link without crashing', async () => {
+    // /settings/projects/100%25 arrives as the param '100%' (react-router
+    // already percent-decodes path params); the page must reject the slug
+    // via validateProjectID instead of throwing a URIError and blanking.
+    renderProjectDetail('100%25');
+
+    expect(await screen.findByTestId('project-detail-invalid')).toBeInTheDocument();
+    expect(screen.queryByTestId('project-detail')).not.toBeInTheDocument();
   });
 });
 
@@ -162,13 +172,37 @@ describe('ProjectDetailPage settings editor (etag swap)', () => {
 
     await screen.findByTestId('project-setting-value-0');
     await user.click(screen.getByTestId('project-setting-remove-row-0'));
-    // The draft is empty now: one blank row remains in the form.
+    // The removal empties the draft: no entry rows remain in the form.
     await user.click(screen.getByTestId('project-settings-save'));
 
     // An entirely empty map is valid doc content; protojson leaves empty
     // maps off the wire and castle decodes the field as the empty doc.
     expect(bodies[0].projectId).toBe('alpha');
     expect(bodies[0].settings ?? {}).toEqual({});
+  });
+
+  test('surfaces a denied settings write', async () => {
+    // Castle denies settings writes to protocol-class credentials; the
+    // console must show the denial instead of a silent no-op.
+    server.use(
+      http.post(projectPath('SetProjectSettings'), () =>
+        new HttpResponse(
+          JSON.stringify({ code: 'permission_denied', message: 'requires project admin credentials' }),
+          { status: 403, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderProjectDetail('alpha');
+
+    await screen.findByTestId('project-setting-value-0');
+    await user.click(screen.getByTestId('project-settings-save'));
+
+    expect(await screen.findByTestId('project-settings-denied')).toHaveTextContent(
+      /denied the write/i,
+    );
+    expect(screen.queryByTestId('project-settings-saved')).not.toBeInTheDocument();
   });
 });
 
@@ -249,6 +283,132 @@ describe('ProjectDetailPage refire editor', () => {
     expect(bodies).toHaveLength(1);
     expect(bodies[0].projectId).toBe('alpha');
     expect(bodies[0].route).toBe('deploy/build');
+  });
+
+  test('an over-budget vocabulary line blocks the save client-side', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    server.use(
+      http.post(projectPath('SetRefirePolicy'), async ({ request }) => {
+        bodies.push((await request.json().catch(() => ({}))) as Record<string, unknown>);
+        return HttpResponse.json({ updated_at: '2026-01-02T00:00:00.000Z' });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderProjectDetail('alpha');
+
+    await screen.findByTestId('refire-budgets');
+    // One 16 KiB + 1 byte line exceeds the per-value budget the server
+    // enforces; the editor must refuse to send the shape-violating policy.
+    fireEvent.change(screen.getByTestId('refire-transient'), {
+      target: { value: 'x'.repeat(16 * 1024 + 1) },
+    });
+
+    expect(await screen.findByTestId('refire-vocab-error')).toHaveTextContent(
+      /1\.\.16384 bytes/,
+    );
+    expect(screen.getByTestId('refire-save')).toBeDisabled();
+    await user.click(screen.getByTestId('refire-save'));
+    expect(bodies).toHaveLength(0);
+  });
+
+  test('surfaces a server-rejected refire save, not just denials', async () => {
+    server.use(
+      http.post(projectPath('SetRefirePolicy'), () =>
+        new HttpResponse(
+          JSON.stringify({ code: 'invalid_argument', message: 'transient vocabulary exceeds budget' }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderProjectDetail('alpha');
+
+    await screen.findByTestId('refire-budgets');
+    await user.type(screen.getByTestId('refire-transient'), 'OOMKILLED');
+    await user.click(screen.getByTestId('refire-save'));
+
+    expect(await screen.findByTestId('refire-save-error')).toHaveTextContent(
+      /rejected the save/i,
+    );
+    expect(screen.getByTestId('refire-save-error')).toHaveTextContent(
+      /transient vocabulary exceeds budget/,
+    );
+    expect(screen.queryByTestId('refire-saved')).not.toBeInTheDocument();
+  });
+
+  test('surfaces a denied refire write', async () => {
+    server.use(
+      http.post(projectPath('SetRefirePolicy'), () =>
+        new HttpResponse(
+          JSON.stringify({ code: 'permission_denied', message: 'requires project admin credentials' }),
+          { status: 403, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderProjectDetail('alpha');
+
+    await screen.findByTestId('refire-budgets');
+    await user.type(screen.getByTestId('refire-max-attempts'), '3');
+    await user.click(screen.getByTestId('refire-save'));
+
+    expect(await screen.findByTestId('refire-denied')).toHaveTextContent(/denied the write/i);
+    expect(screen.queryByTestId('refire-saved')).not.toBeInTheDocument();
+  });
+
+  test('a custom route selection with an empty key is refused, not silently defaulted', async () => {
+    const user = userEvent.setup();
+    renderProjectDetail('alpha');
+
+    await screen.findByTestId('refire-budgets');
+    await user.selectOptions(screen.getByTestId('refire-route-select'), 'custom');
+
+    // An empty custom route would target the project default row on the
+    // wire; the editor requires the key the operator asked for.
+    expect(await screen.findByTestId('refire-route-error')).toHaveTextContent(
+      /Route key is required/,
+    );
+    expect(screen.getByTestId('refire-save')).toBeDisabled();
+  });
+
+  test('the saved banner survives the invalidation refetch of an existing row', async () => {
+    let saved = false;
+    server.use(
+      http.post(projectPath('GetRefirePolicy'), () =>
+        HttpResponse.json(
+          saved
+            ? {
+                policy: { max_attempts: 4, backoff_seconds: 5, transient: ['timeout'] },
+                updated_at: '2026-01-02T00:00:00.000Z',
+              }
+            : {
+                policy: { max_attempts: 2, backoff_seconds: 5, transient: ['timeout'] },
+                updated_at: '2026-01-01T00:00:00.000Z',
+              },
+        ),
+      ),
+      http.post(projectPath('SetRefirePolicy'), async () => {
+        saved = true;
+        return HttpResponse.json({ updated_at: '2026-01-02T00:00:00.000Z' });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderProjectDetail('alpha');
+
+    await screen.findByTestId('refire-budgets');
+    await user.clear(screen.getByTestId('refire-max-attempts'));
+    await user.type(screen.getByTestId('refire-max-attempts'), '4');
+    await user.click(screen.getByTestId('refire-save'));
+
+    expect(await screen.findByTestId('refire-saved')).toBeInTheDocument();
+    // The invalidation refetch lands the row the new updatedAt describes;
+    // the form re-anchors to it and the banner must still be visible.
+    await waitFor(() => expect(screen.getByTestId('refire-max-attempts')).toHaveValue(4));
+    expect(screen.getByTestId('refire-saved')).toBeInTheDocument();
   });
 });
 
@@ -372,5 +532,25 @@ describe('ProjectDetailPage members editor', () => {
 
     expect(await screen.findByTestId('member-add-error')).toHaveTextContent(/required/i);
     expect(bodies).toHaveLength(0);
+  });
+
+  test('surfaces a denied member removal instead of swallowing it', async () => {
+    server.use(
+      http.post(projectPath('RemoveProjectMember'), () =>
+        new HttpResponse(
+          JSON.stringify({ code: 'permission_denied', message: 'requires project admin credentials' }),
+          { status: 403, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderProjectDetail('beta');
+
+    await user.click(await screen.findByTestId('member-remove-ov-2'));
+
+    expect(await screen.findByTestId('member-remove-error')).toHaveTextContent(
+      /denied the write/i,
+    );
   });
 });
