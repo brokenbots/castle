@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -676,6 +677,22 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 				return nil, connect.NewError(connect.CodePermissionDenied, errors.New("console identities cannot register agents"))
 			case store.OperatorRoleTrigger:
 				return nil, connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot register agents"))
+			case store.OperatorRoleAgent:
+				// KB-337: a per-project agent credential scopes its operator
+				// to exactly one project (the operator-<project> row's
+				// project attribute). The claim rides the handler context so
+				// nextRegister refuses registrations claiming any other
+				// project (fail closed) and binds the claimant project.
+				//
+				// The credential IS the registration credential: it returns
+				// straight into nextRegister so provisioning — not the
+				// anon-register dev flag or a bootstrap token — is the
+				// admission gate in production. An agent-role operator row
+				// without a project claim stays behind the configured gate.
+				if claim := op.ProjectAttribute(); claim != "" {
+					ctx = WithCallerProjectClaim(ctx, claim)
+					return i.nextRegister(ctx, req, next)
+				}
 			}
 		}
 		sess, err := ResolveConsoleSession(ctx, i.store, tok)
@@ -712,6 +729,14 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 // context, after the bootstrap gate has admitted the call. Validation
 // failures surface as InvalidArgument so a misconfigured agent fails fast at
 // registration instead of persisting a truncated identity block.
+//
+// KB-337 project binding: a per-project agent credential claims exactly one
+// project. A registration header naming any OTHER project is refused
+// (PermissionDenied, fail closed — the credential may never register into a
+// project its operator does not claim); with the header matching or absent,
+// the claimed project IS the registration binding, which the handler joins
+// regardless of the project's membership policy (provisioning the
+// credential was the admission act).
 func (i *AuthInterceptor) nextRegister(ctx context.Context, req connect.AnyRequest, next connect.UnaryFunc) (connect.AnyResponse, error) {
 	identity, projectID, err := ParseAgentRegistration(req.Header())
 	if err != nil {
@@ -719,6 +744,19 @@ func (i *AuthInterceptor) nextRegister(ctx context.Context, req connect.AnyReque
 	}
 	if identity != nil {
 		ctx = WithAgentIdentity(ctx, identity)
+	}
+	if claim := ProjectClaimFromContext(ctx); claim != "" {
+		switch projectID {
+		case "":
+			// The credential alone binds the registration into its project.
+			ctx = WithCallerProjectClaim(ctx, claim)
+		case claim:
+			ctx = WithCallerProjectClaim(ctx, claim)
+		default:
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("credential is scoped to project %q; refusing registration for project %q", claim, projectID))
+		}
+		return next(ctx, req)
 	}
 	if projectID != "" {
 		ctx = WithRegisterProjectID(ctx, projectID)

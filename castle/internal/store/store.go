@@ -302,6 +302,26 @@ const OperatorAttributeRole = "role"
 // to authorization — role is the only interpreted attribute key.
 const OperatorAttributeDisplay = "display"
 
+// OperatorAttributeProject is the attributes key holding the project an
+// operator is scoped to (KB-337): a per-project agent credential resolves to
+// a DISTINCT operator row named operator-<project> carrying
+// {role: agent, project: <project>}. The shared platform/console 'operator'
+// row never carries it. A credential may only register/heartbeat into the
+// project its operator claims — the auth layer refuses any other project
+// (fail closed).
+const OperatorAttributeProject = "project"
+
+// ProjectAttribute returns the operator's project-scope attribute; "" when
+// the operator is not scoped (platform/console and unscoped agent
+// identities). Never a source of authority by itself — the registration
+// binding and membership checks consult the live project_members set.
+func (o *Operator) ProjectAttribute() string {
+	if o == nil {
+		return ""
+	}
+	return o.Attributes[OperatorAttributeProject]
+}
+
 // ConsoleOperatorAttributes returns the attribute map a console-login
 // operator row carries: role=admin with the login's display attribution
 // (KB-331 — the admin identity is the seeded login, never a shadow

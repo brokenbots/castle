@@ -44,8 +44,29 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 	if identity != nil && identity.Name == "" {
 		identity.Name = req.Msg.Name
 	}
-	if projectID := auth.RegisterProjectIDFromContext(ctx); projectID != "" {
-		if err := s.Store.JoinProject(ctx, projectID, criteriaID, store.ProjectMemberKindAI, now); err != nil {
+	// KB-337: a per-project agent credential binds the registration into the
+	// project its operator claims — the membership join rides
+	// AddProjectMember (policy bypass) because provisioning the credential
+	// WAS the admission act; a missing project row still fails the call so
+	// the binding never manufactures a phantom project. The auth layer has
+	// already refused a header claiming any other project (fail closed), so
+	// only the claimed project reaches this join:
+	// ProjectClaimFromContext is exclusive of the header self-join key.
+	joinedProject := auth.ProjectClaimFromContext(ctx)
+	if joinedProject == "" {
+		joinedProject = auth.RegisterProjectIDFromContext(ctx)
+	}
+	if claim := auth.ProjectClaimFromContext(ctx); claim != "" {
+		if err := s.Store.AddProjectMember(ctx, &store.ProjectMember{
+			ProjectID: claim,
+			MemberID:  criteriaID,
+			Kind:      store.ProjectMemberKindAI,
+			CreatedAt: now,
+		}); err != nil {
+			return nil, registrationJoinError(err)
+		}
+	} else if headerProject := auth.RegisterProjectIDFromContext(ctx); headerProject != "" {
+		if err := s.Store.JoinProject(ctx, headerProject, criteriaID, store.ProjectMemberKindAI, now); err != nil {
 			return nil, registrationJoinError(err)
 		}
 	}
@@ -66,8 +87,8 @@ func (s *CriteriaServer) Register(ctx context.Context, req *connect.Request[pb.R
 		// no member row for an agent that never came to exist. Best-effort:
 		// if the row somehow materialises later, the idempotent join re-fires
 		// at the next registration.
-		if projectID := auth.RegisterProjectIDFromContext(ctx); projectID != "" {
-			_ = s.Store.RemoveProjectMember(ctx, projectID, criteriaID)
+		if joinedProject != "" {
+			_ = s.Store.RemoveProjectMember(ctx, joinedProject, criteriaID)
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

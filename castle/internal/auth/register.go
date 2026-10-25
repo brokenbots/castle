@@ -63,6 +63,29 @@ type registrationIdentityKey struct{}
 // self-joins at registration.
 type registrationProjectIDKey struct{}
 
+// registrationProjectBindingKey is the context key for the project a
+// per-project agent credential binds the registration into (KB-337): the
+// credential's operator claims exactly one project, registration joins it
+// regardless of the join policy (the credential IS the admission), and a
+// header claiming any other project was refused before the handler ran.
+type registrationProjectBindingKey struct{}
+
+// ProjectClaimFromContext returns the project a per-project agent credential
+// scopes the caller to, or "" when the caller presents no project-scoped
+// credential.
+func ProjectClaimFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(registrationProjectBindingKey{}).(string)
+	return v
+}
+
+// WithCallerProjectClaim returns a context carrying the project claim of a
+// per-project agent credential. The auth interceptor sets it during Register
+// admission for project-scoped agent credentials; tests call handlers
+// directly (no HTTP stack) and use it the same way.
+func WithCallerProjectClaim(ctx context.Context, project string) context.Context {
+	return context.WithValue(ctx, registrationProjectBindingKey{}, project)
+}
+
 // AgentIdentityFromContext returns the agent identity block the interceptor
 // parsed from Register metadata, or nil when none was presented.
 func AgentIdentityFromContext(ctx context.Context) *store.AgentIdentity {
