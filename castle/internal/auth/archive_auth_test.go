@@ -7,17 +7,21 @@ import (
 	"connectrpc.com/connect"
 
 	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
+	"github.com/brokenbots/castle/castle/internal/store"
 )
 
-// The archive authorization matrix (KB-308): ArchiveRun is the operator's
-// write and rides the same token path as the podstate feed (criteria agent
-// tokens). It is NEVER anon-readable and never reachable by console or
-// orchestrator identities, whose tokens must not be able to forge run
-// history. The two read surfaces are observation-only: every authenticated
-// identity may read, and they join the dev-mode anonymous-read surface like
-// the ServerService reads.
+// The archive authorization matrix (KB-308, adjusted by KB-334): ArchiveRun
+// is the operator's write and rides the same token path as the podstate feed
+// (criteria agent tokens) — and the orchestrator role is allowed to invoke it
+// under the KB-330 attribute model, because it is the operator's own
+// terminal-archive leg (KB-308): it mutates no agent state, it stores the
+// CR-evidence record keyed by run id / CR-uid archive key. It is NEVER
+// anon-readable and never reachable by console or trigger identities, whose
+// tokens must not be able to forge run history. The two read surfaces are
+// observation-only: every authenticated identity may read, and they join the
+// dev-mode anonymous-read surface like the ServerService reads.
 
-func TestArchiveWriteRequiresAgentToken(t *testing.T) {
+func TestArchiveWriteCredentialMatrix(t *testing.T) {
 	procedure := castlev1connect.RunArchiveServiceArchiveRunProcedure
 	t.Run("no token", func(t *testing.T) {
 		db := newAuthTestStore(t)
@@ -40,10 +44,24 @@ func TestArchiveWriteRequiresAgentToken(t *testing.T) {
 	})
 	t.Run("orchestrator token", func(t *testing.T) {
 		db := newAuthTestStore(t)
-		call := newUnaryProbe(t, db, procedure, false, nil)
-		err := call("orchestrator-token-1")
-		if connect.CodeOf(err) != connect.CodePermissionDenied {
+		var orchID string
+		call := newUnaryProbe(t, db, procedure, false, func(ctx context.Context) { orchID = CallerOrchestratorID(ctx) })
+		if err := call("orchestrator-token-1"); err != nil {
 			t.Fatalf("orchestrator ArchiveRun: %v", err)
+		}
+		if orchID != "orchestrator-operator" {
+			t.Fatalf("caller id = %q want orchestrator-operator (archive provenance stamp source)", orchID)
+		}
+	})
+	t.Run("orchestrator-role operator token", func(t *testing.T) {
+		// The KB-330 attribute-model lane in the bug report: an operator
+		// token whose role attribute is orchestrator must reach ArchiveRun
+		// through the same isOrchestratorAllowed gate.
+		db := newAuthTestStore(t)
+		token := seedOperatorToken(t, db, "op-orch", store.OperatorRoleOrchestrator)
+		call := newUnaryProbe(t, db, procedure, false, nil)
+		if err := call(token); err != nil {
+			t.Fatalf("orchestrator-role operator ArchiveRun: %v", err)
 		}
 	})
 	t.Run("console token", func(t *testing.T) {
@@ -53,6 +71,15 @@ func TestArchiveWriteRequiresAgentToken(t *testing.T) {
 		err := call(sessTok)
 		if connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatalf("console ArchiveRun: %v", err)
+		}
+	})
+	t.Run("trigger token", func(t *testing.T) {
+		db := newAuthTestStore(t)
+		token := seedOperatorToken(t, db, "op-trg", store.OperatorRoleTrigger)
+		call := newUnaryProbe(t, db, procedure, false, nil)
+		err := call(token)
+		if connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatalf("trigger ArchiveRun: %v", err)
 		}
 	})
 	t.Run("no token with anon reads", func(t *testing.T) {
