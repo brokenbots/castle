@@ -1,6 +1,7 @@
 import { castleRunDataSource } from './castleDataSource';
 import type {
   Agent,
+  CallerIdentity,
   EventEnvelope,
   InspectRunArgs,
   ListRunsArgs,
@@ -85,6 +86,12 @@ export interface RunDataSource {
   getAgent(criteriaId: string): Promise<Agent>;
   /** Lightweight reachability probe backing the connection indicator. */
   connectionStatus(): Promise<void>;
+  /**
+   * The caller's own operator identity (KB-333), or null when the host has
+   * no identity to report. Self-scoped by construction — carries only what
+   * the caller may already see about itself.
+   */
+  identity(): Promise<CallerIdentity | null>;
   resume(args: ResumeArgs): Promise<{ issuedAt?: string }>;
   pauseRun(runId: string): Promise<{ issuedAt?: string }>;
   stopRun(args: StopRunArgs): Promise<{ issuedAt?: string }>;

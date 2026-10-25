@@ -10,7 +10,7 @@ import { settingsApi, SETTINGS_API_REDUCER_PATH } from './settingsApi';
 import { createRunViewerStore } from '@castle/run-viewer';
 import { sessionRecovered } from '@castle/run-viewer';
 import { server } from '@castle/run-viewer/src/test/mocks/server';
-import { projectPath } from '@castle/run-viewer/src/test/mocks/handlers';
+import { identityPath, projectPath } from '@castle/run-viewer/src/test/mocks/handlers';
 
 function renderProjectsPage(initialPath = '/settings/projects') {
   const store = createRunViewerStore({
@@ -154,5 +154,60 @@ describe('ProjectListPage', () => {
     renderProjectsPage();
 
     expect(await screen.findByTestId('project-list-empty')).toBeInTheDocument();
+  });
+});
+// KB-333: the creation form is a project-admin surface gated on the
+// operator's role attribute, not on the console credential class. The
+// server keeps enforcing the write either way.
+describe('ProjectListPage admin pre-gate (KB-333)', () => {
+  function installIdentity(admin: boolean) {
+    server.use(
+      http.post(identityPath('GetCallerIdentity'), () =>
+        HttpResponse.json({
+          operator_id: 'console-default',
+          name: 'operator',
+          display_name: 'operator',
+          role: admin ? 'admin' : 'agent',
+          attributes: {},
+          membership_scoped: true,
+          membership: ['alpha', 'beta'],
+        }),
+      ),
+    );
+  }
+
+  test('a non-admin operator gets a notice instead of the creation form', async () => {
+    installIdentity(false);
+    renderProjectsPage();
+
+    expect(await screen.findByTestId('project-create-admin-required')).toBeInTheDocument();
+    expect(screen.queryByTestId('project-create')).not.toBeInTheDocument();
+    // The read-only inventory still renders.
+    expect((await screen.findAllByTestId('project-list-row')).length).toBe(2);
+  });
+
+  test('an admin identity keeps the creation form reachable (as today)', async () => {
+    installIdentity(true);
+    renderProjectsPage();
+
+    expect(await screen.findByTestId('project-create')).toBeInTheDocument();
+    expect(screen.queryByTestId('project-create-admin-required')).not.toBeInTheDocument();
+  });
+
+  test('a failed identity read keeps the creation form closed', async () => {
+    server.use(
+      http.post(identityPath('GetCallerIdentity'), () =>
+        new HttpResponse(JSON.stringify({ code: 'unavailable', message: 'offline' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    renderProjectsPage();
+
+    expect(await screen.findByTestId('project-create-admin-required')).toHaveTextContent(
+      'could not be verified',
+    );
+    expect(screen.queryByTestId('project-create')).not.toBeInTheDocument();
   });
 });

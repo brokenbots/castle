@@ -24,6 +24,12 @@ export default defineConfig({
         target: process.env.VITE_CASTLE_URL || 'http://catch/',
         changeOrigin: true,
       },
+      // castle.v1.IdentityService (KB-333): the self-scoped operator
+      // identity read behind the console badge and admin pre-gates.
+      '/castle.v1.IdentityService': {
+        target: process.env.VITE_CASTLE_URL || 'http://catch/',
+        changeOrigin: true,
+      },
       '/grpc.health.v1.Health': {
         target: process.env.VITE_CASTLE_URL || 'http://catch/',
         changeOrigin: true,

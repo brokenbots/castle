@@ -1,5 +1,6 @@
 import type {
   Agent,
+  CallerIdentity,
   EventEnvelope,
   InspectRunArgs,
   ListRunsArgs,
@@ -138,6 +139,12 @@ export const localRunDataSource: RunDataSource = {
   // The loopback server answers 204 when it is up; any other result throws.
   async connectionStatus(): Promise<void> {
     await request('health');
+  },
+
+  // The standalone viewer talks criteria run-state files only; it has no
+  // castle identity service to consult (KB-333), so no identity is reported.
+  async identity(): Promise<CallerIdentity | null> {
+    return null;
   },
 
   resume({ runId, signal, payload }: ResumeArgs): Promise<{ issuedAt?: string }> {

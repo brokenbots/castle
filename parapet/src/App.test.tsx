@@ -1,4 +1,4 @@
-import { render, screen, act, within } from '@testing-library/react';
+import { render, screen, act, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Navigate, Route, Routes } from 'react-router-dom';
@@ -17,7 +17,7 @@ import { ProjectListPage } from './features/settings/ProjectListPage';
 import { ProjectDetailPage } from './features/settings/ProjectDetailPage';
 import { settingsApi } from './features/settings/settingsApi';
 import { server } from '@castle/run-viewer/src/test/mocks/server';
-import { serverPath } from '@castle/run-viewer/src/test/mocks/handlers';
+import { serverPath, identityPath } from '@castle/run-viewer/src/test/mocks/handlers';
 // Vite's ?raw import inlines the shipped index.html so the document title
 // can be asserted against the real markup.
 import indexHtml from '../index.html?raw';
@@ -404,5 +404,113 @@ describe('App run deep links', () => {
     expect(await screen.findByTestId('login-error')).toHaveTextContent('Castle rejected that token.');
     expect(screen.queryByTestId('top-bar')).not.toBeInTheDocument();
     expect(getAuthToken()).toBe('');
+  });
+});
+
+describe('App credential switch (KB-333)', () => {
+  // One store, two credentials: the default login mock answers as the
+  // console-default admin operator, and the second session overrides the
+  // identity mock with a membership-scoped agent. Everything the UI derives
+  // from identity — badge, admin pre-gating, scoped empty-state diagnostic —
+  // must follow the second credential: identity is credential-bound, never
+  // store-bound, so a cached read from the first session can never answer
+  // for the second one. The full SPA flow takes noticeably longer than a
+  // page unit test under parallel-suite CPU contention, so the test carries
+  // its own generous timeouts rather than the 5s default.
+  const settleMs = 5000;
+
+  test('signing in with a different credential re-reads identity: badge, admin gating and scoped diagnostic follow the new operator', { timeout: 20000 }, async () => {
+    const user = userEvent.setup();
+    // Empty runs for both sessions: the first (unscoped admin) session must
+    // see the generic empty state, the second (scoped) one the diagnostic.
+    server.use(
+      http.post(serverPath('ListRuns'), () =>
+        HttpResponse.json({ runs: [], next_page_token: '' }),
+      ),
+    );
+    renderApp('/runs');
+
+    // Session 1: console admin (default identity mock).
+    await user.type(screen.getByTestId('login-username'), 'operator');
+    await user.type(screen.getByTestId('login-password'), 'op-password');
+    await user.click(screen.getByTestId('login-submit'));
+    expect(await screen.findByTestId('top-bar', {}, { timeout: settleMs })).toBeInTheDocument();
+
+    // The badge renders the operator, not the credential class.
+    expect(await screen.findByTestId('token-menu-identity', {}, { timeout: settleMs })).toHaveTextContent('operator');
+    expect(screen.getByTestId('token-menu-button')).toHaveTextContent('admin');
+    // An unscoped identity's empty list reads as the generic empty state.
+    await screen.findByTestId('run-list-empty', {}, { timeout: settleMs });
+    expect(screen.queryByTestId('run-list-empty-scoped')).not.toBeInTheDocument();
+    // Admin affordances stay reachable: the project create form is present.
+    await user.click(within(screen.getByTestId('side-nav')).getByRole('link', { name: 'Projects' }));
+    expect(await screen.findByTestId('project-create', {}, { timeout: settleMs })).toBeInTheDocument();
+
+    // Session 2: membership-scoped agent token. Log out in-place (the SPA
+    // transition that must drop the previous credential's caches) and sign
+    // back in with a different credential.
+    await user.click(screen.getByTestId('token-menu-button'));
+    await user.click(screen.getByTestId('logout'));
+    expect(await screen.findByTestId('login-brand', {}, { timeout: settleMs })).toBeInTheDocument();
+
+    // Override the identity source before signing back in: the new
+    // credential resolves to a scoped agent with no admin rights.
+    server.use(
+      http.post(identityPath('GetCallerIdentity'), () =>
+        HttpResponse.json({
+          operator_id: 'agent-1',
+          name: 'agent-1',
+          display_name: 'agent-1',
+          role: 'agent',
+          attributes: { role: 'agent', display: 'agent-1' },
+          membership_scoped: true,
+          membership: ['squad'],
+        }),
+      ),
+    );
+    await signInWithToken('agent-scoped-token-123456');
+
+    expect(await screen.findByTestId('top-bar', {}, { timeout: settleMs })).toBeInTheDocument();
+    // The badge shows the NEW operator, not the previous session's admin;
+    // against the cached identity this fails with 'operator · admin'.
+    await waitFor(() => expect(screen.getByTestId('token-menu-identity')).toHaveTextContent('agent-1'), {
+      timeout: settleMs,
+    });
+    expect(screen.getByTestId('token-menu-button')).toHaveTextContent('agent');
+    await user.click(screen.getByTestId('token-menu-button'));
+    expect(
+      within(screen.getByTestId('token-menu-panel')).getByTestId('token-identity-scope'),
+    ).toHaveTextContent('scoped to squad');
+
+    // The admin affordances are gone: no create form, the admin-required
+    // notice instead, and the read-only inventory still renders.
+    await user.click(within(screen.getByTestId('side-nav')).getByRole('link', { name: 'Projects' }));
+    await waitFor(() => expect(screen.queryByTestId('project-create')).not.toBeInTheDocument(), {
+      timeout: settleMs,
+    });
+    expect(await screen.findByTestId('project-create-admin-required', {}, { timeout: settleMs })).toBeInTheDocument();
+    expect(await screen.findByTestId('project-list-table', {}, { timeout: settleMs })).toBeInTheDocument();
+
+    // Detail-page write affordances are gone too: editors render read-only
+    // with their admin-required notices once their data lands.
+    await user.click(
+      within(screen.getByTestId('project-list-table')).getByRole('link', { name: 'alpha' }),
+    );
+    expect(await screen.findByTestId('project-detail', {}, { timeout: settleMs })).toBeInTheDocument();
+    expect(await screen.findByTestId('project-settings-admin-required', {}, { timeout: settleMs })).toBeInTheDocument();
+    expect(await screen.findByTestId('refire-admin-required', {}, { timeout: settleMs })).toBeInTheDocument();
+    expect(await screen.findByTestId('member-admin-required', {}, { timeout: settleMs })).toBeInTheDocument();
+    expect(screen.queryByTestId('project-settings-save')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('refire-save')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('member-add')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('member-remove-ov-1')).not.toBeInTheDocument();
+
+    // Back to runs: identity now says membership-scoped, so the empty list
+    // carries the scoped diagnostic naming the scope — the stale-cache
+    // failure would have kept the generic "No runs yet." state here.
+    await user.click(within(screen.getByTestId('side-nav')).getByRole('link', { name: 'All runs' }));
+    expect(await screen.findByTestId('run-list-empty-scoped', {}, { timeout: settleMs })).toBeInTheDocument();
+    expect(screen.queryByTestId('run-list-empty')).not.toBeInTheDocument();
+    expect(screen.getByTestId('run-list-empty-scoped')).toHaveTextContent('squad');
   });
 });

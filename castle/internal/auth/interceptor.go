@@ -317,6 +317,15 @@ func NewInterceptor(st store.Store, allowAnonReads bool, opts ...InterceptorOpti
 // re-pinning the released criteria/sdk (KB-102).
 const consoleLoginProcedure = "/castle.v1.ConsoleService/Login"
 
+// identityProcedure is the castle-owned self-scoped operator identity read
+// (KB-333). Every authenticated operator — console session or protocol
+// token, role admin/agent/orchestrator/trigger — may read its OWN identity
+// (attributes + membership projection) so the console keys its badge, admin
+// gating, and runs-list empty-state diagnostic on OPERATOR attributes
+// instead of the credential class; anonymous callers stay denied upstream
+// (GetCallerIdentity is not an exempt/anon-readable procedure).
+const identityProcedure = "/castle.v1.IdentityService/GetCallerIdentity"
+
 func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		// Login is the credential bootstrap: it must reach its handler
@@ -401,6 +410,13 @@ func authorizeOrchestratorProcedure(ctx context.Context, procedure string) error
 // tokenless exempt pass-through) fall back to the legacy class maps, so
 // unwired handlers keep their exact pre-operators behavior.
 func authorizeOperatorProcedure(ctx context.Context, procedure string) error {
+	if procedure == identityProcedure {
+		// KB-333: the self-scoped identity read is reachable for every
+		// authenticated identity — the handler serves only the caller's own
+		// identity, so no role map is consulted and the legacy kind-key
+		// fallback below never needs to answer it either.
+		return nil
+	}
 	if CallerOperator(ctx) == nil {
 		if err := authorizeOrchestratorProcedure(ctx, procedure); err != nil {
 			return err

@@ -9,7 +9,7 @@ import { castleApi } from '../../api/castleApi';
 import { createRunViewerStore } from '../../store';
 import { selectAuthExpired, sessionRecovered } from '../../features/auth/sessionSlice';
 import { server } from '../../test/mocks/server';
-import { serverPath } from '../../test/mocks/handlers';
+import { identityPath, serverPath } from '../../test/mocks/handlers';
 
 // One store instance per test file; RTK Query caches per store.
 const store = createRunViewerStore();
@@ -871,5 +871,117 @@ describe('RunListPage URL param sync', () => {
       'poll request sent after becoming visible',
     );
     expect(bodies.length).toBeGreaterThan(hiddenCount);
+  });
+});
+
+// KB-333: an empty runs list must never be mistaken for breakage. A
+// membership-scoped identity gets a scope diagnostic that says WHY the list
+// is empty (no membership rows vs scoped to its projects), while the
+// unfiltered generic state stays for unscoped identities, filtered views,
+// and hosts without identity.
+describe('RunListPage scoped empty-state diagnostic (KB-333)', () => {
+  function installEmptyRuns() {
+    server.use(
+      http.post(serverPath('ListRuns'), () => HttpResponse.json({ runs: [], next_page_token: '' })),
+    );
+  }
+
+  function installIdentity(identity: Record<string, unknown>) {
+    server.use(http.post(identityPath('GetCallerIdentity'), () => HttpResponse.json(identity)));
+  }
+
+  function renderPageAt(path: string) {
+    return render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={[path]}>
+          <RunListPage />
+        </MemoryRouter>
+      </Provider>,
+    );
+  }
+
+  const scopedMemberIdentity = {
+    operator_id: 'agent-1',
+    name: 'agent-1',
+    display_name: 'agent-1',
+    role: 'agent',
+    attributes: { role: 'agent' },
+    membership_scoped: true,
+    membership: ['squad'],
+  };
+
+  test('a scoped identity with membership projects sees the scoped diagnostic naming them', async () => {
+    installEmptyRuns();
+    installIdentity(scopedMemberIdentity);
+
+    renderPage();
+
+    // Drive on the observable DOM condition: the store can fulfill before
+    // React commits the re-render in this suite (see the FLUSH_TEST_RENDER
+    // note on waitUntil), and a finder timeout would race the commit.
+    await waitUntil(
+      () => screen.queryByTestId('run-list-empty-scoped') !== null,
+      'scoped empty-state diagnostic rendered',
+      0,
+    );
+    const empty = screen.getByTestId('run-list-empty-scoped');
+    expect(empty).toHaveTextContent('No runs in your scoped view.');
+    expect(empty).toHaveTextContent('squad');
+    expect(empty).toHaveTextContent('never visible from this identity');
+    // The generic state must not render alongside it.
+    expect(screen.queryByTestId('run-list-empty')).not.toBeInTheDocument();
+  });
+
+  test('a scoped identity with no membership rows sees the no-membership diagnostic', async () => {
+    installEmptyRuns();
+    installIdentity({ ...scopedMemberIdentity, membership: [] });
+
+    renderPage();
+
+    await waitUntil(
+      () => screen.queryByTestId('run-list-empty-scoped-no-membership') !== null,
+      'no-membership empty-state diagnostic rendered',
+      0,
+    );
+    const empty = screen.getByTestId('run-list-empty-scoped-no-membership');
+    expect(empty).toHaveTextContent('No runs, and no project membership.');
+    expect(empty).toHaveTextContent('no membership rows');
+  });
+
+  test('a filtered empty view stays in the generic empty state even for a scoped identity', async () => {
+    installEmptyRuns();
+    installIdentity(scopedMemberIdentity);
+
+    renderPageAt('/runs?status=running');
+
+    await waitUntil(
+      () => screen.queryByTestId('run-list-empty') !== null,
+      'generic empty state rendered for the filtered view',
+      0,
+    );
+    expect(screen.queryByTestId('run-list-empty-scoped')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('run-list-empty-scoped-no-membership')).not.toBeInTheDocument();
+  });
+
+  test('an identity read failure falls back to the generic empty state', async () => {
+    installEmptyRuns();
+    server.use(
+      http.post(identityPath('GetCallerIdentity'), () =>
+        new HttpResponse(JSON.stringify({ code: 'unavailable', message: 'offline' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+
+    renderPage();
+
+    await waitUntil(
+      () => screen.queryByTestId('run-list-empty') !== null,
+      'generic empty state rendered when identity is unavailable',
+      0,
+    );
+    expect(screen.queryByTestId('run-list-empty-scoped')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('run-list-empty-scoped-no-membership')).not.toBeInTheDocument();
   });
 });

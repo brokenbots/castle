@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { PageHeader, PageState, StickyTableHead, classifyError } from '@castle/run-viewer';
+import { PageHeader, PageState, StickyTableHead, classifyError, useCallerIdentity } from '@castle/run-viewer';
 import {
   useGetProjectQuery,
   useGetProjectSettingsQuery,
@@ -31,6 +31,20 @@ import {
 // editor is per-route get/set with the project default row at route ''. The
 // members editor is the only console path that admits members into CLOSED
 // projects. All writes ride the console session castle already authorized.
+//
+// KB-333: the write affordances gate on the caller's own operator role
+// attribute rather than assuming the console credential class is an admin
+// one — with the admin role everything stays reachable exactly as before,
+// while anyone else gets read-only editors. The server still enforces every
+// write; these gates only pre-empt the guaranteed denial.
+
+// The editors' shared admin pre-gate: reads the caller's own identity once.
+// `resolved` is false while the read is in flight; a failed read keeps the
+// gate closed (fail-closed) with a distinct wording available via isError.
+function useOperatorAdminGate(): { resolved: boolean; isAdmin: boolean; failed: boolean } {
+  const { data, isError } = useCallerIdentity();
+  return { resolved: data !== undefined || isError, isAdmin: data?.role === 'admin', failed: isError };
+}
 
 interface Entry {
   key: string;
@@ -105,6 +119,7 @@ function SettingsEditor({ projectId }: { projectId: string }) {
   const settingsErrorKind = error ? classifyError(error) : undefined;
   const [setSettings, { isLoading: saving, error: saveError, reset: resetSave }] =
     useSetProjectSettingsMutation();
+  const { resolved, isAdmin, failed } = useOperatorAdminGate();
 
   const [draft, setDraft] = useState<Entry[] | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -189,17 +204,19 @@ function SettingsEditor({ projectId }: { projectId: string }) {
                 data-testid={`project-setting-key-${i}`}
                 aria-label={`Setting key ${i + 1}`}
                 value={entry.key}
+                disabled={!isAdmin}
                 onChange={(e) => updateEntry(i, { ...entry, key: e.target.value })}
                 placeholder="key"
-                className="w-52 rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink placeholder:text-ink-faint"
+                className="w-52 rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink placeholder:text-ink-faint disabled:opacity-70"
               />
               {entry.key === ALLOW_ANON_READS_KEY ? (
                 <select
                   data-testid={`project-setting-value-${i}`}
                   aria-label={`Setting value ${i + 1}`}
                   value={entry.value}
+                  disabled={!isAdmin}
                   onChange={(e) => updateEntry(i, { ...entry, value: e.target.value })}
-                  className="rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink"
+                  className="rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink disabled:opacity-70"
                 >
                   <option value="">(absent)</option>
                   <option value="true">true</option>
@@ -210,10 +227,11 @@ function SettingsEditor({ projectId }: { projectId: string }) {
                   data-testid={`project-setting-value-${i}`}
                   aria-label={`Setting value ${i + 1}`}
                   value={entry.value}
+                  disabled={!isAdmin}
                   onChange={(e) => updateEntry(i, { ...entry, value: e.target.value })}
                   placeholder='JSON value e.g. {"retries": 3}'
                   rows={1}
-                  className="min-w-64 flex-1 rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink placeholder:text-ink-faint"
+                  className="min-w-64 flex-1 rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink placeholder:text-ink-faint disabled:opacity-70"
                 />
               )}
               {fieldError(i) && (
@@ -221,34 +239,51 @@ function SettingsEditor({ projectId }: { projectId: string }) {
                   {fieldError(i)}
                 </p>
               )}
-              <button
-                type="button"
-                data-testid={`project-setting-remove-row-${i}`}
-                aria-label={`Remove setting row ${i + 1}`}
-                onClick={() => setDraft(entries.filter((_, j) => j !== i))}
-                className="rounded-md border border-line px-2 py-1 text-meta text-ink-muted hover:bg-surface-raised hover:text-ink"
-              >
-                Remove
-              </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  data-testid={`project-setting-remove-row-${i}`}
+                  aria-label={`Remove setting row ${i + 1}`}
+                  onClick={() => setDraft(entries.filter((_, j) => j !== i))}
+                  className="rounded-md border border-line px-2 py-1 text-meta text-ink-muted hover:bg-surface-raised hover:text-ink"
+                >
+                  Remove
+                </button>
+              )}
             </div>
           ))}
-          <button
-            type="button"
-            data-testid="project-setting-add-row"
-            onClick={() => setDraft([...entries, { key: '', value: '' }])}
-            className="mr-2 rounded-md border border-line px-2 py-1 text-body text-ink hover:bg-surface-raised"
-          >
-            Add entry
-          </button>
-          <button
-            type="button"
-            data-testid="project-settings-save"
-            onClick={() => void save()}
-            disabled={saving || invalid}
-            className="rounded-md bg-accent px-3 py-1.5 text-body font-medium text-white hover:bg-accent-strong disabled:opacity-60"
-          >
-            {saving ? 'Saving…' : 'Save settings'}
-          </button>
+          {isAdmin ? (
+            <>
+              <button
+                type="button"
+                data-testid="project-setting-add-row"
+                onClick={() => setDraft([...entries, { key: '', value: '' }])}
+                className="mr-2 rounded-md border border-line px-2 py-1 text-body text-ink hover:bg-surface-raised"
+              >
+                Add entry
+              </button>
+              <button
+                type="button"
+                data-testid="project-settings-save"
+                onClick={() => void save()}
+                disabled={saving || invalid}
+                className="rounded-md bg-accent px-3 py-1.5 text-body font-medium text-white hover:bg-accent-strong disabled:opacity-60"
+              >
+                {saving ? 'Saving…' : 'Save settings'}
+              </button>
+            </>
+          ) : (
+            resolved && (
+              <p
+                data-testid="project-settings-admin-required"
+                className="mb-2 text-meta text-ink-muted"
+              >
+                {failed
+                  ? 'Your operator role could not be verified, so the settings editor is read-only.'
+                  : 'Editing settings needs the admin role; entries are read-only for this session.'}
+              </p>
+            )
+          )}
           {validation.doc && (
             <p role="alert" data-testid="project-settings-doc-error" className="mt-2 text-body text-danger">
               {validation.doc}
@@ -282,7 +317,7 @@ function SettingsEditor({ projectId }: { projectId: string }) {
           )}
           {denied && (
             <p role="alert" data-testid="project-settings-denied" className="mt-2 text-body text-danger">
-              Castle denied the write: this console session lacks project admin credentials.
+              Castle denied the write: this session's operator lacks the admin role.
             </p>
           )}
         </>
@@ -311,6 +346,7 @@ function RefireEditor({ projectId }: { projectId: string }) {
   const [setPolicy, { isLoading: saving, error: saveError }] = useSetRefirePolicyMutation();
   const [draft, setDraft] = useState<RefirePolicyDoc | null>(null);
   const [saved, setSaved] = useState(false);
+  const { resolved, isAdmin, failed } = useOperatorAdminGate();
 
   const deniedSave = errorOf(saveError) === 'permission_denied';
   // Castle rejects shape violations (over-budget vocabularies, negative
@@ -429,8 +465,9 @@ function RefireEditor({ projectId }: { projectId: string }) {
                 min={0}
                 step={1}
                 value={policy.maxAttempts}
+                disabled={!isAdmin}
                 onChange={(e) => setDraft({ ...policy, maxAttempts: num(e.target.value) })}
-                className="ml-2 w-24 rounded-md border border-line bg-surface-raised px-2 py-1.5 text-body text-ink"
+                className="ml-2 w-24 rounded-md border border-line bg-surface-raised px-2 py-1.5 text-body text-ink disabled:opacity-70"
               />
             </label>
             <label className="text-meta text-ink-muted">
@@ -442,8 +479,9 @@ function RefireEditor({ projectId }: { projectId: string }) {
                 min={0}
                 step={1}
                 value={policy.backoffSeconds}
+                disabled={!isAdmin}
                 onChange={(e) => setDraft({ ...policy, backoffSeconds: num(e.target.value) })}
-                className="ml-2 w-24 rounded-md border border-line bg-surface-raised px-2 py-1.5 text-body text-ink"
+                className="ml-2 w-24 rounded-md border border-line bg-surface-raised px-2 py-1.5 text-body text-ink disabled:opacity-70"
               />
             </label>
           </div>
@@ -456,8 +494,9 @@ function RefireEditor({ projectId }: { projectId: string }) {
                 rows={3}
                 defaultValue={policy.transient.join('\n')}
                 key={`transient-${args.route}-${data?.updatedAt ?? 'unset'}`}
+                disabled={!isAdmin}
                 onChange={(e) => setDraft({ ...policy, transient: parseVocabulary(e.target.value) })}
-                className="mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink"
+                className="mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink disabled:opacity-70"
               />
             </label>
             <label className="text-meta text-ink-muted">
@@ -468,8 +507,9 @@ function RefireEditor({ projectId }: { projectId: string }) {
                 rows={3}
                 defaultValue={policy.parks.join('\n')}
                 key={`parks-${args.route}-${data?.updatedAt ?? 'unset'}`}
+                disabled={!isAdmin}
                 onChange={(e) => setDraft({ ...policy, parks: parseVocabulary(e.target.value) })}
-                className="mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink"
+                className="mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink disabled:opacity-70"
               />
             </label>
             <label className="text-meta text-ink-muted">
@@ -480,8 +520,9 @@ function RefireEditor({ projectId }: { projectId: string }) {
                 rows={3}
                 defaultValue={policy.cosmetics.join('\n')}
                 key={`cosmetics-${args.route}-${data?.updatedAt ?? 'unset'}`}
+                disabled={!isAdmin}
                 onChange={(e) => setDraft({ ...policy, cosmetics: parseVocabulary(e.target.value) })}
-                className="mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink"
+                className="mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1.5 font-mono text-body text-ink disabled:opacity-70"
               />
             </label>
           </div>
@@ -492,7 +533,7 @@ function RefireEditor({ projectId }: { projectId: string }) {
           )}
           {deniedSave && (
             <p role="alert" data-testid="refire-denied" className="mb-2 text-body text-danger">
-              Castle denied the write: this console session lacks project admin credentials.
+              Castle denied the write: this session's operator lacks the admin role.
             </p>
           )}
           {saveFailure && (
@@ -500,15 +541,27 @@ function RefireEditor({ projectId }: { projectId: string }) {
               Castle rejected the save: {saveMessage}
             </p>
           )}
-          <button
-            type="button"
-            data-testid="refire-save"
-            onClick={() => void save()}
-            disabled={saving || policyError !== null || vocabError !== null || routeError !== null}
-            className="rounded-md bg-accent px-3 py-1.5 text-body font-medium text-white hover:bg-accent-strong disabled:opacity-60"
-          >
-            {saving ? 'Saving…' : 'Save refire policy'}
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              data-testid="refire-save"
+              onClick={() => void save()}
+              disabled={saving || policyError !== null || vocabError !== null || routeError !== null}
+              className="rounded-md bg-accent px-3 py-1.5 text-body font-medium text-white hover:bg-accent-strong disabled:opacity-60"
+            >
+              {saving ? 'Saving…' : 'Save refire policy'}
+            </button>
+          )}
+          {resolved && !isAdmin && (
+            <p
+              data-testid="refire-admin-required"
+              className="mb-2 text-meta text-ink-muted"
+            >
+              {failed
+                ? 'Your operator role could not be verified, so the refire policy editor is read-only.'
+                : 'Saving refire policies needs the admin role; policies are read-only for this session.'}
+            </p>
+          )}
           {saved && (
             <p role="status" data-testid="refire-saved" className="ml-2 inline text-body text-success">
               Refire policy saved.
@@ -525,6 +578,7 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
   const membersErrorKind = error ? classifyError(error) : undefined;
   const [addMember, { isLoading: adding }] = useAddProjectMemberMutation();
   const [removeMember] = useRemoveProjectMemberMutation();
+  const { resolved, isAdmin, failed } = useOperatorAdminGate();
   const [memberId, setMemberId] = useState('');
   const [kind, setKind] = useState<'ai' | 'human'>('ai');
   const [formError, setFormError] = useState<string | null>(null);
@@ -542,7 +596,7 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
     } catch (err) {
       const { status, data: message } = (err ?? {}) as { status?: unknown; data?: unknown };
       if (status === 'already_exists') setFormError(`Member already admitted. ${String(message ?? '')}`.trim());
-      else if (status === 'permission_denied') setFormError('Castle denied the write: this console session lacks project admin credentials.');
+      else if (status === 'permission_denied') setFormError("Castle denied the write: this session's operator lacks the admin role.");
       else setFormError(String(message ?? 'Add failed. Try again.'));
     }
   }
@@ -555,7 +609,7 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
       const { status } = (err ?? {}) as { status?: unknown };
       setRemoveError(
         status === 'permission_denied'
-          ? 'Castle denied the write: this console session lacks project admin credentials.'
+          ? "Castle denied the write: this session's operator lacks the admin role."
           : `Removing ${id} failed. Try again.`,
       );
     }
@@ -606,15 +660,17 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
                   <td className="py-2 pr-4 text-ink">{m.memberId}</td>
                   <td className="py-2 pr-4 text-ink-muted">{m.kind}</td>
                   <td className="py-2 text-right">
-                    <button
-                      type="button"
-                      data-testid={`member-remove-${m.memberId}`}
-                      aria-label={`Remove member ${m.memberId}`}
-                      onClick={() => void remove(m.memberId)}
-                      className="rounded-md border border-line px-2 py-1 text-meta text-ink-muted hover:bg-surface-raised hover:text-ink"
-                    >
-                      Remove
-                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        data-testid={`member-remove-${m.memberId}`}
+                        aria-label={`Remove member ${m.memberId}`}
+                        onClick={() => void remove(m.memberId)}
+                        className="rounded-md border border-line px-2 py-1 text-meta text-ink-muted hover:bg-surface-raised hover:text-ink"
+                      >
+                        Remove
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))
@@ -623,15 +679,16 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
         </table>
       )}
 
-      <form
-        data-testid="member-add"
-        aria-label="Add member"
-        className="flex flex-wrap items-start gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void add();
-        }}
-      >
+      {isAdmin ? (
+        <form
+          data-testid="member-add"
+          aria-label="Add member"
+          className="flex flex-wrap items-start gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void add();
+          }}
+        >
         <label className="flex flex-col text-meta text-ink-muted">
           Member id
           <input
@@ -675,6 +732,18 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
           </p>
         )}
       </form>
+      ) : (
+        resolved && (
+          <p
+            data-testid="member-admin-required"
+            className="text-meta text-ink-muted"
+          >
+            {failed
+              ? 'Your operator role could not be verified, so membership editing is unavailable.'
+              : 'Adding or removing members needs the admin role; membership is read-only for this session.'}
+          </p>
+        )
+      )}
     </section>
   );
 }

@@ -338,6 +338,9 @@ func main() {
 	// Projects are castle-owned (KB-318): agents register into a project and
 	// dispatch is restricted to the project's member set.
 	projectPath, projectHandler := castlev1connect.NewProjectServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
+	// Identity is castle-owned (KB-333): the self-scoped operator identity
+	// read that powers the console's attribute-driven surfaces.
+	identityPath, identityHandler := castlev1connect.NewIdentityServiceHandler(serverRPC, connect.WithInterceptors(interceptors...))
 	healthPath, healthHandler := grpchealth.NewHandler(grpchealth.NewStaticChecker(
 		criteria.ServiceName,
 		criteriav1connect.ServerServiceName,
@@ -345,6 +348,7 @@ func main() {
 		castlev1connect.ConsoleServiceName,
 		castlev1connect.RunArchiveServiceName,
 		castlev1connect.ProjectServiceName,
+		castlev1connect.IdentityServiceName,
 	))
 	mux.Handle(critPath, critHandler)
 	mux.Handle(serverPath, serverHandler)
@@ -352,6 +356,7 @@ func main() {
 	mux.Handle(consolePath, consoleHandler)
 	mux.Handle(runArchivePath, runArchiveHandler)
 	mux.Handle(projectPath, projectHandler)
+	mux.Handle(identityPath, identityHandler)
 	mux.Handle(healthPath, healthHandler)
 
 	if *grpcReflection {
