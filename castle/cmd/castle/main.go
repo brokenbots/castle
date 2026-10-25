@@ -144,7 +144,6 @@ func main() {
 	// env and persisted as a SHA-256 hash; it is never logged. An empty value
 	// REVOKES the trigger identity, disabling board-trigger auth.
 	triggerToken := flag.String("trigger-token", envOrDefault("CASTLE_TRIGGER_TOKEN", ""), "accept token for the kanboard trigger identity (or CASTLE_TRIGGER_TOKEN); empty revokes the previously provisioned trigger identity (disables board-trigger auth)")
-	operatorToken := flag.String("operator-token", envOrDefault("CASTLE_OPERATOR_TOKEN", ""), "accept token for the admin operator identity (or CASTLE_OPERATOR_TOKEN); empty revokes the previously provisioned admin operator token (disables operator-token admin auth)")
 	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
@@ -278,43 +277,15 @@ func main() {
 		}
 	}
 
-	// Provision or revoke the admin operator token (KB-330). New admin
-	// credentials are operator tokens: the token-only operator carries no
-	// password and its token row rotates verbatim like every token
-	// credential. Running with an empty token deletes the token row and the
-	// operator identity so a retired credential stops authenticating.
-	if *operatorToken != "" {
-		now := time.Now().UTC()
-		if err := st.UpsertOperator(context.Background(), &store.Operator{
-			ID:          "operator-admin",
-			Name:        "operator-admin",
-			DisplayName: "Admin Operator",
-			Attributes:  map[string]string{store.OperatorAttributeRole: store.OperatorRoleAdmin},
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}); err != nil {
-			log.Error("provision admin operator", "err", err)
-			os.Exit(1)
-		}
-		if err := st.UpsertOperatorToken(context.Background(), &store.OperatorToken{
-			ID:         "operator-admin-default",
-			OperatorID: "operator-admin",
-			TokenHash:  auth.HashToken(*operatorToken),
-			CreatedAt:  now,
-		}); err != nil {
-			log.Error("provision admin operator token", "err", err)
-			os.Exit(1)
-		}
-		log.Info("admin operator token provisioned", "operator_id", "operator-admin")
-	} else {
-		if err := st.DeleteOperatorToken(context.Background(), "operator-admin-default"); err != nil {
-			log.Error("revoke admin operator token", "err", err)
-			os.Exit(1)
-		}
-		if err := st.DeleteOperator(context.Background(), "operator-admin"); err != nil {
-			log.Error("revoke admin operator", "err", err)
-			os.Exit(1)
-		}
+	// KB-331: no admin operator token is ever provisioned — the admin
+	// credential surface is the console login (CASTLE_CONSOLE_USER and
+	// CASTLE_CONSOLE_PASSWORD below). A deployment that ran the pre-KB-331
+	// build with --operator-token / CASTLE_OPERATOR_TOKEN converges here:
+	// the long-lived admin bearer and its shadow identity stop
+	// authenticating at boot.
+	if err := revokeAdminOperatorToken(context.Background(), st, log); err != nil {
+		log.Error("revoke admin operator token", "err", err)
+		os.Exit(1)
 	}
 
 	// Provision or revoke the default console user (CRI-195). Seeding is
@@ -592,6 +563,43 @@ func logReapOutcomes(log *slog.Logger, reapedMsg string, outcomes []store.RunRea
 // the operator policy file (when configured) is upserted verbatim on top.
 // A malformed file entry aborts boot with the parse error — deployment
 // configuration must be decodable, not silently ignored.
+// Admin operator boot-revoke constants (KB-331): the row shape the retired
+// --operator-token / CASTLE_OPERATOR_TOKEN path seeded. Boot revocation
+// targets them by name so a deployment that ran the pre-KB-331 build
+// converges to login-only admin credentials.
+const (
+	adminOperatorID      = "operator-admin"
+	adminOperatorTokenID = "operator-admin-default"
+)
+
+// revokeAdminOperatorToken converges the pre-KB-331 admin operator token
+// away (KB-331). The admin credential surface is the console login — the
+// dave ruling stands: a long-lived admin bearer is worse than the identity
+// it stands for, so none is provisioned. A deployment seeded by the
+// old path loses both the token row and its token-only operator identity
+// (deleting the operator cascades its token rows; the explicit token delete
+// first keeps a stray orphan from surviving a constraint-relaxed engine).
+// Absent rows are an idempotent no-op, so every boot carries the reseed.
+func revokeAdminOperatorToken(ctx context.Context, st store.Store, log *slog.Logger) error {
+	_, err := st.GetOperator(ctx, adminOperatorID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	}
+	if err := st.DeleteOperatorToken(ctx, adminOperatorTokenID); err != nil {
+		return fmt.Errorf("delete admin operator token row: %w", err)
+	}
+	if err := st.DeleteOperator(ctx, adminOperatorID); err != nil {
+		return fmt.Errorf("delete admin operator identity: %w", err)
+	}
+	// Identity metadata only; the revoked token hash is never logged.
+	log.Info("admin operator token revoked: console login is the admin credential",
+		"operator_id", adminOperatorID)
+	return nil
+}
+
 func refireBootstrapOnce(ctx context.Context, st store.Store, log *slog.Logger, policyFile string) error {
 	existing, err := st.ListRefirePolicies(ctx)
 	if err != nil {

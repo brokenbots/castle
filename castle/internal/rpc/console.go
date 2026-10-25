@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"time"
 
 	"connectrpc.com/connect"
@@ -31,10 +32,12 @@ func (s *ServerServer) EnableConsoleLogin() {
 }
 
 // ProvisionConsoleUser idempotently seeds the default console user from the
-// operator's environment (CRI-195). If the user already exists with the same
-// credentials it is a no-op; if the password changed, the hash is rotated and
-// every existing console session is revoked so stale logins do not survive a
-// credential rotation.
+// operator's environment (CRI-195). The console user is the attributed admin
+// operator (KB-331): its operator row carries role=admin and the login's
+// display attribution. If the user already exists with the same credentials
+// the row still converges to that desired shape without revoking anything;
+// if the password changed, the hash is rotated and every existing console
+// session is revoked so stale logins do not survive a credential rotation.
 func ProvisionConsoleUser(ctx context.Context, st store.Store, username, password string, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
@@ -75,7 +78,27 @@ func ProvisionConsoleUser(ctx context.Context, st store.Store, username, passwor
 		}
 		log.Info("console user password rotated; existing console sessions revoked", "username", username)
 	default:
-		// Already seeded with these credentials: idempotent no-op.
+		// Already seeded with these credentials. Desired state still
+		// converges: repair the attributed operator shape (KB-331) without
+		// touching the password or revoking sessions — revocation is owned
+		// by password rotation, and this password did not change.
+		op, err := st.GetOperator(ctx, existing.ID)
+		if err != nil {
+			return fmt.Errorf("look up console operator: %w", err)
+		}
+		if maps.Equal(op.Attributes, store.ConsoleOperatorAttributes(username)) {
+			return nil
+		}
+		if err := st.UpsertConsoleUser(ctx, &store.ConsoleUser{
+			ID:           existing.ID,
+			Username:     username,
+			PasswordHash: existing.PasswordHash,
+			CreatedAt:    existing.CreatedAt,
+			UpdatedAt:    now,
+		}); err != nil {
+			return fmt.Errorf("converge console user attributes: %w", err)
+		}
+		log.Info("console user attributes converged", "username", username)
 	}
 	return nil
 }

@@ -64,8 +64,9 @@ func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
 
 // UpsertConsoleUser inserts or replaces a console user (CRI-195). Since
 // KB-330 the console user IS an operator: the write lands on the
-// password-carrying operators row (admin role) keyed by the same id. On
-// conflict, name and password_hash are replaced — rotating the seeded
+// password-carrying operators row keyed by the same id, carrying the
+// admin role and the login's display attribution (KB-331). On conflict,
+// name, password_hash and attributes are replaced — rotating the seeded
 // credentials — and created_at is preserved.
 func (s *Store) UpsertConsoleUser(ctx context.Context, u *store.ConsoleUser) error {
 	op := &store.Operator{
@@ -73,7 +74,7 @@ func (s *Store) UpsertConsoleUser(ctx context.Context, u *store.ConsoleUser) err
 		Name:         u.Username,
 		DisplayName:  u.Username,
 		PasswordHash: &u.PasswordHash,
-		Attributes:   map[string]string{store.OperatorAttributeRole: store.OperatorRoleAdmin},
+		Attributes:   store.ConsoleOperatorAttributes(u.Username),
 		CreatedAt:    u.CreatedAt,
 		UpdatedAt:    u.UpdatedAt,
 	}
