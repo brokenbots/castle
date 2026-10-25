@@ -37,6 +37,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.work
+      # The pg-backed tests boot the embedded-postgres binary (pinned
+      # 18.3.0). Cache the archive so parallel test binaries never race
+      # the 15MB Maven download; on a cold cache exactly one fetch warms
+      # it before any test binary starts.
+      - uses: actions/cache@v4
+        id: pgbin
+        with:
+          path: ~/.embedded-postgres-go
+          key: embedded-postgres-${{ runner.os }}-${{ runner.arch }}-18.3.0
+      - run: go run ./internal/store/pg/pgtest/embedcache
+        if: steps.pgbin.outputs.cache-hit != 'true'
+        working-directory: castle
       - run: cd castle && go test -race ./...
 
   parapet:

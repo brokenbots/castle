@@ -39,6 +39,41 @@ func TestConsoleUserUpsertAndGet(t *testing.T) {
 	})
 }
 
+// TestConsoleOperatorRowCarriesAdminAttributes pins the KB-331 desired-state
+// shape: the console user is ONE attributed admin operator — role=admin plus
+// the login's display attribution, carried ON the operator row (read back
+// through the operator model, not the console projection), never a shadow
+// console-default identity.
+func TestConsoleOperatorRowCarriesAdminAttributes(t *testing.T) {
+	run(t, func(t *testing.T, s store.Store) {
+		ctx := context.Background()
+
+		now := microUTC(time.Now())
+		if err := s.UpsertConsoleUser(ctx, &store.ConsoleUser{
+			ID: "console-default", Username: "dave", PasswordHash: "h", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+
+		op, err := s.GetOperator(ctx, "console-default")
+		if err != nil {
+			t.Fatalf("get operator: %v", err)
+		}
+		if op.Role() != store.OperatorRoleAdmin {
+			t.Fatalf("role = %q, want admin", op.Role())
+		}
+		if got := op.Attributes[store.OperatorAttributeDisplay]; got != "dave" {
+			t.Fatalf("display attribute = %q, want dave (the login names the human it stands for)", got)
+		}
+		if op.DisplayName != "dave" {
+			t.Fatalf("display name = %q, want the login name", op.DisplayName)
+		}
+		if op.PasswordHash == nil {
+			t.Fatal("the console operator is a password-carrying identity, not a token row")
+		}
+	})
+}
+
 // TestConsoleUserUnknownIsNotFound pins the unknown-username login path.
 func TestConsoleUserUnknownIsNotFound(t *testing.T) {
 	run(t, func(t *testing.T, s store.Store) {

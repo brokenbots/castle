@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
@@ -178,6 +179,9 @@ func (w *capturingWriter) Write(p []byte) (int, error) {
 
 func (w *capturingWriter) String() string { return string(w.b) }
 
+// Reset empties the capture buffer for reuse within one test.
+func (w *capturingWriter) Reset() { w.b = w.b[:0] }
+
 // TestReapStaleRunsOnce_ParkedRunLogsReclassification pins the KB-226
 // operator-visible contract: when a heartbeat-stale run's record ends at the
 // awaiting_human terminal completion, the pass does NOT emit "reaped run
@@ -340,6 +344,101 @@ func TestOpenStoreProfile_Rejects(t *testing.T) {
 	}
 	if _, err := openStoreProfile("mysql", "unused.db", ""); err == nil {
 		t.Fatal("unknown profile: want error, got nil")
+	}
+}
+
+// TestRevokeAdminOperatorToken pins the KB-331 boot convergence: the admin
+// operator token (and its token-only operator row, seeded by the retired
+// --operator-token / CASTLE_OPERATOR_TOKEN path) disappears from the store
+// while every unrelated identity survives, and a follow-up call is an
+// idempotent no-op. The password-carrying console operator — the ONE admin
+// identity — must never be touched.
+func TestRevokeAdminOperatorToken(t *testing.T) {
+	s, err := sqlite.Open(t.TempDir() + "/castle.db")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	cw := &capturingWriter{}
+	log := slog.New(slog.NewTextHandler(cw, nil))
+
+	now := time.Now().UTC()
+	admin := "operator-admin"
+	// The retired seed shape: token-only admin operator + its token row.
+	if err := s.UpsertOperator(ctx, &store.Operator{
+		ID:         adminOperatorID,
+		Name:       admin,
+		Attributes: map[string]string{store.OperatorAttributeRole: store.OperatorRoleAdmin},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("seed admin operator: %v", err)
+	}
+	if err := s.UpsertOperatorToken(ctx, &store.OperatorToken{
+		ID:         "operator-admin-default",
+		OperatorID: adminOperatorID,
+		TokenHash:  "stale-admin-hash",
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("seed admin operator token: %v", err)
+	}
+	// An unrelated extra token row on the same identity: also revoked, since
+	// the whole operator identity goes.
+	if err := s.UpsertOperatorToken(ctx, &store.OperatorToken{
+		ID:         "operator-admin-extra",
+		OperatorID: "operator-admin",
+		TokenHash:  "stale-admin-hash-2",
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("seed extra admin token: %v", err)
+	}
+	// Unrelated identities that must survive: the console login operator
+	// (THE admin identity) and a plain agent operator.
+	if err := s.UpsertConsoleUser(ctx, &store.ConsoleUser{
+		ID: "console-default", Username: "dave", PasswordHash: "hash",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed console operator: %v", err)
+	}
+	if err := s.UpsertOperator(ctx, &store.Operator{
+		ID: "agent-1", Name: "agent-1",
+		Attributes: map[string]string{store.OperatorAttributeRole: store.OperatorRoleAgent},
+		CreatedAt:  now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed agent operator: %v", err)
+	}
+
+	if err := revokeAdminOperatorToken(ctx, s, log); err != nil {
+		t.Fatalf("revokeAdminOperatorToken: %v", err)
+	}
+	if _, err := s.GetOperator(ctx, adminOperatorID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("admin operator = %v err, want not-found", err)
+	}
+	tokens, err := s.ListOperatorTokens(ctx)
+	if err != nil {
+		t.Fatalf("ListOperatorTokens: %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("operator tokens = %+v, want none", tokens)
+	}
+	if _, err := s.GetOperator(ctx, "console-default"); err != nil {
+		t.Fatalf("console operator must survive: %v", err)
+	}
+	if _, err := s.GetOperator(ctx, "agent-1"); err != nil {
+		t.Fatalf("agent operator must survive: %v", err)
+	}
+	if !strings.Contains(cw.String(), "admin operator token revoked") {
+		t.Fatalf("expected operator-facing revoke log, got: %s", cw.String())
+	}
+
+	// Idempotent: a second boot over the converged store is a silent no-op.
+	cw.Reset()
+	if err := revokeAdminOperatorToken(ctx, s, log); err != nil {
+		t.Fatalf("second revokeAdminOperatorToken: %v", err)
+	}
+	if cw.String() != "" {
+		t.Fatalf("no-op revoke must not log, got: %s", cw.String())
 	}
 }
 

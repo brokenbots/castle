@@ -5,6 +5,7 @@
 package pgtest
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net"
@@ -59,6 +60,15 @@ func shared(t *testing.T) *sql.DB {
 		return base
 	}
 
+	// Provision the pinned binary archive deterministically and
+	// single-flight before booting: with a warm cache the server starts
+	// with zero network access, and otherwise exactly one downloads while
+	// the parallel test binaries poll.
+	cacheDir := DefaultPostgresCacheDir()
+	if _, err := EnsurePostgresBinaryIfNeeded(context.Background(), DefaultBinaryRepoBase, cacheDir); err != nil {
+		t.Fatalf("pgtest: provision embedded postgres binary: %v", err)
+	}
+
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("pgtest: reserving a free port: %v", err)
@@ -72,22 +82,43 @@ func shared(t *testing.T) *sql.DB {
 	}
 	// Per-process runtime dir: extraction is deterministic and cheap, and an
 	// isolated directory keeps parallel test binaries from racing on the
-	// extraction step. The downloaded archive itself still shares the
-	// default OS cache.
+	// extraction step. The downloaded archive itself always shares the
+	// explicit cache dir below.
 	runtimeDir, err := os.MkdirTemp("", "castle-pgtest-runtime-")
 	if err != nil {
 		t.Fatalf("pgtest: runtime dir: %v", err)
 	}
 
-	srv = embeddedpostgres.NewDatabase(embeddedpostgres.DefaultConfig().
-		Username(testUser).
-		Password(testPassword).
-		Port(port).
-		RuntimePath(runtimeDir).
-		DataPath(filepath.Join(dataDir, "pgdata")).
-		StartTimeout(2 * time.Minute))
-	if err := srv.Start(); err != nil {
-		t.Fatalf("pgtest: boot embedded postgres: %v", err)
+	// Bounded boot retry: the same mirror flakiness that corrupted old
+	// fetches aside, Start's sub-steps (extraction, initdb, first boot) can
+	// each fail transiently on a contended runner. Each attempt builds a
+	// fresh server value; Start removes the runtime dir itself, so the
+	// retries converge on clean state. The test fails only after the final
+	// attempt.
+	bootBackoff := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+	var bootErr error
+	for attempt := 1; attempt <= len(bootBackoff)+1; attempt++ {
+		srv = embeddedpostgres.NewDatabase(embeddedpostgres.DefaultConfig().
+			// The version and cache are pinned explicitly (not inherited
+			// from DefaultConfig) so a library upgrade can never silently
+			// change which binary is booted or which cache file is read.
+			Version(embeddedpostgres.V18).
+			CachePath(cacheDir).
+			Username(testUser).
+			Password(testPassword).
+			Port(port).
+			RuntimePath(runtimeDir).
+			DataPath(filepath.Join(dataDir, "pgdata")).
+			StartTimeout(2 * time.Minute))
+		if bootErr = srv.Start(); bootErr == nil {
+			break
+		}
+		if attempt <= len(bootBackoff) {
+			time.Sleep(bootBackoff[attempt-1])
+		}
+	}
+	if bootErr != nil {
+		t.Fatalf("pgtest: boot embedded postgres after %d attempts: %v", len(bootBackoff)+1, bootErr)
 	}
 
 	base, err = sql.Open("pgx", dsn("postgres"))

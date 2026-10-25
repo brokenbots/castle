@@ -297,6 +297,23 @@ func (o *Operator) Role() string {
 // OperatorAttributeRole is the attributes key holding the operator's role.
 const OperatorAttributeRole = "role"
 
+// OperatorAttributeDisplay is the attributes key holding the operator's
+// display attribution (KB-331): the human the identity stands for. Opaque
+// to authorization — role is the only interpreted attribute key.
+const OperatorAttributeDisplay = "display"
+
+// ConsoleOperatorAttributes returns the attribute map a console-login
+// operator row carries: role=admin with the login's display attribution
+// (KB-331 — the admin identity is the seeded login, never a shadow
+// console-default user). Engines write console operator rows through this
+// helper so every deployment carries the same attributed shape.
+func ConsoleOperatorAttributes(username string) map[string]string {
+	return map[string]string{
+		OperatorAttributeRole:    OperatorRoleAdmin,
+		OperatorAttributeDisplay: username,
+	}
+}
+
 // OperatorToken is one bearer token issued to an operator (KB-330): the
 // credential space for operator-issued tokens (e.g. a newly provisioned
 // admin token). Legacy agent/orchestrator/trigger tokens keep resolving
