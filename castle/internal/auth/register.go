@@ -79,8 +79,9 @@ func ProjectClaimFromContext(ctx context.Context) string {
 }
 
 // WithCallerProjectClaim returns a context carrying the project claim of a
-// per-project agent credential. Use in tests that call handlers directly
-// (no HTTP stack).
+// per-project agent credential. The auth interceptor sets it during Register
+// admission for project-scoped agent credentials; tests call handlers
+// directly (no HTTP stack) and use it the same way.
 func WithCallerProjectClaim(ctx context.Context, project string) context.Context {
 	return context.WithValue(ctx, registrationProjectBindingKey{}, project)
 }

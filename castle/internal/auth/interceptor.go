@@ -735,7 +735,7 @@ func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyReq
 // (PermissionDenied, fail closed — the credential may never register into a
 // project its operator does not claim); with the header matching or absent,
 // the claimed project IS the registration binding, which the handler joins
-// regardless of the project's membership policy ( provisioning the
+// regardless of the project's membership policy (provisioning the
 // credential was the admission act).
 func (i *AuthInterceptor) nextRegister(ctx context.Context, req connect.AnyRequest, next connect.UnaryFunc) (connect.AnyResponse, error) {
 	identity, projectID, err := ParseAgentRegistration(req.Header())

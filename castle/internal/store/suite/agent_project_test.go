@@ -168,7 +168,7 @@ func TestAgentCredentialJoinFailsClosed(t *testing.T) {
 		}
 
 		// A member of another project sees NO work in this project's pool
-		// (membership is checked in the scan itself - the assignment is
+		// (membership is checked in the scan itself — the assignment is
 		// simply not visible): leasing while the assignment is still queued
 		// reports the same not-found as an empty pool.
 		if _, err := s.LeaseWorkflowAssignment(ctx, "proj-b-agent", nil, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
