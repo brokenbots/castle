@@ -324,12 +324,18 @@ function RefireEditor({ projectId }: { projectId: string }) {
   const unset = errorOf(error) === 'not_found';
   const policy = draft ?? data?.policy ?? EMPTY_POLICY;
 
+  // The fetched row changed (external edit or the post-save refetch):
+  // retire the local draft so the form shows the row the current
+  // updatedAt describes.
+  useEffect(() => {
+    setDraft(null);
+  }, [data?.updatedAt, args.route, args.projectId]);
+
   // The saved banner is owned by the save lifecycle (cleared when the next
-  // save starts or the route key changes), not by refetches — the
+  // save starts) or navigating to another row — not by refetches: the
   // invalidation refetch after a successful save would otherwise clear it
   // before the operator reads it.
   useEffect(() => {
-    setDraft(null);
     setSaved(false);
   }, [args.route, args.projectId]);
 
