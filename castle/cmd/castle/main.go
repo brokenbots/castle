@@ -144,6 +144,7 @@ func main() {
 	// env and persisted as a SHA-256 hash; it is never logged. An empty value
 	// REVOKES the trigger identity, disabling board-trigger auth.
 	triggerToken := flag.String("trigger-token", envOrDefault("CASTLE_TRIGGER_TOKEN", ""), "accept token for the kanboard trigger identity (or CASTLE_TRIGGER_TOKEN); empty revokes the previously provisioned trigger identity (disables board-trigger auth)")
+	operatorToken := flag.String("operator-token", envOrDefault("CASTLE_OPERATOR_TOKEN", ""), "accept token for the admin operator identity (or CASTLE_OPERATOR_TOKEN); empty revokes the previously provisioned admin operator token (disables operator-token admin auth)")
 	devAllowAnonRegister := flag.Bool("dev-allow-anon-register", false, "dev mode: allow Register without bootstrap token (unsafe in production)")
 	tlsDefault := *tlsCert != "" || *tlsKey != ""
 	grpcReflection := flag.Bool("grpc-reflection", envOrDefaultBool("CASTLE_GRPC_REFLECTION", !tlsDefault), "enable gRPC reflection")
@@ -273,6 +274,45 @@ func main() {
 	} else {
 		if err := st.DeleteTrigger(context.Background(), "trigger-kanboard"); err != nil {
 			log.Error("revoke trigger identity", "err", err)
+			os.Exit(1)
+		}
+	}
+
+	// Provision or revoke the admin operator token (KB-330). New admin
+	// credentials are operator tokens: the token-only operator carries no
+	// password and its token row rotates verbatim like every token
+	// credential. Running with an empty token deletes the token row and the
+	// operator identity so a retired credential stops authenticating.
+	if *operatorToken != "" {
+		now := time.Now().UTC()
+		if err := st.UpsertOperator(context.Background(), &store.Operator{
+			ID:          "operator-admin",
+			Name:        "operator-admin",
+			DisplayName: "Admin Operator",
+			Attributes:  map[string]string{store.OperatorAttributeRole: store.OperatorRoleAdmin},
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}); err != nil {
+			log.Error("provision admin operator", "err", err)
+			os.Exit(1)
+		}
+		if err := st.UpsertOperatorToken(context.Background(), &store.OperatorToken{
+			ID:         "operator-admin-default",
+			OperatorID: "operator-admin",
+			TokenHash:  auth.HashToken(*operatorToken),
+			CreatedAt:  now,
+		}); err != nil {
+			log.Error("provision admin operator token", "err", err)
+			os.Exit(1)
+		}
+		log.Info("admin operator token provisioned", "operator_id", "operator-admin")
+	} else {
+		if err := st.DeleteOperatorToken(context.Background(), "operator-admin-default"); err != nil {
+			log.Error("revoke admin operator token", "err", err)
+			os.Exit(1)
+		}
+		if err := st.DeleteOperator(context.Background(), "operator-admin"); err != nil {
+			log.Error("revoke admin operator", "err", err)
 			os.Exit(1)
 		}
 	}

@@ -268,7 +268,21 @@ func (s *ServerServer) SubmitProjectAssignment(ctx context.Context, req *connect
 // the handler where the settings map is shaped. Reader postures use
 // requireProjectReader; the other KB-324 writes use requireProjectAdminCaller.
 // Trigger identities are rejected explicitly with PermissionDenied (KB-320).
+// KB-330: the posture is attribute-driven — an admin-role operator carries
+// the console posture (settings seed authority), an agent-role operator the
+// protocol-token posture, an orchestrator-role operator the legacy
+// orchestrator rejection, and a trigger-role operator the trigger denial.
 func requireProjectCaller(ctx context.Context) error {
+	if op := auth.CallerOperator(ctx); op != nil {
+		switch op.Role() {
+		case store.OperatorRoleAdmin, store.OperatorRoleAgent:
+			return nil
+		case store.OperatorRoleTrigger:
+			return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))
+		default:
+			return connect.NewError(connect.CodeUnauthenticated, errors.New("caller required"))
+		}
+	}
 	if auth.CallerTriggerID(ctx) != "" {
 		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))
 	}
@@ -281,10 +295,23 @@ func requireProjectCaller(ctx context.Context) error {
 // requireProjectReader is the KB-324 reader posture shared by the project
 // surfaces a console operator administers: agent identities (the registered
 // project surface callers) and console-session identities (the operator UI)
-// may read; trigger and orchestrator identities may not. With no identity at
-// all the auth interceptor is not wired (direct handler calls in tests), so
-// the check passes through like requireCaller does.
+// may read; trigger and orchestrator identities may not. KB-330: an
+// operator's role attribute decides the posture instead of its credential
+// class — admin- and agent-role operators read, orchestrator- and
+// trigger-role operators do not. With no identity at all the auth
+// interceptor is not wired (direct handler calls in tests), so the check
+// passes through like requireCaller does.
 func requireProjectReader(ctx context.Context) error {
+	if op := auth.CallerOperator(ctx); op != nil {
+		switch op.Role() {
+		case store.OperatorRoleAdmin, store.OperatorRoleAgent:
+			return nil
+		case store.OperatorRoleTrigger:
+			return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))
+		case store.OperatorRoleOrchestrator:
+			return connect.NewError(connect.CodePermissionDenied, errors.New("orchestrator identities cannot invoke this project surface"))
+		}
+	}
 	if auth.CallerTriggerID(ctx) != "" {
 		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project surface"))
 	}
@@ -302,10 +329,22 @@ func requireProjectReader(ctx context.Context) error {
 // administration: settings, refire policies and membership are
 // console-session writes. Protocol tokens — agent and orchestrator
 // identities, and trigger identities (submit-only, KB-320) — are rejected
-// regardless of any membership claim. With no identity at all the auth
-// interceptor is not wired (direct handler calls in tests), so the check
-// passes through like requireCaller does.
+// regardless of any membership claim. KB-330: an admin-role operator carries
+// the console write posture and every other operator role keeps a protocol
+// token's rejection. With no identity at all the auth interceptor is not
+// wired (direct handler calls in tests), so the check passes through like
+// requireCaller does.
 func requireProjectAdminCaller(ctx context.Context) error {
+	if op := auth.CallerOperator(ctx); op != nil {
+		switch op.Role() {
+		case store.OperatorRoleAdmin:
+			return nil
+		case store.OperatorRoleTrigger:
+			return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project admin surface"))
+		default:
+			return connect.NewError(connect.CodePermissionDenied, errors.New("protocol tokens cannot write project settings, policies or membership; this surface is a console-session write"))
+		}
+	}
 	if auth.CallerTriggerID(ctx) != "" {
 		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this project admin surface"))
 	}

@@ -339,13 +339,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if err != nil {
 			return nil, err
 		}
-		if err := authorizeOrchestratorProcedure(newCtx, req.Spec().Procedure); err != nil {
-			return nil, err
-		}
-		if err := authorizeConsoleProcedure(newCtx, req.Spec().Procedure); err != nil {
-			return nil, err
-		}
-		if err := authorizeTriggerProcedure(newCtx, req.Spec().Procedure); err != nil {
+		if err := authorizeOperatorProcedure(newCtx, req.Spec().Procedure); err != nil {
 			return nil, err
 		}
 		return next(newCtx, req)
@@ -369,13 +363,7 @@ func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 		if err != nil {
 			return err
 		}
-		if err := authorizeOrchestratorProcedure(newCtx, conn.Spec().Procedure); err != nil {
-			return err
-		}
-		if err := authorizeConsoleProcedure(newCtx, conn.Spec().Procedure); err != nil {
-			return err
-		}
-		if err := authorizeTriggerProcedure(newCtx, conn.Spec().Procedure); err != nil {
+		if err := authorizeOperatorProcedure(newCtx, conn.Spec().Procedure); err != nil {
 			return err
 		}
 		return next(newCtx, conn)
@@ -395,6 +383,55 @@ func authorizeOrchestratorProcedure(ctx context.Context, procedure string) error
 		return nil
 	}
 	return connect.NewError(connect.CodePermissionDenied, errors.New("orchestrator identities cannot invoke agent-owned procedures"))
+}
+
+// authorizeOperatorProcedure enforces the KB-330 attribute-driven boundary:
+// a resolved operator's privileges derive from its role attribute, not from
+// the credential class the identity arrived through. role=admin reaches the
+// full console surface (read-everything, run control, project
+// administration) because a human operator and an admin operator token are
+// the same privilege class; role=orchestrator reaches the read-only
+// orchestrator observation surface; role=trigger reaches the submit-only
+// trigger surface; role=agent (the least-privilege default) reaches the
+// agent-owned writes and the read-only observation surface — the pre-merge
+// agent path injects no boundary at all.
+//
+// Callers without an operator identity (pre-merge direct-call tests
+// injecting only the legacy kind keys, and anonymous contexts from the
+// tokenless exempt pass-through) fall back to the legacy class maps, so
+// unwired handlers keep their exact pre-operators behavior.
+func authorizeOperatorProcedure(ctx context.Context, procedure string) error {
+	if CallerOperator(ctx) == nil {
+		if err := authorizeOrchestratorProcedure(ctx, procedure); err != nil {
+			return err
+		}
+		if err := authorizeConsoleProcedure(ctx, procedure); err != nil {
+			return err
+		}
+		if err := authorizeTriggerProcedure(ctx, procedure); err != nil {
+			return err
+		}
+		return nil
+	}
+	switch CallerOperatorRole(ctx) {
+	case store.OperatorRoleAdmin:
+		if isConsoleAllowed(procedure) {
+			return nil
+		}
+		return connect.NewError(connect.CodePermissionDenied, errors.New("console identities cannot invoke this procedure"))
+	case store.OperatorRoleOrchestrator:
+		if isOrchestratorAllowed(procedure) {
+			return nil
+		}
+		return connect.NewError(connect.CodePermissionDenied, errors.New("orchestrator identities cannot invoke agent-owned procedures"))
+	case store.OperatorRoleTrigger:
+		if isTriggerAllowed(procedure) {
+			return nil
+		}
+		return connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot invoke this procedure"))
+	default:
+		return nil
+	}
 }
 
 // authenticateAnonReadToken handles the exempt-procedure credential class
@@ -447,59 +484,73 @@ func (i *AuthInterceptor) authenticateAnonReadToken(ctx context.Context, h http.
 	if err != nil {
 		return nil, err
 	}
-	if err := authorizeOrchestratorProcedure(newCtx, procedure); err != nil {
-		return nil, err
-	}
-	if err := authorizeConsoleProcedure(newCtx, procedure); err != nil {
-		return nil, err
-	}
-	// The surface includes OrchestratorService subscription APIs and the
-	// WatchRun mirror (which is also an anon-readable run read), which a
-	// console identity must never reach (CRI-195) and a trigger identity
-	// must observe submit-only (KB-320), so the identity boundaries are
-	// re-checked after identity injection.
-	if err := authorizeTriggerProcedure(newCtx, procedure); err != nil {
+	if err := authorizeOperatorProcedure(newCtx, procedure); err != nil {
 		return nil, err
 	}
 	return newCtx, nil
 }
 
 // authenticateHeaders validates the token and returns a context with the
-// caller's identity injected: criteria agent ID for agent tokens,
-// orchestrator ID for orchestrator tokens (CRI-133), trigger ID for trigger
-// tokens (KB-320), console user ID for console session tokens (CRI-195).
-// Agent tokens take precedence when both
-// match: the per-table token-hash UNIQUE indexes cannot detect identical
-// token material across tables, so in that (operator misconfiguration) case
-// the token acts as an agent and the identity it shadows is unreachable. The
-// same applies to orchestrator and trigger over console: these token
-// spaces are independently generated (distinct random material), so
-// precedence only matters for pathological collisions.
+// caller's identity injected as an OPERATOR (KB-330): the operator_tokens
+// space (admin-issued operator tokens) resolves first, then the legacy
+// per-class spaces — agent, orchestrator (CRI-133), trigger (KB-320),
+// console session (CRI-195) — keep resolving and map onto the SAME operator
+// model through their alias operator rows (or a synthesized class-role
+// identity when the alias row has not landed). Every resolution injects
+// CallerOperator so privilege checks are attribute-driven; agent,
+// orchestrator, and trigger roles additionally carry their legacy kind key
+// so ownership checks stay unchanged. Token precedence still matters only
+// for identical material across spaces: the per-table UNIQUE indexes cannot
+// detect that collision, and the operator token (or, below it, the agent
+// token) registered earlier shadows the identity sharing the material.
 func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header) (context.Context, error) {
 	tok, ok := TokenFromHeaders(h)
 	if !ok {
 		return ctx, connect.NewError(connect.CodeUnauthenticated, errors.New("missing token"))
+	}
+	otok, err := ResolveOperatorToken(ctx, i.store, tok)
+	if err != nil {
+		return ctx, connect.NewError(connect.CodeInternal, err)
+	}
+	if otok != nil {
+		op, err := operatorForIdentity(ctx, i.store, otok.OperatorID, otok.OperatorID, "")
+		if err != nil {
+			return ctx, connect.NewError(connect.CodeInternal, err)
+		}
+		return i.operatorContext(ctx, op), nil
 	}
 	o, err := ResolveToken(ctx, i.store, tok)
 	if err != nil {
 		return ctx, connect.NewError(connect.CodeInternal, err)
 	}
 	if o != nil {
-		return context.WithValue(ctx, callerCriteriaIDKey{}, o.ID), nil
+		op, err := operatorForIdentity(ctx, i.store, o.ID, o.Name, store.OperatorRoleAgent)
+		if err != nil {
+			return ctx, connect.NewError(connect.CodeInternal, err)
+		}
+		return i.operatorContext(ctx, op), nil
 	}
 	orch, err := ResolveOrchestratorToken(ctx, i.store, tok)
 	if err != nil {
 		return ctx, connect.NewError(connect.CodeInternal, err)
 	}
 	if orch != nil {
-		return context.WithValue(ctx, callerOrchestratorIDKey{}, orch.ID), nil
+		op, err := operatorForIdentity(ctx, i.store, orch.ID, orch.ID, store.OperatorRoleOrchestrator)
+		if err != nil {
+			return ctx, connect.NewError(connect.CodeInternal, err)
+		}
+		return i.operatorContext(ctx, op), nil
 	}
 	trigger, err := ResolveTriggerToken(ctx, i.store, tok)
 	if err != nil {
 		return ctx, connect.NewError(connect.CodeInternal, err)
 	}
 	if trigger != nil {
-		return context.WithValue(ctx, callerTriggerIDKey{}, trigger.ID), nil
+		op, err := operatorForIdentity(ctx, i.store, trigger.ID, trigger.ID, store.OperatorRoleTrigger)
+		if err != nil {
+			return ctx, connect.NewError(connect.CodeInternal, err)
+		}
+		return i.operatorContext(ctx, op), nil
 	}
 	sess, err := ResolveConsoleSession(ctx, i.store, tok)
 	if err != nil {
@@ -508,8 +559,37 @@ func (i *AuthInterceptor) authenticateHeaders(ctx context.Context, h http.Header
 	if sess == nil {
 		return ctx, i.unauthenticatedTokenError(ctx, tok)
 	}
-	ctx = context.WithValue(ctx, callerConsoleUserIDKey{}, sess.UserID)
+	op, err := operatorForIdentity(ctx, i.store, sess.OperatorID, sess.OperatorID, store.OperatorRoleAdmin)
+	if err != nil {
+		return ctx, connect.NewError(connect.CodeInternal, err)
+	}
+	if op.Role() == store.OperatorRoleAgent {
+		// A console session can only ever key an admin-class operator: a
+		// token-only agent never has a password row, so a session pointing
+		// at one is seeded data corruption, not an identity.
+		return ctx, connect.NewError(connect.CodeInternal, errors.New("console session keys a non-admin operator"))
+	}
+	ctx = i.operatorContext(ctx, op)
+	ctx = context.WithValue(ctx, callerConsoleUserIDKey{}, sess.OperatorID)
 	return context.WithValue(ctx, callerConsoleSessionIDKey{}, sess.ID), nil
+}
+
+// operatorContext injects the operator identity plus the legacy kind key its
+// role implies (KB-330): ownership checks keep keying on the kind keys,
+// privilege checks read the attribute-driven role. Admin operators carry no
+// kind key — exactly the console-session shape — so an admin operator token
+// sees everything without holding agent/orchestrator/trigger ownership.
+func (i *AuthInterceptor) operatorContext(ctx context.Context, op *store.Operator) context.Context {
+	ctx = WithCallerOperator(ctx, op)
+	switch op.Role() {
+	case store.OperatorRoleAgent:
+		return context.WithValue(ctx, callerCriteriaIDKey{}, op.ID)
+	case store.OperatorRoleOrchestrator:
+		return context.WithValue(ctx, callerOrchestratorIDKey{}, op.ID)
+	case store.OperatorRoleTrigger:
+		return context.WithValue(ctx, callerTriggerIDKey{}, op.ID)
+	}
+	return ctx
 }
 
 // overseerTokenPresenceChecker is implemented (optionally) by stores that can
@@ -541,19 +621,38 @@ func (i *AuthInterceptor) unauthenticatedTokenError(ctx context.Context, tok str
 }
 
 // handleRegister enforces the bootstrap-token gate for the Register RPC, and
-// denies console identities outright (CRI-195): a console token can never
-// register an agent, even under --dev-allow-anon-register, so the human
-// console cannot bootstrap agent credentials. Trigger identities are denied
-// the same way (KB-320): a board adapter is submit-only and can never mint
-// agent credentials.
+// denies operator identities whose role attribute forbids minting agent
+// credentials (CRI-195 via KB-330): the admin role — which console sessions
+// resolve to — and the trigger role are both denied outright, even under
+// --dev-allow-anon-register. Legacy console-session and trigger tokens keep
+// their denials through the same attribute check plus the legacy resolvers.
 //
-//   - Console session token presented: PermissionDenied, checked first so the
-//     denial is deterministic regardless of the bootstrap configuration.
+//   - Operator session/token presented with admin or trigger role:
+//     PermissionDenied, checked first so the denial is deterministic
+//     regardless of the bootstrap configuration.
 //   - allowAnonRegister=true (--dev-allow-anon-register): pass through.
 //   - bootstrapTokenHash set: require a matching X-Server-Bootstrap header.
 //   - Neither: Register is disabled; Unimplemented is returned.
 func (i *AuthInterceptor) handleRegister(ctx context.Context, req connect.AnyRequest, next connect.UnaryFunc) (connect.AnyResponse, error) {
 	if tok, present := TokenFromHeaders(req.Header()); present {
+		// Operator tokens are denied by role attribute (KB-330): an
+		// admin-role operator is the console privilege class and can never
+		// bootstrap agent credentials, a trigger-role operator is
+		// least-privilege board-adapter.
+		if otok, err := ResolveOperatorToken(ctx, i.store, tok); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		} else if otok != nil {
+			op, err := operatorForIdentity(ctx, i.store, otok.OperatorID, otok.OperatorID, "")
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			switch op.Role() {
+			case store.OperatorRoleAdmin:
+				return nil, connect.NewError(connect.CodePermissionDenied, errors.New("console identities cannot register agents"))
+			case store.OperatorRoleTrigger:
+				return nil, connect.NewError(connect.CodePermissionDenied, errors.New("trigger identities cannot register agents"))
+			}
+		}
 		sess, err := ResolveConsoleSession(ctx, i.store, tok)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)

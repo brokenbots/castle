@@ -485,9 +485,17 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 	if err != nil {
 		return err
 	}
+	// KB-330: the overseer row is an alias view of its operator row — keep
+	// both consistent, operator first (the alias FK points at it).
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO operators(id,name,display_name,password_hash,attributes,created_at,updated_at) VALUES(?,?,?,NULL,'{"role":"agent"}',?,?)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at`,
+		o.ID, o.Name, o.Name, o.CreatedAt.Format(store.TimestampLayout), o.CreatedAt.Format(store.TimestampLayout)); err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, o.CreatedAt.Format(store.TimestampLayout), o.LastSeenAt.Format(store.TimestampLayout), identity)
+		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity,operator_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, o.CreatedAt.Format(store.TimestampLayout), o.LastSeenAt.Format(store.TimestampLayout), identity, o.ID)
 	if err == nil {
 		s.freshness.recordWrite(o.CreatedAt)
 	}
@@ -633,10 +641,18 @@ func (s *Store) OverseerTokenHashPresent(ctx context.Context, tokenHash string) 
 func (s *Store) UpsertOrchestrator(ctx context.Context, o *store.Orchestrator) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
+	// KB-330: the orchestrator row is an alias view of its operator row —
+	// keep both consistent, operator first (the alias FK points at it).
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO operators(id,name,display_name,password_hash,attributes,created_at,updated_at) VALUES(?,?,?,NULL,'{"role":"orchestrator"}',?,?)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at`,
+		o.ID, o.Name, o.Name, o.CreatedAt.Format(store.TimestampLayout), o.CreatedAt.Format(store.TimestampLayout)); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO orchestrators(id,name,token_hash,created_at) VALUES(?,?,?,?)
-		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, token_hash=excluded.token_hash`,
-		o.ID, o.Name, o.TokenHash, o.CreatedAt.Format(store.TimestampLayout))
+		`INSERT INTO orchestrators(id,name,token_hash,created_at,operator_id) VALUES(?,?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, token_hash=excluded.token_hash, operator_id=excluded.operator_id`,
+		o.ID, o.Name, o.TokenHash, o.CreatedAt.Format(store.TimestampLayout), o.ID)
 	return err
 }
 
@@ -662,32 +678,45 @@ func (s *Store) ListOrchestrators(ctx context.Context) ([]*store.Orchestrator, e
 }
 
 // DeleteOrchestrator removes the orchestrator identity, revoking its accept
-// token (CRI-133). Deleting an unknown ID is a no-op.
+// token (CRI-133). Deleting an unknown ID is a no-op. Since KB-330 the
+// orchestrator's alias operator row goes too, so the identity disappears
+// from the operators model as well.
 func (s *Store) DeleteOrchestrator(ctx context.Context, id string) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM orchestrators WHERE id = ?`, id)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM orchestrators WHERE id = ?`, id); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM operators WHERE id = ?`, id)
 	return err
 }
 
-// UpsertConsoleUser inserts or replaces a console user (CRI-195). On
-// conflict, username and password_hash are replaced — rotating the seeded
+// UpsertConsoleUser inserts or replaces a console user (CRI-195). Since
+// KB-330 the console user IS an operator: the write lands on the
+// password-carrying operators row (admin role) keyed by the same id. On
+// conflict, name and password_hash are replaced — rotating the seeded
 // credentials — and created_at is preserved.
 func (s *Store) UpsertConsoleUser(ctx context.Context, u *store.ConsoleUser) error {
-	ctx, cancel := s.opCtx(ctx)
-	defer cancel()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO console_users(id,username,password_hash,created_at,updated_at) VALUES(?,?,?,?,?)
-		 ON CONFLICT(id) DO UPDATE SET username=excluded.username, password_hash=excluded.password_hash, updated_at=excluded.updated_at`,
-		u.ID, u.Username, u.PasswordHash, u.CreatedAt.Format(store.TimestampLayout), u.UpdatedAt.Format(store.TimestampLayout))
-	return err
+	op := &store.Operator{
+		ID:           u.ID,
+		Name:         u.Username,
+		DisplayName:  u.Username,
+		PasswordHash: &u.PasswordHash,
+		Attributes:   map[string]string{store.OperatorAttributeRole: store.OperatorRoleAdmin},
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
+	}
+	return s.UpsertOperator(ctx, op)
 }
 
+// GetConsoleUser returns the console user with the given username: the
+// password-carrying operator whose name matches (KB-330). Token-only
+// operators never resolve as console users.
 func (s *Store) GetConsoleUser(ctx context.Context, username string) (*store.ConsoleUser, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id,username,password_hash,created_at,updated_at FROM console_users WHERE username=?`, username)
+		`SELECT id,name,password_hash,created_at,updated_at FROM operators WHERE name=? AND password_hash IS NOT NULL`, username)
 	var u store.ConsoleUser
 	var created, updated string
 	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated); err != nil {
@@ -701,12 +730,13 @@ func (s *Store) GetConsoleUser(ctx context.Context, username string) (*store.Con
 	return &u, nil
 }
 
-// DeleteConsoleUsers removes every console user; the ON DELETE CASCADE on
-// console_sessions revokes their sessions with them (CRI-195).
+// DeleteConsoleUsers removes the password-carrying operators (console
+// users); the ON DELETE CASCADE on console_sessions revokes their sessions
+// with them (CRI-195). Token-only operators are untouched.
 func (s *Store) DeleteConsoleUsers(ctx context.Context) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM console_users`)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM operators WHERE password_hash IS NOT NULL`)
 	return err
 }
 
@@ -718,8 +748,8 @@ func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSes
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO console_sessions(id,user_id,token_hash,created_at,revoked_at,membership) VALUES(?,?,?,?,?,?)`,
-		sess.ID, sess.UserID, sess.TokenHash, sess.CreatedAt.Format(store.TimestampLayout),
+		`INSERT INTO console_sessions(id,operator_id,token_hash,created_at,revoked_at,membership) VALUES(?,?,?,?,?,?)`,
+		sess.ID, sess.OperatorID, sess.TokenHash, sess.CreatedAt.Format(store.TimestampLayout),
 		tsPtr(sess.RevokedAt), membership)
 	return err
 }
@@ -727,7 +757,7 @@ func (s *Store) CreateConsoleSession(ctx context.Context, sess *store.ConsoleSes
 func (s *Store) ListConsoleSessions(ctx context.Context) ([]*store.ConsoleSession, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	rows, err := s.reader.QueryContext(ctx, `SELECT id,user_id,token_hash,created_at,revoked_at,membership FROM console_sessions ORDER BY created_at ASC`)
+	rows, err := s.reader.QueryContext(ctx, `SELECT id,operator_id,token_hash,created_at,revoked_at,membership FROM console_sessions ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -773,7 +803,7 @@ func scanConsoleSession(scan func(...any) error) (*store.ConsoleSession, error) 
 	var created string
 	var revoked sql.NullString
 	var membership []byte
-	err := scan(&sess.ID, &sess.UserID, &sess.TokenHash, &created, &revoked, &membership)
+	err := scan(&sess.ID, &sess.OperatorID, &sess.TokenHash, &created, &revoked, &membership)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -796,12 +826,13 @@ func (s *Store) DeleteConsoleSessions(ctx context.Context) error {
 	return err
 }
 
-// DeleteConsoleSessionsByUser revokes every session of one console user,
-// e.g. when the seeded password is rotated (CRI-195).
+// DeleteConsoleSessionsByUser revokes every login session of one console
+// operator (keyed by operator id since KB-330), e.g. when the seeded
+// password is rotated (CRI-195).
 func (s *Store) DeleteConsoleSessionsByUser(ctx context.Context, userID string) error {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM console_sessions WHERE user_id = ?`, userID)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM console_sessions WHERE operator_id = ?`, userID)
 	return err
 }
 

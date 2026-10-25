@@ -5,7 +5,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -250,8 +252,93 @@ type Trigger struct {
 	CreatedAt time.Time
 }
 
-// ConsoleUser is a human console login identity (CRI-195). The password is
-// stored only as a bcrypt hash; plaintext never reaches the store. The
+// Operator roles (KB-330): privileges derive from the operator's
+// attributes, never from the credential class the identity arrived through.
+// The seeded migration maps each legacy credential class onto exactly one
+// role so every existing wire identity keeps its current effective scope:
+// console users carry OperatorRoleAdmin (see-all + project admin + run
+// control), overseer tokens carry OperatorRoleAgent, orchestrators
+// OperatorRoleOrchestrator and triggers OperatorRoleTrigger.
+const (
+	OperatorRoleAdmin        = "admin"
+	OperatorRoleAgent        = "agent"
+	OperatorRoleOrchestrator = "orchestrator"
+	OperatorRoleTrigger      = "trigger"
+)
+
+// Operator is the ONE identity model (KB-330): every castle caller — human
+// console login, agent, orchestrator, trigger — is an operator carrying
+// privileges and attributes. Token-only operators have a nil PasswordHash;
+// password operators (console logins) resolve against it. Attributes are
+// the privilege source: Attributes["role"] (an OperatorRole* value) drives
+// authorization, with additional scopes/labels/roles allowed as opaque
+// attribute keys for future use.
+type Operator struct {
+	ID          string
+	Name        string
+	DisplayName string
+	// PasswordHash is the bcrypt hash for password-authenticated operators
+	// (console logins); nil for token-only operators.
+	PasswordHash *string
+	Attributes   map[string]string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// Role returns the operator's role attribute; "" when unset (least
+// privilege: an unclassified operator gets no role-derived authority).
+func (o *Operator) Role() string {
+	if o == nil {
+		return ""
+	}
+	return o.Attributes[OperatorAttributeRole]
+}
+
+// OperatorAttributeRole is the attributes key holding the operator's role.
+const OperatorAttributeRole = "role"
+
+// OperatorToken is one bearer token issued to an operator (KB-330): the
+// credential space for operator-issued tokens (e.g. a newly provisioned
+// admin token). Legacy agent/orchestrator/trigger tokens keep resolving
+// through their class registries and alias onto the operator; only new
+// tokens mint themselves here. TokenHash is the SHA-256 hex digest of the
+// accept token.
+type OperatorToken struct {
+	ID         string
+	OperatorID string
+	TokenHash  string
+	CreatedAt  time.Time
+}
+
+// MarshalAttributes canonicalizes an operator attribute map to the JSON
+// persisted in the attributes column (empty attributes persist as "{}").
+func MarshalAttributes(attrs map[string]string) (string, error) {
+	if len(attrs) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(attrs)
+	if err != nil {
+		return "", fmt.Errorf("marshal operator attributes: %w", err)
+	}
+	return string(b), nil
+}
+
+// UnmarshalAttributes decodes a persisted attributes JSON document; empty
+// or absent text decodes to an empty, non-nil map.
+func UnmarshalAttributes(text string) (map[string]string, error) {
+	attrs := map[string]string{}
+	if text == "" || text == "{}" {
+		return attrs, nil
+	}
+	if err := json.Unmarshal([]byte(text), &attrs); err != nil {
+		return nil, fmt.Errorf("unmarshal operator attributes: %w", err)
+	}
+	return attrs, nil
+}
+
+// ConsoleUser is a human console login identity (CRI-195). Since KB-330 it
+// is a login projection over the operators table: a console user IS an
+// operator whose row carries a password hash and the admin role. The
 // seeded default user has the fixed ID ConsoleDefaultUserID so a changed
 // CASTLE_CONSOLE_USER rotates the same row instead of leaving the old
 // username able to log in.
@@ -263,8 +350,9 @@ type ConsoleUser struct {
 	UpdatedAt    time.Time
 }
 
-// ConsoleSession is a login session issued to a console user (CRI-195).
-// TokenHash is the SHA-256 hex digest of the issued bearer token. RevokedAt
+// ConsoleSession is a login session issued to a console operator (CRI-195).
+// Since KB-330 sessions are keyed by operator id. TokenHash is the SHA-256
+// hex digest of the issued bearer token. RevokedAt
 // carries the server-side revocation stamp (KB-325): nil while the session
 // is live, set once Logout (or token rotation) kills it — resolution must
 // treat a stamped session as invalid immediately. Membership is the
@@ -274,7 +362,7 @@ type ConsoleUser struct {
 // shared project membership set.
 type ConsoleSession struct {
 	ID         string
-	UserID     string
+	OperatorID string
 	TokenHash  string
 	CreatedAt  time.Time
 	RevokedAt  *time.Time
@@ -502,18 +590,46 @@ type Store interface {
 	// (KB-320). Deleting an unknown ID is a no-op.
 	DeleteTrigger(ctx context.Context, id string) error
 
+	// Operators (KB-330): the ONE identity model behind every credential
+	// class. Legacy class registries (overseers, orchestrators, triggers)
+	// alias onto operator rows; console users are password-carrying
+	// operators.
+	// UpsertOperator inserts or replaces the operator record by ID. Password
+	// and attributes are rewritten wholesale on update; CreatedAt is
+	// preserved. A nil PasswordHash makes the operator token-only.
+	UpsertOperator(ctx context.Context, o *Operator) error
+	// GetOperator returns the operator with the given id.
+	// Returns ErrNotFound when no operator matches.
+	GetOperator(ctx context.Context, id string) (*Operator, error)
+	// DeleteOperator removes the operator identity and, via cascade, its
+	// operator tokens and login sessions. Deleting an unknown ID is a no-op.
+	DeleteOperator(ctx context.Context, id string) error
+	// UpsertOperatorToken inserts or replaces an operator bearer token by
+	// token id: updating an existing token id rotates its TokenHash
+	// (invalidating previously issued tokens) and preserves CreatedAt.
+	UpsertOperatorToken(ctx context.Context, tok *OperatorToken) error
+	// ListOperatorTokens returns all operator bearer tokens (the resolution
+	// scan for operator-issued credentials).
+	ListOperatorTokens(ctx context.Context) ([]*OperatorToken, error)
+	// DeleteOperatorToken revokes one operator bearer token. Deleting an
+	// unknown token id is a no-op.
+	DeleteOperatorToken(ctx context.Context, id string) error
+
 	// Console users and sessions (CRI-195)
 	// UpsertConsoleUser inserts or replaces the console user record by ID.
 	// Updating an existing identity rotates its username and password hash
-	// and preserves CreatedAt.
+	// and preserves CreatedAt. Since KB-330 this writes the password-carrying
+	// operator row; a new username replaces the old operator name.
 	UpsertConsoleUser(ctx context.Context, u *ConsoleUser) error
-	// GetConsoleUser returns the console user with the given username.
+	// GetConsoleUser returns the console user with the given username
+	// (the password-carrying operator whose name matches).
 	// Returns ErrNotFound when no user matches.
 	GetConsoleUser(ctx context.Context, username string) (*ConsoleUser, error)
-	// DeleteConsoleUsers removes every console user and, via cascade, all
-	// of their sessions. Used when the console login feature is off.
+	// DeleteConsoleUsers removes the password-carrying operators (console
+	// users) and, via cascade, their login sessions. Token-only operators
+	// are not affected. Used when the console login feature is off.
 	DeleteConsoleUsers(ctx context.Context) error
-	// CreateConsoleSession persists a login session for a console user.
+	// CreateConsoleSession persists a login session for a console operator.
 	CreateConsoleSession(ctx context.Context, s *ConsoleSession) error
 	// ListConsoleSessions returns all console login sessions (KB-325: the
 	// session ledger, including revoked rows — every entry carries its
@@ -527,9 +643,9 @@ type Store interface {
 	RevokeConsoleSession(ctx context.Context, sessionID string, at time.Time) error
 	// DeleteConsoleSessions revokes every console login session.
 	DeleteConsoleSessions(ctx context.Context) error
-	// DeleteConsoleSessionsByUser revokes all sessions of one console user,
-	// e.g. when the operator rotates the seeded password.
-	DeleteConsoleSessionsByUser(ctx context.Context, userID string) error
+	// DeleteConsoleSessionsByOperator revokes all login sessions of one
+	// console operator, e.g. when the operator rotates the seeded password.
+	DeleteConsoleSessionsByUser(ctx context.Context, operatorID string) error
 
 	// Runs
 	CreateRun(ctx context.Context, r *Run) error

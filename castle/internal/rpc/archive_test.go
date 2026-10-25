@@ -699,7 +699,7 @@ func newArchiveAuthHarness(t *testing.T, allowAnonReads bool) *archiveAuthHarnes
 		t.Fatal(err)
 	}
 	if err := ts.store.CreateConsoleSession(context.Background(), &store.ConsoleSession{
-		ID: "sess-1", UserID: "console-1", TokenHash: auth.HashToken(sessTok), CreatedAt: now,
+		ID: "sess-1", OperatorID: "console-1", TokenHash: auth.HashToken(sessTok), CreatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}

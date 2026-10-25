@@ -94,6 +94,27 @@ var Tables = []table{
 		},
 	},
 	{
+		name: "operators",
+		key:  []string{"id"},
+		pk:   []string{"id"},
+		cols: []column{
+			{"id", KindText, false}, {"name", KindText, false}, {"display_name", KindText, false},
+			// KB-330: password_hash is NULL for token-only operators.
+			{"password_hash", KindText, true},
+			{"attributes", KindJSON, false},
+			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
+		},
+	},
+	{
+		name: "operator_tokens",
+		key:  []string{"id"},
+		pk:   []string{"id"},
+		cols: []column{
+			{"id", KindText, false}, {"operator_id", KindText, false},
+			{"token_hash", KindText, false}, {"created_at", KindTS, false},
+		},
+	},
+	{
 		name: "overseers",
 		key:  []string{"id"},
 		pk:   []string{"id"},
@@ -102,6 +123,8 @@ var Tables = []table{
 			{"version", KindText, true}, {"token_hash", KindText, false}, {"status", KindText, false},
 			{"created_at", KindTS, false}, {"last_seen_at", KindTS, false}, {"labels", KindText, true},
 			{"identity", KindText, true},
+			// KB-330 alias: every legacy identity row points at its operator.
+			{"operator_id", KindText, true},
 		},
 	},
 	{
@@ -196,15 +219,18 @@ var Tables = []table{
 		cols: []column{
 			{"id", KindText, false}, {"name", KindText, false},
 			{"token_hash", KindText, false}, {"created_at", KindTS, false},
+			// KB-330 alias: every legacy identity row points at its operator.
+			{"operator_id", KindText, true},
 		},
 	},
 	{
-		name: "console_users",
+		name: "triggers",
 		key:  []string{"id"},
 		pk:   []string{"id"},
 		cols: []column{
-			{"id", KindText, false}, {"username", KindText, false}, {"password_hash", KindText, false},
-			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
+			{"id", KindText, false}, {"token_hash", KindText, false}, {"created_at", KindTS, false},
+			// KB-330 alias: every legacy identity row points at its operator.
+			{"operator_id", KindText, true},
 		},
 	},
 	{
@@ -212,7 +238,8 @@ var Tables = []table{
 		key:  []string{"id"},
 		pk:   []string{"id"},
 		cols: []column{
-			{"id", KindText, false}, {"user_id", KindText, false},
+			// KB-330: sessions are keyed by operator id.
+			{"id", KindText, false}, {"operator_id", KindText, false},
 			{"token_hash", KindText, false}, {"created_at", KindTS, false},
 			// 0021 session ledger (KB-325): the revocation tombstone (NULL
 			// while the session is live) and the issue-time membership

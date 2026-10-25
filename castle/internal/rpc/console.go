@@ -135,7 +135,7 @@ func (s *ServerServer) Login(ctx context.Context, req *connect.Request[castlev1.
 	}
 	sess := &store.ConsoleSession{
 		ID:         uuid.NewString(),
-		UserID:     u.ID,
+		OperatorID: u.ID,
 		TokenHash:  auth.HashToken(token),
 		CreatedAt:  time.Now().UTC(),
 		Membership: membership,
@@ -194,7 +194,7 @@ func (s *ServerServer) ListSessions(ctx context.Context, req *connect.Request[ca
 	}
 	out := make([]*castlev1.SessionInfo, 0, len(all))
 	for _, sess := range all {
-		if sess.UserID != userID {
+		if sess.OperatorID != userID {
 			// A caller sees its own account's sessions only.
 			continue
 		}

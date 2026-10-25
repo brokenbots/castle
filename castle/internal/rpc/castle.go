@@ -118,10 +118,20 @@ func (s *ServerServer) GetRun(ctx context.Context, req *connect.Request[pb.GetRu
 }
 
 // membershipScopedCaller returns the identity a run read is scoped to under
-// KB-324: protocol-token callers (agent and trigger identities) read only
-// their membership's runs. Console and orchestrator identities observe the
-// whole space; the no-interceptor direct-call path is unscoped too.
+// KB-324, attribute-driven per KB-330: an operator's role — not its
+// credential class — decides the scope. Admin-role and orchestrator-role
+// operators observe the whole space; agent-role and trigger-role operators
+// read only their membership's runs (scoped to the operator id, which the
+// legacy alias rows keep equal to the wire identity).
 func membershipScopedCaller(ctx context.Context) (string, bool) {
+	if op := auth.CallerOperator(ctx); op != nil {
+		switch op.Role() {
+		case store.OperatorRoleAdmin, store.OperatorRoleOrchestrator:
+			return "", false
+		default:
+			return op.ID, true
+		}
+	}
 	if id := auth.CallerCriteriaID(ctx); id != "" {
 		return id, true
 	}

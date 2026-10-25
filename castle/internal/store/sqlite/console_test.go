@@ -105,7 +105,7 @@ func TestConsoleSession_CreateListAndCascadeDelete(t *testing.T) {
 	}
 	for _, tok := range []string{"hash-a", "hash-b"} {
 		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{
-			ID: "sess-" + tok, UserID: "console-default", TokenHash: tok, CreatedAt: now,
+			ID: "sess-" + tok, OperatorID: "console-default", TokenHash: tok, CreatedAt: now,
 		}); err != nil {
 			t.Fatalf("create session %s: %v", tok, err)
 		}
@@ -144,10 +144,10 @@ func TestConsoleSession_DeleteByUser(t *testing.T) {
 			t.Fatalf("upsert %s: %v", u, err)
 		}
 	}
-	if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s1", UserID: "u1", TokenHash: "h1", CreatedAt: now}); err != nil {
+	if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s1", OperatorID: "u1", TokenHash: "h1", CreatedAt: now}); err != nil {
 		t.Fatalf("create s1: %v", err)
 	}
-	if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s2", UserID: "u2", TokenHash: "h2", CreatedAt: now}); err != nil {
+	if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s2", OperatorID: "u2", TokenHash: "h2", CreatedAt: now}); err != nil {
 		t.Fatalf("create s2: %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestConsoleSession_DeleteAll(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s1", UserID: "u1", TokenHash: "h1", CreatedAt: now}); err != nil {
+	if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s1", OperatorID: "u1", TokenHash: "h1", CreatedAt: now}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
