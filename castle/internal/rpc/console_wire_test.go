@@ -39,6 +39,10 @@ func newConsoleWireHarness(t *testing.T, allowAnonReads bool) *consoleWireHarnes
 	t.Helper()
 	ts := newTestStack(t)
 	ts.server.EnableConsoleLogin()
+	// KB-326 S3: arm the handler-side anon-read gate with the same flag the
+	// interceptor runs under — since S3 the interceptor only marks tokenless
+	// calls and the handler decides.
+	ts.server.AllowAnonymousReads = allowAnonReads
 	if err := ProvisionConsoleUser(context.Background(), ts.store, "operator", "op-password", nil); err != nil {
 		t.Fatalf("provision console user: %v", err)
 	}

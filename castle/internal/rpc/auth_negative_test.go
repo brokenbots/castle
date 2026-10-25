@@ -38,10 +38,13 @@ func newOwnershipHarness(t *testing.T) *ownershipHarness {
 // newOwnershipHarnessAllowingAnonReads is newOwnershipHarness with the auth
 // interceptor's --allow-anon-reads flag set, so tests can exercise the same
 // ownership surface under the deployed dev-mode configuration (CRI-194: the
-// deployed castle runs --allow-anon-reads=true).
+// deployed castle runs --allow-anon-reads=true). The handler-side anon-read
+// grant gate (KB-326 S3) is armed with the SAME flag: since S3 the
+// interceptor only marks tokenless calls and the handler decides.
 func newOwnershipHarnessAllowingAnonReads(t *testing.T, allowAnonReads bool) *ownershipHarness {
 	t.Helper()
 	ts := newTestStack(t)
+	ts.server.AllowAnonymousReads = allowAnonReads
 	_, oClient, cClient := ts.startServer(t, connect.WithInterceptors(
 		auth.NewInterceptor(ts.store, allowAnonReads, auth.WithAnonRegister()),
 	))

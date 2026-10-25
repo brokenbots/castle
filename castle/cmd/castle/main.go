@@ -221,6 +221,9 @@ func main() {
 
 	criteriaRPC := rpc.NewCriteriaServer(st, h, log, controls)
 	serverRPC := rpc.NewServerServer(st, h, log, controls)
+	// KB-326 S3: the handler owns the anonymous-run-read grant decision; the
+	// resolved flag feeds it directly instead of the old TLS-mode recompute.
+	serverRPC.AllowAnonymousReads = *allowAnonReads
 	orchestratorRPC := rpc.NewOrchestratorServer(st, log)
 
 	// Refire policy bootstrap (KB-321): policy rows ARE the classification

@@ -180,6 +180,13 @@ type ServerServer struct {
 	controls                *ControlRegistry
 	assignmentLeaseDuration time.Duration
 	consoleLogin            bool // console username+password login enabled (CRI-195)
+	// AllowAnonymousReads is the --allow-anon-reads dev flag (KB-326 S3):
+	// when true, anonymous callers may read legacy UNscoped runs on the
+	// run-read surfaces. Project-scoped runs are never anonymously
+	// readable regardless of this flag; with the flag off, individual
+	// agents' unscoped runs are anonymously readable only through their
+	// owning project's allow_anonymous_reads grant (see rpc/anon_reads.go).
+	AllowAnonymousReads bool
 }
 
 func NewCriteriaServer(st store.Store, h *hub.Hub, log *slog.Logger, controls *ControlRegistry) *CriteriaServer {

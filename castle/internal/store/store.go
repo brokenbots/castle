@@ -563,6 +563,12 @@ type Store interface {
 	// (false, nil) — callers surface that as ErrNotFound so denied runs do
 	// not leak their existence through error classes.
 	IsRunVisibleTo(ctx context.Context, runID, criteriaID string) (bool, error)
+	// ListRunsUnscoped is ListRuns restricted to legacy unscoped runs
+	// (project_id NULL / empty, KB-324 S1): the anonymous-read listing
+	// (KB-326 S3) filters to it so an anonymous page never reveals that
+	// project-scoped runs exist. Ordering, paging and cursor semantics
+	// match ListRuns exactly.
+	ListRunsUnscoped(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*Run, string, error)
 	UpdateRun(ctx context.Context, r *Run) error
 	// SetRunMetadata promotes non-empty metadata values (ticket, repo_url,
 	// pr_url) onto the run record without touching run status (CRI-131). Empty
@@ -810,9 +816,12 @@ type Store interface {
 	// Project settings (KB-324 S1)
 	// GetProjectSettings returns the project's ONE settings doc — the
 	// convention-keyed (per-convention-key JSON entry) map castle persists
-	// verbatim and never interprets — plus the doc's content-addressed
-	// etag (store.SettingsETag). ErrNotFound when the project does not
-	// exist. A fresh project reads as an empty doc with an empty etag.
+	// verbatim — plus the doc's content-addressed etag (store.SettingsETag).
+	// ErrNotFound when the project does not exist. A fresh project reads as
+	// an empty doc with an empty etag. Castle interprets exactly ONE key of
+	// the doc (allow_anonymous_reads, the KB-326 anonymous-read grant;
+	// validated as a JSON boolean at write time); every other key stays
+	// opaque.
 	GetProjectSettings(ctx context.Context, projectID string) (map[string]string, string, error)
 	// SetProjectSettings atomically swaps the whole settings doc when the
 	// caller has seen the current one: expectedETag must equal the doc's
@@ -821,7 +830,9 @@ type Store interface {
 	// the new etag; any concurrent writer between the caller's read and
 	// this swap fails with ErrSettingsConflict. ErrNotFound when the
 	// project does not exist. Bounds and per-entry JSON validity are the
-	// rpc layer's contract; the store persists the doc verbatim.
+	// rpc layer's contract; the store persists the doc verbatim. As of
+	// KB-326 S3 the rpc layer additionally validates the one interpreted
+	// key (allow_anonymous_reads) as a JSON boolean.
 	SetProjectSettings(ctx context.Context, projectID string, settings map[string]string, expectedETag string) (string, error)
 
 	Close() error

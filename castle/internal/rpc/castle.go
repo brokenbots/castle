@@ -61,6 +61,27 @@ func (s *ServerServer) ListRuns(ctx context.Context, req *connect.Request[pb.Lis
 	// the store consults the same project_members predicate the lease scan
 	// uses. Console and orchestrator identities, and the direct-call path
 	// (no interceptor), read across the membership space as before.
+	//
+	// KB-326 S3: the anonymous ListRuns surface stays globally flag-gated.
+	// When an anonymous caller reaches the handler (only possible with the
+	// flag on, but enforced here too so the handler contract does not lean
+	// on the interceptor's flag knowledge) the page is filtered to unscoped
+	// runs only — scoped runs are never anonymous-readable, so an
+	// anonymous listing must not reveal that they exist.
+	if auth.CallerIsAnonymousRead(ctx) {
+		if !s.AllowAnonymousReads {
+			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing token"))
+		}
+		list, next, err := s.Store.ListRunsUnscoped(ctx, req.Msg.CriteriaId, req.Msg.Status, int(req.Msg.Limit), req.Msg.PageToken)
+		if err != nil {
+			return nil, mapListRunsError(err)
+		}
+		out := make([]*pb.Run, 0, len(list))
+		for _, r := range list {
+			out = append(out, mapRun(r))
+		}
+		return connect.NewResponse(&pb.ListRunsResponse{Runs: out, NextPageToken: next}), nil
+	}
 	if scopedID, scoped := membershipScopedCaller(ctx); scoped {
 		filter := req.Msg.CriteriaId
 		if filter != "" && filter != scopedID {
@@ -113,6 +134,11 @@ func membershipScopedCaller(ctx context.Context) (string, bool) {
 // runVisibleToCaller fetches the run and enforces the membership read scope
 // (KB-324): an invisible run answers NotFound like a missing one so denied
 // runs do not leak their existence through the error class.
+//
+// Anonymous callers (KB-326 S3) are checked BEFORE the membership scope:
+// they carry no identity, so their admission is the per-run grant decision
+// (rpc/anon_reads.go) — scoped runs are refused uniformly, unscoped runs
+// need the dev flag or an owning project's allow_anonymous_reads grant.
 func (s *ServerServer) runVisibleToCaller(ctx context.Context, runID string) (*store.Run, error) {
 	run, err := s.Store.GetRun(ctx, runID)
 	if err != nil {
@@ -120,6 +146,12 @@ func (s *ServerServer) runVisibleToCaller(ctx context.Context, runID string) (*s
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("run not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if auth.CallerIsAnonymousRead(ctx) {
+		if err := s.anonymousRunReadRefusal(ctx, run); err != nil {
+			return nil, err
+		}
+		return run, nil
 	}
 	if scopedID, scoped := membershipScopedCaller(ctx); scoped {
 		visible, err := s.Store.IsRunVisibleTo(ctx, run.ID, scopedID)
@@ -680,6 +712,17 @@ func (s *ServerServer) InspectRun(ctx context.Context, req *connect.Request[pb.I
 	_, run, err := requireCallerOwnsRun(ctx, s.Store, req.Msg.RunId)
 	if err != nil {
 		return nil, err
+	}
+	// KB-326 S3: agent-OWNERSHIP identity stays the admission rule (an
+	// anonymous caller carries no identity and passes the ownership check),
+	// so the anonymous run-read grant is enforced right after it. Scoped
+	// runs are refused uniformly; unscoped runs need the dev flag or the
+	// owning project's grant — same decision as GetRun/ListRunEvents/
+	// WatchRun via runVisibleToCaller.
+	if auth.CallerIsAnonymousRead(ctx) {
+		if err := s.anonymousRunReadRefusal(ctx, run); err != nil {
+			return nil, err
+		}
 	}
 
 	resp := &pb.InspectRunResponse{
