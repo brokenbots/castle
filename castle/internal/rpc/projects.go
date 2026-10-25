@@ -56,6 +56,11 @@ func (s *ServerServer) CreateProject(ctx context.Context, req *connect.Request[c
 	if err != nil {
 		return nil, err
 	}
+	for k, v := range settings {
+		if err := validateProjectSettingValue("settings", k, v); err != nil {
+			return nil, err
+		}
+	}
 	// KB-324 write shape: the settings doc is a console-session write, so
 	// only console sessions (or the unwired direct-call path) may seed
 	// settings at creation. The registry write itself stays
@@ -412,7 +417,9 @@ func mapMember(m *store.ProjectMember) *castlev1.ProjectMember {
 // shapeValidateStringMap enforces the size discipline for opaque convention
 // maps (input_values, target_metadata, labels, project settings/info):
 // bounded entry count, key length and value length. Contents are never
-// interpreted.
+// interpreted here; the ONE interpreted settings key (allow_anonymous_reads,
+// valid as a JSON boolean at write time) is validated separately — see
+// validateProjectSettingValue.
 func shapeValidateStringMap(name string, m map[string]string) (map[string]string, error) {
 	if len(m) > conventionMaxEntries {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
@@ -482,6 +489,9 @@ func (s *ServerServer) SetProjectSettings(ctx context.Context, req *connect.Requ
 		if !json.Valid([]byte(v)) {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				errors.New("settings["+strconv.Quote(k)+"] must be valid JSON"))
+		}
+		if err := validateProjectSettingValue("settings", k, v); err != nil {
+			return nil, err
 		}
 	}
 	etag, err := s.Store.SetProjectSettings(ctx, projectID, settings, req.Msg.GetExpectedEtag())

@@ -146,8 +146,14 @@ type Project struct {
 	DefaultRefirePolicy string `protobuf:"bytes,3,opt,name=default_refire_policy,json=defaultRefirePolicy,proto3" json:"default_refire_policy,omitempty"`
 	// queues lists the project-owned queue names.
 	Queues []string `protobuf:"bytes,4,rep,name=queues,proto3" json:"queues,omitempty"`
-	// settings is an opaque, shape-validated key/value map owned by the
-	// project.
+	// settings is a shape-validated key/value map owned by the project;
+	// entries are convention-keyed JSON, an empty value meaning "entry
+	// absent". Every key is opaque to the service EXCEPT
+	// allow_anonymous_reads (KB-326): it is the ONE interpreted key, its
+	// value must be a JSON boolean, and true lets anonymous callers read the
+	// owning agent's legacy unscoped runs even with the global
+	// --allow-anon-reads flag off. Project-scoped runs are never
+	// anonymously readable.
 	Settings map[string]string `protobuf:"bytes,5,rep,name=settings,proto3" json:"settings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// info is an opaque, shape-validated key/value map with descriptive
 	// project metadata.

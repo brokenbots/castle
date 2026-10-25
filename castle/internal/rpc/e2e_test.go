@@ -31,8 +31,18 @@ func TestE2ELifecycleAndAuth(t *testing.T) {
 	}
 	overseerID, token := reg.Msg.CriteriaId, reg.Msg.Token
 
-	// Any non-exempt RPC should reject unauthenticated requests.
+	// Per-run reads (KB-326 S3) pass the interceptor without a token in both
+	// flag states — enforcement moved to the handler grant, which answers a
+	// missing run with the SAME NotFound an authenticated caller gets (no
+	// existence leak through the credential class).
 	_, err = cClient.GetRun(context.Background(), connect.NewRequest(&pb.GetRunRequest{RunId: "missing"}))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("expected not_found for anonymous GetRun of a missing run, got %v", err)
+	}
+
+	// Any non-exempt RPC should still reject unauthenticated requests: at
+	// flag-off the observation listings stay behind the credential gate.
+	_, err = cClient.ListAgents(context.Background(), connect.NewRequest(&pb.ListAgentsRequest{}))
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("expected unauthenticated, got %v", err)
 	}

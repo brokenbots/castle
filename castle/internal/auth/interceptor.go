@@ -52,6 +52,43 @@ var readOnlyServerProcedures = map[string]struct{}{
 	criteriav1connect.ServerServiceInspectRunProcedure:    {},
 }
 
+// anonymousReadCallerKey marks the context of a tokenless caller admitted
+// by the anonymous-read pass-through (KB-326 S3). The interceptor never
+// decides WHICH run an anonymous caller may read — it only marks the
+// credential class, so handlers own the per-run grant decision.
+type anonymousReadCallerKey struct{}
+
+// WithAnonymousReadCaller marks the context as an anonymous (tokenless)
+// caller admitted through the anonymous-read pass-through.
+func WithAnonymousReadCaller(ctx context.Context) context.Context {
+	return context.WithValue(ctx, anonymousReadCallerKey{}, true)
+}
+
+// CallerIsAnonymousRead reports whether the context belongs to a tokenless
+// caller the interceptor passed through as anonymous. The direct-call path
+// (no interceptor, bare ctx) is never marked: direct callers keep the
+// privileged whole-space semantics the unwired tests rely on.
+func CallerIsAnonymousRead(ctx context.Context) bool {
+	v, _ := ctx.Value(anonymousReadCallerKey{}).(bool)
+	return v
+}
+
+// runReadServerProcedures are the per-run ServerService read surfaces whose
+// anonymous admission (KB-326 S3) is decided per-run by the handler, not by
+// the global flag: scoped runs (project-stamped) are never anonymously
+// readable, unscoped legacy runs need the flag or an owning project's
+// allow_anonymous_reads setting. They are exempt from token enforcement so
+// tokenless callers reach the handler's grant check; a presented token is
+// still fully validated by authenticateAnonReadToken. ListRuns is NOT here:
+// its anonymous surface stays globally flag-gated at the credential gate
+// (the handler only filters it to unscoped runs).
+var runReadServerProcedures = map[string]struct{}{
+	criteriav1connect.ServerServiceGetRunProcedure:        {},
+	criteriav1connect.ServerServiceListRunEventsProcedure: {},
+	criteriav1connect.ServerServiceWatchRunProcedure:      {},
+	criteriav1connect.ServerServiceInspectRunProcedure:    {},
+}
+
 // orchestratorProcedures are the OrchestratorService RPCs (CRI-133). They are
 // read-only observation surfaces for the operator reconcile loop.
 var orchestratorProcedures = map[string]struct{}{
@@ -360,53 +397,67 @@ func authorizeOrchestratorProcedure(ctx context.Context, procedure string) error
 	return connect.NewError(connect.CodePermissionDenied, errors.New("orchestrator identities cannot invoke agent-owned procedures"))
 }
 
-// anonReadableProcedure reports whether the procedure belongs to the
-// dev-mode anonymous-read surface: the read-only ServerService reads and the
-// OrchestratorService subscription APIs. Every member of this set is also in
-// the orchestrator-allowed set, so identity injection here never needs the
-// orchestrator boundary re-check.
-func anonReadableProcedure(procedure string) bool {
-	if _, ok := readOnlyServerProcedures[procedure]; ok {
-		return true
-	}
-	if _, ok := orchestratorProcedures[procedure]; ok {
-		return true
-	}
-	_, ok := runArchiveReadProcedures[procedure]
-	return ok
-}
-
-// authenticateAnonReadToken optionally authenticates a presented token on
-// the dev-mode anonymous-read surface (CRI-194). A caller without a token
-// keeps the anonymous pass-through --allow-anon-reads promises. A presented
-// token must be valid: its identity is injected so per-caller authorization
-// stays enforceable (InspectRun requires run ownership), and an invalid
-// token is rejected as unauthenticated instead of silently succeeding. That
-// last property is what lets the Parapet login gate's token probe (a
-// ListAgents call carrying the candidate token) actually detect a bad token
-// rather than accept anything and trap the UI in a login loop on a
-// deep-linked route. Health and reflection exemptions are not anon-readable
-// surfaces and stay fully unauthenticated.
+// authenticateAnonReadToken handles the exempt-procedure credential class
+// (CRI-194, restructured by KB-326 S3). It has exactly three branches:
 //
-// The surface includes OrchestratorService subscription APIs, which a console
-// identity must never reach (CRI-195), so the console and trigger boundaries
-// are re-checked after identity injection: a trigger token on an anon-readable
-// surface stays submit-only (KB-320), which matters because WatchRun is
-// both a mirror surface and an anon-readable surface.
+//   - Probe procedures (health/reflection): pass through untouched, no
+//     credential validation — infrastructure surfaces, never anon-readable.
+//   - Tokenless callers: pass through MARKED anonymous
+//     (WithAnonymousReadCaller). The handler owns the per-run grant on the
+//     run-read surface; on the flag-gated surfaces the pass-through can only
+//     happen with the dev flag on, because isExempt gates them.
+//   - A presented token must be valid: its identity is injected so
+//     per-caller authorization stays enforceable (InspectRun requires run
+//     ownership), and an invalid token is rejected as unauthenticated
+//     instead of silently succeeding. That last property is what lets the
+//     Parapet login gate's token probe (a ListAgents call carrying the
+//     candidate token) actually detect a bad token rather than accept
+//     anything and trap the UI in a login loop on a deep-linked route.
+//
+// The surface includes OrchestratorService subscription APIs and WatchRun,
+// which a console identity must never reach (CRI-195) and which a trigger
+// identity may observe only per its submit-only boundary (KB-320), so every
+// identity boundary is re-checked after identity injection; a rejected
+// identity fails the call like the non-exempt path would.
 func (i *AuthInterceptor) authenticateAnonReadToken(ctx context.Context, h http.Header, procedure string) (context.Context, error) {
-	if !i.allowAnonReads || !anonReadableProcedure(procedure) {
+	if isProbeProcedure(procedure) {
+		// Health and reflection exemption probes are not anon-readable
+		// surfaces and stay fully unauthenticated: a stray header must not
+		// turn a health check into a failed one.
 		return ctx, nil
 	}
 	if _, ok := TokenFromHeaders(h); !ok {
-		return ctx, nil
+		// KB-326 S3: a tokenless caller on an exempt procedure is not denied
+		// here — for the run-read surface the handler owns the per-run grant
+		// (scoped runs are never anonymous-readable; unscoped runs need the
+		// dev flag or an owning project's grant), and for the flag-gated
+		// surfaces the caller only ever reaches this branch when the flag is
+		// on. Every pass-through is marked so handlers can distinguish
+		// tokenless callers from the unmarked direct-call path.
+		return WithAnonymousReadCaller(ctx), nil
 	}
+	// A presented token must be valid: its identity is injected so
+	// per-caller authorization stays enforceable (InspectRun requires run
+	// ownership), and an invalid token is rejected as unauthenticated
+	// instead of silently succeeding. That last property is what lets the
+	// Parapet login gate's token probe (a ListAgents call carrying the
+	// candidate token) actually detect a bad token rather than accept
+	// anything and trap the UI in a login loop on a deep-linked route.
 	newCtx, err := i.authenticateHeaders(ctx, h)
 	if err != nil {
+		return nil, err
+	}
+	if err := authorizeOrchestratorProcedure(newCtx, procedure); err != nil {
 		return nil, err
 	}
 	if err := authorizeConsoleProcedure(newCtx, procedure); err != nil {
 		return nil, err
 	}
+	// The surface includes OrchestratorService subscription APIs and the
+	// WatchRun mirror (which is also an anon-readable run read), which a
+	// console identity must never reach (CRI-195) and a trigger identity
+	// must observe submit-only (KB-320), so the identity boundaries are
+	// re-checked after identity injection.
 	if err := authorizeTriggerProcedure(newCtx, procedure); err != nil {
 		return nil, err
 	}
@@ -552,11 +603,22 @@ func (i *AuthInterceptor) nextRegister(ctx context.Context, req connect.AnyReque
 }
 
 func (i *AuthInterceptor) isExempt(procedure string) bool {
+	// Run reads (KB-326 S3) are exempt regardless of the flag: the
+	// interceptor no longer decides anonymous admission for them — it marks
+	// the credential class and the handler enforces the per-run grant
+	// (scoped runs never anonymous-readable; unscoped runs behind the dev
+	// flag or an owning project's allow_anonymous_reads grant). Presented
+	// tokens are still fully validated by authenticateAnonReadToken.
+	if _, ok := runReadServerProcedures[procedure]; ok {
+		return true
+	}
 	if i.allowAnonReads {
 		// Read-only observation surfaces (ServerService reads and the
-		// OrchestratorService subscription APIs, CRI-133) stay anonymously
-		// readable in dev mode so local tooling keeps working. Production
-		// TLS deployments do not enable this flag.
+		// OrchestratorService subscription APIs, CRI-133) plus the KB-308
+		// archive reads stay anonymously readable in dev mode so local
+		// tooling keeps working. Production TLS deployments do not enable
+		// this flag. Anonymous ListRuns additionally stays flag-gated: it
+		// never receives a tokenless caller when the flag is off.
 		if _, ok := readOnlyServerProcedures[procedure]; ok {
 			return true
 		}
@@ -567,14 +629,18 @@ func (i *AuthInterceptor) isExempt(procedure string) bool {
 			return true
 		}
 	}
+	return isProbeProcedure(procedure)
+}
+
+// isProbeProcedure identifies the health/reflection exemption probes: they
+// are infrastructure surfaces, not anon-readable RPCs, and stay fully
+// unauthenticated even when a token header is presented.
+func isProbeProcedure(procedure string) bool {
 	if strings.HasPrefix(procedure, "/grpc.health.v1.Health/") {
 		return true
 	}
 	if strings.HasPrefix(procedure, "/grpc.reflection.v1.ServerReflection/") {
 		return true
 	}
-	if strings.HasPrefix(procedure, "/grpc.reflection.v1alpha.ServerReflection/") {
-		return true
-	}
-	return false
+	return strings.HasPrefix(procedure, "/grpc.reflection.v1alpha.ServerReflection/")
 }

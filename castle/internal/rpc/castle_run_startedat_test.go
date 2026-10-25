@@ -19,6 +19,9 @@ import (
 func TestRunStartedAtWireContract(t *testing.T) {
 	ts := newTestStack(t)
 	ctx := context.Background()
+	// KB-326 S3: arm the handler-side anon-read gate with the same flag the
+	// interceptor runs under (the interceptor only marks tokenless calls).
+	ts.server.AllowAnonymousReads = true
 	_, _, cClient := ts.startServer(t,
 		connect.WithInterceptors(auth.NewInterceptor(ts.store, true, auth.WithAnonRegister())),
 	)

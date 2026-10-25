@@ -34,9 +34,16 @@ func TestAuthInterceptorUnary(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Since KB-326 S3, per-run reads (GetRun included) pass the interceptor
+	// without a token in both flag states, marked anonymous; the handler owns
+	// the grant check (see auth/interceptor_anon_reads_test.go and the rpc
+	// wire tests for the refusal matrix).
+	captured := &capturedCaller{}
 	h := connect.NewUnaryHandler(
 		criteriav1connect.ServerServiceGetRunProcedure,
-		func(context.Context, *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {
+		func(ctx context.Context, _ *connect.Request[pb.GetRunRequest]) (*connect.Response[pb.Run], error) {
+			captured.criteria = CallerCriteriaID(ctx)
+			captured.anonymous = CallerIsAnonymousRead(ctx)
 			return connect.NewResponse(&pb.Run{RunId: "r1"}), nil
 		},
 		connect.WithInterceptors(NewInterceptor(db, false)),
@@ -49,9 +56,14 @@ func TestAuthInterceptorUnary(t *testing.T) {
 
 	client := connect.NewClient[pb.GetRunRequest, pb.Run](httpClient(), tsrv.URL+criteriav1connect.ServerServiceGetRunProcedure)
 
-	_, err = client.CallUnary(context.Background(), connect.NewRequest(&pb.GetRunRequest{RunId: "r1"}))
-	if connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("expected unauthenticated, got %v", err)
+	if _, err = client.CallUnary(context.Background(), connect.NewRequest(&pb.GetRunRequest{RunId: "r1"})); err != nil {
+		t.Fatalf("tokenless GetRun passes through marked anonymous: %v", err)
+	}
+	if !captured.anonymous {
+		t.Error("tokenless GetRun must be marked anonymous")
+	}
+	if captured.criteria != "" {
+		t.Errorf("tokenless GetRun must have no criteria id, got %q", captured.criteria)
 	}
 
 	req := connect.NewRequest(&pb.GetRunRequest{RunId: "r1"})
@@ -133,14 +145,19 @@ func TestAuthInterceptor_CallerIDInjected(t *testing.T) {
 // TestAnonReads_InspectRunAnonymousReadable verifies InspectRun is part of
 // the dev-mode anonymous-read surface (CRI-194): with no token the call
 // passes anonymously when --allow-anon-reads is enabled — matching every
-// other read the Parapet run detail page makes — and requires
-// authentication when the flag is off.
+// other read the Parapet run detail page makes. Since KB-326 S3 the
+// interceptor passes a tokenless per-run read through in BOTH flag states
+// (marked anonymous; the handler owns the per-run grant and refuses scoped
+// runs uniformly), so the flag-off branch pins the pass-through itself, and
+// the grant/refusal behavior is pinned by the rpc wire tests.
 func TestAnonReads_InspectRunAnonymousReadable(t *testing.T) {
-	newInspectClient := func(t *testing.T, allowAnonReads bool) *connect.Client[pb.InspectRunRequest, pb.InspectRunResponse] {
+	newInspectClient := func(t *testing.T, allowAnonReads bool, captured *capturedCaller) *connect.Client[pb.InspectRunRequest, pb.InspectRunResponse] {
 		t.Helper()
 		h := connect.NewUnaryHandler(
 			criteriav1connect.ServerServiceInspectRunProcedure,
-			func(context.Context, *connect.Request[pb.InspectRunRequest]) (*connect.Response[pb.InspectRunResponse], error) {
+			func(ctx context.Context, _ *connect.Request[pb.InspectRunRequest]) (*connect.Response[pb.InspectRunResponse], error) {
+				captured.criteria = CallerCriteriaID(ctx)
+				captured.anonymous = CallerIsAnonymousRead(ctx)
 				return connect.NewResponse(&pb.InspectRunResponse{RunId: "r1"}), nil
 			},
 			connect.WithInterceptors(NewInterceptor(nil, allowAnonReads)),
@@ -153,13 +170,20 @@ func TestAnonReads_InspectRunAnonymousReadable(t *testing.T) {
 		return connect.NewClient[pb.InspectRunRequest, pb.InspectRunResponse](httpClient(), tsrv.URL+criteriav1connect.ServerServiceInspectRunProcedure)
 	}
 
-	if _, err := newInspectClient(t, true).CallUnary(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: "r1"})); err != nil {
+	flagOn := &capturedCaller{}
+	if _, err := newInspectClient(t, true, flagOn).CallUnary(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: "r1"})); err != nil {
 		t.Fatalf("anonymous InspectRun under --allow-anon-reads: %v", err)
 	}
+	if !flagOn.anonymous {
+		t.Error("flag-on tokenless InspectRun must be marked anonymous")
+	}
 
-	_, err := newInspectClient(t, false).CallUnary(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: "r1"}))
-	if connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("expected unauthenticated with the flag off, got code=%v err=%v", connect.CodeOf(err), err)
+	flagOff := &capturedCaller{}
+	if _, err := newInspectClient(t, false, flagOff).CallUnary(context.Background(), connect.NewRequest(&pb.InspectRunRequest{RunId: "r1"})); err != nil {
+		t.Fatalf("flag-off tokenless InspectRun must pass through for the handler grant check (KB-326 S3): %v", err)
+	}
+	if !flagOff.anonymous {
+		t.Error("flag-off tokenless InspectRun must be marked anonymous")
 	}
 }
 

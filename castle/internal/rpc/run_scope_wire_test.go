@@ -219,10 +219,12 @@ func TestRunWatchIsMembershipScoped(t *testing.T) {
 		t.Fatalf("expected WatchReady first, got %+v", m)
 	}
 
-	// Anonymous read (default anon-reads off) is refused at the credential
-	// gate; S3 flips the default later, not here.
-	if _, err := f.sClient.GetRun(ctx, connect.NewRequest(&pb.GetRunRequest{RunId: f.scopedRun})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("anon GetRun: got %v, want Unauthenticated", err)
+	// Anonymous read (KB-326 S3: per-run reads pass through in both flag
+	// states) is refused at the handler grant: a scoped run is never
+	// anonymously readable, and the refusal is the uniform NotFound —
+	// indistinguishable from a missing run.
+	if _, err := f.sClient.GetRun(ctx, connect.NewRequest(&pb.GetRunRequest{RunId: f.scopedRun})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("anon GetRun: got %v, want NotFound", err)
 	}
 
 	// Non-member watch: refused without leaking existence. connect streams

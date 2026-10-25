@@ -836,10 +836,29 @@ func (s *Store) GetRun(ctx context.Context, id string) (*store.Run, error) {
 // limit <= 0 returns every matching row with no token. The cursor predicate
 // mirrors the ORDER BY, so a token stays valid across intervening inserts.
 func (s *Store) ListRuns(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	return s.listRunsPage(ctx, ``, nil, overseerID, status, limit, pageToken)
+}
+
+// ListRunsUnscoped is ListRuns restricted to legacy unscoped runs
+// (project_id NULL): the anonymous-read listing (KB-326 S3) filters to it so
+// an anonymous page never shows that project-scoped runs exist. Ordering,
+// paging and cursor semantics match ListRuns exactly.
+func (s *Store) ListRunsUnscoped(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	return s.listRunsPage(ctx, `project_id IS NULL`, nil, overseerID, status, limit, pageToken)
+}
+
+// listRunsPage is the shared paging body of ListRuns/ListRunsUnscoped: base
+// restricts the row set ("" = every run, e.g. "project_id IS NULL"), baseArgs
+// carries its parameters, and the optional overseer/status filters plus the
+// cursor are appended on top.
+func (s *Store) listRunsPage(ctx context.Context, base string, baseArgs []any, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	q := `SELECT ` + runColumns + ` FROM runs WHERE 1=1`
-	args := []any{}
+	args := baseArgs
+	if base != "" {
+		q += ` AND (` + base + `)`
+	}
 	if overseerID != "" {
 		q += ` AND overseer_id=?`
 		args = append(args, overseerID)

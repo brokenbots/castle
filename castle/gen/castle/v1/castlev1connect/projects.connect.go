@@ -112,7 +112,9 @@ type ProjectServiceClient interface {
 	// semantics: expected_etag must be the etag the caller last read, or ""
 	// exactly when the doc is still unset. A writer whose expectation no
 	// longer holds is rejected without clobbering; the response carries the
-	// new etag to chain further swaps.
+	// new etag to chain further swaps. The allow_anonymous_reads entry, if
+	// present, must be a JSON boolean (see Project.settings) — any other
+	// shape is rejected.
 	SetProjectSettings(context.Context, *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error)
 	// GetRefirePolicy returns the policy row for (project_id, route) — the
 	// exact key, not the engine's resolution ladder. The project-scoped
@@ -310,7 +312,9 @@ type ProjectServiceHandler interface {
 	// semantics: expected_etag must be the etag the caller last read, or ""
 	// exactly when the doc is still unset. A writer whose expectation no
 	// longer holds is rejected without clobbering; the response carries the
-	// new etag to chain further swaps.
+	// new etag to chain further swaps. The allow_anonymous_reads entry, if
+	// present, must be a JSON boolean (see Project.settings) — any other
+	// shape is rejected.
 	SetProjectSettings(context.Context, *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error)
 	// GetRefirePolicy returns the policy row for (project_id, route) — the
 	// exact key, not the engine's resolution ladder. The project-scoped
