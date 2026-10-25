@@ -17,7 +17,7 @@ import { ProjectListPage } from './features/settings/ProjectListPage';
 import { ProjectDetailPage } from './features/settings/ProjectDetailPage';
 import { settingsApi } from './features/settings/settingsApi';
 import { server } from '@castle/run-viewer/src/test/mocks/server';
-import { serverPath, projectPath } from '@castle/run-viewer/src/test/mocks/handlers';
+import { serverPath } from '@castle/run-viewer/src/test/mocks/handlers';
 // Vite's ?raw import inlines the shipped index.html so the document title
 // can be asserted against the real markup.
 import indexHtml from '../index.html?raw';
@@ -255,6 +255,14 @@ describe('App shell', () => {
 
     const outlet = screen.getByTestId('shell-outlet');
     expect(await within(outlet).findByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+  });
+
+  test('routes the settings console project detail page inside the shell outlet', async () => {
+    renderApp('/settings/projects/alpha');
+
+    const outlet = screen.getByTestId('shell-outlet');
+    expect(await within(outlet).findByTestId('project-detail')).toBeInTheDocument();
+    expect(within(outlet).getByTestId('project-overview')).toHaveTextContent('alpha');
   });
 
   test('collapses and expands the nav rail', async () => {
