@@ -2,11 +2,7 @@ import { createApi } from '@reduxjs/toolkit/query/react';
 import { fakeBaseQuery } from '@reduxjs/toolkit/query';
 import { ConnectError } from '@connectrpc/connect';
 import { connectCodeName, projectsClient, tsToIso } from '@castle/run-viewer';
-import type {
-  Project as PbProject,
-  ProjectMember as PbProjectMember,
-  RefirePolicy as PbRefirePolicy,
-} from '@castle/run-viewer';
+import type { PbProject, PbProjectMember, PbRefirePolicy } from '@castle/run-viewer';
 import { ProjectMemberKind, ProjectMembershipPolicy } from '@castle/run-viewer';
 
 // The settings console rides castle.v1.ProjectService (KB-324): projects,
