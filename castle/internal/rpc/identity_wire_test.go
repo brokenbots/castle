@@ -1,4 +1,4 @@
-// KB-333 wire acceptance: the CastleService.GetCallerIdentity surface. Every
+// KB-333 wire acceptance: the castle.v1.IdentityService.GetCallerIdentity surface. Every
 // authenticated identity reads exactly its OWN identity — unified operator
 // attributes (role/display) and the membership projection of the shared
 // membership set — regardless of the credential class it arrived through:

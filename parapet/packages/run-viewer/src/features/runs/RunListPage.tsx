@@ -143,7 +143,13 @@ export function RunListPage() {
   // membership-scoped identity that sees zero runs gets a scope diagnostic
   // instead of an unqualified "no runs", so an empty list is never again
   // mistaken for breakage. Read-only: identity never gates visibility here.
-  const { data: identity } = useGetCallerIdentityQuery();
+  const { data: identity, isError: identityFailed } = useGetCallerIdentityQuery();
+  // While the identity read is unresolved, hold the unfiltered empty state
+  // below rather than flashing the generic one first: an empty scope and an
+  // unscoped identity look identical until the read settles. `undefined`
+  // marks "no answer yet" — a host that answers nothing returns null, which
+  // counts as settled.
+  const identitySettled = identity !== undefined || identityFailed;
   const identityMembership = identity?.membership ?? [];
   const firstPageRuns = data?.runs ?? [];
   const errorKind = error ? classifyError(error) : undefined;  // The next "Load more" cursor: once older pages exist, the most recent
@@ -308,6 +314,8 @@ export function RunListPage() {
             onRetry={() => void refetch()}
           />
         )
+      ) : runs.length === 0 && statusFilter === '' && !identitySettled ? (
+        <PageState loading title="Loading runs…" testId="run-list-loading" />
       ) : runs.length === 0 && identity?.membershipScoped && statusFilter === '' ? (
         identityMembership.length === 0 ? (
           <PageState

@@ -282,11 +282,15 @@ export const castleApi = createApi({
       },
     }),
     // Single-operator identity read (KB-333): the self-scoped response the
-    // console renders (badge, admin pre-gating, scoped empty state).
-    // Deliberately untagged like getConnectionStatus — identity is read-once
-    // display and pre-gate metadata; real authorization stays live on the
-    // server for every procedure, so nothing invalidates it.
+    // console renders (badge, admin pre-gating, scoped empty state). It is
+    // credential-bound, so it re-issues on every mount — an entry left in
+    // the cache (or in the error state) by a previous credential can never
+    // answer for a new one; combined with the reset on session transitions
+    // in the app shell, signing out and back in always re-reads the caller.
+    // Deliberately untagged like getConnectionStatus — real authorization
+    // stays live on the server for every procedure regardless of this view.
     getCallerIdentity: b.query<CallerIdentity | null, void>({
+      refetchOnMountOrArgChange: true,
       queryFn: async () => {
         try {
           return { data: await getRunDataSource().identity() };

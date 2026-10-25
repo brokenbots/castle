@@ -1,11 +1,11 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { TokenMenu } from './TokenMenu';
 import { setAuthToken, clearAuthToken } from '../authToken';
-import { createRunViewerStore } from '@castle/run-viewer';
+import { castleApi, createRunViewerStore } from '@castle/run-viewer';
 import { server } from '@castle/run-viewer/src/test/mocks/server';
 import { identityPath } from '@castle/run-viewer/src/test/mocks/handlers';
 
@@ -127,9 +127,11 @@ describe('TokenMenu identity badge (KB-333)', () => {
     );
 
     await screen.findByTestId('token-menu-button');
-    // Let the identity read settle (the 503 above) so the fallback
-    // assertions cover the post-resolution state and not a pending race.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Settle on the RTK error state itself rather than a fixed sleep: this
+    // covers the post-resolution state and not a pending race.
+    await waitFor(() =>
+      expect(castleApi.endpoints.getCallerIdentity.select()(store.getState()).isError).toBe(true),
+    );
     // No identity: the badge keeps the credential-class presentation —
     // masked token only — and nothing identity-flavored renders.
     expect(screen.queryByTestId('token-menu-identity')).not.toBeInTheDocument();
