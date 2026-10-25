@@ -158,7 +158,7 @@ export const settingsApi = createApi({
     getProject: b.query<ProjectInfo, string>({
       queryFn: async (projectId) => {
         try {
-          return { data: mapProject(await projectsClient.getProject({ projectId })) };
+          return { data: mapProject((await projectsClient.getProject({ projectId })).project as PbProject) };
         } catch (err) {
           return { error: toError(err) };
         }

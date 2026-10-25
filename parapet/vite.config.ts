@@ -14,6 +14,16 @@ export default defineConfig({
         target: process.env.VITE_CASTLE_URL || 'http://catch/',
         changeOrigin: true,
       },
+      // castle.v1 surfaces the console rides (CRI-195 login, KB-327
+      // settings console): proxy them alongside the criteria services.
+      '/castle.v1.ConsoleService': {
+        target: process.env.VITE_CASTLE_URL || 'http://catch/',
+        changeOrigin: true,
+      },
+      '/castle.v1.ProjectService': {
+        target: process.env.VITE_CASTLE_URL || 'http://catch/',
+        changeOrigin: true,
+      },
       '/grpc.health.v1.Health': {
         target: process.env.VITE_CASTLE_URL || 'http://catch/',
         changeOrigin: true,
