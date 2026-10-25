@@ -274,9 +274,9 @@ const (
 // authorization, with additional scopes/labels/roles allowed as opaque
 // attribute keys for future use.
 type Operator struct {
-	ID           string
-	Name         string
-	DisplayName  string
+	ID          string
+	Name        string
+	DisplayName string
 	// PasswordHash is the bcrypt hash for password-authenticated operators
 	// (console logins); nil for token-only operators.
 	PasswordHash *string
