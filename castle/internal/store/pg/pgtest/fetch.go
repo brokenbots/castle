@@ -70,7 +70,6 @@ func DefaultPostgresCacheDir() string {
 	return ".embedded-postgres-go"
 }
 
-// zonky
 // zonkyOSArch maps the runtime OS/arch onto the zonkyio
 // embedded-postgres-binaries artifact naming. It mirrors the library's
 // defaultVersionStrategy (version >= 14.2) so the archive this helper
@@ -165,18 +164,12 @@ func (f *postgresBinaryFetch) normalize() {
 	}
 }
 
-// EnsurePostgresBinary makes the pinned embedded-postgres binary archive
-// available in the OS-wide cache the library reads, downloading it through
-// the single-flight fetch when the cache is cold.
-func EnsurePostgresBinary(ctx context.Context) error {
-	_, err := EnsurePostgresBinaryIfNeeded(ctx, DefaultBinaryRepoBase, DefaultPostgresCacheDir())
-	return err
-}
-
-// EnsurePostgresBinaryIfNeeded is the parameterized form of
-// EnsurePostgresBinary: repoBase is the Maven base URL (or an httptest
-// stand-in in tests), cacheDir the cache the server config and the CI
-// key share. It returns whether this call downloaded the archive.
+// EnsurePostgresBinaryIfNeeded makes the pinned embedded-postgres binary
+// archive available in cacheDir — the cache the library's default cache
+// locator reads — downloading it through the single-flight fetch when the
+// cache is cold. It returns whether this call downloaded the archive.
+// repoBase is the Maven base URL (or an httptest stand-in in tests); the
+// CI cache key pins the DefaultPostgresCacheDir/18.3.0 pair.
 func EnsurePostgresBinaryIfNeeded(ctx context.Context, repoBase, cacheDir string) (bool, error) {
 	f := postgresBinaryFetch{repoBase: repoBase, cacheDir: cacheDir}
 	f.normalize()
