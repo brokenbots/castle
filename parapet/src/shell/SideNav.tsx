@@ -27,12 +27,27 @@ function AgentsIcon() {
   );
 }
 
-// Grouped left navigation. Sections (Runs, Agents) carry their links; the
-// rail can collapse to an icon-only strip. When collapsed, labels stay
-// available to assistive tech via sr-only text and title tooltips.
+function SettingsIcon() {
+  return (
+    <svg aria-hidden viewBox="0 0 16 16" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="8" cy="8" r="2.5" />
+      <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" />
+    </svg>
+  );
+}
+
+// Grouped left navigation. Sections (Runs, Agents, Settings console) carry
+// their links; the rail can collapse to an icon-only strip. When collapsed,
+// labels stay available to assistive tech via sr-only text and title
+// tooltips. The settings console is its own area: the run-viewer feature
+// (runs, agents) stays viewer-shaped, and project administration lives here.
 const SECTIONS: NavSection[] = [
   { label: 'Runs', items: [{ to: '/runs', label: 'All runs', icon: <RunsIcon /> }] },
   { label: 'Agents', items: [{ to: '/agents', label: 'All agents', icon: <AgentsIcon /> }] },
+  {
+    label: 'Settings console',
+    items: [{ to: '/settings/projects', label: 'Projects', icon: <SettingsIcon /> }],
+  },
 ];
 
 export function SideNav({ collapsed, onToggle }: SideNavProps) {

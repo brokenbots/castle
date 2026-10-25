@@ -7,6 +7,8 @@ import { store } from './store';
 import { App } from './App';
 import { AgentListPage } from './features/agents/AgentListPage';
 import { AgentDetailPage } from './features/agents/AgentDetailPage';
+import { ProjectListPage } from './features/settings/ProjectListPage';
+import { ProjectDetailPage } from './features/settings/ProjectDetailPage';
 import { initTheme } from './theme';
 import './index.css';
 
@@ -42,6 +44,9 @@ createRoot(document.getElementById('root')!).render(
               <Route path="runs/:id" element={<RunDetailPage />} />
               <Route path="agents" element={<AgentListPage />} />
               <Route path="agents/:criteriaId" element={<AgentDetailPage />} />
+              <Route path="settings" element={<Navigate to="/settings/projects" replace />} />
+              <Route path="settings/projects" element={<ProjectListPage />} />
+              <Route path="settings/projects/:projectId" element={<ProjectDetailPage />} />
             </Route>
           </Routes>
         </Suspense>
