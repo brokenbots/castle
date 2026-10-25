@@ -111,8 +111,14 @@ export class Project extends Message<Project> {
   queues: string[] = [];
 
   /**
-   * settings is an opaque, shape-validated key/value map owned by the
-   * project.
+   * settings is a shape-validated key/value map owned by the project;
+   * entries are convention-keyed JSON, an empty value meaning "entry
+   * absent". Every key is opaque to the service EXCEPT
+   * allow_anonymous_reads (KB-326): it is the ONE interpreted key, its
+   * value must be a JSON boolean, and true lets anonymous callers read the
+   * owning agent's legacy unscoped runs even with the global
+   * --allow-anon-reads flag off. Project-scoped runs are never
+   * anonymously readable.
    *
    * @generated from field: map<string, string> settings = 5;
    */

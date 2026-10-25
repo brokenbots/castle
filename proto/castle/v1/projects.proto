@@ -57,7 +57,9 @@ service ProjectService {
   // semantics: expected_etag must be the etag the caller last read, or ""
   // exactly when the doc is still unset. A writer whose expectation no
   // longer holds is rejected without clobbering; the response carries the
-  // new etag to chain further swaps.
+  // new etag to chain further swaps. The allow_anonymous_reads entry, if
+  // present, must be a JSON boolean (see Project.settings) — any other
+  // shape is rejected.
   rpc SetProjectSettings(SetProjectSettingsRequest) returns (SetProjectSettingsResponse);
 
   // GetRefirePolicy returns the policy row for (project_id, route) — the
@@ -99,8 +101,14 @@ message Project {
   string default_refire_policy = 3;
   // queues lists the project-owned queue names.
   repeated string queues = 4;
-  // settings is an opaque, shape-validated key/value map owned by the
-  // project.
+  // settings is a shape-validated key/value map owned by the project;
+  // entries are convention-keyed JSON, an empty value meaning "entry
+  // absent". Every key is opaque to the service EXCEPT
+  // allow_anonymous_reads (KB-326): it is the ONE interpreted key, its
+  // value must be a JSON boolean, and true lets anonymous callers read the
+  // owning agent's legacy unscoped runs even with the global
+  // --allow-anon-reads flag off. Project-scoped runs are never
+  // anonymously readable.
   map<string, string> settings = 5;
   // info is an opaque, shape-validated key/value map with descriptive
   // project metadata.
