@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { PageHeader, PageState, StickyTableHead, classifyError } from '@castle/run-viewer';
+import { PageHeader, PageState, StickyTableHead, classifyError, useGetCallerIdentityQuery } from '@castle/run-viewer';
 import { useCreateProjectMutation, useListProjectsQuery } from './settingsApi';
 import { validateProjectID } from './validation';
 
@@ -8,11 +8,17 @@ import { validateProjectID } from './validation';
 // one creation form. Membership policy is the create-time decision castle
 // enforces — OPEN lets agents self-join at registration, CLOSED admits
 // members only through this console's members editor.
+//
+// KB-333: the creation form is an admin surface gated on the caller's own
+// operator role attribute, not on the credential class; the server keeps
+// enforcing authorization on every write either way.
 export function ProjectListPage() {
   const navigate = useNavigate();
   const { data, isLoading, error, refetch } = useListProjectsQuery();
   const errorKind = error ? classifyError(error) : undefined;
   const [createProject, { isLoading: creating }] = useCreateProjectMutation();
+  const { data: identity, isError: identityFailed } = useGetCallerIdentityQuery();
+  const isAdmin = identity?.role === 'admin';
 
   const [slug, setSlug] = useState('');
   const [policy, setPolicy] = useState<'open' | 'closed'>('open');
@@ -37,15 +43,16 @@ export function ProjectListPage() {
   return (
     <div>
       <PageHeader title="Projects" />
-      <form
-        data-testid="project-create"
-        aria-label="Create project"
-        className="mb-4 flex flex-wrap items-start gap-2 rounded-lg border border-line bg-surface p-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit();
-        }}
-      >
+      {identity === undefined && !identityFailed ? null : isAdmin ? (
+        <form
+          data-testid="project-create"
+          aria-label="Create project"
+          className="mb-4 flex flex-wrap items-start gap-2 rounded-lg border border-line bg-surface p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
         <label className="flex flex-col text-meta text-ink-muted">
           Slug
           <input
@@ -84,6 +91,16 @@ export function ProjectListPage() {
           </p>
         )}
       </form>
+      ) : (
+        <p
+          data-testid="project-create-admin-required"
+          className="mb-4 rounded-lg border border-line bg-surface p-3 text-body text-ink-muted"
+        >
+          {identityFailed
+            ? 'Your operator role could not be verified, so project creation is unavailable.'
+            : 'Creating projects needs an operator with the admin role; this session is not one.'}
+        </p>
+      )}
 
       {isLoading ? (
         <PageState loading title="Loading projects…" testId="project-list-loading" />
