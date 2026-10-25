@@ -126,7 +126,7 @@ func TestConsoleSessionCreateListAndCascadeDelete(t *testing.T) {
 		}
 		for _, tok := range []string{"hash-a", "hash-b"} {
 			if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{
-				ID: "sess-" + tok, UserID: "console-default", TokenHash: tok, CreatedAt: now,
+				ID: "sess-" + tok, OperatorID: "console-default", TokenHash: tok, CreatedAt: now,
 			}); err != nil {
 				t.Fatalf("create session %s: %v", tok, err)
 			}
@@ -167,10 +167,10 @@ func TestConsoleSessionDeleteByUser(t *testing.T) {
 				t.Fatalf("upsert %s: %v", u, err)
 			}
 		}
-		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s1", UserID: "u1", TokenHash: "h1", CreatedAt: now}); err != nil {
+		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s1", OperatorID: "u1", TokenHash: "h1", CreatedAt: now}); err != nil {
 			t.Fatalf("create s1: %v", err)
 		}
-		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s2", UserID: "u2", TokenHash: "h2", CreatedAt: now}); err != nil {
+		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s2", OperatorID: "u2", TokenHash: "h2", CreatedAt: now}); err != nil {
 			t.Fatalf("create s2: %v", err)
 		}
 
@@ -199,7 +199,7 @@ func TestConsoleSessionDeleteAll(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("upsert: %v", err)
 		}
-		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s1", UserID: "u1", TokenHash: "h1", CreatedAt: now}); err != nil {
+		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{ID: "s1", OperatorID: "u1", TokenHash: "h1", CreatedAt: now}); err != nil {
 			t.Fatalf("create: %v", err)
 		}
 
@@ -235,7 +235,7 @@ func TestConsoleSessionRevokedAtKeepsFirstStamp(t *testing.T) {
 		created := microUTC(time.Now())
 		membership := []string{"proj-a", "proj-b"}
 		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{
-			ID: "s1", UserID: "u1", TokenHash: "h1", CreatedAt: created, Membership: membership,
+			ID: "s1", OperatorID: "u1", TokenHash: "h1", CreatedAt: created, Membership: membership,
 		}); err != nil {
 			t.Fatalf("create: %v", err)
 		}
@@ -288,7 +288,7 @@ func TestConsoleSessionRevocationEmptyMembershipAndUnknownID(t *testing.T) {
 			t.Fatalf("upsert: %v", err)
 		}
 		if err := s.CreateConsoleSession(ctx, &store.ConsoleSession{
-			ID: "s1", UserID: "u1", TokenHash: "h1", CreatedAt: now, Membership: []string{},
+			ID: "s1", OperatorID: "u1", TokenHash: "h1", CreatedAt: now, Membership: []string{},
 		}); err != nil {
 			t.Fatalf("create: %v", err)
 		}

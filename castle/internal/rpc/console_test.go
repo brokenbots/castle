@@ -88,8 +88,8 @@ func TestLogin_SuccessIssuesSession(t *testing.T) {
 	if err != nil || sess == nil {
 		t.Fatalf("issued token must resolve as a console session (sess=%v, err=%v)", sess, err)
 	}
-	if sess.UserID != ConsoleDefaultUserID {
-		t.Fatalf("expected session user %q, got %q", ConsoleDefaultUserID, sess.UserID)
+	if sess.OperatorID != ConsoleDefaultUserID {
+		t.Fatalf("expected session user %q, got %q", ConsoleDefaultUserID, sess.OperatorID)
 	}
 }
 

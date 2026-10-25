@@ -20,8 +20,16 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 	if err != nil {
 		return err
 	}
+	// KB-330: the overseer row is an alias view of its operator row — keep
+	// both consistent, operator first (the alias FK points at it).
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO operators(id,name,display_name,password_hash,attributes,created_at,updated_at) VALUES($1,$2,$2,NULL,'{"role":"agent"}'::jsonb,$3,$3)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at`,
+		o.ID, o.Name, us(o.CreatedAt)); err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity,operator_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$1)`,
 		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, us(o.CreatedAt), us(o.LastSeenAt), nonEmpty(identity))
 	if err == nil {
 		s.freshness.recordWrite(o.CreatedAt)

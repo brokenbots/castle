@@ -32,7 +32,7 @@ func seedConsoleUser(t *testing.T, db *sqlite.Store) string {
 		t.Fatalf("new session token: %v", err)
 	}
 	if err := db.CreateConsoleSession(ctx, &store.ConsoleSession{
-		ID: "sess-1", UserID: "console-default", TokenHash: HashToken(token), CreatedAt: now,
+		ID: "sess-1", OperatorID: "console-default", TokenHash: HashToken(token), CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("seed console session: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestResolveConsoleSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if sess == nil || sess.UserID != "console-default" {
+	if sess == nil || sess.OperatorID != "console-default" {
 		t.Fatalf("expected console-default session, got %+v", sess)
 	}
 

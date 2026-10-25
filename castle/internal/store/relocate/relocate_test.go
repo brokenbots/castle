@@ -97,14 +97,14 @@ func seedSource(t *testing.T, st store.Store) (agentRunID, stubRunID string) {
 		t.Fatalf("UpsertConsoleUser: %v", err)
 	}
 	if err := st.CreateConsoleSession(ctx, &store.ConsoleSession{
-		ID: "cs-1", UserID: u.ID, TokenHash: "tokhash", CreatedAt: now,
+		ID: "cs-1", OperatorID: u.ID, TokenHash: "tokhash", CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("CreateConsoleSession: %v", err)
 	}
 	// Session ledger (KB-325): a live row with a membership snapshot plus a
 	// tombstoned row — freeze/import must preserve both new columns.
 	if err := st.CreateConsoleSession(ctx, &store.ConsoleSession{
-		ID: "cs-2", UserID: u.ID, TokenHash: "tokhash-2", CreatedAt: now,
+		ID: "cs-2", OperatorID: u.ID, TokenHash: "tokhash-2", CreatedAt: now,
 		Membership: []string{"proj-x"},
 	}); err != nil {
 		t.Fatalf("CreateConsoleSession cs-2: %v", err)
