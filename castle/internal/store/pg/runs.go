@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/brokenbots/castle/castle/internal/store"
@@ -66,18 +67,38 @@ func (s *Store) ListRunsUnscoped(ctx context.Context, overseerID, status string,
 	return s.listRunsPage(ctx, "project_id IS NULL", nil, overseerID, status, limit, pageToken)
 }
 
+// ListRunsByProject pages the runs of one project (KB-340): the parapet
+// project console listing. includeUnscoped adds the legacy unscoped runs
+// (project_id NULL) after the project's own — the admin arm; a
+// missing/empty project is the empty set, not an error. Ordering, paging
+// and cursor semantics match ListRuns exactly.
+func (s *Store) ListRunsByProject(ctx context.Context, projectID string, includeUnscoped bool, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	base := "project_id = ?"
+	if includeUnscoped {
+		base = "(project_id = ? OR project_id IS NULL)"
+	}
+	return s.listRunsPage(ctx, base, []any{nonEmpty(projectID)}, "", status, limit, pageToken)
+}
+
 // listRunsPage is the shared paging body of ListRuns/ListRunsUnscoped: base
 // restricts the row set ("" = every run, e.g. "project_id IS NULL"), baseArgs
-// carries its parameters, and the optional overseer/status filters plus the
+// backs base's ? placeholders in order (pgx needs $n references, so they are
+// substituted here), and the optional overseer/status filters plus the
 // cursor are appended on top.
 func (s *Store) listRunsPage(ctx context.Context, base string, baseArgs []any, overseerID, status string, limit int, pageToken string) ([]*store.Run, string, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	q := `SELECT ` + runColumns + ` FROM runs WHERE 1=1`
 	p := &plf{}
-	p.args = append(p.args, baseArgs...)
 	if base != "" {
-		q += " AND (" + base + ")"
+		// Substitute base's ? placeholders in order — pgx needs $n
+		// references, so pre-seeded args cannot be referenced by the
+		// extended protocol parser alone.
+		b := base
+		for _, arg := range baseArgs {
+			b = strings.Replace(b, "?", p.next(arg), 1)
+		}
+		q += " AND (" + b + ")"
 	}
 	if overseerID != "" {
 		q += " AND overseer_id=" + p.next(overseerID)
