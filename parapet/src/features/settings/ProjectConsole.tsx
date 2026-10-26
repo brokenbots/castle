@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   PageState,
+  RUN_STATUS_FILTER_VALUES,
   StickyTableHead,
   classifyError,
   useCallerIdentity,
@@ -48,13 +49,6 @@ export function errorOf(err: unknown): string {
   const { status } = (err ?? {}) as { status?: unknown };
   return typeof status === 'string' ? status : '';
 }
-
-export function num(raw: string): number {
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
-}
-
-const RUN_STATUSES = ['', 'running', 'pending', 'stopped', 'paused', 'completed'];
 
 const SECTION_BORDER = 'rounded-lg border border-line bg-surface p-4';
 
@@ -107,7 +101,7 @@ export function RunsPanel({ projectId }: { projectId: string }) {
           onChange={(e) => requery({ status: e.target.value })}
           className="rounded-md border border-line bg-surface-raised px-2 py-1.5 text-body text-ink disabled:opacity-70"
         >
-          {RUN_STATUSES.map((s) => (
+          {RUN_STATUS_FILTER_VALUES.map((s) => (
             <option key={s} value={s}>
               {s === '' ? 'all statuses' : s}
             </option>
@@ -247,7 +241,16 @@ function AgentIdentityBlocks({ projectId }: { projectId: string }) {
   const { data: members, isLoading, error } = useListProjectMembersQuery(projectId);
   const aiMembers = (members ?? []).filter((m: ProjectMemberInfo) => m.kind === 'ai');
 
-  if (error) return null;
+  if (error) {
+    return (
+      <PageState
+        error
+        kind={classifyError(error)}
+        title="Failed to load project members."
+        testId="agents-identity-error"
+      />
+    );
+  }
   if (isLoading) {
     return (
       <p data-testid="agents-identity-loading" className="mb-2 text-meta text-ink-muted">
@@ -514,12 +517,12 @@ export function RoutesEditor({ projectId }: { projectId: string }) {
         </p>
       ) : (
         <>
-          {record.routes.length === 0 && (
+          {(record.routes ?? []).length === 0 && (
             <p data-testid="routes-empty" className="mb-2 text-body text-ink-muted">
               No explicit routes; dispatch falls back to the record's catalog workflows.
             </p>
           )}
-          {record.routes.map((rt, i) => {
+          {(record.routes ?? []).map((rt, i) => {
             const configRefError = (rt.configRef ?? '') !== '' && !Object.keys(record.configLibrary ?? {}).includes(rt.configRef ?? '')
               ? `configRef "${rt.configRef}" is not in the record's configLibrary.`
               : null;
@@ -548,7 +551,7 @@ export function RoutesEditor({ projectId }: { projectId: string }) {
                       className={`mt-1 ${inputClass}`}
                     >
                       <option value="">(none)</option>
-                      {Object.keys(record.catalog).map((name) => (
+                      {Object.keys(record.catalog ?? {}).map((name) => (
                         <option key={name} value={name}>
                           {name}
                         </option>

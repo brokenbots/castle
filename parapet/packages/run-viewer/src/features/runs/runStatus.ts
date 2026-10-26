@@ -15,6 +15,25 @@
 // deliberately absent from RUN_TERMINAL_STATUSES.
 export const RUN_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 
+// The run-status values the project console's status filter offers: the full
+// status vocabulary castle stores (castle/internal/store/store.go RunStatus*,
+// including the awaiting_human gate from CRI-217), in presentation order,
+// with the leading '' meaning "no status filter". The shipped run-list page
+// keeps its own narrower STATUS_FILTERS (RunListPage.tsx); this list exists
+// so console panels cannot drift from what castle's exact-match column
+// filter can actually return.
+export const RUN_STATUS_FILTER_VALUES = [
+  '',
+  'running',
+  'pending',
+  'paused',
+  'succeeded',
+  'failed',
+  'stopped',
+  'cancelled',
+  'awaiting_human',
+] as const;
+
 // Compact tinted chip (used in tables and next to titles): a translucent
 // status-colored fill with matching text.
 export const RUN_STATUS_CHIP_CLASSES: Record<string, string> = {

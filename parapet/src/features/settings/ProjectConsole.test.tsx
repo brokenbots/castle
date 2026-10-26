@@ -211,6 +211,30 @@ describe('runs panel', () => {
       expect(screen.queryByTestId('runs-row-page-run-1')).not.toBeInTheDocument();
     });
   });
+
+  test('status filter offers exactly the full run-status vocabulary', async () => {
+    seedAlpha();
+    await renderConsole('alpha');
+    await openTab('runs');
+
+    // castle persists pending|running|succeeded|failed|paused|stopped|
+    // cancelled plus awaiting_human (castle/internal/store/store.go) and
+    // filters by exact column match, so the option set must pin that
+    // vocabulary (with '' = no filter) rather than a hand-rolled subset.
+    const select = await screen.findByTestId('runs-status-filter');
+    const values = [...within(select).getAllByRole('option')].map((o) => o.getAttribute('value'));
+    expect(values).toEqual([
+      '',
+      'running',
+      'pending',
+      'paused',
+      'succeeded',
+      'failed',
+      'stopped',
+      'cancelled',
+      'awaiting_human',
+    ]);
+  });
 });
 
 describe('agents panel', () => {
@@ -224,6 +248,20 @@ describe('agents panel', () => {
     expect(ov1).toHaveTextContent('ov-1');
     // The human member gets no identity block (agents are ai operators).
     expect(within(blocks).queryByTestId('agent-block-human-ops')).not.toBeInTheDocument();
+  });
+
+  test('a members fetch failure renders an explicit error state', async () => {
+    seedAlpha();
+    server.use(
+      http.post(projectPath('ListProjectMembers'), () => new HttpResponse(null, { status: 500 })),
+    );
+    await renderConsole('alpha');
+    await openTab('agents');
+
+    // Silence is not honest: the failure must surface its own block, and
+    // the (never-rendered) identity blocks must be gone with it.
+    expect(await screen.findByTestId('agents-identity-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('agents-identity-blocks')).not.toBeInTheDocument();
   });
 });
 
@@ -255,6 +293,46 @@ describe('catalog panel', () => {
 });
 
 describe('routes editor', () => {
+  test('renders a stored record whose catalog and routes are null', async () => {
+    // SetProjectConfig stores documents verbatim, so a record written
+    // without catalog/routes arrives as explicit nulls; the routes tab
+    // must degrade to the empty state instead of blanking the page.
+    seedProjectConfig(
+      'alpha',
+      JSON.stringify({
+        apiVersion: API_VERSION,
+        kind: KIND_RECORD,
+        registryName: 'alpha',
+        namespace: 'alpha-ns',
+        catalog: null,
+        routes: null,
+      }),
+    );
+    await renderConsole('alpha');
+    await openTab('routes');
+
+    expect(screen.getByTestId('project-routes')).toBeInTheDocument();
+    expect(await screen.findByTestId('routes-empty')).toHaveTextContent(/No explicit routes/);
+    // The null record must not crash the page shell into a blank render.
+    expect(screen.getByTestId('project-detail')).toBeInTheDocument();
+    // No route rows, so no workflow selects — and no Object.keys(null) blowup.
+    expect(screen.queryAllByRole('combobox')).toHaveLength(0);
+  });
+
+  test('renders route rows against a null catalog with only the empty workflow option', async () => {
+    seedProjectConfig('alpha', JSON.stringify({ ...configRecord, catalog: null }));
+    await renderConsole('alpha');
+    await openTab('routes');
+
+    const select = await screen.findByTestId('routes-workflow-0');
+    const options = within(select).getAllByRole('option');
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveTextContent('(none)');
+    // Rows survive the null catalog; the page shell is intact.
+    expect(screen.getByTestId('routes-row-0')).toBeInTheDocument();
+    expect(screen.getByTestId('project-detail')).toBeInTheDocument();
+    expect(screen.queryByTestId('routes-empty')).not.toBeInTheDocument();
+  });
   test('renders the recorded routes and swaps the record under the etag', async () => {
     let currentEtag = seedAlpha();
     const saveBodies: Record<string, unknown>[] = [];

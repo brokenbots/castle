@@ -78,6 +78,7 @@ export { ProjectMemberKind, ProjectMembershipPolicy } from './gen/castle/v1/proj
 // Shared run-status vocabulary + cells (used by host pages too).
 export {
   RUN_TERMINAL_STATUSES,
+  RUN_STATUS_FILTER_VALUES,
   RUN_STATUS_TEXT_COLORS,
   RUN_STATUS_CHIP_CLASSES,
   RUN_STATUS_PILL_CLASSES,
