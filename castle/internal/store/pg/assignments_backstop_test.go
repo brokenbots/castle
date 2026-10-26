@@ -57,7 +57,7 @@ func TestExpireLeasesReassertRunStatus(t *testing.T) {
 
 	// Agent A leases with an already-expired lease so expiry is driven by an
 	// explicit now; no sleeping.
-	if _, err := s.LeaseWorkflowAssignment(ctx, overseerID, map[string]string{}, now, -time.Second); err != nil {
+	if _, _, err := s.LeaseWorkflowAssignment(ctx, overseerID, map[string]string{}, now, -time.Second); err != nil {
 		t.Fatalf("lease to A: %v", err)
 	}
 

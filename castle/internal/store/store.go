@@ -436,6 +436,40 @@ type WorkflowAssignment struct {
 	// RefireAttempt is the family attempt number (originals carry 1).
 	RefireRootRunID string
 	RefireAttempt   int
+	// LeaseAttempt counts how many LeaseWorkflowAssignment scans visited this
+	// row — blocked on a dispatch rule, granted, or simply walked past (KB-343).
+	LeaseAttempt int
+	// LastLeaseRejection is the last dispatch rule that prevented this row
+	// from being leased (LeaseRejection* constant), or empty on a granted
+	// lease / a row never visited by a lease scan (KB-343). It is the
+	// row-level disposition of the Option B failure-story contract: "why
+	// didn't X run" is queryable without reconstructing logs.
+	LastLeaseRejection string
+}
+
+// Lease scan rejection rules (KB-343). A LeaseWorkflowAssignment that does
+// not match reports which rule declined the work; the same value lands on
+// the declined assignment row as its last-lease disposition. Values are
+// bare snake words stored verbatim in last_lease_rejection.
+const (
+	LeaseRejectionAgentUnknown      = "agent_unknown"
+	LeaseRejectionAgentOffline      = "agent_offline"
+	LeaseRejectionAgentPendingLease = "agent_pending_lease"
+	LeaseRejectionRunNotExecutable  = "run_not_executable"
+	LeaseRejectionProjectNotMember  = "project_not_member"
+	LeaseRejectionLabelsMismatch    = "labels_mismatch"
+)
+
+// LeaseDecision explains the outcome of a LeaseWorkflowAssignment scan
+// (KB-343). Matched is true with the leased assignment; otherwise Rejection
+// names the disqualifying rule, Details the human-readable specifics, and
+// AssignmentID the row the disposition was stamped on. When the queue held
+// no candidates at all, Rejection is empty (a quiet, non-operator signal).
+type LeaseDecision struct {
+	Matched      bool
+	AssignmentID string
+	Rejection    string
+	Details      string
 }
 
 // WorkflowAssignmentLease records a single lease grant to an agent.
@@ -912,7 +946,11 @@ type Store interface {
 	// LeaseWorkflowAssignment atomically expires stale leases, finds a queued
 	// assignment whose labels are satisfied by the agent's labels, and leases it
 	// to criteriaID. Returns ErrNotFound when no eligible queued assignment is
-	// available. Expired leases are only returned to the queue when their run
+	// available — the accompanying *LeaseDecision explains which dispatch rule
+	// declined the work (KB-343), and the declined assignment rows carry the
+	// same disposition (see LeaseDecision). A rejected scan is not an error
+	// beyond ErrNotFound: matching itself keeps its existing semantics.
+	// Expired leases are only returned to the queue when their run
 	// has not yet started (status='pending'); running runs are left leased.
 	//
 	// Project scoping (KB-318) is enforced here, at the store layer: an
@@ -921,7 +959,7 @@ type Store interface {
 	// (empty ProjectID) are visible to every agent as before. The leased
 	// run's agent_identity column is stamped from the leasing agent's
 	// overseer identity row for exact-build traceability.
-	LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*WorkflowAssignment, error)
+	LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*WorkflowAssignment, *LeaseDecision, error)
 	// ExpireWorkflowAssignmentLeases transitions leased assignments whose lease
 	// has expired and whose run is still pending back to queued, clearing their
 	// run's overseer_id. It returns the IDs of the assignments that were expired.

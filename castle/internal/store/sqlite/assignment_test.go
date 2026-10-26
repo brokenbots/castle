@@ -213,7 +213,7 @@ func TestLeaseWorkflowAssignment_RequiresOnlineAgent(t *testing.T) {
 		t.Fatalf("create overseer: %v", err)
 	}
 
-	_, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
+	_, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for offline agent, got %v", err)
 	}
@@ -245,7 +245,7 @@ func TestLeaseWorkflowAssignment_RequiresLabelMatch(t *testing.T) {
 		t.Fatalf("create overseer: %v", err)
 	}
 
-	_, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{"gpu": "false"}, now, time.Minute)
+	_, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{"gpu": "false"}, now, time.Minute)
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for non-matching labels, got %v", err)
 	}
@@ -257,7 +257,7 @@ func TestLeaseWorkflowAssignment_RequiresLabelMatch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create overseer: %v", err)
 	}
-	leased, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{"gpu": "true", "zone": "a"}, now, time.Minute)
+	leased, _, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{"gpu": "true", "zone": "a"}, now, time.Minute)
 	if err != nil {
 		t.Fatalf("expected lease success, got %v", err)
 	}
@@ -322,7 +322,7 @@ func TestLeaseWorkflowAssignment_ConcurrentClaimsOneWinner(t *testing.T) {
 			defer wg.Done()
 			// Slightly stagger starts to exercise the transactional guard.
 			time.Sleep(time.Duration(offset) * time.Millisecond)
-			leased, err := s.LeaseWorkflowAssignment(ctx, agentID, map[string]string{"gpu": "true"}, now, time.Minute)
+			leased, _, err := s.LeaseWorkflowAssignment(ctx, agentID, map[string]string{"gpu": "true"}, now, time.Minute)
 			if err == nil {
 				atomic.AddInt64(&wins, 1)
 				mu.Lock()
@@ -340,7 +340,7 @@ func TestLeaseWorkflowAssignment_ConcurrentClaimsOneWinner(t *testing.T) {
 	}
 
 	// Subsequent attempts must fail because the assignment is already leased.
-	_, err := s.LeaseWorkflowAssignment(ctx, "a1", map[string]string{"gpu": "true"}, now.Add(time.Second), time.Minute)
+	_, _, err := s.LeaseWorkflowAssignment(ctx, "a1", map[string]string{"gpu": "true"}, now.Add(time.Second), time.Minute)
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after lease, got %v", err)
 	}
@@ -373,7 +373,7 @@ func TestLeaseWorkflowAssignment_ExpiryReturnsToLeasable(t *testing.T) {
 
 	// Lease with a duration that has already expired.
 	leaseDuration := -time.Second
-	leased, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, leaseDuration)
+	leased, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, leaseDuration)
 	if err != nil {
 		t.Fatalf("lease: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestLeaseWorkflowAssignment_ExpiryReturnsToLeasable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create overseer: %v", err)
 	}
-	reLeased, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{}, now.Add(time.Second), time.Minute)
+	reLeased, _, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{}, now.Add(time.Second), time.Minute)
 	if err != nil {
 		t.Fatalf("expected re-lease after expiry, got %v", err)
 	}
@@ -439,7 +439,7 @@ func TestMarkWorkflowAssignmentTerminal_PreventsLease(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create overseer: %v", err)
 	}
-	_, err = s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
+	_, _, err = s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for terminal assignment, got %v", err)
 	}

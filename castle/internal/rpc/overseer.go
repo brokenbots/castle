@@ -715,6 +715,12 @@ func (s *CriteriaServer) dispatchForAgent(ctx context.Context, criteriaID string
 		return
 	}
 	if o.Status != "online" {
+		// The lease scan would decline every candidate behind this gate
+		// (KB-343): name the rule instead of returning silently.
+		s.Log.Info("dispatch for agent: assignment not leased",
+			"criteria_id", criteriaID,
+			"reason", store.LeaseRejectionAgentOffline,
+			"details", "agent "+criteriaID+" status "+o.Status)
 		return
 	}
 
@@ -729,15 +735,30 @@ func (s *CriteriaServer) dispatchForAgent(ctx context.Context, criteriaID string
 // accepted its running work becomes eligible for the next queued assignment,
 // and a reconnecting agent re-leases work it no longer holds. Safe to run in
 // a goroutine; errors are logged.
+//
+// A scan that matches nothing logs the lease decision (KB-343): a named
+// rejection rule is operator-visible at Info ("why didn't X run"), while an
+// empty queue stays a Debug line.
 func leaseAndDispatchNext(ctx context.Context, st store.Store, controls *ControlRegistry, log *slog.Logger, criteriaID string, agentLabels map[string]string, leaseDuration time.Duration) {
 	controls.LeaseLock()
 	defer controls.LeaseUnlock()
 
 	now := time.Now().UTC()
-	leased, err := st.LeaseWorkflowAssignment(ctx, criteriaID, agentLabels, now, leaseDuration)
+	leased, decision, err := st.LeaseWorkflowAssignment(ctx, criteriaID, agentLabels, now, leaseDuration)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			log.Debug("dispatch for agent: lease failed", "criteria_id", criteriaID, "err", err)
+			return
+		}
+		if decision != nil && decision.Rejection != "" {
+			log.Info("dispatch for agent: assignment not leased",
+				"criteria_id", criteriaID,
+				"reason", decision.Rejection,
+				"assignment_id", decision.AssignmentID,
+				"details", decision.Details)
+		} else {
+			log.Debug("dispatch for agent: no queued assignment",
+				"criteria_id", criteriaID)
 		}
 		return
 	}

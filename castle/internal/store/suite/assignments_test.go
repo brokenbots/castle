@@ -110,18 +110,18 @@ func TestLeaseRequiresOnlineAgentAndLabelMatch(t *testing.T) {
 		if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o-off", Name: "x", TokenHash: "t", Status: "offline", CreatedAt: now, LastSeenAt: now}); err != nil {
 			t.Fatalf("CreateOverseer(offline): %v", err)
 		}
-		if _, err := s.LeaseWorkflowAssignment(ctx, "o-off", map[string]string{}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "o-off", map[string]string{}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("offline agent lease err = %v, want ErrNotFound", err)
 		}
 
 		if err := s.CreateOverseer(ctx, &store.Overseer{ID: "o2", Name: "y", TokenHash: "t2", Status: "online", Labels: map[string]string{"gpu": "true", "zone": "a"}, CreatedAt: now, LastSeenAt: now}); err != nil {
 			t.Fatalf("CreateOverseer(matching): %v", err)
 		}
-		if _, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{"gpu": "false"}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{"gpu": "false"}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("label mismatch lease err = %v, want ErrNotFound", err)
 		}
 
-		leased, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{"gpu": "true", "zone": "a"}, now, time.Minute)
+		leased, _, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{"gpu": "true", "zone": "a"}, now, time.Minute)
 		if err != nil {
 			t.Fatalf("matching lease: %v", err)
 		}
@@ -182,7 +182,7 @@ func TestLeaseSingleWinnerAndSequentialGuards(t *testing.T) {
 			agent := fmt.Sprintf("a%d", (i%2)+1)
 			go func() {
 				defer wg.Done()
-				leased, err := s.LeaseWorkflowAssignment(ctx, agent, map[string]string{"gpu": "true"}, now, time.Minute)
+				leased, _, err := s.LeaseWorkflowAssignment(ctx, agent, map[string]string{"gpu": "true"}, now, time.Minute)
 				if err == nil {
 					atomic.AddInt64(&wins, 1)
 					mu.Lock()
@@ -199,11 +199,11 @@ func TestLeaseSingleWinnerAndSequentialGuards(t *testing.T) {
 		}
 
 		// Winner retrying while its lease is unstarted: sequential guard.
-		if _, err := s.LeaseWorkflowAssignment(ctx, "a1", map[string]string{"gpu": "true"}, now.Add(time.Second), time.Minute); !errors.Is(err, store.ErrNotFound) {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "a1", map[string]string{"gpu": "true"}, now.Add(time.Second), time.Minute); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("winner retry err = %v, want ErrNotFound", err)
 		}
 		// The other agent cannot pick up the assignment either: it is leased.
-		if _, err := s.LeaseWorkflowAssignment(ctx, "a2", map[string]string{"gpu": "true"}, now.Add(time.Second), time.Minute); !errors.Is(err, store.ErrNotFound) {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "a2", map[string]string{"gpu": "true"}, now.Add(time.Second), time.Minute); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("second agent lease err = %v, want ErrNotFound", err)
 		}
 		_ = a
@@ -223,14 +223,14 @@ func TestLeaseExpiryRequeues(t *testing.T) {
 			}
 		}
 
-		first, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, -time.Second)
+		first, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, -time.Second)
 		if err != nil {
 			t.Fatalf("stale lease: %v", err)
 		}
 		if first.State != store.WorkflowAssignmentStateLeased {
 			t.Fatalf("state = %q, want leased", first.State)
 		}
-		again, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{}, now.Add(time.Second), time.Minute)
+		again, _, err := s.LeaseWorkflowAssignment(ctx, "o2", map[string]string{}, now.Add(time.Second), time.Minute)
 		if err != nil {
 			t.Fatalf("re-lease after expiry: %v", err)
 		}
@@ -254,7 +254,7 @@ func TestExpireLeasesAndRedelivery(t *testing.T) {
 			t.Fatalf("CreateOverseer: %v", err)
 		}
 
-		if _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, a1.CreatedAt, time.Hour); err != nil {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, a1.CreatedAt, time.Hour); err != nil {
 			t.Fatalf("lease a1: %v", err)
 		}
 		// a2 stays queued: an agent with an unstarted lease gets nothing.
@@ -283,7 +283,7 @@ func TestExpireLeasesAndRedelivery(t *testing.T) {
 
 		// a2 takes a lease that is already stale: expiry requeues it and
 		// clears the run's overseer so the work can be redispatched.
-		if _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, a2.CreatedAt, -time.Second); err != nil {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, a2.CreatedAt, -time.Second); err != nil {
 			t.Fatalf("lease a2 stale: %v", err)
 		}
 		expired, err = s.ExpireWorkflowAssignmentLeases(ctx, now.Add(2*time.Hour))
@@ -336,7 +336,7 @@ func TestMarkAssignmentTerminalAndAttempts(t *testing.T) {
 		}
 
 		// a2 stays leasable: terminal marking is scoped to the given run.
-		a2Leased, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
+		a2Leased, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
 		if err != nil || a2Leased.ID != a2.ID {
 			t.Fatalf("lease of remaining assignment = %+v err=%v, want a2", a2Leased, err)
 		}
@@ -362,7 +362,7 @@ func TestExpireLeasesSkipRunningRuns(t *testing.T) {
 			t.Fatalf("CreateOverseer: %v", err)
 		}
 		a := newAssignment(t, ctx, s, "owner-running", "key-running", nil, now)
-		if _, err := s.LeaseWorkflowAssignment(ctx, "oa-running", map[string]string{}, now, -time.Second); err != nil {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "oa-running", map[string]string{}, now, -time.Second); err != nil {
 			t.Fatalf("lease: %v", err)
 		}
 
@@ -427,7 +427,7 @@ func TestExpireLeasesLoseRaceToLease(t *testing.T) {
 			a := newAssignment(t, ctx, s, "owner-race", fmt.Sprintf("key-race-%d", i), nil, now)
 			// Agent A leases with an already-expired lease so expiry can be
 			// driven deterministically with an explicit now; no sleeping.
-			if _, err := s.LeaseWorkflowAssignment(ctx, "oa-race", map[string]string{}, now, -time.Second); err != nil {
+			if _, _, err := s.LeaseWorkflowAssignment(ctx, "oa-race", map[string]string{}, now, -time.Second); err != nil {
 				t.Fatalf("iteration %d: lease to A: %v", i, err)
 			}
 
@@ -449,7 +449,7 @@ func TestExpireLeasesLoseRaceToLease(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				_, leaseErr = s.LeaseWorkflowAssignment(ctx, "ob-race", map[string]string{}, now.Add(time.Minute), time.Hour)
+				_, _, leaseErr = s.LeaseWorkflowAssignment(ctx, "ob-race", map[string]string{}, now.Add(time.Minute), time.Hour)
 			}()
 			close(start)
 			wg.Wait()
