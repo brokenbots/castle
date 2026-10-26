@@ -1097,12 +1097,6 @@ func TestOptionBIsolationRejectsWrongProject(t *testing.T) {
 	}
 }
 
-// optionbCriteriaJobsBinding is the criteria-jobs namespace's binding
-// payload, imported during the cleanup step so the namespace's two
-// registry records (the platform record and the kanboard record) can go
-// binding-first post-cutover (KB-313, ADR 307).
-var optionbCriteriaJobsBinding = filepath.Join("testdata", "..", "confighome", "testdata", "binding-criteria-jobs.json")
-
 // TestOptionBCleanupCutoverFlip is step 6: the flag-flip decision. Every
 // registry record imports its namespace binding, flips post-cutover
 // through the console's etag-gated editor, and the assembled CM payload
