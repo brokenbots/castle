@@ -4,7 +4,7 @@
 // identity blocks, catalog + interface viewer, routes + config editors
 // with the live validator preview, etag-swapping saves and conflict
 // handling). Fixtures ride the shared run-viewer msw store.
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Provider } from 'react-redux';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -413,9 +413,117 @@ describe('config editor', () => {
     expect((iface as HTMLTextAreaElement).value).toContain('configSlots');
 
     const user = userEvent.setup();
-    await user.type(iface! as HTMLTextAreaElement, '{{not json');
+    await user.type(iface! as HTMLTextAreaElement, 'bogus');
     expect(await screen.findByTestId('config-catalog-ship-it-parse-error')).toHaveTextContent(/not valid JSON yet/);
+    // No keystroke is discarded: the textarea keeps the broken text while
+    // the parse error stands, and deleting the suffix restores the draft.
+    expect((iface as HTMLTextAreaElement).value).toContain('bogus');
+    for (let i = 0; i < 'bogus'.length; i++) {
+      await user.type(iface! as HTMLTextAreaElement, '{backspace}');
+    }
+    await waitFor(() => expect(screen.queryByTestId('config-catalog-ship-it-parse-error')).not.toBeInTheDocument());
+    expect((iface as HTMLTextAreaElement).value).toBe(JSON.stringify(configRecord.catalog['ship-it'].interface));
     expect(screen.queryByText(/not a ProjectWorkflowConfig record/)).not.toBeInTheDocument();
+  });
+
+  test('a single interface keystroke sticks while the JSON is mid-invalid', async () => {
+    seedAlpha();
+    await renderConsole('alpha');
+    await openTab('config');
+
+    const iface = (await screen.findByTestId('config-catalog-ship-it-interface')) as HTMLTextAreaElement;
+    const before = iface.value;
+    const user = userEvent.setup();
+    await user.type(iface, '}');
+    expect(iface.value).toBe(before + '}');
+    expect(await screen.findByTestId('config-catalog-ship-it-parse-error')).toBeInTheDocument();
+  });
+
+  test('an interface edit that parses reaches the save payload through the etag swap', async () => {
+    seedAlpha();
+    const saveBodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post(projectPath('SetProjectConfig'), async ({ request }) => {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        saveBodies.push(body);
+        return HttpResponse.json({ etag: seedProjectConfig('alpha', decodeRecordDoc(body.document)) });
+      }),
+    );
+    await renderConsole('alpha');
+    await openTab('config');
+
+    const iface = (await screen.findByTestId('config-catalog-ship-it-interface')) as HTMLTextAreaElement;
+    const user = userEvent.setup();
+    await user.clear(iface);
+    const next = JSON.stringify({
+      ...configRecord.catalog['ship-it'].interface,
+      configSlots: [
+        ...configRecord.catalog['ship-it'].interface.configSlots,
+        { slot: 'dryRun', variable: 'custom_dry_run', target: 'ci' },
+      ],
+    });
+    // userEvent.type parses braces/quotes as key modifiers, so the raw JSON
+    // lands via a change event; the editor's value derivation, parse and
+    // draft absorption are what the test pins.
+    fireEvent.change(iface, { target: { value: next } });
+    await waitFor(() => expect(screen.getByTestId('config-catalog-ship-it-interface')).toHaveValue(next));
+    expect(screen.queryByTestId('config-catalog-ship-it-parse-error')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('config-save'));
+    await screen.findByTestId('config-saved');
+    const saved = JSON.parse(decodeRecordDoc(saveBodies[0].document)) as {
+      catalog: Record<string, { interface?: { configSlots?: unknown[] } }>;
+    };
+    expect(saved.catalog['ship-it'].interface?.configSlots).toHaveLength(2);
+  });
+
+  test('clearing the interface drops it from the save payload', async () => {
+    seedAlpha();
+    const saveBodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post(projectPath('SetProjectConfig'), async ({ request }) => {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        saveBodies.push(body);
+        return HttpResponse.json({ etag: seedProjectConfig('alpha', decodeRecordDoc(body.document)) });
+      }),
+    );
+    await renderConsole('alpha');
+    await openTab('config');
+
+    const iface = (await screen.findByTestId('config-catalog-ship-it-interface')) as HTMLTextAreaElement;
+    const user = userEvent.setup();
+    await user.clear(iface);
+    await waitFor(() => expect(iface).toHaveValue(''));
+    expect(screen.queryByTestId('config-catalog-ship-it-parse-error')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('config-save'));
+    await screen.findByTestId('config-saved');
+    const saved = JSON.parse(decodeRecordDoc(saveBodies[0].document)) as {
+      catalog: Record<string, Record<string, unknown>>;
+    };
+    expect(saved.catalog['ship-it'].interface).toBeUndefined();
+  });
+
+  test('a save rejection other than conflict surfaces the failure to the operator', async () => {
+    seedAlpha();
+    server.use(
+      http.post(projectPath('SetProjectConfig'), () =>
+        HttpResponse.json(
+          { code: 'invalid_argument', message: 'record is not a ProjectWorkflowConfig record' },
+          { status: 400 },
+        ),
+      ),
+    );
+    await renderConsole('alpha');
+    await openTab('config');
+    await screen.findByTestId('config-catalog-row-ship-it');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('config-save'));
+    const banner = await screen.findByTestId('config-server-error');
+    expect(banner).toHaveTextContent(/Castle rejected the save \(invalid_argument\)/);
+    expect(screen.queryByTestId('config-saved')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('config-conflict')).not.toBeInTheDocument();
   });
 });
 

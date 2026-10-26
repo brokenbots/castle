@@ -110,7 +110,10 @@ export interface Route {
   project: string;
   tags?: string[];
   tagMatch?: string;
-  /** Omitted parses to [DefaultState]; an empty list rejects. */
+  /**
+   * Omitted (and empty) rejects; records do not materialize a payload
+   * default — routes are stored/validated exactly as wired.
+   */
   states: string[];
   configRef?: string;
 }

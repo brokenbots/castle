@@ -9,6 +9,7 @@ import {
   DEFAULT_STATE,
   type Binding,
   type CfgRecord,
+  type Interface,
   type Workflow,
   emptyRecord,
 } from './record';
@@ -307,6 +308,24 @@ describe('binding shapes (bindingErrors)', () => {
     expect(all).toMatch(/binding env has invalid env var name "bad!name"/);
     expect(all).toMatch(/env\.CREDS_FILE value "bad key!" is not a valid key name/);
   });
+
+  test('a volume and a secret may share a name; duplicates within one list reject', () => {
+    const b: Binding = {
+      apiVersion: API_VERSION,
+      kind: 'CriteriaBinding',
+      images: {},
+      env: {},
+      volumes: [
+        { name: 'work', kind: 'tmp', mountPath: '/v' },
+        { name: 'work', kind: 'tmp', mountPath: '/v2' },
+      ],
+      secrets: [{ name: 'work', secretProviderClass: 'spc', mountPath: '/s', env: {} }],
+      config: {},
+    };
+    const all = bindingErrors(b).join('\n');
+    expect(all).toMatch(/binding volumes\[1\] duplicates name "work"/);
+    expect(all).not.toMatch(/binding secrets\[0\] duplicates/);
+  });
 });
 
 describe('record-level cross references', () => {
@@ -329,7 +348,7 @@ describe('record-level cross references', () => {
     expect(all).toMatch(/routes\[3\][^:]*: project "other" must be the record's registryName "squad"/);
   });
 
-  test('states materialize: an empty list rejects, omitted parses to Triage', () => {
+  test('states are not materialized: an empty or omitted list rejects', () => {
     const rec = minimalRecord();
     rec.routes.push({ ...newRoute('squad'), name: 'no-states', states: [] });
     expect(validateRecord(rec).join('\n')).toMatch(
@@ -382,5 +401,22 @@ describe('unknown-field rejection (ParseRecord discipline)', () => {
     rec.catalog['ship-it'].interface = { ...emptyInterface(), workflow: 'ship-it' };
     rec.catalog['ship-it'].volumes = [{ name: 'work', kind: 'tmp', mountPath: '/w' }];
     expect(unknownFieldErrors(rec)).toEqual([]);
+  });
+
+  test('the live preview path flags a catalog interface carrying unknown keys', () => {
+    const rec = minimalRecord();
+    const wf: Workflow = { ...rec.catalog['ship-it'], type: 'url', url: 'https://git.example/squad/ship-it' };
+    wf.interface = {
+      ...emptyInterface(),
+      workflow: 'ship-it',
+      secrets: { KUBECONFIG: 'creds/kubeconfig' },
+    } as Interface;
+    rec.catalog['ship-it'] = wf;
+    // Pastes with `secrets` instead of the schema's `secretEnv` are valid
+    // JSON: ParseRecord rejects them fail-closed before Validate runs, so
+    // the preview must lead with the unknown-field error.
+    const errs = validateRecord(rec);
+    expect(errs[0]).toMatch(/catalog\["ship-it"\]\.interface: unknown field "secrets"/);
+    expect(errs.join('\n')).not.toMatch(/must not declare an interface/);
   });
 });

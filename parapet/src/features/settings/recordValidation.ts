@@ -328,15 +328,18 @@ export function bindingShapeErrors(b: {
   const out: string[] = [];
   out.push(...validateAdapterImages(b.images).map((e) => `binding images: ${e}`));
   out.push(...envMapErrors(b.env, 'binding env'));
-  const seen: Set<string> = new Set();
+  // One names-unique check per list, like BindingRules.Validate: a volume
+  // and a secret may share a name, names must not repeat WITHIN a list.
+  const seenV: Set<string> = new Set();
   (b.volumes ?? []).forEach((v, i) => {
-    if (seen.has(v.name)) out.push(`binding volumes[${i}] duplicates name "${v.name}"`);
-    seen.add(v.name);
+    if (seenV.has(v.name)) out.push(`binding volumes[${i}] duplicates name "${v.name}"`);
+    seenV.add(v.name);
     out.push(...validateVolume(v).map((e) => `binding volume "${v.name}": ${e}`));
   });
+  const seenS: Set<string> = new Set();
   (b.secrets ?? []).forEach((s, i) => {
-    if (seen.has(s.name)) out.push(`binding secrets[${i}] duplicates name "${s.name}"`);
-    seen.add(s.name);
+    if (seenS.has(s.name)) out.push(`binding secrets[${i}] duplicates name "${s.name}"`);
+    seenS.add(s.name);
     out.push(...validateSecret(s).map((e) => `binding secret "${s.name}": ${e}`));
   });
   for (const slot of Object.keys(b.config ?? {})) {
@@ -388,12 +391,17 @@ function routeConfigCross(routeName: string, workflowName: string, wf: Workflow 
 
 /**
  * Mirror confighome Record.Validate(): every shape rule the server's
- * SetProjectConfig enforces, in record order. The array returns ALL errors
- * so the editor's live preview shows the full surface; the first entry
- * mirrors what the server would reject first.
+ * SetProjectConfig enforces, in record order. ParseRecord's fail-closed
+ * unknown-field rejection runs before Validate on the server, so those
+ * errors come first. The array returns ALL errors so the editor's live
+ * preview shows the full surface; the first entry mirrors what the server
+ * would reject first.
  */
 export function validateRecord(r: CfgRecord): string[] {
   const out: string[] = [];
+  // The round trip is the wire form the server's decoder sees (undefined
+  // optional fields drop out), so unknown keys reject exactly like ParseRecord.
+  out.push(...unknownFieldErrors(JSON.parse(JSON.stringify(r))));
   if (r.apiVersion !== API_VERSION) {
     out.push(`apiVersion must be "${API_VERSION}", got "${r.apiVersion ?? ''}"`);
   }

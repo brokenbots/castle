@@ -663,6 +663,11 @@ export function RoutesEditor({ projectId }: { projectId: string }) {
           Castle denied the write: this session's operator lacks the admin role.
         </p>
       )}
+      {draft.serverError !== null && draft.serverError !== 'permission_denied' && (
+        <p role="alert" data-testid="routes-server-error" className="mt-2 text-body text-danger">
+          Castle rejected the save ({draft.serverError}) — the record was not written; fix the record and retry.
+        </p>
+      )}
     </section>
   );
 }
@@ -680,6 +685,12 @@ function CatalogSection({ draft, admin }: { draft: WorkflowDraft; admin: boolean
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState<string>(TYPE_URL);
   const [parseErrors, setParseErrors] = useState<Record<string, string>>( {});
+  // Raw text per workflow name, held even mid-parse so no keystroke is
+  // discarded: the draft only absorbs successfully parsed text. `installed`
+  // marks the interface object WE last wrote; when the draft's interface
+  // differs (reload/save/refetch) the textarea falls back to a display form.
+  const [rawText, setRawText] = useState<Record<string, string>>({});
+  const [installed, setInstalled] = useState<Record<string, Interface | undefined>>({});
 
   if (record === null) return null;
 
@@ -689,17 +700,25 @@ function CatalogSection({ draft, admin }: { draft: WorkflowDraft; admin: boolean
     setCatalog({ ...catalog, [name]: { ...catalog[name], ...next } });
 
   const setInterface = (name: string, raw: string) => {
+    setRawText((prev) => ({ ...prev, [name]: raw }));
     if (raw.trim() === '') {
       const { interface: _drop, ...rest } = catalog[name];
       setParseErrors({ ...parseErrors, [name]: '' });
+      setInstalled({ ...installed, [name]: undefined });
       setCatalog({ ...catalog, [name]: rest as Workflow });
       return;
     }
     try {
       const parsed = JSON.parse(raw) as Interface;
       setParseErrors({ ...parseErrors, [name]: '' });
+      setInstalled({ ...installed, [name]: parsed });
       setCatalog({ ...catalog, [name]: { ...catalog[name], interface: parsed } });
-    } catch (err) {
+    } catch {
+      // Keep the draft as-is; the flag below pins the parse error until the
+      // text parses, and the textarea holds the raw text meanwhile. Pin the
+      // pre-edit interface as "ours" so the first invalid keystroke on an
+      // externally-loaded value does not snap the textarea back to display.
+      setInstalled((prev) => (prev[name] !== undefined ? prev : { ...prev, [name]: catalog[name]?.interface ?? undefined }));
       setParseErrors({ ...parseErrors, [name]: 'Interface is not valid JSON yet — castle would reject the record.' });
     }
   };
@@ -777,13 +796,13 @@ function CatalogSection({ draft, admin }: { draft: WorkflowDraft; admin: boolean
               <textarea
                 data-testid={'config-catalog-' + name + '-interface'}
                 rows={3}
-                value={wf.interface === undefined ? '' : JSON.stringify(wf.interface)}
+                value={wf.interface === installed[name] ? (rawText[name] ?? '') : JSON.stringify(wf.interface)}
                 onChange={(e) => setInterface(name, e.target.value)}
                 className={'mt-1 font-mono ' + inputClass}
               />
             </label>
           )}
-          {(parseErrors[name] ?? '') !== '' && (
+          {wf.interface === installed[name] && (parseErrors[name] ?? '') !== '' && (
             <p role="alert" data-testid={'config-catalog-' + name + '-parse-error'} className="mt-1 text-meta text-danger">
               {parseErrors[name]}
             </p>
@@ -1074,6 +1093,11 @@ export function ConfigEditor({ projectId }: { projectId: string }) {
       {draft.serverError === 'permission_denied' && (
         <p role="alert" data-testid="config-denied" className="mt-2 text-body text-danger">
           Castle denied the write: this session's operator lacks the admin role.
+        </p>
+      )}
+      {draft.serverError !== null && draft.serverError !== 'permission_denied' && (
+        <p role="alert" data-testid="config-server-error" className="mt-2 text-body text-danger">
+          Castle rejected the save ({draft.serverError}) — the record was not written; fix the record and retry.
         </p>
       )}
     </section>
