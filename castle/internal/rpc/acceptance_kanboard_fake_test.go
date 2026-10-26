@@ -93,6 +93,23 @@ func (fk *optionbFakeKanboard) columnOf(taskID int) string {
 	return ""
 }
 
+// moveCard models the operator dragging a card to a new column: an
+// out-of-band board edit the next poll observes as a column change.
+func (fk *optionbFakeKanboard) moveCard(t *testing.T, id int, column string) {
+	t.Helper()
+	fk.mu.Lock()
+	defer fk.mu.Unlock()
+	colID, ok := fk.columnIDOf[column]
+	if !ok {
+		t.Fatalf("fake kanboard: unknown column %q", column)
+	}
+	task, ok := fk.tasks[id]
+	if !ok {
+		t.Fatalf("fake kanboard: card %d does not exist", id)
+	}
+	task.ColumnID = colID
+}
+
 // commentsOn returns the comments the mirror left on the card.
 func (fk *optionbFakeKanboard) commentsOn(taskID int) []string {
 	fk.mu.Lock()

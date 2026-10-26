@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -885,5 +886,162 @@ func TestOptionBFireFailureRefirePolicy(t *testing.T) {
 	}
 	if len(outcomes2) != 0 {
 		t.Fatalf("second refire pass outcomes %v, want none (lineage closed)", outcomes2)
+	}
+}
+
+// optionbAwaitTerminal polls the trigger's disposition until the
+// assignment settles terminal.
+func optionbAwaitTerminal(t *testing.T, clients *optionbCastleClients, runID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		disp, err := clients.GetAssignmentDisposition(context.Background(),
+			connect.NewRequest(&pb.GetAssignmentDispositionRequest{RunId: runID}))
+		if err != nil {
+			t.Fatalf("trigger disposition for %s: %v", runID, err)
+		}
+		if disp.Msg.GetState() == pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("assignment %s never settled terminal (state %v)", runID, disp.Msg.GetState())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// optionbRenderedRoutes is the small slice of the rendered routes payload
+// the edit-flow assertions read: the configLibrary entries and the
+// routes' configRef references.
+type optionbRenderedRoutes struct {
+	ConfigLibrary map[string]struct {
+		CIGateCmd string `json:"ciGateCmd"`
+	} `json:"configLibrary"`
+	Routes []struct {
+		Name      string `json:"name"`
+		ConfigRef string `json:"configRef"`
+	} `json:"routes"`
+}
+
+// TestOptionBEditConfigRefire is step 4 (EDIT-FLOW): the console edits the
+// project's ci gate config through the etag-gated write, the edited record
+// is immediately the routing truth (a stale-etag write conflicts; an
+// unknown route is rejected against the edited record), the assembled
+// routes payload carries the edit, and a refired card executes a fresh run
+// that clears the edited record's route gate.
+//
+// DELIVERY BOUNDARY: ci_gate_cmd's ride into the k8s render (the
+// configSlots assembly the platform side consumes) is outside castle.
+// Castle's honest slice is the full editor flow on the wire reads/writes
+// PLUS the routing truth: the edited record gates which routes fire, so
+// the refired card's assignment proves the edit is live.
+func TestOptionBEditConfigRefire(t *testing.T) {
+	fx := optionbSeed(t)
+	ctx := context.Background()
+
+	// First fire runs to completion so the card sits in Done and the
+	// adapter fully settled the ticket.
+	agent, ctrl, runID1 := optionbFireReady(t, fx)
+	clients := newOptionbCastleClients(fx.tsrv, fx.triggerToken)
+	optionbRunEnvelopes(t, fx.oClient, agent.Token, runID1, "kanboard-develop", "handler_complete", true)
+	optionbAwaitTerminal(t, clients, runID1)
+	fx.optionbAwaitColumn(t, optionbTicketID, "Done")
+
+	// EDIT: the console reads the record, adds the edited ci gate config
+	// entry, points the route's configRef at it, validates, and writes
+	// through the etag-gated surface — parapet's editor flow.
+	record, etag := fx.getConfigRecord(optionbFireProject)
+	const editEntry = "edited-gate"
+	const editCmd = "edited ci gate v2: make ci && make vuln-scan"
+	if record.ConfigLibrary == nil {
+		record.ConfigLibrary = map[string]confighome.ConfigEntry{}
+	}
+	record.ConfigLibrary[editEntry] = confighome.ConfigEntry{CIGateCmd: editCmd}
+	for i := range record.Routes {
+		if record.Routes[i].Name == "kanboard-develop" {
+			record.Routes[i].ConfigRef = editEntry
+		}
+	}
+	if err := record.Validate(); err != nil {
+		t.Fatalf("console edit fails validation: %v", err)
+	}
+	editedDoc, err := record.Marshal()
+	if err != nil {
+		t.Fatalf("marshal edited record: %v", err)
+	}
+	newEtag := fx.seedConfigImport(optionbFireProject, record, etag)
+	if newEtag == etag {
+		t.Fatalf("etag unchanged after the edit (%s)", newEtag)
+	}
+	if _, etag2 := fx.getConfigRecord(optionbFireProject); etag2 != newEtag {
+		t.Fatalf("readback etag, want the edit's etag %q", newEtag)
+	}
+
+	// A lost-update write conflicts: a writer holding the pre-edit etag
+	// fails against the record the edit just moved (parapet's editor
+	// lost-update guard, live on the wire).
+	_, err = fx.projects.SetProjectConfig(ctx, bearer(&castlev1.SetProjectConfigRequest{
+		ProjectId:    optionbFireProject,
+		Document:     editedDoc,
+		ExpectedEtag: etag,
+	}, fx.consoleToken))
+	if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("stale-etag write = %v, want FailedPrecondition conflict", err)
+	}
+
+	// The edited record is the routing truth the moment it is written: an
+	// unknown route name is rejected against the EDITED record (KB-339).
+	_, err = clients.SubmitProjectAssignment(ctx, connect.NewRequest(&castlev1.SubmitProjectAssignmentRequest{
+		ProjectId:      optionbFireProject,
+		WorkflowName:   "kanboard-nonexistent",
+		WorkflowSource: "hcl-source",
+		IdempotencyKey: "optionb-edit-probe",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "is not a route in project") {
+		t.Fatalf("unknown route rejected = %v, want the edited record's route gate", err)
+	}
+
+	// The assembled payload the platform renders from carries the edit.
+	assembled, err := confighome.NewAssemblyFor(optionbFetchAllRecords(t, fx)).RenderRoutesPayload()
+	if err != nil {
+		t.Fatalf("render edited records: %v", err)
+	}
+	var rendered optionbRenderedRoutes
+	if err := json.Unmarshal(assembled, &rendered); err != nil {
+		t.Fatalf("unmarshal rendered routes payload: %v", err)
+	}
+	if got := rendered.ConfigLibrary[editEntry].CIGateCmd; got != editCmd {
+		t.Fatalf("rendered configLibrary[%s] = %q, want %q", editEntry, got, editCmd)
+	}
+	sawRef := false
+	for _, r := range rendered.Routes {
+		if r.Name == "kanboard-develop" {
+			if r.ConfigRef != editEntry {
+				t.Fatalf("rendered route %s configRef = %q, want %q", r.Name, r.ConfigRef, editEntry)
+			}
+			sawRef = true
+		}
+	}
+	if !sawRef {
+		t.Fatalf("rendered payload lost the kanboard-develop route")
+	}
+
+	// REFIRE: the operator drags the settled card back into the trigger
+	// column; the next poll sees the column change and fires a fresh run
+	// through the edited record — the route gate reads the stored record
+	// live, so the refired assignment proves the edit is live. The refired
+	// run executes exactly like the first and settles the card on Done.
+	fx.board.moveCard(t, optionbTicketID, "Ready")
+	runID2 := optionbRunAssigned(t, ctrl, "kanboard-develop")
+	if runID2 == runID1 {
+		t.Fatalf("refire re-used run id %s", runID2)
+	}
+	optionbRunEnvelopes(t, fx.oClient, agent.Token, runID2, "kanboard-develop", "handler_complete", true)
+	optionbAwaitTerminal(t, clients, runID2)
+	fx.optionbAwaitColumn(t, optionbTicketID, "Done")
+	doneMove := fmt.Sprintf("task %d -> %d", optionbTicketID, fx.board.columnIDOf["Done"])
+	moves := fx.board.moveTargets()
+	if len(moves) != 2 || moves[0] != doneMove || moves[1] != doneMove {
+		t.Fatalf("mirror moves across both fires = %v (want %q twice), got something else", moves, doneMove)
 	}
 }
