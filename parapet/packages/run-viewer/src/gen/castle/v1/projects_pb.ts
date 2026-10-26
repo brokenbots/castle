@@ -14,6 +14,7 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 import { WorkflowAssignmentState } from "../../criteria/v1/server_pb.js";
+import { Run } from "../../criteria/v1/criteria_pb.js";
 
 /**
  * @generated from enum castle.v1.ProjectMembershipPolicy
@@ -1673,6 +1674,130 @@ export class SetRefirePolicyResponse extends Message<SetRefirePolicyResponse> {
 
   static equals(a: SetRefirePolicyResponse | PlainMessage<SetRefirePolicyResponse> | undefined, b: SetRefirePolicyResponse | PlainMessage<SetRefirePolicyResponse> | undefined): boolean {
     return proto3.util.equals(SetRefirePolicyResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.ListProjectRunsRequest
+ */
+export class ListProjectRunsRequest extends Message<ListProjectRunsRequest> {
+  /**
+   * project_id of the project whose runs are listed.
+   *
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  /**
+   * status optionally narrows the page to one run status; blank matches
+   * every status.
+   *
+   * @generated from field: string status = 2;
+   */
+  status = "";
+
+  /**
+   * limit is an optional page size; 0 returns every run unpaginated (the
+   * caller must hold a status filter or accept the full page).
+   *
+   * @generated from field: int32 limit = 3;
+   */
+  limit = 0;
+
+  /**
+   * page_token continues a previous page (the token returned in the
+   * prior response). Unrecognized tokens are rejected as malformed.
+   *
+   * @generated from field: string page_token = 4;
+   */
+  pageToken = "";
+
+  /**
+   * include_unscoped widens the page with the project's legacy unscoped
+   * runs (project_id NULL). Console admins only; every other caller is
+   * rejected without the flag's effects.
+   *
+   * @generated from field: bool include_unscoped = 5;
+   */
+  includeUnscoped = false;
+
+  constructor(data?: PartialMessage<ListProjectRunsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.ListProjectRunsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "include_unscoped", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProjectRunsRequest {
+    return new ListProjectRunsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListProjectRunsRequest {
+    return new ListProjectRunsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListProjectRunsRequest {
+    return new ListProjectRunsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListProjectRunsRequest | PlainMessage<ListProjectRunsRequest> | undefined, b: ListProjectRunsRequest | PlainMessage<ListProjectRunsRequest> | undefined): boolean {
+    return proto3.util.equals(ListProjectRunsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.ListProjectRunsResponse
+ */
+export class ListProjectRunsResponse extends Message<ListProjectRunsResponse> {
+  /**
+   * runs is the newest-first page of the project's runs, projected with
+   * the same criteria run shape the agents observe.
+   *
+   * @generated from field: repeated criteria.v1.Run runs = 1;
+   */
+  runs: Run[] = [];
+
+  /**
+   * next_page_token is "" when no further page exists.
+   *
+   * @generated from field: string next_page_token = 2;
+   */
+  nextPageToken = "";
+
+  constructor(data?: PartialMessage<ListProjectRunsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.ListProjectRunsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "runs", kind: "message", T: Run, repeated: true },
+    { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListProjectRunsResponse {
+    return new ListProjectRunsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListProjectRunsResponse {
+    return new ListProjectRunsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListProjectRunsResponse {
+    return new ListProjectRunsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListProjectRunsResponse | PlainMessage<ListProjectRunsResponse> | undefined, b: ListProjectRunsResponse | PlainMessage<ListProjectRunsResponse> | undefined): boolean {
+    return proto3.util.equals(ListProjectRunsResponse, a, b);
   }
 }
 

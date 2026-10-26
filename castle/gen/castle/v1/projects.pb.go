@@ -1997,11 +1997,152 @@ func (x *SetRefirePolicyResponse) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+type ListProjectRunsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// project_id of the project whose runs are listed.
+	ProjectId string `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	// status optionally narrows the page to one run status; blank matches
+	// every status.
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// limit is an optional page size; 0 returns every run unpaginated (the
+	// caller must hold a status filter or accept the full page).
+	Limit int32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// page_token continues a previous page (the token returned in the
+	// prior response). Unrecognized tokens are rejected as malformed.
+	PageToken string `protobuf:"bytes,4,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	// include_unscoped widens the page with the project's legacy unscoped
+	// runs (project_id NULL). Console admins only; every other caller is
+	// rejected without the flag's effects.
+	IncludeUnscoped bool `protobuf:"varint,5,opt,name=include_unscoped,json=includeUnscoped,proto3" json:"include_unscoped,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ListProjectRunsRequest) Reset() {
+	*x = ListProjectRunsRequest{}
+	mi := &file_castle_v1_projects_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListProjectRunsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListProjectRunsRequest) ProtoMessage() {}
+
+func (x *ListProjectRunsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListProjectRunsRequest.ProtoReflect.Descriptor instead.
+func (*ListProjectRunsRequest) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *ListProjectRunsRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *ListProjectRunsRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ListProjectRunsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListProjectRunsRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+func (x *ListProjectRunsRequest) GetIncludeUnscoped() bool {
+	if x != nil {
+		return x.IncludeUnscoped
+	}
+	return false
+}
+
+type ListProjectRunsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// runs is the newest-first page of the project's runs, projected with
+	// the same criteria run shape the agents observe.
+	Runs []*v1.Run `protobuf:"bytes,1,rep,name=runs,proto3" json:"runs,omitempty"`
+	// next_page_token is "" when no further page exists.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListProjectRunsResponse) Reset() {
+	*x = ListProjectRunsResponse{}
+	mi := &file_castle_v1_projects_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListProjectRunsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListProjectRunsResponse) ProtoMessage() {}
+
+func (x *ListProjectRunsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListProjectRunsResponse.ProtoReflect.Descriptor instead.
+func (*ListProjectRunsResponse) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *ListProjectRunsResponse) GetRuns() []*v1.Run {
+	if x != nil {
+		return x.Runs
+	}
+	return nil
+}
+
+func (x *ListProjectRunsResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
+}
+
 var File_castle_v1_projects_proto protoreflect.FileDescriptor
 
 const file_castle_v1_projects_proto_rawDesc = "" +
 	"\n" +
-	"\x18castle/v1/projects.proto\x12\tcastle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x18criteria/v1/server.proto\"\x92\x04\n" +
+	"\x18castle/v1/projects.proto\x12\tcastle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1acriteria/v1/criteria.proto\x1a\x18criteria/v1/server.proto\"\x92\x04\n" +
 	"\aProject\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12O\n" +
 	"\x11membership_policy\x18\x02 \x01(\x0e2\".castle.v1.ProjectMembershipPolicyR\x10membershipPolicy\x122\n" +
@@ -2150,7 +2291,18 @@ const file_castle_v1_projects_proto_rawDesc = "" +
 	"\x06policy\x18\x03 \x01(\v2\x17.castle.v1.RefirePolicyR\x06policy\"T\n" +
 	"\x17SetRefirePolicyResponse\x129\n" +
 	"\n" +
-	"updated_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt*\x8e\x01\n" +
+	"updated_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xaf\x01\n" +
+	"\x16ListProjectRunsRequest\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x04 \x01(\tR\tpageToken\x12)\n" +
+	"\x10include_unscoped\x18\x05 \x01(\bR\x0fincludeUnscoped\"g\n" +
+	"\x17ListProjectRunsResponse\x12$\n" +
+	"\x04runs\x18\x01 \x03(\v2\x10.criteria.v1.RunR\x04runs\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*\x8e\x01\n" +
 	"\x17ProjectMembershipPolicy\x12)\n" +
 	"%PROJECT_MEMBERSHIP_POLICY_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1ePROJECT_MEMBERSHIP_POLICY_OPEN\x10\x01\x12$\n" +
@@ -2158,8 +2310,7 @@ const file_castle_v1_projects_proto_rawDesc = "" +
 	"\x11ProjectMemberKind\x12#\n" +
 	"\x1fPROJECT_MEMBER_KIND_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16PROJECT_MEMBER_KIND_AI\x10\x01\x12\x1d\n" +
-	"\x19PROJECT_MEMBER_KIND_HUMAN\x10\x022\xb2\n" +
-	"\n" +
+	"\x19PROJECT_MEMBER_KIND_HUMAN\x10\x022\x8c\v\n" +
 	"\x0eProjectService\x12R\n" +
 	"\rCreateProject\x12\x1f.castle.v1.CreateProjectRequest\x1a .castle.v1.CreateProjectResponse\x12I\n" +
 	"\n" +
@@ -2175,7 +2326,8 @@ const file_castle_v1_projects_proto_rawDesc = "" +
 	"\x10SetProjectConfig\x12\".castle.v1.SetProjectConfigRequest\x1a#.castle.v1.SetProjectConfigResponse\x12d\n" +
 	"\x13ListWorkflowCatalog\x12%.castle.v1.ListWorkflowCatalogRequest\x1a&.castle.v1.ListWorkflowCatalogResponse\x12X\n" +
 	"\x0fGetRefirePolicy\x12!.castle.v1.GetRefirePolicyRequest\x1a\".castle.v1.GetRefirePolicyResponse\x12X\n" +
-	"\x0fSetRefirePolicy\x12!.castle.v1.SetRefirePolicyRequest\x1a\".castle.v1.SetRefirePolicyResponseB<Z:github.com/brokenbots/castle/castle/gen/castle/v1;castlev1b\x06proto3"
+	"\x0fSetRefirePolicy\x12!.castle.v1.SetRefirePolicyRequest\x1a\".castle.v1.SetRefirePolicyResponse\x12X\n" +
+	"\x0fListProjectRuns\x12!.castle.v1.ListProjectRunsRequest\x1a\".castle.v1.ListProjectRunsResponseB<Z:github.com/brokenbots/castle/castle/gen/castle/v1;castlev1b\x06proto3"
 
 var (
 	file_castle_v1_projects_proto_rawDescOnce sync.Once
@@ -2190,7 +2342,7 @@ func file_castle_v1_projects_proto_rawDescGZIP() []byte {
 }
 
 var file_castle_v1_projects_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_castle_v1_projects_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
+var file_castle_v1_projects_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_castle_v1_projects_proto_goTypes = []any{
 	(ProjectMembershipPolicy)(0),            // 0: castle.v1.ProjectMembershipPolicy
 	(ProjectMemberKind)(0),                  // 1: castle.v1.ProjectMemberKind
@@ -2226,24 +2378,27 @@ var file_castle_v1_projects_proto_goTypes = []any{
 	(*GetRefirePolicyResponse)(nil),         // 31: castle.v1.GetRefirePolicyResponse
 	(*SetRefirePolicyRequest)(nil),          // 32: castle.v1.SetRefirePolicyRequest
 	(*SetRefirePolicyResponse)(nil),         // 33: castle.v1.SetRefirePolicyResponse
-	nil,                                     // 34: castle.v1.Project.SettingsEntry
-	nil,                                     // 35: castle.v1.Project.InfoEntry
-	nil,                                     // 36: castle.v1.SubmitProjectAssignmentRequest.LabelsEntry
-	nil,                                     // 37: castle.v1.SubmitProjectAssignmentRequest.InputValuesEntry
-	nil,                                     // 38: castle.v1.SubmitProjectAssignmentRequest.TargetMetadataEntry
-	nil,                                     // 39: castle.v1.GetProjectSettingsResponse.SettingsEntry
-	nil,                                     // 40: castle.v1.SetProjectSettingsRequest.SettingsEntry
-	(*timestamppb.Timestamp)(nil),           // 41: google.protobuf.Timestamp
-	(v1.WorkflowAssignmentState)(0),         // 42: criteria.v1.WorkflowAssignmentState
+	(*ListProjectRunsRequest)(nil),          // 34: castle.v1.ListProjectRunsRequest
+	(*ListProjectRunsResponse)(nil),         // 35: castle.v1.ListProjectRunsResponse
+	nil,                                     // 36: castle.v1.Project.SettingsEntry
+	nil,                                     // 37: castle.v1.Project.InfoEntry
+	nil,                                     // 38: castle.v1.SubmitProjectAssignmentRequest.LabelsEntry
+	nil,                                     // 39: castle.v1.SubmitProjectAssignmentRequest.InputValuesEntry
+	nil,                                     // 40: castle.v1.SubmitProjectAssignmentRequest.TargetMetadataEntry
+	nil,                                     // 41: castle.v1.GetProjectSettingsResponse.SettingsEntry
+	nil,                                     // 42: castle.v1.SetProjectSettingsRequest.SettingsEntry
+	(*timestamppb.Timestamp)(nil),           // 43: google.protobuf.Timestamp
+	(v1.WorkflowAssignmentState)(0),         // 44: criteria.v1.WorkflowAssignmentState
+	(*v1.Run)(nil),                          // 45: criteria.v1.Run
 }
 var file_castle_v1_projects_proto_depIdxs = []int32{
 	0,  // 0: castle.v1.Project.membership_policy:type_name -> castle.v1.ProjectMembershipPolicy
-	34, // 1: castle.v1.Project.settings:type_name -> castle.v1.Project.SettingsEntry
-	35, // 2: castle.v1.Project.info:type_name -> castle.v1.Project.InfoEntry
-	41, // 3: castle.v1.Project.created_at:type_name -> google.protobuf.Timestamp
-	41, // 4: castle.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
+	36, // 1: castle.v1.Project.settings:type_name -> castle.v1.Project.SettingsEntry
+	37, // 2: castle.v1.Project.info:type_name -> castle.v1.Project.InfoEntry
+	43, // 3: castle.v1.Project.created_at:type_name -> google.protobuf.Timestamp
+	43, // 4: castle.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
 	1,  // 5: castle.v1.ProjectMember.kind:type_name -> castle.v1.ProjectMemberKind
-	41, // 6: castle.v1.ProjectMember.created_at:type_name -> google.protobuf.Timestamp
+	43, // 6: castle.v1.ProjectMember.created_at:type_name -> google.protobuf.Timestamp
 	2,  // 7: castle.v1.CreateProjectRequest.project:type_name -> castle.v1.Project
 	2,  // 8: castle.v1.CreateProjectResponse.project:type_name -> castle.v1.Project
 	2,  // 9: castle.v1.GetProjectResponse.project:type_name -> castle.v1.Project
@@ -2251,51 +2406,54 @@ var file_castle_v1_projects_proto_depIdxs = []int32{
 	1,  // 11: castle.v1.AddProjectMemberRequest.kind:type_name -> castle.v1.ProjectMemberKind
 	3,  // 12: castle.v1.AddProjectMemberResponse.member:type_name -> castle.v1.ProjectMember
 	3,  // 13: castle.v1.ListProjectMembersResponse.members:type_name -> castle.v1.ProjectMember
-	36, // 14: castle.v1.SubmitProjectAssignmentRequest.labels:type_name -> castle.v1.SubmitProjectAssignmentRequest.LabelsEntry
-	37, // 15: castle.v1.SubmitProjectAssignmentRequest.input_values:type_name -> castle.v1.SubmitProjectAssignmentRequest.InputValuesEntry
-	38, // 16: castle.v1.SubmitProjectAssignmentRequest.target_metadata:type_name -> castle.v1.SubmitProjectAssignmentRequest.TargetMetadataEntry
-	42, // 17: castle.v1.SubmitProjectAssignmentResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
-	41, // 18: castle.v1.SubmitProjectAssignmentResponse.created_at:type_name -> google.protobuf.Timestamp
-	39, // 19: castle.v1.GetProjectSettingsResponse.settings:type_name -> castle.v1.GetProjectSettingsResponse.SettingsEntry
-	40, // 20: castle.v1.SetProjectSettingsRequest.settings:type_name -> castle.v1.SetProjectSettingsRequest.SettingsEntry
+	38, // 14: castle.v1.SubmitProjectAssignmentRequest.labels:type_name -> castle.v1.SubmitProjectAssignmentRequest.LabelsEntry
+	39, // 15: castle.v1.SubmitProjectAssignmentRequest.input_values:type_name -> castle.v1.SubmitProjectAssignmentRequest.InputValuesEntry
+	40, // 16: castle.v1.SubmitProjectAssignmentRequest.target_metadata:type_name -> castle.v1.SubmitProjectAssignmentRequest.TargetMetadataEntry
+	44, // 17: castle.v1.SubmitProjectAssignmentResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
+	43, // 18: castle.v1.SubmitProjectAssignmentResponse.created_at:type_name -> google.protobuf.Timestamp
+	41, // 19: castle.v1.GetProjectSettingsResponse.settings:type_name -> castle.v1.GetProjectSettingsResponse.SettingsEntry
+	42, // 20: castle.v1.SetProjectSettingsRequest.settings:type_name -> castle.v1.SetProjectSettingsRequest.SettingsEntry
 	27, // 21: castle.v1.ListWorkflowCatalogResponse.entries:type_name -> castle.v1.WorkflowCatalogEntry
 	18, // 22: castle.v1.GetRefirePolicyResponse.policy:type_name -> castle.v1.RefirePolicy
-	41, // 23: castle.v1.GetRefirePolicyResponse.updated_at:type_name -> google.protobuf.Timestamp
+	43, // 23: castle.v1.GetRefirePolicyResponse.updated_at:type_name -> google.protobuf.Timestamp
 	18, // 24: castle.v1.SetRefirePolicyRequest.policy:type_name -> castle.v1.RefirePolicy
-	41, // 25: castle.v1.SetRefirePolicyResponse.updated_at:type_name -> google.protobuf.Timestamp
-	4,  // 26: castle.v1.ProjectService.CreateProject:input_type -> castle.v1.CreateProjectRequest
-	6,  // 27: castle.v1.ProjectService.GetProject:input_type -> castle.v1.GetProjectRequest
-	8,  // 28: castle.v1.ProjectService.ListProjects:input_type -> castle.v1.ListProjectsRequest
-	10, // 29: castle.v1.ProjectService.AddProjectMember:input_type -> castle.v1.AddProjectMemberRequest
-	12, // 30: castle.v1.ProjectService.RemoveProjectMember:input_type -> castle.v1.RemoveProjectMemberRequest
-	14, // 31: castle.v1.ProjectService.ListProjectMembers:input_type -> castle.v1.ListProjectMembersRequest
-	16, // 32: castle.v1.ProjectService.SubmitProjectAssignment:input_type -> castle.v1.SubmitProjectAssignmentRequest
-	19, // 33: castle.v1.ProjectService.GetProjectSettings:input_type -> castle.v1.GetProjectSettingsRequest
-	21, // 34: castle.v1.ProjectService.SetProjectSettings:input_type -> castle.v1.SetProjectSettingsRequest
-	23, // 35: castle.v1.ProjectService.GetProjectConfig:input_type -> castle.v1.GetProjectConfigRequest
-	25, // 36: castle.v1.ProjectService.SetProjectConfig:input_type -> castle.v1.SetProjectConfigRequest
-	28, // 37: castle.v1.ProjectService.ListWorkflowCatalog:input_type -> castle.v1.ListWorkflowCatalogRequest
-	30, // 38: castle.v1.ProjectService.GetRefirePolicy:input_type -> castle.v1.GetRefirePolicyRequest
-	32, // 39: castle.v1.ProjectService.SetRefirePolicy:input_type -> castle.v1.SetRefirePolicyRequest
-	5,  // 40: castle.v1.ProjectService.CreateProject:output_type -> castle.v1.CreateProjectResponse
-	7,  // 41: castle.v1.ProjectService.GetProject:output_type -> castle.v1.GetProjectResponse
-	9,  // 42: castle.v1.ProjectService.ListProjects:output_type -> castle.v1.ListProjectsResponse
-	11, // 43: castle.v1.ProjectService.AddProjectMember:output_type -> castle.v1.AddProjectMemberResponse
-	13, // 44: castle.v1.ProjectService.RemoveProjectMember:output_type -> castle.v1.RemoveProjectMemberResponse
-	15, // 45: castle.v1.ProjectService.ListProjectMembers:output_type -> castle.v1.ListProjectMembersResponse
-	17, // 46: castle.v1.ProjectService.SubmitProjectAssignment:output_type -> castle.v1.SubmitProjectAssignmentResponse
-	20, // 47: castle.v1.ProjectService.GetProjectSettings:output_type -> castle.v1.GetProjectSettingsResponse
-	22, // 48: castle.v1.ProjectService.SetProjectSettings:output_type -> castle.v1.SetProjectSettingsResponse
-	24, // 49: castle.v1.ProjectService.GetProjectConfig:output_type -> castle.v1.GetProjectConfigResponse
-	26, // 50: castle.v1.ProjectService.SetProjectConfig:output_type -> castle.v1.SetProjectConfigResponse
-	29, // 51: castle.v1.ProjectService.ListWorkflowCatalog:output_type -> castle.v1.ListWorkflowCatalogResponse
-	31, // 52: castle.v1.ProjectService.GetRefirePolicy:output_type -> castle.v1.GetRefirePolicyResponse
-	33, // 53: castle.v1.ProjectService.SetRefirePolicy:output_type -> castle.v1.SetRefirePolicyResponse
-	40, // [40:54] is the sub-list for method output_type
-	26, // [26:40] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	43, // 25: castle.v1.SetRefirePolicyResponse.updated_at:type_name -> google.protobuf.Timestamp
+	45, // 26: castle.v1.ListProjectRunsResponse.runs:type_name -> criteria.v1.Run
+	4,  // 27: castle.v1.ProjectService.CreateProject:input_type -> castle.v1.CreateProjectRequest
+	6,  // 28: castle.v1.ProjectService.GetProject:input_type -> castle.v1.GetProjectRequest
+	8,  // 29: castle.v1.ProjectService.ListProjects:input_type -> castle.v1.ListProjectsRequest
+	10, // 30: castle.v1.ProjectService.AddProjectMember:input_type -> castle.v1.AddProjectMemberRequest
+	12, // 31: castle.v1.ProjectService.RemoveProjectMember:input_type -> castle.v1.RemoveProjectMemberRequest
+	14, // 32: castle.v1.ProjectService.ListProjectMembers:input_type -> castle.v1.ListProjectMembersRequest
+	16, // 33: castle.v1.ProjectService.SubmitProjectAssignment:input_type -> castle.v1.SubmitProjectAssignmentRequest
+	19, // 34: castle.v1.ProjectService.GetProjectSettings:input_type -> castle.v1.GetProjectSettingsRequest
+	21, // 35: castle.v1.ProjectService.SetProjectSettings:input_type -> castle.v1.SetProjectSettingsRequest
+	23, // 36: castle.v1.ProjectService.GetProjectConfig:input_type -> castle.v1.GetProjectConfigRequest
+	25, // 37: castle.v1.ProjectService.SetProjectConfig:input_type -> castle.v1.SetProjectConfigRequest
+	28, // 38: castle.v1.ProjectService.ListWorkflowCatalog:input_type -> castle.v1.ListWorkflowCatalogRequest
+	30, // 39: castle.v1.ProjectService.GetRefirePolicy:input_type -> castle.v1.GetRefirePolicyRequest
+	32, // 40: castle.v1.ProjectService.SetRefirePolicy:input_type -> castle.v1.SetRefirePolicyRequest
+	34, // 41: castle.v1.ProjectService.ListProjectRuns:input_type -> castle.v1.ListProjectRunsRequest
+	5,  // 42: castle.v1.ProjectService.CreateProject:output_type -> castle.v1.CreateProjectResponse
+	7,  // 43: castle.v1.ProjectService.GetProject:output_type -> castle.v1.GetProjectResponse
+	9,  // 44: castle.v1.ProjectService.ListProjects:output_type -> castle.v1.ListProjectsResponse
+	11, // 45: castle.v1.ProjectService.AddProjectMember:output_type -> castle.v1.AddProjectMemberResponse
+	13, // 46: castle.v1.ProjectService.RemoveProjectMember:output_type -> castle.v1.RemoveProjectMemberResponse
+	15, // 47: castle.v1.ProjectService.ListProjectMembers:output_type -> castle.v1.ListProjectMembersResponse
+	17, // 48: castle.v1.ProjectService.SubmitProjectAssignment:output_type -> castle.v1.SubmitProjectAssignmentResponse
+	20, // 49: castle.v1.ProjectService.GetProjectSettings:output_type -> castle.v1.GetProjectSettingsResponse
+	22, // 50: castle.v1.ProjectService.SetProjectSettings:output_type -> castle.v1.SetProjectSettingsResponse
+	24, // 51: castle.v1.ProjectService.GetProjectConfig:output_type -> castle.v1.GetProjectConfigResponse
+	26, // 52: castle.v1.ProjectService.SetProjectConfig:output_type -> castle.v1.SetProjectConfigResponse
+	29, // 53: castle.v1.ProjectService.ListWorkflowCatalog:output_type -> castle.v1.ListWorkflowCatalogResponse
+	31, // 54: castle.v1.ProjectService.GetRefirePolicy:output_type -> castle.v1.GetRefirePolicyResponse
+	33, // 55: castle.v1.ProjectService.SetRefirePolicy:output_type -> castle.v1.SetRefirePolicyResponse
+	35, // 56: castle.v1.ProjectService.ListProjectRuns:output_type -> castle.v1.ListProjectRunsResponse
+	42, // [42:57] is the sub-list for method output_type
+	27, // [27:42] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_castle_v1_projects_proto_init() }
@@ -2309,7 +2467,7 @@ func file_castle_v1_projects_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_castle_v1_projects_proto_rawDesc), len(file_castle_v1_projects_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   39,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

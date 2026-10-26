@@ -190,7 +190,11 @@ var consoleProjectAdminProcedures = map[string]struct{}{
 	castlev1connect.ProjectServiceListWorkflowCatalogProcedure: {},
 	castlev1connect.ProjectServiceGetRefirePolicyProcedure:     {},
 	castlev1connect.ProjectServiceSetRefirePolicyProcedure:     {},
-	castlev1connect.ProjectServiceCreateProjectProcedure:       {},
+	// KB-340: the project console runs page is a project-surface read —
+	// console identity reaches it; requireProjectReader in the handler
+	// enforces the admin-vs-membership posture per caller.
+	castlev1connect.ProjectServiceListProjectRunsProcedure: {},
+	castlev1connect.ProjectServiceCreateProjectProcedure:   {},
 }
 
 // consoleSessionProcedures are the KB-325 session-ledger surfaces: a console

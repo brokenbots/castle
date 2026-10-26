@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddProjectMemberRequest, AddProjectMemberResponse, CreateProjectRequest, CreateProjectResponse, GetProjectConfigRequest, GetProjectConfigResponse, GetProjectRequest, GetProjectResponse, GetProjectSettingsRequest, GetProjectSettingsResponse, GetRefirePolicyRequest, GetRefirePolicyResponse, ListProjectMembersRequest, ListProjectMembersResponse, ListProjectsRequest, ListProjectsResponse, ListWorkflowCatalogRequest, ListWorkflowCatalogResponse, RemoveProjectMemberRequest, RemoveProjectMemberResponse, SetProjectConfigRequest, SetProjectConfigResponse, SetProjectSettingsRequest, SetProjectSettingsResponse, SetRefirePolicyRequest, SetRefirePolicyResponse, SubmitProjectAssignmentRequest, SubmitProjectAssignmentResponse } from "./projects_pb.js";
+import { AddProjectMemberRequest, AddProjectMemberResponse, CreateProjectRequest, CreateProjectResponse, GetProjectConfigRequest, GetProjectConfigResponse, GetProjectRequest, GetProjectResponse, GetProjectSettingsRequest, GetProjectSettingsResponse, GetRefirePolicyRequest, GetRefirePolicyResponse, ListProjectMembersRequest, ListProjectMembersResponse, ListProjectRunsRequest, ListProjectRunsResponse, ListProjectsRequest, ListProjectsResponse, ListWorkflowCatalogRequest, ListWorkflowCatalogResponse, RemoveProjectMemberRequest, RemoveProjectMemberResponse, SetProjectConfigRequest, SetProjectConfigResponse, SetProjectSettingsRequest, SetProjectSettingsResponse, SetRefirePolicyRequest, SetRefirePolicyResponse, SubmitProjectAssignmentRequest, SubmitProjectAssignmentResponse } from "./projects_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -211,6 +211,22 @@ export const ProjectService = {
       name: "SetRefirePolicy",
       I: SetRefirePolicyRequest,
       O: SetRefirePolicyResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListProjectRuns pages a project's runs (newest-first) for the parapet
+     * project console (KB-340): the Runs page shows the project's work
+     * stream through the same run projection criteria callers see. Console
+     * admins may widen the page with include_unscoped so the legacy
+     * unscoped runs stay observable from the project view; every other
+     * caller must hold project membership and is denied the unscoped arm.
+     *
+     * @generated from rpc castle.v1.ProjectService.ListProjectRuns
+     */
+    listProjectRuns: {
+      name: "ListProjectRuns",
+      I: ListProjectRunsRequest,
+      O: ListProjectRunsResponse,
       kind: MethodKind.Unary,
     },
   }

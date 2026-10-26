@@ -83,6 +83,9 @@ const (
 	// ProjectServiceSetRefirePolicyProcedure is the fully-qualified name of the ProjectService's
 	// SetRefirePolicy RPC.
 	ProjectServiceSetRefirePolicyProcedure = "/castle.v1.ProjectService/SetRefirePolicy"
+	// ProjectServiceListProjectRunsProcedure is the fully-qualified name of the ProjectService's
+	// ListProjectRuns RPC.
+	ProjectServiceListProjectRunsProcedure = "/castle.v1.ProjectService/ListProjectRuns"
 )
 
 // ProjectServiceClient is a client for the castle.v1.ProjectService service.
@@ -154,6 +157,13 @@ type ProjectServiceClient interface {
 	// SetRefirePolicy upserts the policy row for (project_id, route) with
 	// the same strict validation the policy file loader applies.
 	SetRefirePolicy(context.Context, *connect.Request[v1.SetRefirePolicyRequest]) (*connect.Response[v1.SetRefirePolicyResponse], error)
+	// ListProjectRuns pages a project's runs (newest-first) for the parapet
+	// project console (KB-340): the Runs page shows the project's work
+	// stream through the same run projection criteria callers see. Console
+	// admins may widen the page with include_unscoped so the legacy
+	// unscoped runs stay observable from the project view; every other
+	// caller must hold project membership and is denied the unscoped arm.
+	ListProjectRuns(context.Context, *connect.Request[v1.ListProjectRunsRequest]) (*connect.Response[v1.ListProjectRunsResponse], error)
 }
 
 // NewProjectServiceClient constructs a client for the castle.v1.ProjectService service. By default,
@@ -251,6 +261,12 @@ func NewProjectServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(projectServiceMethods.ByName("SetRefirePolicy")),
 			connect.WithClientOptions(opts...),
 		),
+		listProjectRuns: connect.NewClient[v1.ListProjectRunsRequest, v1.ListProjectRunsResponse](
+			httpClient,
+			baseURL+ProjectServiceListProjectRunsProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("ListProjectRuns")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -270,6 +286,7 @@ type projectServiceClient struct {
 	listWorkflowCatalog     *connect.Client[v1.ListWorkflowCatalogRequest, v1.ListWorkflowCatalogResponse]
 	getRefirePolicy         *connect.Client[v1.GetRefirePolicyRequest, v1.GetRefirePolicyResponse]
 	setRefirePolicy         *connect.Client[v1.SetRefirePolicyRequest, v1.SetRefirePolicyResponse]
+	listProjectRuns         *connect.Client[v1.ListProjectRunsRequest, v1.ListProjectRunsResponse]
 }
 
 // CreateProject calls castle.v1.ProjectService.CreateProject.
@@ -342,6 +359,11 @@ func (c *projectServiceClient) SetRefirePolicy(ctx context.Context, req *connect
 	return c.setRefirePolicy.CallUnary(ctx, req)
 }
 
+// ListProjectRuns calls castle.v1.ProjectService.ListProjectRuns.
+func (c *projectServiceClient) ListProjectRuns(ctx context.Context, req *connect.Request[v1.ListProjectRunsRequest]) (*connect.Response[v1.ListProjectRunsResponse], error) {
+	return c.listProjectRuns.CallUnary(ctx, req)
+}
+
 // ProjectServiceHandler is an implementation of the castle.v1.ProjectService service.
 type ProjectServiceHandler interface {
 	// CreateProject registers a new project. IDs are lowercase slugs; the
@@ -411,6 +433,13 @@ type ProjectServiceHandler interface {
 	// SetRefirePolicy upserts the policy row for (project_id, route) with
 	// the same strict validation the policy file loader applies.
 	SetRefirePolicy(context.Context, *connect.Request[v1.SetRefirePolicyRequest]) (*connect.Response[v1.SetRefirePolicyResponse], error)
+	// ListProjectRuns pages a project's runs (newest-first) for the parapet
+	// project console (KB-340): the Runs page shows the project's work
+	// stream through the same run projection criteria callers see. Console
+	// admins may widen the page with include_unscoped so the legacy
+	// unscoped runs stay observable from the project view; every other
+	// caller must hold project membership and is denied the unscoped arm.
+	ListProjectRuns(context.Context, *connect.Request[v1.ListProjectRunsRequest]) (*connect.Response[v1.ListProjectRunsResponse], error)
 }
 
 // NewProjectServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -504,6 +533,12 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 		connect.WithSchema(projectServiceMethods.ByName("SetRefirePolicy")),
 		connect.WithHandlerOptions(opts...),
 	)
+	projectServiceListProjectRunsHandler := connect.NewUnaryHandler(
+		ProjectServiceListProjectRunsProcedure,
+		svc.ListProjectRuns,
+		connect.WithSchema(projectServiceMethods.ByName("ListProjectRuns")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/castle.v1.ProjectService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ProjectServiceCreateProjectProcedure:
@@ -534,6 +569,8 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 			projectServiceGetRefirePolicyHandler.ServeHTTP(w, r)
 		case ProjectServiceSetRefirePolicyProcedure:
 			projectServiceSetRefirePolicyHandler.ServeHTTP(w, r)
+		case ProjectServiceListProjectRunsProcedure:
+			projectServiceListProjectRunsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -597,4 +634,8 @@ func (UnimplementedProjectServiceHandler) GetRefirePolicy(context.Context, *conn
 
 func (UnimplementedProjectServiceHandler) SetRefirePolicy(context.Context, *connect.Request[v1.SetRefirePolicyRequest]) (*connect.Response[v1.SetRefirePolicyResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.SetRefirePolicy is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) ListProjectRuns(context.Context, *connect.Request[v1.ListProjectRunsRequest]) (*connect.Response[v1.ListProjectRunsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.ListProjectRuns is not implemented"))
 }
