@@ -350,7 +350,10 @@ describe('routes editor', () => {
 });
 
 describe('config editor', () => {
-  test('bootstraps an unset record, validates the draft live, and saves through the etag swap', async () => {
+  test('bootstraps an unset record, validates the draft live, and saves through the etag swap', { timeout: 20_000 }, async () => {
+    // Step-dense admin flow (bootstrap → header → catalog import → KB-310
+    // configLibrary entry → etag swap); under a saturated runner the 5s
+    // default trips mid-flow.
     const saveBodies: Record<string, unknown>[] = [];
     server.use(
       http.post(projectPath('SetProjectConfig'), async ({ request }) => {

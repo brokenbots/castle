@@ -894,16 +894,6 @@ export function ConfigEditor({ projectId }: { projectId: string }) {
         </>
       ) : (
         <>
-          {record !== null && admin && (
-            <button
-              type="button"
-              data-testid="config-bootstrap"
-              onClick={() => { draft.setDraft(emptyRecord(projectId)); }}
-              className="mb-3 rounded-md bg-accent px-3 py-1.5 text-body font-medium text-white hover:bg-accent-strong"
-            >
-              Start a config record
-            </button>
-          )}
           {entries.length === 0 && (
             <p data-testid="config-empty" className="mb-2 text-body text-ink-muted">
               No configLibrary entries yet; add one with the KB-310 variable map below.
