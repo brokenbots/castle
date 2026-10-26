@@ -1192,4 +1192,12 @@ func TestOptionBCleanupCutoverFlip(t *testing.T) {
 	if _, err := confighome.NewAssemblyFor(zombie).RenderRoutesPayload(); err == nil || !strings.Contains(err.Error(), "post-cutover payload still carries global run-config surfaces") {
 		t.Fatalf("zombie render = %v, want the KB-313 hard error", err)
 	}
+
+	// The post-flip pipeline still fires: a fresh card routes through the
+	// flipped record, the project member leases and executes it, and the
+	// card settles on Done.
+	member, _, postFlipRun := optionbFireReady(t, fx)
+	optionbRunEnvelopes(t, fx.oClient, member.Token, postFlipRun, "kanboard-develop", "handler_complete", true)
+	optionbAwaitTerminal(t, newOptionbCastleClients(fx.tsrv, fx.triggerToken), postFlipRun)
+	fx.optionbAwaitColumn(t, optionbTicketID, "Done")
 }
