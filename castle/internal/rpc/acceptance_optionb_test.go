@@ -79,18 +79,19 @@ type optionbAgent struct {
 // operator driving parapet-level writes, the trigger identity the board
 // adapter authenticates with, and each project's operator identity.
 type optionbFixture struct {
-	t            *testing.T
-	ts           *testStack
-	tsrv         *httptest.Server
-	oClient      criteriav1connect.CriteriaServiceClient
-	sClient      criteriav1connect.ServerServiceClient
-	console      castlev1connect.ConsoleServiceClient
-	projects     castlev1connect.ProjectServiceClient
-	consoleToken string
-	triggerToken string
-	agents       map[string]optionbAgent
-	board        *optionbFakeKanboard
-	boardStop    func()
+	t              *testing.T
+	ts             *testStack
+	tsrv           *httptest.Server
+	oClient        criteriav1connect.CriteriaServiceClient
+	sClient        criteriav1connect.ServerServiceClient
+	console        castlev1connect.ConsoleServiceClient
+	projects       castlev1connect.ProjectServiceClient
+	consoleToken   string
+	triggerToken   string
+	agents         map[string]optionbAgent
+	board          *optionbFakeKanboard
+	boardStatePath string
+	boardStop      func()
 }
 
 // optionbReadLivePayload reads the confighome routes payload fixture — the
@@ -518,18 +519,25 @@ func (c *optionbCastleClients) SetRefirePolicy(ctx context.Context, req *connect
 // own idempotent cleanup — so a test may stop one instance and boot a
 // second (the EDIT-FLOW re-points the lane at the edited route); the fake
 // board fx.board is shared across instances, holding the cards and the
-// moves log the tests assert on. Cleanup order per instance: the board
-// adapter is cancelled before the wire server closes, so the mirror's
-// open streams do not block shutdown.
+// moves log the tests assert on, and so is the adapter's state file: a
+// second boot is a RESTART and must resume the first instance's memo and
+// fire sequence — a fresh state would re-derive fire key :1 and castle's
+// idempotency replay the first fire's (terminal) run instead of firing a
+// new one. Cleanup order per instance: the board adapter is cancelled
+// before the wire server closes, so the mirror's open streams do not
+// block shutdown.
 func (fx *optionbFixture) startBoard(t *testing.T, cfg *kanboardtrigger.Config) func() {
 	t.Helper()
 	if fx.board == nil {
 		fx.board = newOptionbFakeKanboard(t, optionbBoardProject, "Backlog", "Ready", "Review", "Done")
 	}
+	if fx.boardStatePath == "" {
+		fx.boardStatePath = filepath.Join(t.TempDir(), "adapter-state.json")
+	}
 	kb := kanboard.New(fx.board.srv.URL+"/jsonrpc.php", "board-app-token")
 	clients := newOptionbCastleClients(fx.tsrv, fx.triggerToken)
 	adapter, err := kanboardtrigger.New(cfg, kb, clients, clients, clients, discardLogger(), kanboardtrigger.Options{
-		StatePath:    filepath.Join(t.TempDir(), "adapter-state.json"),
+		StatePath:    fx.boardStatePath,
 		PollInterval: 15 * time.Millisecond,
 		Instance:     "optionb",
 	})
@@ -542,16 +550,22 @@ func (fx *optionbFixture) startBoard(t *testing.T, cfg *kanboardtrigger.Config) 
 		done <- adapter.Run(ctx)
 	}()
 	var once sync.Once
+	// stop is idempotent and safe to call repeatedly: cancel signals the
+	// adapter, and the wait runs once — later calls (an explicit stop plus
+	// the registered cleanup) return immediately instead of racing for the
+	// single buffered done value.
 	stop := func() {
-		once.Do(cancel)
-		select {
-		case err := <-done:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Fatalf("board adapter stopped with error: %v", err)
+		cancel()
+		once.Do(func() {
+			select {
+			case err := <-done:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					t.Fatalf("board adapter stopped with error: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("board adapter did not stop after cancel")
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("board adapter did not stop after cancel")
-		}
+		})
 	}
 	t.Cleanup(stop)
 	fx.boardStop = stop
