@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   settingsApi,
   SETTINGS_API_REDUCER_PATH,
@@ -9,7 +9,12 @@ import {
 import { createRunViewerStore } from '@castle/run-viewer';
 import { selectAuthExpired, sessionRecovered } from '@castle/run-viewer';
 import { server } from '@castle/run-viewer/src/test/mocks/server';
-import { projectPath } from '@castle/run-viewer/src/test/mocks/handlers';
+import {
+  projectPath,
+  resetProjectRuns,
+  seedProjectConfig,
+  seedProjectRuns,
+} from '@castle/run-viewer/src/test/mocks/handlers';
 
 // The store wiring under test mirrors production (parapet/src/store.ts):
 // the settings console slice rides the run-viewer store seam via the
@@ -250,5 +255,224 @@ describe('policyId', () => {
   test('derives per-(project, route) tag ids with the default row at empty route', () => {
     expect(policyId('alpha', '')).toBe('alpha/');
     expect(policyId('alpha', 'deploy/build')).toBe('alpha/deploy/build');
+  });
+});
+
+// KB-340: the project console's config/routes/catalog/runs surfaces ride
+// the same etag-swap store as settings; these tests pin the wire mapping
+// (bytes documents, catalog projection, runs paging + the admin
+// include_unscoped arm).
+describe('settingsApi project config console', () => {
+  const configRecord = {
+    apiVersion: 'criteria.brokenbots.dev/v1',
+    kind: 'ProjectWorkflowConfig',
+    registryName: 'alpha',
+    namespace: 'alpha-ns',
+    catalog: {
+      'ship-it': {
+        type: 'url',
+        url: 'https://git.example/alpha/ship-it',
+        ref: 'main',
+        interface: { workflow: 'ship-it' },
+      },
+      'lint-only': { type: 'image', image: 'registry.example/lint@sha256:zz', class: 'triage' },
+    },
+    routes: [
+      {
+        name: 'triage-runs',
+        workflow: 'lint-only',
+        project: 'alpha',
+        states: ['Triage'],
+      },
+    ],
+    digests: { 'ship-it': 'a'.repeat(64) },
+  };
+
+  test('getProjectConfig reports unset docs as empty json + empty etag', async () => {
+    const res = await store.dispatch(settingsApi.endpoints.getProjectConfig.initiate('beta'));
+    expect(res.error).toBeUndefined();
+    expect(res.data).toEqual({ json: '', etag: '', record: undefined });
+  });
+
+  test('getProjectConfig decodes the bytes document into json + the TS record model', async () => {
+    seedProjectConfig('alpha', JSON.stringify(configRecord));
+
+    const res = await store.dispatch(settingsApi.endpoints.getProjectConfig.initiate('alpha'));
+    expect(res.error).toBeUndefined();
+    expect(res.data?.etag).toBe('cfg-etag-alpha-1');
+    expect(res.data?.json).toBe(JSON.stringify(configRecord));
+    expect(res.data?.record?.registryName).toBe('alpha');
+    expect(Object.keys(res.data?.record?.catalog ?? {})).toEqual(['ship-it', 'lint-only']);
+    expect(res.data?.record?.routes?.[0]?.workflow).toBe('lint-only');
+  });
+
+  test('setProjectConfig posts the document as bytes + expected etag and returns the new etag', async () => {
+    const edited = JSON.stringify({ ...configRecord, namespace: 'alpha-ns-v2' });
+    const res = await store.dispatch(
+      settingsApi.endpoints.setProjectConfig.initiate({
+        projectId: 'alpha',
+        json: edited,
+        expectedEtag: 'cfg-etag-alpha-1',
+      }),
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.data).toBe('cfg-etag-alpha-2');
+
+    // The swap invalidates the config: a fresh read sees the edit.
+    const after = await store.dispatch(settingsApi.endpoints.getProjectConfig.initiate('alpha'));
+    expect(JSON.parse(after.data?.json ?? '{}').namespace).toBe('alpha-ns-v2');
+  });
+
+  test('setProjectConfig rejects a stale etag without clobbering', async () => {
+    const res = await store.dispatch(
+      settingsApi.endpoints.setProjectConfig.initiate({
+        projectId: 'alpha',
+        json: JSON.stringify(configRecord),
+        expectedEtag: 'cfg-etag-alpha-stale',
+      }),
+    );
+    expect((res.error as { status?: string }).status).toBe('failed_precondition');
+  });
+
+  test('setProjectConfig surfaces the server fail-closed shape rejection', async () => {
+    const res = await store.dispatch(
+      settingsApi.endpoints.setProjectConfig.initiate({
+        projectId: 'alpha',
+        json: JSON.stringify({ apiVersion: 'x', kind: 'y' }),
+        expectedEtag: 'cfg-etag-alpha-2',
+      }),
+    );
+    expect((res.error as { status?: string }).status).toBe('invalid_argument');
+  });
+
+  test('listWorkflowCatalog projects the record catalog with digests and namespaces', async () => {
+    const res = await store.dispatch(settingsApi.endpoints.listWorkflowCatalog.initiate('alpha'));
+    expect(res.error).toBeUndefined();
+    expect(res.data?.etag).toBe('cfg-etag-alpha-2');
+    expect(res.data?.entries).toEqual([
+      expect.objectContaining({
+        name: 'ship-it',
+        type: 'url',
+        url: 'https://git.example/alpha/ship-it',
+        ref: 'main',
+        digest: 'a'.repeat(64),
+        namespace: 'alpha-ns-v2',
+        interfaceName: 'ship-it',
+      }),
+      expect.objectContaining({ name: 'lint-only', type: 'image', class: 'triage' }),
+    ]);
+  });
+
+  test('listWorkflowCatalog on an unset record answers an empty listing', async () => {
+    const res = await store.dispatch(settingsApi.endpoints.listWorkflowCatalog.initiate('beta'));
+    expect(res.data).toEqual({ entries: [], etag: '' });
+  });
+});
+
+describe('settingsApi listProjectRuns', () => {
+  beforeEach(() => resetProjectRuns());
+  const runWire = (runId: string, status: string, scope: string | null) => ({
+    run_id: runId,
+    criteria_id: scope === null ? 'ov-legacy' : 'ov-1',
+    workflow_name: 'ship-it',
+    workflow_hash: 'workflow "ship-it" {}',
+    status,
+    created_at: new Date(0).toISOString(),
+    final_state: '',
+    failure_reason: '',
+  });
+
+  test('pages the project scoped runs and maps the criteria projection', async () => {
+    seedProjectRuns('alpha', [
+      runWire('alpha-run-1', 'running', 'alpha'),
+      runWire('alpha-run-2', 'pending', 'alpha'),
+    ]);
+
+    const res = await store.dispatch(
+      settingsApi.endpoints.listProjectRuns.initiate({
+        projectId: 'alpha',
+        status: '',
+        limit: 0,
+        pageToken: '',
+        includeUnscoped: false,
+      }),
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.data?.nextPageToken).toBe('');
+    expect(res.data?.runs.map((r) => `${r.runId}:${r.status}`)).toEqual(['alpha-run-1:running', 'alpha-run-2:pending']);
+  });
+
+  test('status filter and paging flow through the wire request', async () => {
+    seedProjectRuns('alpha', [
+      runWire('alpha-filter-1', 'running', 'alpha'),
+      runWire('alpha-filter-2', 'running', 'alpha'),
+      runWire('alpha-filter-3', 'running', 'alpha'),
+    ]);
+
+    const page1 = await store.dispatch(
+      settingsApi.endpoints.listProjectRuns.initiate({
+        projectId: 'alpha',
+        status: 'running',
+        limit: 2,
+        pageToken: '',
+        includeUnscoped: false,
+      }),
+    );
+
+    expect(page1.data?.runs.map((r) => r.runId)).toEqual(['alpha-filter-1', 'alpha-filter-2']);
+    expect(page1.data?.runs.every((r) => r.runId.startsWith('alpha-filter-'))).toBe(true);
+    expect(page1.data?.nextPageToken).toBe('2');
+
+    const page2 = await store.dispatch(
+      settingsApi.endpoints.listProjectRuns.initiate({
+        projectId: 'alpha',
+        status: 'running',
+        limit: 2,
+        pageToken: '2',
+        includeUnscoped: false,
+      }),
+    );
+    expect(page2.data?.nextPageToken).toBe('');
+    expect(page2.data?.runs.map((r) => r.runId)).toEqual(['alpha-filter-3']);
+  });
+
+  test('admin callers widen the page with include_unscoped; denials surface as errors', async () => {
+    seedProjectRuns(null, [runWire('alpha-unscoped-legacy', 'stopped', null)]);
+
+    const widened = await store.dispatch(
+      settingsApi.endpoints.listProjectRuns.initiate({
+        projectId: 'alpha',
+        status: '',
+        limit: 0,
+        pageToken: '',
+        includeUnscoped: true,
+      }),
+    );
+
+    expect(widened.data?.runs.map((r) => r.runId)).toContain('alpha-unscoped-legacy');
+
+    server.use(
+      http.post(
+        projectPath('ListProjectRuns'),
+        () =>
+          new HttpResponse(JSON.stringify({ code: 'permission_denied', message: 'non-admin' }), {
+            status: 403,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+
+    const denied = await store.dispatch(
+      settingsApi.endpoints.listProjectRuns.initiate({
+        projectId: 'alpha',
+        status: '',
+        limit: 0,
+        pageToken: '',
+        includeUnscoped: true,
+      }, { forceRefetch: true }),
+    );
+    expect((denied.error as { status?: string }).status).toBe('permission_denied');
   });
 });

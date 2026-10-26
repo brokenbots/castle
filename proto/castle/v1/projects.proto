@@ -10,6 +10,7 @@ syntax = "proto3";
 package castle.v1;
 
 import "google/protobuf/timestamp.proto";
+import "criteria/v1/criteria.proto";
 import "criteria/v1/server.proto";
 
 option go_package = "github.com/brokenbots/castle/castle/gen/castle/v1;castlev1";
@@ -95,6 +96,15 @@ service ProjectService {
   // SetRefirePolicy upserts the policy row for (project_id, route) with
   // the same strict validation the policy file loader applies.
   rpc SetRefirePolicy(SetRefirePolicyRequest) returns (SetRefirePolicyResponse);
+
+  // ListProjectRuns pages a project's runs (newest-first) for the parapet
+  // project console (KB-340): the Runs page shows the project's work
+  // stream through the same run projection criteria callers see. Console
+  // admins may widen the page with include_unscoped so the instance-wide
+  // legacy unscoped runs (project_id IS NULL, any owner) stay observable
+  // from the project view; every other
+  // caller must hold project membership and is denied the unscoped arm.
+  rpc ListProjectRuns(ListProjectRunsRequest) returns (ListProjectRunsResponse);
 }
 
 enum ProjectMembershipPolicy {
@@ -378,4 +388,31 @@ message SetRefirePolicyRequest {
 
 message SetRefirePolicyResponse {
   google.protobuf.Timestamp updated_at = 1;
+}
+
+message ListProjectRunsRequest {
+  // project_id of the project whose runs are listed.
+  string project_id = 1;
+  // status optionally narrows the page to one run status; blank matches
+  // every status.
+  string status = 2;
+  // limit is an optional page size; 0 returns every run unpaginated (the
+  // caller must hold a status filter or accept the full page).
+  int32 limit = 3;
+  // page_token continues a previous page (the token returned in the
+  // prior response). Unrecognized tokens are rejected as malformed.
+  string page_token = 4;
+  // include_unscoped widens the page with the instance's legacy unscoped
+  // runs (project_id IS NULL): every run recorded without a project,
+  // regardless of owner — not a project-scoped arm. Console admins only;
+  // every other caller is rejected without the flag's effects.
+  bool include_unscoped = 5;
+}
+
+message ListProjectRunsResponse {
+  // runs is the newest-first page of the project's runs, projected with
+  // the same criteria run shape the agents observe.
+  repeated criteria.v1.Run runs = 1;
+  // next_page_token is "" when no further page exists.
+  string next_page_token = 2;
 }

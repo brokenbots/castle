@@ -12,6 +12,8 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
+
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/confighome"
 	"github.com/brokenbots/castle/castle/internal/store"
@@ -713,6 +715,59 @@ func recordWorkflowCatalogEntry(name string, wf confighome.Workflow, digest stri
 		entry.InterfaceName = wf.Interface.Workflow
 	}
 	return entry
+}
+
+// ListProjectRuns is the KB-340 project console runs page: the project's
+// runs newest-first in the same criteria run projection the agents observe.
+// Membership scoping is the KB-324 read shape — a criteria caller must hold
+// membership in the exact project and never widens past the project's own
+// runs; a console identity reads across the page including the legacy
+// unscoped arm via include_unscoped. Anonymous callers never read
+// project-scoped runs (KB-326): the console listing is not part of the
+// anonymously-readable observation surface at all.
+func (s *ServerServer) ListProjectRuns(ctx context.Context, req *connect.Request[castlev1.ListProjectRunsRequest]) (*connect.Response[castlev1.ListProjectRunsResponse], error) {
+	if err := requireProjectReader(ctx); err != nil {
+		return nil, err
+	}
+	if auth.CallerIsAnonymousRead(ctx) {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing token"))
+	}
+	if req.Msg.GetLimit() < 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, store.ErrInvalidLimit)
+	}
+	projectID := req.Msg.GetProjectId()
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id required"))
+	}
+	if err := store.ValidateProjectID(projectID); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	includeUnscoped := req.Msg.GetIncludeUnscoped()
+	if memberID, scoped := membershipScopedCaller(ctx); scoped {
+		// Protocol tokens: the unscoped arm is a console posture — no
+		// membership widens a member's page past its project.
+		if includeUnscoped {
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				errors.New("only console callers may include the legacy unscoped runs"))
+		}
+		member, err := s.Store.IsProjectMember(ctx, projectID, memberID)
+		if err != nil {
+			return nil, projectStoreError(err)
+		}
+		if !member {
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("caller is not a member of project %q", projectID))
+		}
+	}
+	list, next, err := s.Store.ListRunsByProject(ctx, projectID, includeUnscoped, req.Msg.GetStatus(), int(req.Msg.GetLimit()), req.Msg.GetPageToken())
+	if err != nil {
+		return nil, mapListRunsError(err)
+	}
+	out := make([]*pb.Run, 0, len(list))
+	for _, r := range list {
+		out = append(out, mapRun(r))
+	}
+	return connect.NewResponse(&castlev1.ListProjectRunsResponse{Runs: out, NextPageToken: next}), nil
 }
 
 // GetRefirePolicy reads the exact policy row (project_id, route) — not the

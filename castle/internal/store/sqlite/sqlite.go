@@ -879,6 +879,19 @@ func (s *Store) ListRunsUnscoped(ctx context.Context, overseerID, status string,
 	return s.listRunsPage(ctx, `project_id IS NULL`, nil, overseerID, status, limit, pageToken)
 }
 
+// ListRunsByProject pages the runs of one project (KB-340): the parapet
+// project console listing. includeUnscoped adds the legacy unscoped runs
+// (project_id NULL) after the project's own — the admin arm; a
+// missing/empty project is the empty set, not an error. Ordering, paging
+// and cursor semantics match ListRuns exactly.
+func (s *Store) ListRunsByProject(ctx context.Context, projectID string, includeUnscoped bool, status string, limit int, pageToken string) ([]*store.Run, string, error) {
+	base := `project_id = ?`
+	if includeUnscoped {
+		base = `(project_id = ? OR project_id IS NULL)`
+	}
+	return s.listRunsPage(ctx, base, []any{nullText(projectID)}, "", status, limit, pageToken)
+}
+
 // listRunsPage is the shared paging body of ListRuns/ListRunsUnscoped: base
 // restricts the row set ("" = every run, e.g. "project_id IS NULL"), baseArgs
 // carries its parameters, and the optional overseer/status filters plus the

@@ -722,6 +722,16 @@ type Store interface {
 	// project-scoped runs exist. Ordering, paging and cursor semantics
 	// match ListRuns exactly.
 	ListRunsUnscoped(ctx context.Context, overseerID, status string, limit int, pageToken string) ([]*Run, string, error)
+	// ListRunsByProject pages the runs of one project newest-first
+	// (KB-340): the parapet project console listing. includeUnscoped adds
+	// the legacy unscoped runs (project_id NULL) after the project's own —
+	// the admin arm of the console view; project-scoped pages stay
+	// identical at includeUnscoped=false. Unknown and empty project ids
+	// return an empty page (runs belong to existing projects, so a
+	// missing project is the empty set) — the caller decides which of
+	// "no membership" and "no data" to surface. Ordering, paging and
+	// cursor semantics match ListRuns exactly.
+	ListRunsByProject(ctx context.Context, projectID string, includeUnscoped bool, status string, limit int, pageToken string) ([]*Run, string, error)
 	UpdateRun(ctx context.Context, r *Run) error
 	// SetRunMetadata promotes non-empty metadata values (ticket, repo_url,
 	// pr_url) onto the run record without touching run status (CRI-131). Empty

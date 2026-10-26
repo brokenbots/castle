@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { AgentsPanel, BindingPanel, CatalogPanel, ConfigEditor, RoutesEditor, RunsPanel, errorOf } from './ProjectConsole';
 import { Link, useParams } from 'react-router-dom';
 import { PageHeader, PageState, StickyTableHead, classifyError, useCallerIdentity } from '@castle/run-viewer';
 import {
@@ -51,8 +52,18 @@ interface Entry {
   value: string;
 }
 
+const PROJECT_TABS: { id: string; label: string }[] = [
+  { id: 'runs', label: 'Runs' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'catalog', label: 'Workflows' },
+  { id: 'routes', label: 'Routes' },
+  { id: 'config', label: 'Config' },
+  { id: 'binding', label: 'Bindings' },
+  { id: 'policy', label: 'Policy & members' },
+];
 export function ProjectDetailPage() {
   const params = useParams();
+  const [tab, setTab] = useState('policy');
   // react-router already percent-decodes path params per segment; decoding
   // again would throw URIError on a stray '%' (e.g. deep link /settings/
   // projects/100%25). validateProjectID below rejects malformed slugs.
@@ -105,12 +116,56 @@ export function ProjectDetailPage() {
         <dd className="text-ink">{data.createdAt ? new Date(data.createdAt).toLocaleString() : '—'}</dd>
       </dl>
 
-      <div className="flex flex-col gap-6">
-        <SettingsEditor projectId={projectId} />
-        <RefireEditor projectId={projectId} />
-        <MembersCard projectId={projectId} membershipPolicy={data.membershipPolicy} />
+      <ConsoleTabs activeTab={tab} onSelect={setTab} />
+
+      <div data-testid={'project-panel-' + tab}>
+        {tab === 'policy' ? (
+          <div className="flex flex-col gap-6">
+            <SettingsEditor projectId={projectId} />
+            <RefireEditor projectId={projectId} />
+            <MembersCard projectId={projectId} membershipPolicy={data.membershipPolicy} />
+          </div>
+        ) : tab === 'runs' ? (
+          <RunsPanel projectId={projectId} />
+        ) : tab === 'agents' ? (
+          <AgentsPanel projectId={projectId}>
+            <MembersCard projectId={projectId} membershipPolicy={data.membershipPolicy} />
+          </AgentsPanel>
+        ) : tab === 'catalog' ? (
+          <CatalogPanel projectId={projectId} />
+        ) : tab === 'routes' ? (
+          <RoutesEditor projectId={projectId} />
+        ) : tab === 'config' ? (
+          <ConfigEditor projectId={projectId} />
+        ) : (
+          <BindingPanel projectId={projectId} />
+        )}
       </div>
     </div>
+  );
+}
+
+function ConsoleTabs({ activeTab, onSelect }: { activeTab: string; onSelect: (id: string) => void }) {
+  return (
+    <nav data-testid="project-console-tabs" className="mb-6 flex flex-wrap gap-1 border-b border-line">
+      {PROJECT_TABS.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          data-testid={'project-tab-' + t.id}
+          aria-selected={t.id === activeTab}
+          onClick={() => onSelect(t.id)}
+          className={
+            'border-b-2 px-3 py-2 text-body ' +
+            (t.id === activeTab
+              ? 'border-ink font-semibold text-ink'
+              : 'border-transparent text-ink-muted hover:text-ink')
+          }
+        >
+          {t.label}
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -746,12 +801,6 @@ function MembersCard({ projectId, membershipPolicy }: { projectId: string; membe
       )}
     </section>
   );
-}
-
-// settingsApi errors arrive as {status, data} RTK error objects.
-function errorOf(err: unknown): string {
-  const { status } = (err ?? {}) as { status?: unknown };
-  return typeof status === 'string' ? status : '';
 }
 
 function num(raw: string): number {

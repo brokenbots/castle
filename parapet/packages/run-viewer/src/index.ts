@@ -69,12 +69,16 @@ export type {
   Project as PbProject,
   ProjectMember as PbProjectMember,
   RefirePolicy as PbRefirePolicy,
+  // KB-340: the project console rides these too (config/catalog/runs).
+  WorkflowCatalogEntry as PbWorkflowCatalogEntry,
+  ListProjectRunsRequest as PbListProjectRunsRequest,
 } from './gen/castle/v1/projects_pb';
 export { ProjectMemberKind, ProjectMembershipPolicy } from './gen/castle/v1/projects_pb';
 
 // Shared run-status vocabulary + cells (used by host pages too).
 export {
   RUN_TERMINAL_STATUSES,
+  RUN_STATUS_FILTER_VALUES,
   RUN_STATUS_TEXT_COLORS,
   RUN_STATUS_CHIP_CLASSES,
   RUN_STATUS_PILL_CLASSES,
