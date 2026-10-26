@@ -534,11 +534,9 @@ describe('config editor', () => {
     await openTab('config');
 
     const preview = await screen.findByTestId('config-validation');
-    expect(preview).toHaveTextContent(/catalog\["ship-it"\]\.interface: unknown field "secrets"/);
     // The unknown-field error leads the preview, mirroring the server's
     // ParseRecord-before-Validate order.
-    const text = (screen.getByTestId('config-validation') as HTMLElement).textContent ?? '';
-    expect(text).toMatch(/unknown field "secrets"/);
+    expect(preview).toHaveTextContent(/catalog\["ship-it"\]\.interface: unknown field "secrets"/);
   });
 });
 
