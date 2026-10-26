@@ -3,8 +3,10 @@ package rpc
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -16,10 +18,14 @@ import (
 	castlev1connect "github.com/brokenbots/castle/castle/gen/castle/v1/castlev1connect"
 	"github.com/brokenbots/castle/castle/internal/auth"
 	"github.com/brokenbots/castle/castle/internal/confighome"
+	"github.com/brokenbots/castle/castle/internal/kanboard"
+	"github.com/brokenbots/castle/castle/internal/kanboardtrigger"
 	"github.com/brokenbots/castle/castle/internal/provision"
 	"github.com/brokenbots/castle/castle/internal/store"
+	critsdk "github.com/brokenbots/criteria/sdk"
 	pb "github.com/brokenbots/criteria/sdk/pb/criteria/v1"
 	criteriav1connect "github.com/brokenbots/criteria/sdk/pb/criteria/v1/criteriav1connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // The Option B acceptance suite (KB-341): the project's goal demonstrated
@@ -73,6 +79,7 @@ type optionbFixture struct {
 	ts           *testStack
 	tsrv         *httptest.Server
 	oClient      criteriav1connect.CriteriaServiceClient
+	sClient      criteriav1connect.ServerServiceClient
 	console      castlev1connect.ConsoleServiceClient
 	projects     castlev1connect.ProjectServiceClient
 	consoleToken string
@@ -192,11 +199,12 @@ func optionbNewFixture(t *testing.T) *optionbFixture {
 		ts:     newTestStack(t),
 		agents: map[string]optionbAgent{},
 	}
-	tsrv, oClient, _ := fx.ts.startServer(t,
+	tsrv, oClient, sClient := fx.ts.startServer(t,
 		connect.WithInterceptors(auth.NewInterceptor(fx.ts.store, false)),
 	)
 	fx.tsrv = tsrv
 	fx.oClient = oClient
+	fx.sClient = sClient
 	fx.console = consoleClient(tsrv)
 	fx.projects = projectClient(tsrv)
 
@@ -421,5 +429,287 @@ func TestOptionBSeedImport(t *testing.T) {
 	assembled := confighome.NewAssemblyFor(optionbFetchAllRecords(t, fx))
 	if _, err := assembled.RenderRoutesPayload(); err != nil {
 		t.Fatalf("render the written tree: %v", err)
+	}
+}
+
+// optionbLaneConfig is the board adapter's lane configuration for the demo:
+// one develop lane pointing at the kanboard-tickets record's
+// "kanboard-develop" route, triggered by cards entering "Ready", with the
+// lane's default repo binding (the card carries no repo tag — the static
+// lane config is the production shape).
+func optionbLaneConfig() *kanboardtrigger.Config {
+	return &kanboardtrigger.Config{
+		BoardProject:    optionbBoardProject,
+		CastleProjectID: optionbFireProject,
+		TriggerTag:      "castle-run",
+		ReviewColumn:    "Review",
+		DoneColumn:      "Done",
+		Lanes: []kanboardtrigger.Lane{
+			{
+				RouteName:      "kanboard-develop",
+				Class:          kanboardtrigger.ClassDevelop,
+				TriggerColumns: []string{"Ready"},
+				WorkflowSource: "hcl-source",
+				RepoDefault:    "https://github.com/brokenbots/workflow-example",
+			},
+		},
+	}
+}
+
+// optionbCastleClients adapts the real castle wire clients to the adapter's
+// three engine interfaces, attaching the trigger identity's bearer token to
+// every request — the same shim cmd/kanboard-trigger-adapter boots in
+// production.
+type optionbCastleClients struct {
+	project castlev1connect.ProjectServiceClient
+	server  criteriav1connect.ServerServiceClient
+	token   string
+}
+
+func newOptionbCastleClients(tsrv *httptest.Server, token string) *optionbCastleClients {
+	return &optionbCastleClients{
+		project: castlev1connect.NewProjectServiceClient(http.DefaultClient, tsrv.URL),
+		server:  criteriav1connect.NewServerServiceClient(http.DefaultClient, tsrv.URL),
+		token:   token,
+	}
+}
+
+func (c *optionbCastleClients) auth(h http.Header) { h.Set("Authorization", "Bearer "+c.token) }
+
+func (c *optionbCastleClients) SubmitProjectAssignment(ctx context.Context, req *connect.Request[castlev1.SubmitProjectAssignmentRequest]) (*connect.Response[castlev1.SubmitProjectAssignmentResponse], error) {
+	c.auth(req.Header())
+	return c.project.SubmitProjectAssignment(ctx, req)
+}
+
+func (c *optionbCastleClients) GetAssignmentDisposition(ctx context.Context, req *connect.Request[pb.GetAssignmentDispositionRequest]) (*connect.Response[pb.GetAssignmentDispositionResponse], error) {
+	c.auth(req.Header())
+	return c.server.GetAssignmentDisposition(ctx, req)
+}
+
+func (c *optionbCastleClients) WatchRun(ctx context.Context, req *connect.Request[pb.WatchRunRequest]) (kanboardtrigger.RunEventStream, error) {
+	c.auth(req.Header())
+	return c.server.WatchRun(ctx, req)
+}
+
+// startBoard boots the real kanboardtrigger adapter against the fake board
+// and the real castle wire. The adapter polls immediately on boot; the
+// fixture records the run context for cleanup ordering (the board must be
+// cancelled before the wire server closes so the mirror's open streams do
+// not block shutdown).
+func (fx *optionbFixture) startBoard(t *testing.T, cfg *kanboardtrigger.Config) {
+	t.Helper()
+	if fx.board == nil {
+		fx.board = newOptionbFakeKanboard(t, optionbBoardProject, "Backlog", "Ready", "Review", "Done")
+	}
+	kb := kanboard.New(fx.board.srv.URL+"/jsonrpc.php", "board-app-token")
+	clients := newOptionbCastleClients(fx.tsrv, fx.triggerToken)
+	adapter, err := kanboardtrigger.New(cfg, kb, clients, clients, clients, discardLogger(), kanboardtrigger.Options{
+		StatePath:    filepath.Join(t.TempDir(), "adapter-state.json"),
+		PollInterval: 15 * time.Millisecond,
+		Instance:     "optionb",
+	})
+	if err != nil {
+		t.Fatalf("boot board adapter: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	fx.boardCancel = cancel
+	fx.boardDone = make(chan error, 1)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-fx.boardDone:
+			if err != nil && ctx.Err() == nil {
+				t.Fatalf("board adapter stopped with error: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("board adapter did not stop after cancel")
+		}
+	})
+	go func() {
+		err := adapter.Run(ctx)
+		fx.boardDone <- err
+	}()
+}
+
+// addFiredCard seeds the demo card in the lane's trigger column: the fire
+// gate's entry memo treats the first sighting as entry, so the next poll
+// fires it.
+func (fx *optionbFixture) addFiredCard(t *testing.T, id int, title string) {
+	t.Helper()
+	fx.board.addCard(t, id, "Ready", title, "castle-run")
+}
+
+// optionbRunAssigned waits for the member operator's WorkflowAssignment
+// control message and returns the run id it carries.
+func optionbRunAssigned(t *testing.T, ctrl *connect.ServerStreamForClient[pb.ControlMessage], route string) string {
+	t.Helper()
+	msg := receiveControl(t, ctrl, 5*time.Second)
+	wa := msg.GetWorkflowAssignment()
+	if wa == nil {
+		t.Fatalf("expected WorkflowAssignment, got %T", msg.Command)
+	}
+	if wa.GetWorkflowName() != route {
+		t.Fatalf("assignment route = %q, want %q", wa.GetWorkflowName(), route)
+	}
+	return wa.GetRunId()
+}
+
+// optionbAwaitColumn polls the fake board until the card sits in the named
+// column (the mirror's move happens on the poll after the settle).
+func (fx *optionbFixture) optionbAwaitColumn(t *testing.T, taskID int, column string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if fx.board.columnOf(taskID) == column {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("card %d never reached column %q (now %q)",
+				taskID, column, fx.board.columnOf(taskID))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// optionbRunEnvelopes plays the agent side of the run: RunStarted executes
+// the run in its project, StepEntered records the attempt (decision-trail
+// layer), RunCompleted settles it. success=false parks the mirror on the
+// failure path. Returns the envelopes' acks' absence as an error.
+func optionbRunEnvelopes(t *testing.T, oClient criteriav1connect.CriteriaServiceClient, token, runID, workflowName string, finalState string, success bool) {
+	t.Helper()
+	submitRunStarted(t, oClient, token, runID, workflowName, "s1")
+	stream := oClient.SubmitEvents(context.Background())
+	stream.RequestHeader().Set("Authorization", "Bearer "+token)
+	send := func(env *pb.Envelope) {
+		t.Helper()
+		env.SchemaVersion = 1
+		env.RunId = runID
+		env.Ts = timestamppb.Now()
+		if err := stream.Send(env); err != nil {
+			t.Fatalf("send %T: %v", env.GetPayload(), err)
+		}
+		if _, err := stream.Receive(); err != nil {
+			t.Fatalf("receive ack for %T: %v", env.GetPayload(), err)
+		}
+	}
+	send(&pb.Envelope{CorrelationId: "step-" + runID,
+		Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s1", Adapter: "shell", Attempt: 1}}})
+	send(critsdk.NewEnvelope(runID, &pb.RunCompleted{FinalState: finalState, Success: success}))
+}
+
+// TestOptionBFireRunObserve is steps 2 AND 3's acceptance: a real work card
+// fires through the kanboard adapter (castle mode: submit + own disposition
+// read + run watch), the project's operator identity leases and executes it
+// THROUGH the control wire, the run lands in the project, the decision
+// trail is readable (trigger disposition read, assignment, attempt, run
+// events), and the mirror settles the card onto Done.
+func TestOptionBFireRunObserve(t *testing.T) {
+	fx := optionbSeed(t)
+	agent := fx.agents[optionbFireProject]
+
+	// The project's operator identity opens its Control stream first: the
+	// dispatch only offers work to registered members.
+	ctrl := openControl(t, fx.oClient, agent.CriteriaID, agent.Token)
+	expectControlReady(t, ctrl)
+	t.Cleanup(func() { _ = ctrl.Close() })
+
+	// The board goes live with one demo card sitting in the lane's trigger
+	// column.
+	fx.startBoard(t, optionbLaneConfig())
+	fx.addFiredCard(t, optionbTicketID, "Option B demo card")
+
+	// FIRE: the adapter submits the assignment from the card's entry.
+	runID := optionbRunAssigned(t, ctrl, "kanboard-develop")
+
+	// The trigger reads its own assignment's disposition (the assignment's
+	// owner IS the trigger: castle resolves it through the trigger identity).
+	clients := newOptionbCastleClients(fx.tsrv, fx.triggerToken)
+	ctx := context.Background()
+	disp, err := clients.GetAssignmentDisposition(ctx, connect.NewRequest(&pb.GetAssignmentDispositionRequest{RunId: runID}))
+	if err != nil {
+		t.Fatalf("trigger reads assignment disposition: %v", err)
+	}
+	if got := disp.Msg.GetState(); got != pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_LEASED {
+		t.Fatalf("disposition state = %v, want LEASED", got)
+	}
+	if got := disp.Msg.GetLeasedCriteriaId(); got != agent.CriteriaID {
+		t.Fatalf("leased to %q, want the project's operator identity %q", got, agent.CriteriaID)
+	}
+
+	// The run executes in ITS namespace through the server wire: the
+	// member reads the run by id (membership scoped) with the route's
+	// workflow name.
+	getRun, err := fx.sClient.GetRun(ctx, bearer(&pb.GetRunRequest{RunId: runID}, agent.Token))
+	if err != nil {
+		t.Fatalf("operator reads its run: %v", err)
+	}
+	if got := getRun.Msg.GetWorkflowName(); got != "kanboard-develop" {
+		t.Fatalf("run workflow = %q, want kanboard-develop", got)
+	}
+
+	// The member executes the run through the event wire: RunStarted, the
+	// step attempt, and completion.
+	optionbRunEnvelopes(t, fx.oClient, agent.Token, runID, "kanboard-develop", "handler_complete", true)
+
+	// OBSERVE: the run is visible in the project's run list (the console's
+	// scoped surface), and the decision trail is complete: assignment,
+	// attempts, run events.
+	listRuns, err := fx.projects.ListProjectRuns(ctx, bearer(&castlev1.ListProjectRunsRequest{ProjectId: optionbFireProject}, fx.consoleToken))
+	if err != nil {
+		t.Fatalf("console lists project runs: %v", err)
+	}
+	var listed *pb.Run
+	for _, r := range listRuns.Msg.GetRuns() {
+		if r.GetRunId() == runID {
+			listed = r
+			break
+		}
+	}
+	if listed == nil {
+		t.Fatalf("run %s missing from the project's run list", runID)
+	}
+
+	events, err := fx.sClient.ListRunEvents(ctx, bearer(&pb.ListRunEventsRequest{RunId: runID}, agent.Token))
+	if err != nil {
+		t.Fatalf("listen run events: %v", err)
+	}
+	sawRunStarted, sawStepEntered := false, false
+	for _, ev := range events.Msg.GetEvents() {
+		switch p := ev.GetPayload().(type) {
+		case *pb.Envelope_RunStarted:
+			sawRunStarted = true
+		case *pb.Envelope_StepEntered:
+			if p.StepEntered.GetAttempt() != 1 {
+				t.Fatalf("step attempt = %d, want 1 in the run trail", p.StepEntered.GetAttempt())
+			}
+			sawStepEntered = true
+		}
+	}
+	if !sawRunStarted || !sawStepEntered {
+		t.Fatalf("run trail incomplete for %s: runStarted=%v stepEntered=%v", runID, sawRunStarted, sawStepEntered)
+	}
+
+	// The trigger's disposition settles terminal once the run completed.
+	deadline := time.Now().Add(5 * time.Second)
+	dispState := func() pb.WorkflowAssignmentState {
+		d, err := clients.GetAssignmentDisposition(ctx, connect.NewRequest(&pb.GetAssignmentDispositionRequest{RunId: runID}))
+		if err != nil {
+			t.Fatalf("trigger disposition after completion: %v", err)
+		}
+		return d.Msg.GetState()
+	}
+	for dispState() != pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL {
+		if time.Now().After(deadline) {
+			t.Fatalf("assignment never settled terminal (state %v)", dispState())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The board mirror settles the develop success: the demo card moves to
+	// Done, exactly once.
+	fx.optionbAwaitColumn(t, optionbTicketID, "Done")
+	moves := fx.board.moveTargets()
+	if len(moves) != 1 {
+		t.Fatalf("mirror moved the card %d times (%v), want exactly one Done move", len(moves), moves)
 	}
 }

@@ -27,9 +27,9 @@ type optionbFakeKanboard struct {
 		ID    int
 		Title string
 	}
-	comments map[int][]string
-	moves    []string
-	srv      *httptest.Server
+	comments   map[int][]string
+	moves      []string
+	srv        *httptest.Server
 	columnIDOf map[string]int
 }
 
