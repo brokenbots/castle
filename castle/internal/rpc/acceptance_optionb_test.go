@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1093,5 +1094,102 @@ func TestOptionBIsolationRejectsWrongProject(t *testing.T) {
 	if _, err := newOptionbCastleClients(fx.tsrv, rogue.Token).
 		GetAssignmentDisposition(ctx, connect.NewRequest(&pb.GetAssignmentDispositionRequest{RunId: runID})); err == nil || connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("rogue disposition read = %v, want PermissionDenied", err)
+	}
+}
+
+// optionbCriteriaJobsBinding is the criteria-jobs namespace's binding
+// payload, imported during the cleanup step so the namespace's two
+// registry records (the platform record and the kanboard record) can go
+// binding-first post-cutover (KB-313, ADR 307).
+var optionbCriteriaJobsBinding = filepath.Join("testdata", "..", "confighome", "testdata", "binding-criteria-jobs.json")
+
+// TestOptionBCleanupCutoverFlip is step 6: the flag-flip decision. Every
+// registry record imports its namespace binding, flips post-cutover
+// through the console's etag-gated editor, and the assembled CM payload
+// ends warning-free — with the stale run-config surfaces hard-rejected
+// (no zombie routes) and the post-flip pipeline still firing.
+func TestOptionBCleanupCutoverFlip(t *testing.T) {
+	fx := optionbSeed(t)
+
+	// The unbound fail-closed check first: the kanboard record imports
+	// with no binding of its own yet, and a binding-first cutover flip
+	// must refuse it.
+	record, _ := fx.getConfigRecord(optionbFireProject)
+	if record.Binding != nil {
+		t.Fatal("pre-import kanboard record unexpectedly carries a binding")
+	}
+	if err := record.MarkCutoverDone(); err == nil {
+		t.Fatal("MarkCutoverDone accepted an unbound record")
+	}
+
+	// Import the criteria-jobs binding into both records of that
+	// namespace, then flip every record post-cutover through the
+	// console editor.
+	bindingRaw, err := os.ReadFile("../confighome/testdata/binding-criteria-jobs.json")
+	if err != nil {
+		t.Fatalf("read criteria-jobs binding: %v", err)
+	}
+	binding, err := confighome.ParseBinding(bindingRaw)
+	if err != nil {
+		t.Fatalf("parse criteria-jobs binding: %v", err)
+	}
+	for _, slug := range slices.Sorted(maps.Keys(optionbProjects)) {
+		projectID := optionbProjects[slug]
+		record, etag := fx.getConfigRecord(projectID)
+		if record.Binding == nil {
+			record.Binding = binding
+		}
+		if err := record.MarkCutoverDone(); err != nil {
+			t.Fatalf("flip %s post-cutover: %v", projectID, err)
+		}
+		newEtag := fx.seedConfigImport(projectID, record, etag)
+		if newEtag == etag {
+			t.Fatalf("%s: flip produced the same etag", projectID)
+		}
+		readback, _ := fx.getConfigRecord(projectID)
+		if readback.Cutover != confighome.CutoverDone {
+			t.Fatalf("%s: readback cutover = %q, want done", projectID, readback.Cutover)
+		}
+		if readback.Binding == nil {
+			t.Fatalf("%s: readback lost the namespace binding", projectID)
+		}
+	}
+
+	// The CM payload is now assembled warning-free, with the registry
+	// fully post-cutover.
+	all := optionbFetchAllRecords(t, fx)
+	asm := confighome.NewAssemblyFor(all)
+	if warnings := asm.DeprecationWarnings(); len(warnings) != 0 {
+		t.Fatalf("post-cutover assembly still emits deprecation warnings: %v", warnings)
+	}
+	if _, err := asm.RenderRoutesPayload(); err != nil {
+		t.Fatalf("post-cutover render: %v", err)
+	}
+
+	// No zombie routes: reintroducing a stale global run-config surface
+	// on a post-cutover registry hard-rejects the assembled payload.
+	last := -1
+	zombie := append([]confighome.ProjectRecord(nil), all...)
+	for i, pr := range zombie {
+		if pr.ProjectID == optionbFireProject {
+			last = i
+			break
+		}
+	}
+	if last == -1 {
+		t.Fatalf("no %s record in the assembled set", optionbFireProject)
+	}
+	zombieRecord := *zombie[last].Record
+	stale := zombieRecord.Catalog["kanboard-triage-url"]
+	stale.Volumes = []confighome.Volume{{
+		Name:      "stale-data",
+		Kind:      "pvc",
+		Claim:     "criteria-data",
+		MountPath: "/data",
+	}}
+	zombieRecord.Catalog["kanboard-triage-url"] = stale
+	zombie[last].Record = &zombieRecord
+	if _, err := confighome.NewAssemblyFor(zombie).RenderRoutesPayload(); err == nil || !strings.Contains(err.Error(), "post-cutover payload still carries global run-config surfaces") {
+		t.Fatalf("zombie render = %v, want the KB-313 hard error", err)
 	}
 }
