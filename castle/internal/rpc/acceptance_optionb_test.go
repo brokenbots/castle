@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -491,6 +492,14 @@ func (c *optionbCastleClients) WatchRun(ctx context.Context, req *connect.Reques
 	return c.server.WatchRun(ctx, req)
 }
 
+// SetRefirePolicy is the console-side policy write (parapet's operator
+// identity owns refire settings): bound with the fixture's console token
+// it reaches the server surface's project-admin check.
+func (c *optionbCastleClients) SetRefirePolicy(ctx context.Context, req *connect.Request[castlev1.SetRefirePolicyRequest]) (*connect.Response[castlev1.SetRefirePolicyResponse], error) {
+	c.auth(req.Header())
+	return c.project.SetRefirePolicy(ctx, req)
+}
+
 // startBoard boots the real kanboardtrigger adapter against the fake board
 // and the real castle wire. The adapter polls immediately on boot; the
 // fixture records the run context for cleanup ordering (the board must be
@@ -597,14 +606,13 @@ func optionbRunEnvelopes(t *testing.T, oClient criteriav1connect.CriteriaService
 	send(critsdk.NewEnvelope(runID, &pb.RunCompleted{FinalState: finalState, Success: success}))
 }
 
-// TestOptionBFireRunObserve is steps 2 AND 3's acceptance: a real work card
-// fires through the kanboard adapter (castle mode: submit + own disposition
-// read + run watch), the project's operator identity leases and executes it
-// THROUGH the control wire, the run lands in the project, the decision
-// trail is readable (trigger disposition read, assignment, attempt, run
-// events), and the mirror settles the card onto Done.
-func TestOptionBFireRunObserve(t *testing.T) {
-	fx := optionbSeed(t)
+// optionbFireReady opens the demo member's control stream, brings the
+// board live, seeds the demo card in the lane's trigger column, and waits
+// for the fire: the member receives the assignment on its control stream.
+// Returns the member identity, the (caller-owned) control stream, and the
+// fired assignment's run id.
+func optionbFireReady(t *testing.T, fx *optionbFixture) (optionbAgent, *connect.ServerStreamForClient[pb.ControlMessage], string) {
+	t.Helper()
 	agent := fx.agents[optionbFireProject]
 
 	// The project's operator identity opens its Control stream first: the
@@ -620,6 +628,18 @@ func TestOptionBFireRunObserve(t *testing.T) {
 
 	// FIRE: the adapter submits the assignment from the card's entry.
 	runID := optionbRunAssigned(t, ctrl, "kanboard-develop")
+	return agent, ctrl, runID
+}
+
+// TestOptionBFireRunObserve is steps 2 AND 3's acceptance: a real work card
+// fires through the kanboard adapter (castle mode: submit + own disposition
+// read + run watch), the project's operator identity leases and executes it
+// THROUGH the control wire, the run lands in the project, the decision
+// trail is readable (trigger disposition read, assignment, attempt, run
+// events), and the mirror settles the card onto Done.
+func TestOptionBFireRunObserve(t *testing.T) {
+	fx := optionbSeed(t)
+	agent, _, runID := optionbFireReady(t, fx)
 
 	// The trigger reads its own assignment's disposition (the assignment's
 	// owner IS the trigger: castle resolves it through the trigger identity).
@@ -711,5 +731,159 @@ func TestOptionBFireRunObserve(t *testing.T) {
 	moves := fx.board.moveTargets()
 	if len(moves) != 1 {
 		t.Fatalf("mirror moved the card %d times (%v), want exactly one Done move", len(moves), moves)
+	}
+}
+
+// optionbFailedRunEnvelopes plays a failing run through the event wire:
+// RunStarted, the step attempt, and RunFailed carrying the ending reason
+// the refire policy classifies.
+func optionbFailedRunEnvelopes(t *testing.T, oClient criteriav1connect.CriteriaServiceClient, token, runID, workflowName, reason string) {
+	t.Helper()
+	submitRunStarted(t, oClient, token, runID, workflowName, "s1")
+	stream := oClient.SubmitEvents(context.Background())
+	stream.RequestHeader().Set("Authorization", "Bearer "+token)
+	for _, env := range []*pb.Envelope{
+		{CorrelationId: "step-" + runID,
+			Payload: &pb.Envelope_StepEntered{StepEntered: &pb.StepEntered{Step: "s1", Adapter: "shell", Attempt: 1}}},
+		critsdk.NewEnvelope(runID, &pb.RunFailed{Reason: reason, Step: "s1"}),
+	} {
+		env.SchemaVersion = 1
+		env.RunId = runID
+		env.Ts = timestamppb.Now()
+		if err := stream.Send(env); err != nil {
+			t.Fatalf("send %T: %v", env.GetPayload(), err)
+		}
+		if _, err := stream.Receive(); err != nil {
+			t.Fatalf("receive ack for %T: %v", env.GetPayload(), err)
+		}
+	}
+}
+
+// TestOptionBFireFailureRefirePolicy continues the OBSERVE step on the
+// failure branch: the run fails, the mirror parks the card on Review with
+// the single failure comment, and the decision trail's policy-evaluate
+// leg refires the failed run's lineage — the console writes the project's
+// refire policy, the pass mints a successor run for the SAME ticket's
+// family (new run id, new attempt), the successor reaches the member
+// through the same control wire and executes, and the lineage then closes
+// (the refired original ages out of the candidate scan).
+func TestOptionBFireFailureRefirePolicy(t *testing.T) {
+	fx := optionbSeed(t)
+	agent, ctrl, runID := optionbFireReady(t, fx)
+	ctx := context.Background()
+
+	// The run fails mid-flight.
+	optionbFailedRunEnvelopes(t, fx.oClient, agent.Token, runID, "kanboard-develop", "boom: ci gate flaked")
+
+	// The assignment settles failed, and the mirror parks the card on
+	// Review with exactly the one failure comment.
+	clients := newOptionbCastleClients(fx.tsrv, fx.triggerToken)
+	deadline := time.Now().Add(5 * time.Second)
+	dispState := func() pb.WorkflowAssignmentState {
+		d, err := clients.GetAssignmentDisposition(ctx, connect.NewRequest(&pb.GetAssignmentDispositionRequest{RunId: runID}))
+		if err != nil {
+			t.Fatalf("trigger disposition after failure: %v", err)
+		}
+		return d.Msg.GetState()
+	}
+	for dispState() != pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL {
+		if time.Now().After(deadline) {
+			t.Fatalf("failed assignment never settled terminal (state %v)", dispState())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	fx.optionbAwaitColumn(t, optionbTicketID, "Review")
+	if got := len(fx.board.moveTargets()); got != 1 {
+		t.Fatalf("mirror moved the failed card %d times (%v), want the single park", got, fx.board.moveTargets())
+	}
+	comments := fx.board.commentsOn(optionbTicketID)
+	if len(comments) != 1 {
+		t.Fatalf("failed card carries %d comments (%v), want the single failure comment", len(comments), comments)
+	}
+	if !strings.Contains(comments[0], runID) || !strings.Contains(comments[0], "boom") {
+		t.Fatalf("failure comment %q does not record the run id and reason", comments[0])
+	}
+
+	// POLICY EVALUATE: the console (parapet's operator identity) writes the
+	// refire policy for the project's route — a transient vocabulary entry
+	// matching the failure reason — and the pass refires the failed run.
+	policyClients := newOptionbCastleClients(fx.tsrv, fx.consoleToken)
+	if _, err := policyClients.SetRefirePolicy(ctx, connect.NewRequest(&castlev1.SetRefirePolicyRequest{
+		ProjectId: optionbFireProject,
+		Route:     "kanboard-develop",
+		Policy: &castlev1.RefirePolicy{
+			MaxAttempts: 2, // the budget counts the original attempt
+			Transient:   []string{"boom"},
+		},
+	})); err != nil {
+		t.Fatalf("console writes the refire policy: %v", err)
+	}
+
+	outcomes, err := fx.ts.server.RefireFailedRunsNow(ctx)
+	if err != nil {
+		t.Fatalf("refire pass: %v", err)
+	}
+	refireAssignmentID := ""
+	refires := 0
+	for _, o := range outcomes {
+		if o.Disposition == store.RefireDispositionRefire {
+			refires++
+			refireAssignmentID = o.RefireAssignmentID
+		}
+	}
+	if refires != 1 || refireAssignmentID == "" {
+		t.Fatalf("refire pass outcomes %v, want exactly one refire", outcomes)
+	}
+
+	// The successor assignment reaches the member through the same control
+	// wire and executes with the member's project credentials.
+	runID2 := optionbRunAssigned(t, ctrl, "kanboard-develop")
+	if runID2 == runID {
+		t.Fatalf("successor re-used run id %s", runID2)
+	}
+	disp2, err := clients.GetAssignmentDisposition(ctx, connect.NewRequest(&pb.GetAssignmentDispositionRequest{RunId: runID2}))
+	if err != nil {
+		t.Fatalf("trigger reads successor disposition: %v", err)
+	}
+	if got := disp2.Msg.GetState(); got != pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_LEASED {
+		t.Fatalf("successor disposition = %v, want LEASED", got)
+	}
+	if got := disp2.Msg.GetLeasedCriteriaId(); got != agent.CriteriaID {
+		t.Fatalf("successor leased to %q, want %q", got, agent.CriteriaID)
+	}
+	optionbRunEnvelopes(t, fx.oClient, agent.Token, runID2, "kanboard-develop", "handler_complete", true)
+
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		d2, err := clients.GetAssignmentDisposition(ctx, connect.NewRequest(&pb.GetAssignmentDispositionRequest{RunId: runID2}))
+		if err != nil {
+			t.Fatalf("trigger disposition after successor completion: %v", err)
+		}
+		if d2.Msg.GetState() == pb.WorkflowAssignmentState_WORKFLOW_ASSIGNMENT_STATE_TERMINAL {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("successor assignment never settled terminal (state %v)", d2.Msg.GetState())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The parked card stays parked: the successor run is lineage
+	// bookkeeping, not a new card event — no extra move, no extra comment.
+	if got := fx.board.columnOf(optionbTicketID); got != "Review" {
+		t.Fatalf("parked card drifted to %q during the refire", got)
+	}
+	if got := len(fx.board.moveTargets()); got != 1 {
+		t.Fatalf("mirror moved the card %d times (%v), want only the failure park", got, fx.board.moveTargets())
+	}
+
+	// The lineage closed: the refired original aged out of the candidate
+	// scan and the successor run succeeded, so a fresh pass is a no-op.
+	outcomes2, err := fx.ts.server.RefireFailedRunsNow(ctx)
+	if err != nil {
+		t.Fatalf("second refire pass: %v", err)
+	}
+	if len(outcomes2) != 0 {
+		t.Fatalf("second refire pass outcomes %v, want none (lineage closed)", outcomes2)
 	}
 }
