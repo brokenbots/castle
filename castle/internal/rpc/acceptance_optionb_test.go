@@ -1045,3 +1045,53 @@ func TestOptionBEditConfigRefire(t *testing.T) {
 		t.Fatalf("mirror moves across both fires = %v (want %q twice), got something else", moves, doneMove)
 	}
 }
+
+// TestOptionBIsolationRejectsWrongProject is step 5: the wrong-project
+// agent identity cannot receive, lease, or even see another project's run.
+// The rogue (criteria-go-dev's member) has its control stream open through
+// the fire, so a leak would have been visible in dispatch.
+func TestOptionBIsolationRejectsWrongProject(t *testing.T) {
+	fx := optionbSeed(t)
+	ctx := context.Background()
+
+	// The rogue's control stream is open BEFORE the fire: the dispatch
+	// scan ran with both identities eligible-in-theory, and only the
+	// owning project's member must ever be offered the assignment.
+	rogue := fx.agents["criteria-go-dev"]
+	rogueCtrl := openControl(t, fx.oClient, rogue.CriteriaID, rogue.Token)
+	expectControlReady(t, rogueCtrl)
+	t.Cleanup(func() { _ = rogueCtrl.Close() })
+
+	_, _, runID := optionbFireReady(t, fx)
+
+	// The rogue's stream never sees the assignment.
+	expectNoWorkflowAssignment(t, rogueCtrl, 800*time.Millisecond)
+
+	// The rogue cannot read the run by id.
+	if _, err := fx.sClient.GetRun(ctx, bearer(&pb.GetRunRequest{RunId: runID}, rogue.Token)); err == nil || connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("rogue agent GetRun = %v, want NotFound", err)
+	}
+
+	// The rogue cannot read the owning project's run list...
+	if _, err := fx.projects.ListProjectRuns(ctx, bearer(&castlev1.ListProjectRunsRequest{ProjectId: optionbFireProject}, rogue.Token)); err == nil || connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("rogue ListProjectRuns on the owning project = %v, want PermissionDenied", err)
+	}
+
+	// ...and its own project's list never carries the foreign run.
+	own, err := fx.projects.ListProjectRuns(ctx, bearer(&castlev1.ListProjectRunsRequest{ProjectId: "criteria-go-dev"}, rogue.Token))
+	if err != nil {
+		t.Fatalf("rogue lists its own project runs: %v", err)
+	}
+	for _, r := range own.Msg.GetRuns() {
+		if r.GetRunId() == runID {
+			t.Fatalf("foreign run %s leaked into the wrong project's run list", runID)
+		}
+	}
+
+	// The disposition read is owner-scoped: only the assignment's owner
+	// (the firing trigger) reads it.
+	if _, err := newOptionbCastleClients(fx.tsrv, rogue.Token).
+		GetAssignmentDisposition(ctx, connect.NewRequest(&pb.GetAssignmentDispositionRequest{RunId: runID})); err == nil || connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("rogue disposition read = %v, want PermissionDenied", err)
+	}
+}
