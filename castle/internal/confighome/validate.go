@@ -125,6 +125,43 @@ func (r *Record) Validate() error {
 			return fmt.Errorf("digests[%q]: %q is not a sha256 hex digest", name, digest)
 		}
 	}
+	for i, rt := range r.Routes {
+		if rt.ConfigRef == "" {
+			continue
+		}
+		if err := validateRouteConfigCross(rt.Name, rt.Workflow, r.Catalog[rt.Workflow], rt.ConfigRef, r.ConfigLibrary[rt.ConfigRef]); err != nil {
+			return fmt.Errorf("routes[%d] (%s): %w", i, rt.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateRouteConfigCross checks a route's config entry against the
+// resolved workflow tree's interface (KB-339, item 3): config keys the
+// tree's interface does not declare reject — shapes validate against
+// DECLARED interfaces only. Trees without an interface declaration keep
+// the legacy config semantics (no constraint).
+func validateRouteConfigCross(routeName, workflowName string, wf Workflow, configRef string, entry ConfigEntry) error {
+	if wf.Interface == nil {
+		return nil
+	}
+	declared := make(map[string]bool, len(wf.Interface.ConfigSlots))
+	for _, s := range wf.Interface.ConfigSlots {
+		declared[s.Slot] = true
+	}
+	for field, values := range map[string]string{
+		"buildCmd":   entry.BuildCmd,
+		"testCmd":    entry.TestCmd,
+		"ciGateCmd":  entry.CIGateCmd,
+		"baseBranch": entry.BaseBranch,
+	} {
+		if values == "" {
+			continue
+		}
+		if !declared[field] {
+			return fmt.Errorf("configRef %q: route %q workflow %q interface does not declare the config slot %q", configRef, routeName, workflowName, field)
+		}
+	}
 	return nil
 }
 
