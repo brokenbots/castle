@@ -183,6 +183,11 @@ var consoleProjectAdminProcedures = map[string]struct{}{
 	castlev1connect.ProjectServiceRemoveProjectMemberProcedure: {},
 	castlev1connect.ProjectServiceGetProjectSettingsProcedure:  {},
 	castlev1connect.ProjectServiceSetProjectSettingsProcedure:  {},
+	// KB-339: the project workflow config record family rides the settings
+	// family's surface — same console credential class, same etag swap.
+	castlev1connect.ProjectServiceGetProjectConfigProcedure:    {},
+	castlev1connect.ProjectServiceSetProjectConfigProcedure:    {},
+	castlev1connect.ProjectServiceListWorkflowCatalogProcedure: {},
 	castlev1connect.ProjectServiceGetRefirePolicyProcedure:     {},
 	castlev1connect.ProjectServiceSetRefirePolicyProcedure:     {},
 	castlev1connect.ProjectServiceCreateProjectProcedure:       {},

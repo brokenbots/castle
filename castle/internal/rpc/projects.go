@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/brokenbots/castle/castle/internal/auth"
+	"github.com/brokenbots/castle/castle/internal/confighome"
 	"github.com/brokenbots/castle/castle/internal/store"
 	"github.com/brokenbots/castle/castle/internal/store/refire"
 
@@ -220,6 +222,34 @@ func (s *ServerServer) SubmitProjectAssignment(ctx context.Context, req *connect
 	if _, err := s.Store.GetProject(ctx, req.Msg.GetProjectId()); err != nil {
 		return nil, projectStoreError(err)
 	}
+	// KB-339 item 3: once a project imports its workflow config record, the
+	// record is the ONE routing truth — an assignment submitted with a
+	// route name (the trigger lanes' workflow_name) must name a route the
+	// project's config carries. Projects without an imported record keep
+	// the legacy open surface until the import cutover reaches them.
+	if doc, _, err := s.Store.GetProjectConfig(ctx, req.Msg.GetProjectId()); err != nil {
+		return nil, projectStoreError(err)
+	} else if len(doc) > 0 {
+		record, err := confighome.ParseRecord(doc)
+		if err != nil {
+			// Config only enters the store through validated writes; a
+			// corrupt stored record surfaces as Internal.
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if len(record.Routes) > 0 {
+			routed := false
+			for _, route := range record.Routes {
+				if route.Name == req.Msg.GetWorkflowName() {
+					routed = true
+					break
+				}
+			}
+			if !routed {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("workflow_name "+strconv.Quote(req.Msg.GetWorkflowName())+" is not a route in project "+strconv.Quote(req.Msg.GetProjectId())+" workflow config; route names must exist in project config (KB-339)"))
+			}
+		}
+	}
 	if req.Msg.GetWorkflowName() == "" || req.Msg.GetWorkflowSource() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workflow_name and workflow_source required"))
 	}
@@ -373,6 +403,10 @@ func projectStoreError(err error) error {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, store.ErrProjectExists):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, store.ErrProjectConfigConflict):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, store.ErrInvalidWorkflowConfig):
+		return connect.NewError(connect.CodeInternal, err)
 	case errors.Is(err, store.ErrInvalidProjectID),
 		errors.Is(err, store.ErrInvalidProjectPolicy),
 		errors.Is(err, store.ErrInvalidProjectMember):
@@ -538,6 +572,135 @@ func (s *ServerServer) SetProjectSettings(ctx context.Context, req *connect.Requ
 		return nil, projectStoreError(err)
 	}
 	return connect.NewResponse(&castlev1.SetProjectSettingsResponse{Etag: etag}), nil
+}
+
+// GetProjectConfig returns the project's ONE workflow config record (KB-339):
+// routes, catalog, configLibrary, namespace binding, digests — canonical
+// JSON of a ProjectWorkflowConfig record, plus its content-addressed etag.
+// A project not yet imported reads as the empty record with the empty etag.
+func (s *ServerServer) GetProjectConfig(ctx context.Context, req *connect.Request[castlev1.GetProjectConfigRequest]) (*connect.Response[castlev1.GetProjectConfigResponse], error) {
+	if err := requireProjectReader(ctx); err != nil {
+		return nil, err
+	}
+	projectID := req.Msg.GetProjectId()
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id required"))
+	}
+	if err := store.ValidateProjectID(projectID); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	doc, etag, err := s.Store.GetProjectConfig(ctx, projectID)
+	if err != nil {
+		return nil, projectStoreError(err)
+	}
+	return connect.NewResponse(&castlev1.GetProjectConfigResponse{
+		Document: doc,
+		Etag:     etag,
+	}), nil
+}
+
+// SetProjectConfig is the KB-339 config write: the whole record swaps under
+// optimistic etag semantics, mirroring the settings swap. The record must
+// parse and validate a ProjectWorkflowConfig shape fail-closed (values stay
+// opaque); the store persists the canonical form so the rendered CM
+// payloads derive from deterministic bytes. An empty document clears the
+// record.
+func (s *ServerServer) SetProjectConfig(ctx context.Context, req *connect.Request[castlev1.SetProjectConfigRequest]) (*connect.Response[castlev1.SetProjectConfigResponse], error) {
+	if err := requireProjectAdminCaller(ctx); err != nil {
+		return nil, err
+	}
+	projectID := req.Msg.GetProjectId()
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id required"))
+	}
+	if err := store.ValidateProjectID(projectID); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if len(req.Msg.GetDocument()) == 0 {
+		// Clearing mirrors the settings family: the empty record is only
+		// reachable from its current etag.
+		etag, err := s.Store.SetProjectConfig(ctx, projectID, nil, req.Msg.GetExpectedEtag())
+		if err != nil {
+			return nil, projectStoreError(err)
+		}
+		return connect.NewResponse(&castlev1.SetProjectConfigResponse{Etag: etag}), nil
+	}
+	record, err := confighome.ParseRecord(req.Msg.GetDocument())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	canonical, err := record.Marshal()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	etag, err := s.Store.SetProjectConfig(ctx, projectID, canonical, req.Msg.GetExpectedEtag())
+	if err != nil {
+		return nil, projectStoreError(err)
+	}
+	return connect.NewResponse(&castlev1.SetProjectConfigResponse{Etag: etag}), nil
+}
+
+// ListWorkflowCatalog lists the project's workflow catalog entries resolved
+// from the project's workflow config record (KB-339) in name order, with
+// the record etag as the listing's cache handle. A project not yet imported
+// lists empty with the empty etag.
+func (s *ServerServer) ListWorkflowCatalog(ctx context.Context, req *connect.Request[castlev1.ListWorkflowCatalogRequest]) (*connect.Response[castlev1.ListWorkflowCatalogResponse], error) {
+	if err := requireProjectReader(ctx); err != nil {
+		return nil, err
+	}
+	projectID := req.Msg.GetProjectId()
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id required"))
+	}
+	if err := store.ValidateProjectID(projectID); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	doc, etag, err := s.Store.GetProjectConfig(ctx, projectID)
+	if err != nil {
+		return nil, projectStoreError(err)
+	}
+	if len(doc) == 0 {
+		return connect.NewResponse(&castlev1.ListWorkflowCatalogResponse{Etag: etag}), nil
+	}
+	record, err := confighome.ParseRecord(doc)
+	if err != nil {
+		// Config only enters the store through validated writes; a stale
+		// or corrupt stored record surfaces as Internal, not a request
+		// failure the caller could retry meaningfully.
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	names := make([]string, 0, len(record.Catalog))
+	for name := range record.Catalog {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	resp := &castlev1.ListWorkflowCatalogResponse{
+		Etag:    etag,
+		Entries: make([]*castlev1.WorkflowCatalogEntry, 0, len(names)),
+	}
+	for _, name := range names {
+		resp.Entries = append(resp.Entries, recordWorkflowCatalogEntry(name, record.Catalog[name], record.Digests[name]))
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// recordWorkflowCatalogEntry maps a record's catalog entry (and learned
+// digest) onto the catalog-list wire shape.
+func recordWorkflowCatalogEntry(name string, wf confighome.Workflow, digest string) *castlev1.WorkflowCatalogEntry {
+	entry := &castlev1.WorkflowCatalogEntry{
+		Name:      name,
+		Type:      wf.Type,
+		Url:       wf.URL,
+		Ref:       wf.Ref,
+		Digest:    digest,
+		Namespace: wf.Namespace,
+		Class:     wf.Class,
+		Image:     wf.Image,
+	}
+	if wf.Interface != nil {
+		entry.InterfaceName = wf.Interface.Workflow
+	}
+	return entry
 }
 
 // GetRefirePolicy reads the exact policy row (project_id, route) — not the
