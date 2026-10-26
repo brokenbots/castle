@@ -198,6 +198,7 @@ func AttachLabels(ctx context.Context, runner reap.Runner, d reap.Dialect, candi
 //   - park: the run is reclassified to the KB-226 parked shape — status
 //     awaiting_human, no ended_at, no failure_reason, no assignment change —
 //     and never refires without a human ack.
+//
 //   - requeue (KB-343): a dispatch-layer reap — the created_never_started
 //     stamp — re-plans the SAME attempt under the policy's backoff clock
 //     (the run and its assignment return to the leasable/queued shape, the
@@ -206,6 +207,7 @@ func AttachLabels(ctx context.Context, runner reap.Runner, d reap.Dialect, candi
 //   - cosmetic / none: the verdict is stamped on the run as data
 //     (runs.refire_disposition) and the run is left terminal-failed for an
 //     operator decision; the stamp ages the row out of the candidate scan.
+//
 //   - refire: under the policy's attempt budget (family attempts counting
 //     the original) and backoff deadline, a successor run plus queued
 //     assignment is minted with an attempt-suffixed idempotency key and the
