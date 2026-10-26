@@ -67,6 +67,16 @@ func (s *Store) Close() error {
 // rather than one serialized connection.
 func (s *Store) SetMaxOpenConns(n int) { s.db.SetMaxOpenConns(n) }
 
+// SetLogger swaps the store's slog.Logger. Open installs slog.Default();
+// embedders and tests use SetLogger to route operation telemetry (including
+// the reader-freshness audit) through their own handler.
+func (s *Store) SetLogger(log *slog.Logger) {
+	if log == nil {
+		return
+	}
+	s.log = log
+}
+
 // storeOpTimeout bounds each store operation executed on a detached context.
 // Postgres has no driver-level interrupt analogue to sqlite3_interrupt, but
 // opCtx is kept for parity with the sqlite profile (KB-222): a cancelled gRPC

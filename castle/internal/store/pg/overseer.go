@@ -32,7 +32,12 @@ func (s *Store) CreateOverseer(ctx context.Context, o *store.Overseer) error {
 		`INSERT INTO overseers(id,name,hostname,version,token_hash,status,labels,created_at,last_seen_at,identity,operator_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$1)`,
 		o.ID, o.Name, o.Hostname, o.Version, o.TokenHash, o.Status, labels, us(o.CreatedAt), us(o.LastSeenAt), nonEmpty(identity))
 	if err == nil {
-		s.freshness.recordWrite(o.CreatedAt)
+		// recordWrite is expressed at the persisted (microsecond) precision:
+		// the reader view's created_at can only ever be read back at this
+		// granularity, so recording the raw caller timestamp (nanoseconds)
+		// would make newerThan diverge forever and flap the staleness audit
+		// on every read (KB-343).
+		s.freshness.recordWrite(us(o.CreatedAt))
 	}
 	return err
 }
@@ -83,6 +88,11 @@ func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
 			readerNewest = newestOverseerCreatedAt(out)
 			s.freshness.healed(ctx, s.log)
 		}
+	} else {
+		// A read whose view already shows the newest committed write ends the
+		// current divergence episode (KB-343): the next gap narrates anew
+		// instead of being suppressed as a continuation of the old one.
+		s.freshness.converged()
 	}
 	// Audit the reader view against the writer's newest write (KB-10).
 	s.freshness.check(ctx, readerNewest, s.log)

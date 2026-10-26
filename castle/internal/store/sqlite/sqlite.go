@@ -545,6 +545,11 @@ func (s *Store) ListOverseers(ctx context.Context) ([]*store.Overseer, error) {
 			readerNewest = newestOverseerCreatedAt(out)
 			s.freshness.healed(ctx, s.log)
 		}
+	} else {
+		// A read whose view already shows the newest committed write ends the
+		// current divergence episode (KB-343): the next gap narrates anew
+		// instead of being suppressed as a continuation of the old one.
+		s.freshness.converged()
 	}
 	// Audit the reader view against the writer's newest write (KB-10): a
 	// reader snapshot pinned before the latest registration is the symptom
