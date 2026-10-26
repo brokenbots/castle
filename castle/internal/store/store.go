@@ -572,8 +572,10 @@ type RunReapOutcome struct {
 // successor attempt under the attempt/backoff limits, "park" holds the run
 // for a human decision in the KB-226 parked shape, "cosmetic" leaves a
 // known-benign failure without taking action, "none" is an unclassified
-// failure (fail-safe: no action), and the "skipped" flavors record why the
-// scan skipped a candidate that otherwise matched.
+// failure (fail-safe: no action), "requeue" restores a dispatch-layer reap
+// (the same attempt, the attempt budget untouched — KB-343), and the
+// "skipped" flavors record why the scan skipped a candidate that otherwise
+// matched.
 const (
 	RefireDispositionRefire    = "refire"
 	RefireDispositionPark      = "park"
@@ -582,6 +584,7 @@ const (
 	RefireDispositionDeferred  = "deferred"
 	RefireDispositionExhausted = "exhausted"
 	RefireDispositionSkipped   = "skipped"
+	RefireDispositionRequeue   = "requeue"
 )
 
 // RefirePolicyRow is one policy-as-data row (KB-321): the policy document is

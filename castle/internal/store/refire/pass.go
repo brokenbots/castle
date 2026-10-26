@@ -198,6 +198,11 @@ func AttachLabels(ctx context.Context, runner reap.Runner, d reap.Dialect, candi
 //   - park: the run is reclassified to the KB-226 parked shape — status
 //     awaiting_human, no ended_at, no failure_reason, no assignment change —
 //     and never refires without a human ack.
+//   - requeue (KB-343): a dispatch-layer reap — the created_never_started
+//     stamp — re-plans the SAME attempt under the policy's backoff clock
+//     (the run and its assignment return to the leasable/queued shape, the
+//     refire attempt budget and the refire_disposition stamp untouched).
+//
 //   - cosmetic / none: the verdict is stamped on the run as data
 //     (runs.refire_disposition) and the run is left terminal-failed for an
 //     operator decision; the stamp ages the row out of the candidate scan.
@@ -283,6 +288,38 @@ func evaluateCandidate(
 			outcome.Reason = "skipped: run no longer failed"
 		}
 		return outcome, nil
+	case DispositionRequeue:
+		// KB-343: a dispatch-layer reap re-plans the SAME attempt under the
+		// policy's backoff clock — no successor is minted, so the family
+		// attempt budget is untouched (the budget counts real execution
+		// failures only). Before the backoff window elapses the verdict is
+		// deferred and nothing is written; the run keeps its failure record
+		// and stays in the candidate set for the next pass.
+		if c.EndedAt == nil {
+			outcome.Disposition = store.RefireDispositionDeferred
+			outcome.Reason = "deferred: requeue candidate has no ended_at"
+			return outcome, nil
+		}
+		if readyAt := c.EndedAt.Add(policy.Backoff); now.Before(readyAt) {
+			outcome.Disposition = store.RefireDispositionDeferred
+			outcome.Reason = fmt.Sprintf(
+				"deferred: requeue backoff runs until %s (+%s) under refire policy %s",
+				readyAt.Format(store.TimestampLayout), policy.Backoff, source)
+			return outcome, nil
+		}
+		changed, err := requeueDispatchReap(ctx, tx, d, now, a)
+		if err != nil {
+			return store.RefireOutcome{}, fmt.Errorf("refire requeue %s: %w", a.RunID, err)
+		}
+		if changed {
+			outcome.Disposition = store.RefireDispositionRequeue
+			outcome.Reason = fmt.Sprintf(
+				"requeued dispatch-layer reap without consuming the attempt budget, backoff %s, under refire policy %s",
+				policy.Backoff, source)
+		} else {
+			outcome.Reason = "skipped: run no longer failed"
+		}
+		return outcome, nil
 	case DispositionCosmetic, DispositionNone:
 		// The verdict is stamped on the run as data: known-benign endings
 		// (cosmetic) and unclassified endings (none) stay terminal-failed
@@ -335,6 +372,56 @@ func evaluateCandidate(
 		return outcome, nil
 	}
 	return mintSuccessor(ctx, tx, d, now, c, a, policy, source, key, outcome)
+}
+
+// requeueDispatchReap restores a run stamped by the created_never_started
+// reaper (KB-233 rule 2 / KB-343) to the leasable shape so the dispatch
+// layer can deliver it again — the same attempt, never a successor mint.
+// The restore mirrors the operator-issue MarkRunUnstarted resume shape
+// (CRI-207): the run returns to status pending with started_at kept NULL
+// and created_at refreshed to the requeue instant, so the reaper's
+// created_at window restarts and the next tick cannot reap the fresh
+// incarnation before redelivery; ended_at/failure_reason fall away and the
+// stale lease attach (overseer_id) is cleared. The workflow assignment —
+// terminal with the same reap reason — returns to queued with its dead
+// lease dropped and its terminal_reason cleared.
+//
+// The writes are guarded (CRI-142 discipline): the run row moves only from
+// status failed WITH the reaper's own failure_reason (a run a real
+// execution failure or an operator transition claimed in between is never
+// rewritten), and only a run restored here has its assignment restored —
+// keyed to state terminal + the reap reason, so other endings are
+// untouched. The run's refire_disposition stays NULL: the family attempt
+// budget is untouched and the row is intentionally invisible to the
+// candidate scan (status pending) unless it dies again — at which point the
+// next reap stamps it fresh and the class logic re-runs from scratch.
+// Returns whether the run restore landed.
+func requeueDispatchReap(ctx context.Context, tx reap.Runner, d reap.Dialect, now time.Time, a *store.WorkflowAssignment) (bool, error) {
+	res, err := tx.ExecContext(ctx,
+		`UPDATE runs
+		 SET status='pending', started_at=NULL, ended_at=NULL, failure_reason=NULL,
+		     overseer_id=NULL, created_at=`+d.P(1)+`
+		 WHERE id=`+d.P(2)+` AND status='failed' AND failure_reason=`+d.P(3),
+		d.TS(now), a.RunID, reap.ReasonCreatedNeverStarted)
+	if err != nil {
+		return false, err
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if changed == 0 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET state='`+store.WorkflowAssignmentStateQueued+`', terminal_reason=NULL,
+		     leased_criteria_id=NULL, lease_expires_at=NULL, updated_at=`+d.P(1)+`
+		 WHERE run_id=`+d.P(2)+` AND state='`+store.WorkflowAssignmentStateTerminal+`' AND terminal_reason=`+d.P(3),
+		d.TS(now), a.RunID, reap.ReasonCreatedNeverStarted); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // stampRefireDisposition closes an evaluated run's story in the automatic

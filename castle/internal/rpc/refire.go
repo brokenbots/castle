@@ -40,6 +40,24 @@ func (s *ServerServer) RefireFailedRunsNow(ctx context.Context) ([]store.RefireO
 		}
 		s.dispatchAssignment(ctx, a)
 	}
+	// Requeued dispatch-layer reaps (KB-343): the restored SAME assignment is
+	// handed to the connected-eligible dispatch path, mirroring the
+	// ExpireLeasesNow symmetry — a requeued row should not wait for the next
+	// control stream event to reach a connected agent.
+	for _, o := range outcomes {
+		if o.Disposition != store.RefireDispositionRequeue {
+			continue
+		}
+		a, err := s.Store.GetWorkflowAssignmentByRunID(ctx, o.RunID)
+		if err != nil {
+			s.Log.Debug("refire failed runs: cannot load requeued assignment",
+				"run_id", o.RunID, "err", err)
+			continue
+		}
+		if a.State == store.WorkflowAssignmentStateQueued {
+			s.dispatchAssignment(ctx, a)
+		}
+	}
 	return outcomes, nil
 }
 
@@ -61,6 +79,12 @@ func (s *ServerServer) RunRefirePass(ctx context.Context) {
 				"run_id", o.RunID, "attempt", o.RefireAttempt,
 				"root_run_id", o.RootRunID, "refire_run_id", o.RefireRunID,
 				"reason", o.Reason)
+		case store.RefireDispositionRequeue:
+			// KB-343: a dispatch-layer reap restored its same attempt —
+			// operator-visible at Info because this is the pass proving the
+			// attempt budget was NOT consumed by a transport condition.
+			s.Log.Info("refire: requeued dispatch-layer reap, attempt budget untouched",
+				"run_id", o.RunID, "root_run_id", o.RootRunID, "reason", o.Reason)
 		case store.RefireDispositionPark:
 			s.Log.Info("refire: parked failed run at human gate",
 				"run_id", o.RunID, "root_run_id", o.RootRunID, "reason", o.Reason)

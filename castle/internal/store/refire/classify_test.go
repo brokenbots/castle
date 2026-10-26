@@ -2,8 +2,10 @@ package refire
 
 import (
 	"testing"
+	"time"
 
 	"github.com/brokenbots/castle/castle/internal/store"
+	"github.com/brokenbots/castle/castle/internal/store/reap"
 )
 
 func classify(t *testing.T, p Policy, reason string) (Disposition, string) {
@@ -22,6 +24,42 @@ func TestClassifyStallRefires(t *testing.T) {
 		if got != DispositionRefire {
 			t.Fatalf("classify(%q) = %s, want refire", reason, got)
 		}
+	}
+}
+
+// TestClassifyCreatedNeverStartedRequeues is the KB-343 failing-first
+// acceptance: the dispatch-transport stamp requeues the SAME attempt even
+// though the token sits in the transient vocabulary (policy rows keep
+// their shape), and it never reaches the refire path — for ANY backoff,
+// attempt budget included. Parks still beat the class (fail-safe
+// direction), and a real stall reason keeps refiring.
+func TestClassifyCreatedNeverStartedRequeues(t *testing.T) {
+	p := Policy{
+		MaxAttempts: 3,
+		Backoff:     30 * time.Second,
+		Transient:   []string{"stall", reap.ReasonCreatedNeverStarted, "heartbeat"},
+	}
+	got, reason := classify(t, p, reap.ReasonCreatedNeverStarted)
+	if got != DispositionRequeue {
+		t.Fatalf("classify(%q) = %s (%s), want requeue", reap.ReasonCreatedNeverStarted, got, reason)
+	}
+	if got, _ := classify(t, p, "created_never_started drifted: extra context"); got == DispositionRequeue {
+		t.Fatal("substring match reached the dispatch class; must be exact")
+	}
+	// The class never falls through to refire: any transient vocabulary
+	// match on the token is superseded by precedence.
+	p2 := Policy{Transient: []string{"created_never_started"}, MaxAttempts: 0}
+	if got, _ := classify(t, p2, reap.ReasonCreatedNeverStarted); got != DispositionRequeue {
+		t.Fatalf("classify with empty budget = %s, want requeue (budget governs mints, not transport retries)", got)
+	}
+	// Parks beat the requeue class.
+	p3 := Policy{Transient: []string{"stall"}, Parks: []string{reap.ReasonCreatedNeverStarted}}
+	if got, _ := classify(t, p3, reap.ReasonCreatedNeverStarted); got != DispositionPark {
+		t.Fatalf("classify with park vocabulary = %s, want park", got)
+	}
+	// A real stall still refires.
+	if got, _ := classify(t, p, "provider stall: upstream 500"); got != DispositionRefire {
+		t.Fatalf("stall classify = %s, want refire", got)
 	}
 }
 
