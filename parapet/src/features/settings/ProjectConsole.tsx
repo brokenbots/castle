@@ -382,7 +382,7 @@ export function CatalogPanel({ projectId }: { projectId: string }) {
               </p>
               {entryInterface ? (
                 <pre className="overflow-x-auto text-meta text-ink">
-                  {JSON.stringify({ ...entryInterface, configSlots: (entryInterface as { configSlots?: { slot: string; variable: string }[] }).configSlots?.map((s) => ({ ...s, variable: KB310_CONFIG_SLOT_VARIABLES[s.slot] ?? s.variable })) }, null, 2)}
+                  {JSON.stringify({ ...entryInterface, configSlots: (entryInterface as { configSlots?: { slot: string; variable: string }[] }).configSlots?.map((s) => ({ ...s, variable: s.variable || KB310_CONFIG_SLOT_VARIABLES[s.slot] || s.slot })) }, null, 2)}
                 </pre>
               ) : (
                 <p className="text-meta text-ink-muted">This entry declares no interface (image workflow without KB-310 slots).</p>
@@ -614,7 +614,7 @@ export function RoutesEditor({ projectId }: { projectId: string }) {
                     </button>
                   )}
                 </div>
-                {(configRefError || (rt.workflow === '' && rt.name !== '')) && (
+                {(configRefError || rt.workflow === '') && (
                   <p role="alert" data-testid={`routes-row-error-${i}`} className="text-meta text-danger">
                     {configRefError ?? 'Pick the workflow this route targets.'}
                   </p>
@@ -877,9 +877,21 @@ export function ConfigEditor({ projectId }: { projectId: string }) {
       ) : draft.error ? (
         <PageState error kind={draft.error as PageErrorKind} title="Failed to load the config record." testId="config-error" />
       ) : record === null ? (
-        <p data-testid="config-empty-unset" className="text-body text-ink-muted">
-          No config record yet — the first save creates it.
-        </p>
+        <>
+          {admin && (
+            <button
+              type="button"
+              data-testid="config-bootstrap"
+              onClick={() => { draft.setDraft(emptyRecord(projectId)); }}
+              className="mb-3 rounded-md bg-accent px-3 py-1.5 text-body font-medium text-white hover:bg-accent-strong"
+            >
+              Start a config record
+            </button>
+          )}
+          <p data-testid="config-empty-unset" className="text-body text-ink-muted">
+            No config record yet — the first save creates it.
+          </p>
+        </>
       ) : (
         <>
           {record !== null && admin && (
@@ -892,7 +904,7 @@ export function ConfigEditor({ projectId }: { projectId: string }) {
               Start a config record
             </button>
           )}
-          {entries.length === 0 && record !== null && (
+          {entries.length === 0 && (
             <p data-testid="config-empty" className="mb-2 text-body text-ink-muted">
               No configLibrary entries yet; add one with the KB-310 variable map below.
             </p>
