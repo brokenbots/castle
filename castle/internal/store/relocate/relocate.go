@@ -185,6 +185,9 @@ var Tables = []table{
 			{"created_at", KindTS, false}, {"updated_at", KindTS, false},
 			{"project_id", KindText, true}, {"input_values", KindText, true}, {"target_metadata", KindText, true},
 			{"refire_root_run_id", KindText, false}, {"refire_attempt", KindInt, false},
+			// KB-343 lease dispositions (0025): scan-visit count and the
+			// named rule that declined the row's last lease scan.
+			{"lease_attempt", KindInt, false}, {"last_lease_rejection", KindText, true},
 		},
 	},
 	{
