@@ -16,7 +16,17 @@ import {
   type PageErrorKind,
 } from '@castle/run-viewer';
 import type { Run } from '@castle/run-viewer';
-import { KB310_CONFIG_SLOT_VARIABLES, type CfgRecord, type ConfigEntry, type Route } from './record';
+import {
+  emptyRecord,
+  TYPE_URL,
+  TYPE_IMAGE,
+  KB310_CONFIG_SLOT_VARIABLES,
+  type CfgRecord,
+  type ConfigEntry,
+  type Interface,
+  type Route,
+  type Workflow,
+} from './record';
 import {
   bindingErrors,
   newRoute,
@@ -657,6 +667,176 @@ export function RoutesEditor({ projectId }: { projectId: string }) {
   );
 }
 
+// --- Catalog editor: the workflowLibrary entries the record owns (---
+
+/**
+ * Workflow import/edit rides the config record: catalog entries are typed
+ * url/image workflows; the interface editor takes the raw
+ * criteria.brokenbots.dev/v1 WorkflowInterface JSON (parsed client-side,
+ * shape-checked by the record mirror — castle re-validates on save).
+ */
+function CatalogSection({ draft, admin }: { draft: WorkflowDraft; admin: boolean }) {
+  const record = draft.record;
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState<string>(TYPE_URL);
+  const [parseErrors, setParseErrors] = useState<Record<string, string>>( {});
+
+  if (record === null) return null;
+
+  const catalog = record.catalog ?? {};
+  const setCatalog = (next: Record<string, Workflow>) => draft.setDraft({ ...record, catalog: next });
+  const setEntryField = (name: string, next: Partial<Workflow>) =>
+    setCatalog({ ...catalog, [name]: { ...catalog[name], ...next } });
+
+  const setInterface = (name: string, raw: string) => {
+    if (raw.trim() === '') {
+      const { interface: _drop, ...rest } = catalog[name];
+      setParseErrors({ ...parseErrors, [name]: '' });
+      setCatalog({ ...catalog, [name]: rest as Workflow });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Interface;
+      setParseErrors({ ...parseErrors, [name]: '' });
+      setCatalog({ ...catalog, [name]: { ...catalog[name], interface: parsed } });
+    } catch (err) {
+      setParseErrors({ ...parseErrors, [name]: 'Interface is not valid JSON yet — castle would reject the record.' });
+    }
+  };
+
+  return (
+    <div className="mb-4">
+      <h3 className="mb-2 text-heading font-medium text-ink">Workflow catalog</h3>
+      {Object.keys(catalog).length === 0 && (
+        <p data-testid="config-catalog-empty" className="mb-2 text-body text-ink-muted">
+          No workflows yet — add the first one below to import it into the project record.
+        </p>
+      )}
+      {Object.entries(catalog).map(([name, wf]) => (
+        <div key={name} data-testid={'config-catalog-row-' + name} className="mb-3 rounded-md border border-line bg-surface-raised p-3">
+          <div className="flex flex-wrap items-center gap-2 text-meta text-ink-muted">
+            <span className="font-mono text-body text-ink">{name}</span>
+            {admin && (
+              <button type="button" data-testid={'config-catalog-remove-' + name} onClick={() => {
+                const next = { ...catalog };
+                delete next[name];
+                setCatalog(next);
+              }} className="rounded-md border border-line px-2 py-0.5 text-meta text-ink-muted hover:bg-surface hover:text-ink">
+                Remove
+              </button>
+            )}
+          </div>
+          <div className="mt-2 grid gap-2 sm:grid-cols-4">
+            <label className="flex flex-col text-meta text-ink-muted">
+              type
+              <select
+                data-testid={'config-catalog-' + name + '-type'}
+                value={wf.type}
+                disabled={!admin}
+                onChange={(e) => setEntryField(name, { type: e.target.value })}
+                className={'mt-1 ' + inputClass}
+              >
+                <option value="url">url</option>
+                <option value="image">image</option>
+              </select>
+            </label>
+            <label className="flex flex-col text-meta text-ink-muted">
+              url
+              <input
+                data-testid={'config-catalog-' + name + '-url'}
+                value={wf.url ?? ''}
+                disabled={!admin}
+                onChange={(e) => setEntryField(name, { url: e.target.value === '' ? undefined : e.target.value })}
+                className={'mt-1 ' + inputClass}
+              />
+            </label>
+            <label className="flex flex-col text-meta text-ink-muted">
+              ref
+              <input
+                data-testid={'config-catalog-' + name + '-ref'}
+                value={wf.ref ?? ''}
+                disabled={!admin}
+                onChange={(e) => setEntryField(name, { ref: e.target.value === '' ? undefined : e.target.value })}
+                className={'mt-1 ' + inputClass}
+              />
+            </label>
+            <label className="flex flex-col text-meta text-ink-muted">
+              image
+              <input
+                data-testid={'config-catalog-' + name + '-image'}
+                value={wf.image ?? ''}
+                disabled={!admin}
+                onChange={(e) => setEntryField(name, { image: e.target.value === '' ? undefined : e.target.value })}
+                className={'mt-1 ' + inputClass}
+              />
+            </label>
+          </div>
+          {admin && (
+            <label className="mt-2 flex flex-col text-meta text-ink-muted">
+              interface (JSON; KB-310 slots)
+              <textarea
+                data-testid={'config-catalog-' + name + '-interface'}
+                rows={3}
+                value={wf.interface === undefined ? '' : JSON.stringify(wf.interface)}
+                onChange={(e) => setInterface(name, e.target.value)}
+                className={'mt-1 font-mono ' + inputClass}
+              />
+            </label>
+          )}
+          {(parseErrors[name] ?? '') !== '' && (
+            <p role="alert" data-testid={'config-catalog-' + name + '-parse-error'} className="mt-1 text-meta text-danger">
+              {parseErrors[name]}
+            </p>
+          )}
+        </div>
+      ))}
+      {admin && (
+        <form
+          data-testid="config-catalog-add"
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const name = newName.trim();
+            if (!name || catalog[name]) return;
+            const seed: Workflow = newType === TYPE_IMAGE
+              ? { type: TYPE_IMAGE, image: '' }
+              : { type: TYPE_URL, url: '' };
+            setCatalog({ ...catalog, [name]: seed });
+            setNewName('');
+          }}
+        >
+          <input
+            data-testid="config-catalog-add-name"
+            aria-label="New workflow name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="workflow name e.g. ship-it"
+            className={inputClass + ' w-56'}
+          />
+          <select
+            data-testid="config-catalog-add-type"
+            aria-label="New workflow type"
+            value={newType}
+            onChange={(e) => setNewType(e.target.value)}
+            className={inputClass}
+          >
+            <option value="url">url</option>
+            <option value="image">image</option>
+          </select>
+          <button
+            type="submit"
+            data-testid="config-catalog-add-submit"
+            disabled={!!newName.trim() && catalog[newName.trim()] !== undefined}
+            className="rounded-md border border-line px-2 py-1 text-body text-ink hover:bg-surface-raised disabled:opacity-60"
+          >
+            Add workflow
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
 // --- Config editor: configLibrary entries + slot defaults + payload preview ---
 
 const CONFIG_ENTRY_FIELDS = [
@@ -696,18 +876,53 @@ export function ConfigEditor({ projectId }: { projectId: string }) {
         <PageState loading title="Loading config record…" testId="config-loading" />
       ) : draft.error ? (
         <PageState error kind={draft.error as PageErrorKind} title="Failed to load the config record." testId="config-error" />
+      ) : record === null ? (
+        <p data-testid="config-empty-unset" className="text-body text-ink-muted">
+          No config record yet — the first save creates it.
+        </p>
       ) : (
         <>
+          {record !== null && admin && (
+            <button
+              type="button"
+              data-testid="config-bootstrap"
+              onClick={() => { draft.setDraft(emptyRecord(projectId)); }}
+              className="mb-3 rounded-md bg-accent px-3 py-1.5 text-body font-medium text-white hover:bg-accent-strong"
+            >
+              Start a config record
+            </button>
+          )}
           {entries.length === 0 && record !== null && (
             <p data-testid="config-empty" className="mb-2 text-body text-ink-muted">
               No configLibrary entries yet; add one with the KB-310 variable map below.
             </p>
           )}
-          {record === null && (
-            <p data-testid="config-empty-unset" className="text-body text-ink-muted">
-              No config record yet — the first save creates it.
-            </p>
-          )}
+          <div className="mb-3 rounded-md border border-line bg-surface-raised p-3">
+            <p className="mb-2 text-meta font-medium text-ink">Record header</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="flex flex-col text-meta text-ink-muted">
+                registryName
+                <input
+                  data-testid="config-registryname"
+                  value={record.registryName}
+                  disabled={!admin}
+                  onChange={(e) => { if (record !== null) draft.setDraft({ ...record, registryName: e.target.value }); }}
+                  className={'mt-1 ' + inputClass}
+                />
+              </label>
+              <label className="flex flex-col text-meta text-ink-muted">
+                namespace
+                <input
+                  data-testid="config-namespace"
+                  value={record.namespace ?? ''}
+                  disabled={!admin}
+                  onChange={(e) => { if (record !== null) draft.setDraft({ ...record, namespace: e.target.value }); }}
+                  className={'mt-1 ' + inputClass}
+                />
+              </label>
+            </div>
+          </div>
+          <CatalogSection draft={draft} admin={admin} />
           {entries.map(([name, entry]) => {
             const shaped = entry as ConfigEntry;
             const shapeErrors = validateConfigEntryShape(name, shaped);
@@ -834,6 +1049,11 @@ export function ConfigEditor({ projectId }: { projectId: string }) {
             </button>
           )}
         </>
+      )}
+      {record !== null && (
+        <pre data-testid="config-record-preview" className="mt-3 overflow-x-auto rounded-md border border-line bg-surface-raised p-2 text-meta text-ink">
+          {JSON.stringify(record, null, 2)}
+        </pre>
       )}
       {record !== null && <RecordValidationPreview record={record} testId="config-validation" />}
       {draft.saved && (
