@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"time"
@@ -599,6 +600,13 @@ func (s *ServerServer) GetProjectConfig(ctx context.Context, req *connect.Reques
 	}), nil
 }
 
+// maxProjectConfigDocSize bounds one SetProjectConfig document. A config
+// record carries shapes, not blob data — this is defense in depth for a
+// record write path that would otherwise be unbounded (connect-go does
+// not bound request payloads); the clear path is exempt (an empty
+// document clears the record).
+const maxProjectConfigDocSize = 1 << 20 // 1 MiB
+
 // SetProjectConfig is the KB-339 config write: the whole record swaps under
 // optimistic etag semantics, mirroring the settings swap. The record must
 // parse and validate a ProjectWorkflowConfig shape fail-closed (values stay
@@ -624,6 +632,10 @@ func (s *ServerServer) SetProjectConfig(ctx context.Context, req *connect.Reques
 			return nil, projectStoreError(err)
 		}
 		return connect.NewResponse(&castlev1.SetProjectConfigResponse{Etag: etag}), nil
+	}
+	if len(req.Msg.GetDocument()) > maxProjectConfigDocSize {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("project config doc is %d bytes; SetProjectConfig carries shapes, not blob data, bound to %d bytes", len(req.Msg.GetDocument()), maxProjectConfigDocSize))
 	}
 	record, err := confighome.ParseRecord(req.Msg.GetDocument())
 	if err != nil {

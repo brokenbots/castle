@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -235,6 +236,42 @@ func TestProjectConfigWireRejectsInvalidShape(t *testing.T) {
 	// against the (now unset) empty etag loses.
 	if _, err := set("dangling-etag", nil); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("stale clear: got %v, want FailedPrecondition", err)
+	}
+}
+
+// TestProjectConfigWireRejectsOversizedDoc pins the surface bound on the
+// config write: SetProjectConfig carries shapes, not blob data, so a
+// document past maxProjectConfigDocSize must fail with InvalidArgument
+// before any parse, validation, or storage — and the record (unset here)
+// stays untouched.
+func TestProjectConfigWireRejectsOversizedDoc(t *testing.T) {
+	f := newSettingsFixture(t)
+	ctx := context.Background()
+	createProject(t, ctx, f.pClient, f.agentToken, f.projectID, castlev1.ProjectMembershipPolicy_PROJECT_MEMBERSHIP_POLICY_OPEN)
+
+	doc, err := wireConfigRecord().Marshal()
+	if err != nil {
+		t.Fatalf("marshal record: %v", err)
+	}
+	if len(doc) >= maxProjectConfigDocSize {
+		t.Fatalf("fixture record is %d bytes; want a fixture under the %d byte bound", len(doc), maxProjectConfigDocSize)
+	}
+	big := append(append([]byte(nil), doc...), bytes.Repeat([]byte(" "), maxProjectConfigDocSize)...)
+	if len(big) <= maxProjectConfigDocSize {
+		t.Fatalf("padded probe is %d bytes; want it over the bound", len(big))
+	}
+	_, err = f.pClient.SetProjectConfig(ctx, bearer(&castlev1.SetProjectConfigRequest{
+		ProjectId: f.projectID, ExpectedEtag: "", Document: big,
+	}, f.consoleToken))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("oversized doc: got %v, want InvalidArgument", err)
+	}
+	current, err := f.pClient.GetProjectConfig(ctx, bearer(&castlev1.GetProjectConfigRequest{ProjectId: f.projectID}, f.consoleToken))
+	if err != nil {
+		t.Fatalf("get after rejected write: %v", err)
+	}
+	if len(current.Msg.Document) != 0 || current.Msg.Etag != "" {
+		t.Fatalf("rejected oversized write leaked a record: %d bytes etag %q", len(current.Msg.Document), current.Msg.Etag)
 	}
 }
 
