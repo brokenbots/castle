@@ -56,6 +56,45 @@ const memberRows: Record<string, { project_id: string; member_id: string; kind: 
 
 const refireRows: Record<string, { max_attempts: number; backoff_seconds: number; transient: string[]; parks: string[]; cosmetics: string[] }> = {};
 
+// KB-340 console fixtures: one workflow config record per project (the
+// canonical JSON the proto bytes carry) and the run rows the Runs tab pages
+// through. Unscoped legacy runs carry a null project id — the admin
+// include_unscoped arm observes them.
+const configRows: Record<string, { json: string; etag: string; seq: number }> = {};
+const runRows: { run: Record<string, unknown>; project_id: string | null }[] = [];
+
+/** Test fixture: install a project's workflow config record JSON, returning its etag. */
+export function seedProjectConfig(projectId: string, json: string): string {
+  const seq = (configRows[projectId]?.seq ?? 0) + 1;
+  const etag = `cfg-etag-${projectId}-${seq}`;
+  configRows[projectId] = { json, etag, seq };
+  return etag;
+}
+
+/** Test fixture: append run rows (newest-first); null project_id = legacy unscoped. */
+export function seedProjectRuns(
+  projectId: string | null,
+  runs: Record<string, unknown>[],
+): void {
+  for (const run of runs) runRows.push({ run, project_id: projectId });
+}
+
+/** Test fixture: drop the accumulated run rows. */
+export function resetProjectRuns(): void {
+  runRows.length = 0;
+}
+
+function decodeBytesDoc(document: unknown): string {
+  // Protojson carries bytes fields as base64 strings on the wire.
+  if (typeof document !== 'string' || document === '') return '';
+  return decodeURIComponent(escape(atob(document)));
+}
+
+function encodeBytesDoc(json: string): string {
+  if (!json) return '';
+  return btoa(unescape(encodeURIComponent(json)));
+}
+
 function seedProject(id: string, policy: 'OPEN' | 'CLOSED', members: string[]) {
   projectRows[id] = {
     id,
@@ -266,6 +305,96 @@ const projectHandlers = [
     const idx = members.findIndex((m) => m.member_id === memberId);
     if (idx >= 0) members.splice(idx, 1);
     return HttpResponse.json({});
+  }),
+  // KB-339 config home + KB-340 console: the project's ONE workflow config
+  // record rides Get/SetProjectConfig with the same etag-swap discipline as
+  // settings, and the catalog listing derives from the stored record.
+  http.post(projectPath('GetProjectConfig'), async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const row = configRows[projectId];
+    return HttpResponse.json({
+      document: encodeBytesDoc(row?.json ?? ''),
+      etag: row?.etag ?? '',
+    });
+  }),
+  http.post(projectPath('SetProjectConfig'), async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const row = configRows[projectId];
+    const expectedEtag = readField<string>(body, 'expected_etag') ?? '';
+    if ((row?.etag ?? '') !== expectedEtag) {
+      return HttpResponse.json(
+        { code: 'failed_precondition', message: 'config record was modified concurrently' },
+        { status: 412 },
+      );
+    }
+    let json: string;
+    try {
+      json = decodeBytesDoc(readField<string>(body, 'document'));
+      JSON.parse(json) as unknown;
+    } catch {
+      return HttpResponse.json(
+        { code: 'invalid_argument', message: 'record is not valid JSON' },
+        { status: 400 },
+      );
+    }
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    if (parsed.apiVersion !== 'criteria.brokenbots.dev/v1' || parsed.kind !== 'ProjectWorkflowConfig' || typeof parsed.registryName !== 'string') {
+      return HttpResponse.json(
+        { code: 'invalid_argument', message: 'record is not a ProjectWorkflowConfig record' },
+        { status: 400 },
+      );
+    }
+    const etag = seedProjectConfig(projectId, json);
+    return HttpResponse.json({ etag });
+  }),
+  http.post(projectPath('ListWorkflowCatalog'), async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const row = configRows[projectId];
+    if (!row) return HttpResponse.json({ entries: [], etag: '' });
+    const entries: Record<string, unknown>[] = [];
+    try {
+      const rec = JSON.parse(row.json) as {
+        namespace?: string;
+        digests?: Record<string, string>;
+        catalog?: Record<string, Record<string, unknown>>;
+      };
+      for (const [name, wf] of Object.entries(rec.catalog ?? {})) {
+        entries.push({
+          name,
+          type: wf['type'],
+          url: (wf['url'] as string) ?? '',
+          ref: (wf['ref'] as string) ?? '',
+          digest: rec.digests?.[name] ?? '',
+          namespace: rec.namespace ?? '',
+          class: (wf['class'] as string) ?? '',
+          image: (wf['image'] as string) ?? '',
+          interface_name: ((wf['interface'] as Record<string, unknown>)?.['workflow'] as string) ?? '',
+        });
+      }
+    } catch {
+      // A deliberately corrupt fixture answers an empty catalog; the etag
+      // still reflects the stored row so previews stay consistent.
+    }
+    return HttpResponse.json({ entries, etag: row.etag });
+  }),
+  http.post(projectPath('ListProjectRuns'), async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = readField<string>(body, 'project_id') ?? '';
+    const status = readField<string>(body, 'status') ?? '';
+    const limit = readField<number>(body, 'limit') ?? 0;
+    const pageToken = readField<string>(body, 'page_token') ?? '';
+    const includeUnscoped = readField<boolean>(body, 'include_unscoped') ?? false;
+    const scope = runRows.filter(
+      (r) => r.project_id === projectId || (includeUnscoped && r.project_id === null),
+    );
+    const filtered = status ? scope.filter((r) => r.run['status'] === status) : scope;
+    const offset = /^[0-9]+$/.test(pageToken) ? Number(pageToken) : 0;
+    const page = limit > 0 ? filtered.slice(offset, offset + limit) : filtered;
+    const next = limit > 0 && offset + limit < filtered.length ? String(offset + limit) : '';
+    return HttpResponse.json({ runs: page.map((r) => r.run), next_page_token: next });
   }),
 ];
 

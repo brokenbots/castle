@@ -1,8 +1,14 @@
 import { createApi } from '@reduxjs/toolkit/query/react';
 import { fakeBaseQuery } from '@reduxjs/toolkit/query';
 import { ConnectError } from '@connectrpc/connect';
-import { connectCodeName, projectsClient, tsToIso } from '@castle/run-viewer';
+import { connectCodeName, mapRun, projectsClient, tsToIso } from '@castle/run-viewer';
 import type { PbProject, PbProjectMember, PbRefirePolicy } from '@castle/run-viewer';
+import type { Run } from '@castle/run-viewer';
+import type {
+  PbListProjectRunsRequest,
+  PbWorkflowCatalogEntry,
+} from '@castle/run-viewer';
+import type { CfgRecord } from './record';
 import { ProjectMemberKind, ProjectMembershipPolicy } from '@castle/run-viewer';
 
 // The settings console rides castle.v1.ProjectService (KB-324): projects,
@@ -80,6 +86,60 @@ export interface RemoveMemberArgs {
   memberId: string;
 }
 
+// --- KB-340: the project console's config/routes/catalog/runs surfaces ---
+
+/** The project's workflow config doc: canonical JSON, the TS-model parse, and the etag. */
+export interface ProjectConfigDoc {
+  /** Canonical JSON of the ProjectWorkflowConfig record; '' when unset. */
+  json: string;
+  /** Present when the document parses as a record; absent when unset or the parse fails. */
+  record?: CfgRecord;
+  /** Content-addressed etag; '' when the doc is unset. */
+  etag: string;
+}
+
+export interface SetProjectConfigArgs {
+  projectId: string;
+  /** The complete replacement record as JSON (config is swapped whole, never merged). */
+  json: string;
+  /** The etag the caller last read, or '' when the record is still unset. */
+  expectedEtag: string;
+}
+
+export interface WorkflowCatalogEntry {
+  name: string;
+  type: string;
+  url: string;
+  ref: string;
+  digest: string;
+  namespace: string;
+  class: string;
+  image: string;
+  /** The declared interface's workflow name when the entry carries one. */
+  interfaceName: string;
+}
+
+export interface WorkflowCatalogDoc {
+  entries: WorkflowCatalogEntry[];
+  etag: string;
+}
+
+export interface ListProjectRunsArgs {
+  projectId: string;
+  /** '' matches every run status. */
+  status: string;
+  /** Page size; 0 = everything unpaginated. */
+  limit: number;
+  pageToken: string;
+  /** Console admins only — the legacy unscoped runs arm. */
+  includeUnscoped: boolean;
+}
+
+export interface ProjectRunsPage {
+  runs: Run[];
+  nextPageToken: string;
+}
+
 function toError(err: unknown) {
   if (err instanceof ConnectError) {
     return { status: connectCodeName(err.code), data: err.rawMessage };
@@ -127,6 +187,33 @@ function mapRefirePolicy(p: PbRefirePolicy): RefirePolicyDoc {
   };
 }
 
+function decodeDocument(bytes: Uint8Array): string {
+  return new TextDecoder().decode(bytes);
+}
+
+function parseRecordDoc(json: string): CfgRecord | undefined {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json) as CfgRecord;
+  } catch {
+    return undefined;
+  }
+}
+
+function mapCatalogEntry(e: PbWorkflowCatalogEntry): WorkflowCatalogEntry {
+  return {
+    name: e.name,
+    type: e.type,
+    url: e.url,
+    ref: e.ref,
+    digest: e.digest,
+    namespace: e.namespace,
+    class: e.class,
+    image: e.image,
+    interfaceName: e.interfaceName,
+  };
+}
+
 /** Tag id for a per-(project, route) refire policy; '' route = default row. */
 export function policyId(projectId: string, route: string): string {
   return `${projectId}/${route}`;
@@ -135,7 +222,7 @@ export function policyId(projectId: string, route: string): string {
 export const settingsApi = createApi({
   reducerPath: SETTINGS_API_REDUCER_PATH,
   baseQuery: fakeBaseQuery<{ status: string | number; data: string }>(),
-  tagTypes: ['Project', 'ProjectSettings', 'RefirePolicy', 'ProjectMember'],
+  tagTypes: ['Project', 'ProjectSettings', 'RefirePolicy', 'ProjectMember', 'ProjectConfig', 'ProjectRuns'],
   endpoints: (b) => ({
     listProjects: b.query<ProjectInfo[], void>({
       queryFn: async () => {
@@ -271,6 +358,69 @@ export const settingsApi = createApi({
       },
       invalidatesTags: (_r, _e, { projectId }) => [{ type: 'ProjectMember', id: projectId }],
     }),
+    // KB-339 config home + KB-340 console: the project's ONE workflow config
+    // record. Writes swap whole documents under etag semantics and re-render
+    // the namespace ConfigMaps; catalog/routes/preview all read from here.
+    getProjectConfig: b.query<ProjectConfigDoc, string>({
+      queryFn: async (projectId) => {
+        try {
+          const resp = await projectsClient.getProjectConfig({ projectId });
+          const json = decodeDocument(resp.document);
+          return { data: { json, record: parseRecordDoc(json), etag: resp.etag } };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      providesTags: (_r, _e, projectId) => [{ type: 'ProjectConfig', id: projectId }],
+    }),
+    setProjectConfig: b.mutation<string, SetProjectConfigArgs>({
+      queryFn: async ({ projectId, json, expectedEtag }) => {
+        try {
+          const resp = await projectsClient.setProjectConfig({
+            projectId,
+            document: new TextEncoder().encode(json),
+            expectedEtag,
+          });
+          return { data: resp.etag };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      invalidatesTags: (_r, _e, { projectId }) => [
+        { type: 'ProjectConfig', id: projectId },
+        { type: 'Project', id: projectId },
+      ],
+    }),
+    listWorkflowCatalog: b.query<WorkflowCatalogDoc, string>({
+      queryFn: async (projectId) => {
+        try {
+          const resp = await projectsClient.listWorkflowCatalog({ projectId });
+          return {
+            data: {
+              entries: resp.entries.map(mapCatalogEntry),
+              // The catalog etag is the config record etag: the editor's
+              // optimistic-write handle for the listing it just read.
+              etag: resp.etag,
+            },
+          };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      providesTags: (_r, _e, projectId) => [{ type: 'ProjectConfig', id: projectId }],
+    }),
+    listProjectRuns: b.query<ProjectRunsPage, ListProjectRunsArgs>({
+      queryFn: async ({ projectId, status, limit, pageToken, includeUnscoped }) => {
+        try {
+          const req: Partial<PbListProjectRunsRequest> = { projectId, status, limit, pageToken, includeUnscoped };
+          const resp = await projectsClient.listProjectRuns(req);
+          return { data: { runs: resp.runs.map(mapRun), nextPageToken: resp.nextPageToken } };
+        } catch (err) {
+          return { error: toError(err) };
+        }
+      },
+      providesTags: (_r, _e, { projectId }) => [{ type: 'ProjectRuns', id: projectId }],
+    }),
   }),
 });
 
@@ -285,4 +435,8 @@ export const {
   useListProjectMembersQuery,
   useAddProjectMemberMutation,
   useRemoveProjectMemberMutation,
+  useGetProjectConfigQuery,
+  useSetProjectConfigMutation,
+  useListWorkflowCatalogQuery,
+  useListProjectRunsQuery,
 } = settingsApi;

@@ -69,6 +69,9 @@ export type {
   Project as PbProject,
   ProjectMember as PbProjectMember,
   RefirePolicy as PbRefirePolicy,
+  // KB-340: the project console rides these too (config/catalog/runs).
+  WorkflowCatalogEntry as PbWorkflowCatalogEntry,
+  ListProjectRunsRequest as PbListProjectRunsRequest,
 } from './gen/castle/v1/projects_pb';
 export { ProjectMemberKind, ProjectMembershipPolicy } from './gen/castle/v1/projects_pb';
 
