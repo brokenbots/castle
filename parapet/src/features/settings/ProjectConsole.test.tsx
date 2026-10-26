@@ -525,6 +525,21 @@ describe('config editor', () => {
     expect(screen.queryByTestId('config-saved')).not.toBeInTheDocument();
     expect(screen.queryByTestId('config-conflict')).not.toBeInTheDocument();
   });
+
+  test('the config preview surfaces a ParseRecord unknown-field rejection before save', async () => {
+    const bad = JSON.parse(JSON.stringify(configRecord)) as typeof configRecord;
+    (bad.catalog['ship-it'].interface as Record<string, unknown>).secrets = { KUBECONFIG: 'creds/kubeconfig' };
+    seedProjectConfig('alpha', JSON.stringify(bad));
+    await renderConsole('alpha');
+    await openTab('config');
+
+    const preview = await screen.findByTestId('config-validation');
+    expect(preview).toHaveTextContent(/catalog\["ship-it"\]\.interface: unknown field "secrets"/);
+    // The unknown-field error leads the preview, mirroring the server's
+    // ParseRecord-before-Validate order.
+    const text = (screen.getByTestId('config-validation') as HTMLElement).textContent ?? '';
+    expect(text).toMatch(/unknown field "secrets"/);
+  });
 });
 
 describe('binding panel', () => {
