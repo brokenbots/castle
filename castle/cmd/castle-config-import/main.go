@@ -20,9 +20,9 @@
 //     (their assembly stays renderable post-cutover); a record with no
 //     binding stays pre-cutover with an explicit warning, and a run
 //     where no record is bound refuses before any write. The flip is
-//     applied after the round-trip checks never instead of them, and
+//     applied after the round-trip checks — never instead of them — and
 //     the flipped records must re-render a routes payload before the
-//     first write — a partial flip over a tree another un-flipped
+//     first write: a partial flip over a tree another un-flipped
 //     record shares refuses here instead of writing an un-renderable
 //     castle-authoritative state.
 //
@@ -245,7 +245,11 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 
 	// The verified round-trip: the records' assembly must render a routes
 	// payload canonically equal to the live file, and each binding payload
-	// must render canonically equal to its live file.
+	// must render canonically equal to its live file. With --cutover the
+	// checksum reported at the end is the post-flip render (the stored
+	// state intentionally differs from live: the stale surfaces are
+	// stripped), so the print never implies the flipped records still
+	// equal the live payload.
 	assembly := confighome.NewAssemblyFor(projRecords)
 	renderedRoutes, err := assembly.RenderRoutesPayload()
 	if err != nil {
@@ -263,6 +267,7 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "round-trip MISMATCH: rendered checksum %s, live checksum %s\n", checksum, liveChecksum)
 		return errors.New("records rendered a routes payload that differs from the live payload; import aborted (no writes happened)")
 	}
+	cutoverChecksum := ""
 
 	for _, pr := range projRecords {
 		if pr.Record.Binding == nil {
@@ -292,20 +297,20 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 	// strip the deprecated global run-config surfaces so the flipped
 	// state still re-renders. Unbound records stay pre-cutover with an
 	// explicit warning; a run with no bindings at all refuses.
+	cutoverFlipped := 0
 	if cfg.cutover {
-		flipped := 0
 		for _, pr := range projRecords {
 			if pr.Record.Binding != nil {
 				if err := pr.Record.MarkCutoverDone(); err != nil {
 					return fmt.Errorf("record %q after cutover flip: %w", pr.Record.RegistryName, err)
 				}
-				flipped++
+				cutoverFlipped++
 				continue
 			}
 			fmt.Fprintf(stderr, "--cutover: project %q (%s) stays pre-cutover (binding-first: no namespace binding in the import; import its binding, then re-run)\n",
 				pr.Record.RegistryName, pr.ProjectID)
 		}
-		if flipped == 0 {
+		if cutoverFlipped == 0 {
 			return errors.New("cutover refuses to flip: no record carries a namespace binding (binding-first; import namespace bindings with --binding, then re-run)")
 		}
 		// Re-verify post-flip, still BEFORE any write: each flipped
@@ -322,9 +327,15 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 				return fmt.Errorf("render binding for %s after the cutover flip: %w", pr.ProjectID, err)
 			}
 		}
-		if _, err := confighome.NewAssemblyFor(projRecords).RenderRoutesPayload(); err != nil {
+		flippedPayload, err := confighome.NewAssemblyFor(projRecords).RenderRoutesPayload()
+		if err != nil {
 			return fmt.Errorf("re-render routes payload after the cutover flip: %w (import aborted; no writes happened)", err)
 		}
+		postFlipChecksum, err := confighome.CanonicalChecksum(flippedPayload)
+		if err != nil {
+			return fmt.Errorf("checksum the post-flip routes payload: %w", err)
+		}
+		cutoverChecksum = postFlipChecksum
 	}
 
 	// Open the store per profile: Open runs the migrations so a fresh
@@ -409,7 +420,12 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintf(stdout, "imported %q: project %s etag %s\n", t.name, t.slug, etag)
 	}
-	fmt.Fprintf(stdout, "verified %d record(s) with routes round-trip checksum %s\n", len(targets), checksum)
+	if cutoverFlipped > 0 {
+		fmt.Fprintf(stdout, "verified %d record(s): live round-trip checksum %s, cutover applied, post-flip castle checksum %s\n",
+			len(targets), checksum, cutoverChecksum)
+	} else {
+		fmt.Fprintf(stdout, "verified %d record(s) with routes round-trip checksum %s\n", len(targets), checksum)
+	}
 	return nil
 }
 
