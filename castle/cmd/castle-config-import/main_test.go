@@ -236,6 +236,10 @@ func TestConfigImportFailsClosed(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("empty args: exit %d, want 2", code)
 	}
+	code, msg = run(append(importArgs(db, "--create-projects"), "--policy", "weird"))
+	if code != 2 || !strings.Contains(msg, "unknown --policy") {
+		t.Fatalf("bad policy: exit %d msg %s, want 2 unknown policy", code, msg)
+	}
 
 	// Mapping completeness failure: only one of four records mapped.
 	partial := []string{

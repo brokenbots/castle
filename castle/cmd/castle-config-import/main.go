@@ -147,6 +147,9 @@ func (c *config) validate() error {
 	} else if !strings.EqualFold(c.profile, "pg") {
 		return fmt.Errorf("unknown --store profile %q (want sqlite or pg)", c.profile)
 	}
+	if c.policy != store.ProjectMembershipOpen && c.policy != store.ProjectMembershipClosed {
+		return fmt.Errorf("unknown --policy %q (want %s or %s)", c.policy, store.ProjectMembershipOpen, store.ProjectMembershipClosed)
+	}
 	if c.profile == "pg" && c.pgDSN == "" {
 		return errors.New("--pg-dsn (or CASTLE_PG_DSN) is required for --store pg")
 	}
