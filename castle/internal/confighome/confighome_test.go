@@ -543,9 +543,6 @@ func TestRecordMarkCutoverDone(t *testing.T) {
 	if err := godev.Validate(); err != nil {
 		t.Fatalf("flipped record must still validate: %v", err)
 	}
-	// Every record flips its OWN copies of shared entries too, so the
-	// stripped copies stay equal (workflowsEqual) and the assembly is a
-	// valid post-cutover payload with no stale surfaces.
 	if _, err := testAssembly(t, records).RenderRoutesPayload(); err != nil {
 		t.Fatalf("flipped assembly must render post-cutover: %v", err)
 	}
