@@ -18,12 +18,11 @@ import (
 // getVersion — so the real kanboardtrigger adapter and kanboard.Client run
 // against it unchanged.
 type optionbFakeKanboard struct {
-	mu       sync.Mutex
-	project  string
-	nextTask int
-	tasks    map[int]*kanboard.Task
-	tags     map[int][]string
-	columns  []struct {
+	mu      sync.Mutex
+	project string
+	tasks   map[int]*kanboard.Task
+	tags    map[int][]string
+	columns []struct {
 		ID    int
 		Title string
 	}
@@ -72,7 +71,6 @@ func (fk *optionbFakeKanboard) addCard(t *testing.T, id int, column, title strin
 	if !ok {
 		t.Fatalf("fake kanboard: unknown column %q", column)
 	}
-	fk.nextTask = max(fk.nextTask, id)
 	fk.tasks[id] = &kanboard.Task{ID: id, Title: title, ProjectID: 1, ColumnID: colID, SwimlaneID: 1}
 	fk.tags[id] = append([]string(nil), tags...)
 }

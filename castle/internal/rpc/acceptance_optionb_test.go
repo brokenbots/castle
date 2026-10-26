@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -89,8 +90,7 @@ type optionbFixture struct {
 	triggerToken string
 	agents       map[string]optionbAgent
 	board        *optionbFakeKanboard
-	boardCancel  context.CancelFunc
-	boardDone    chan error
+	boardStop    func()
 }
 
 // optionbReadLivePayload reads the confighome routes payload fixture — the
@@ -229,17 +229,18 @@ func optionbNewFixture(t *testing.T) *optionbFixture {
 	return fx
 }
 
-var optionbTokensUsed sync.Map
+var (
+	optionbTokensMu   sync.Mutex
+	optionbTokensUsed = map[string]int{}
+)
 
 // optionbSecretToken mints a unique token value for identity provisioning.
 func optionbSecretToken(t *testing.T, name string) string {
 	t.Helper()
-	n := 0
-	if v, ok := optionbTokensUsed.Load(name); ok {
-		n = v.(int) + 1
-	}
-	optionbTokensUsed.Store(name, n)
-	return fmt.Sprintf("tok-optionb-%s-%d", name, n)
+	optionbTokensMu.Lock()
+	defer optionbTokensMu.Unlock()
+	optionbTokensUsed[name]++
+	return fmt.Sprintf("tok-optionb-%s-%d", name, optionbTokensUsed[name])
 }
 
 func (fx *optionbFixture) ctx() context.Context {
@@ -427,20 +428,27 @@ func TestOptionBSeedImport(t *testing.T) {
 	verifyAgentMembers(t, fx)
 
 	// The transition window is real: the written tree carries pre-cutover
-	// namespaces, so the payload renders with deprecation warnings (the
-	// allowed window) — the same render the live import reported.
+	// namespaces, so the assembly reports the KB-313 deprecation warnings
+	// (the allowed window) — the two un-cut projects ("Kanboard Tickets"
+	// and "Criteria K8s Workflow Runner") still carry workflows with the
+	// global run-config surfaces the per-project bindings replace.
 	assembled := confighome.NewAssemblyFor(optionbFetchAllRecords(t, fx))
+	if warnings := assembled.DeprecationWarnings(); len(warnings) == 0 {
+		t.Fatalf("expected deprecation warnings for the pre-cutover registry, got none")
+	}
 	if _, err := assembled.RenderRoutesPayload(); err != nil {
 		t.Fatalf("render the written tree: %v", err)
 	}
 }
 
 // optionbLaneConfig is the board adapter's lane configuration for the demo:
-// one develop lane pointing at the kanboard-tickets record's
-// "kanboard-develop" route, triggered by cards entering "Ready", with the
-// lane's default repo binding (the card carries no repo tag — the static
-// lane config is the production shape).
-func optionbLaneConfig() *kanboardtrigger.Config {
+// one develop lane pointing at the given route of the kanboard-tickets
+// record (the first fire uses the imported "kanboard-develop" route; the
+// EDIT-FLOW refire re-boots the adapter pointed at the renamed
+// "kanboard-develop-edited" route), triggered by cards entering "Ready",
+// with the lane's default repo binding (the card carries no repo tag — the
+// static lane config is the production shape).
+func optionbLaneConfig(routeName string) *kanboardtrigger.Config {
 	return &kanboardtrigger.Config{
 		BoardProject:    optionbBoardProject,
 		CastleProjectID: optionbFireProject,
@@ -449,7 +457,7 @@ func optionbLaneConfig() *kanboardtrigger.Config {
 		DoneColumn:      "Done",
 		Lanes: []kanboardtrigger.Lane{
 			{
-				RouteName:      "kanboard-develop",
+				RouteName:      routeName,
 				Class:          kanboardtrigger.ClassDevelop,
 				TriggerColumns: []string{"Ready"},
 				WorkflowSource: "hcl-source",
@@ -502,12 +510,18 @@ func (c *optionbCastleClients) SetRefirePolicy(ctx context.Context, req *connect
 	return c.project.SetRefirePolicy(ctx, req)
 }
 
-// startBoard boots the real kanboardtrigger adapter against the fake board
-// and the real castle wire. The adapter polls immediately on boot; the
-// fixture records the run context for cleanup ordering (the board must be
-// cancelled before the wire server closes so the mirror's open streams do
-// not block shutdown).
-func (fx *optionbFixture) startBoard(t *testing.T, cfg *kanboardtrigger.Config) {
+// startBoard boots a kanboardtrigger adapter instance against the fake
+// board and the real castle wire, and returns the function that stops it:
+// cancel, then wait for adapter.Run to return (context.Canceled is
+// success; any other stop error fails the test). It is re-entrant — each
+// call owns its cancel func and done channel in local variables and its
+// own idempotent cleanup — so a test may stop one instance and boot a
+// second (the EDIT-FLOW re-points the lane at the edited route); the fake
+// board fx.board is shared across instances, holding the cards and the
+// moves log the tests assert on. Cleanup order per instance: the board
+// adapter is cancelled before the wire server closes, so the mirror's
+// open streams do not block shutdown.
+func (fx *optionbFixture) startBoard(t *testing.T, cfg *kanboardtrigger.Config) func() {
 	t.Helper()
 	if fx.board == nil {
 		fx.board = newOptionbFakeKanboard(t, optionbBoardProject, "Backlog", "Ready", "Review", "Done")
@@ -523,23 +537,25 @@ func (fx *optionbFixture) startBoard(t *testing.T, cfg *kanboardtrigger.Config) 
 		t.Fatalf("boot board adapter: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	fx.boardCancel = cancel
-	fx.boardDone = make(chan error, 1)
-	t.Cleanup(func() {
-		cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- adapter.Run(ctx)
+	}()
+	var once sync.Once
+	stop := func() {
+		once.Do(cancel)
 		select {
-		case err := <-fx.boardDone:
-			if err != nil && ctx.Err() == nil {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
 				t.Fatalf("board adapter stopped with error: %v", err)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("board adapter did not stop after cancel")
 		}
-	})
-	go func() {
-		err := adapter.Run(ctx)
-		fx.boardDone <- err
-	}()
+	}
+	t.Cleanup(stop)
+	fx.boardStop = stop
+	return stop
 }
 
 // addFiredCard seeds the demo card in the lane's trigger column: the fire
@@ -625,7 +641,7 @@ func optionbFireReady(t *testing.T, fx *optionbFixture) (optionbAgent, *connect.
 
 	// The board goes live with one demo card sitting in the lane's trigger
 	// column.
-	fx.startBoard(t, optionbLaneConfig())
+	fx.startBoard(t, optionbLaneConfig("kanboard-develop"))
 	fx.addFiredCard(t, optionbTicketID, "Option B demo card")
 
 	// FIRE: the adapter submits the assignment from the card's entry.
@@ -925,17 +941,28 @@ type optionbRenderedRoutes struct {
 }
 
 // TestOptionBEditConfigRefire is step 4 (EDIT-FLOW): the console edits the
-// project's ci gate config through the etag-gated write, the edited record
-// is immediately the routing truth (a stale-etag write conflicts; an
-// unknown route is rejected against the edited record), the assembled
-// routes payload carries the edit, and a refired card executes a fresh run
-// that clears the edited record's route gate.
+// project's config through the etag-gated write and the edited record is
+// immediately the routing truth. The edit RENAMES the develop route to
+// "kanboard-develop-edited" and repoints its configRef at a freshly added
+// "edited-gate" config entry, which makes both routing directions
+// load-bearing: the pre-edit route name is rejected by the route gate (on
+// the pre-edit record that name would still have fired, so a test that
+// ignored the record write fails here), and the renamed route is accepted,
+// leased to the project's operator on its control stream, and executed.
+// The assembled routes payload carries the rename and the edited command,
+// and a card refired through the edited route executes a fresh run that
+// settles the card on Done.
 //
-// DELIVERY BOUNDARY: ci_gate_cmd's ride into the k8s render (the
-// configSlots assembly the platform side consumes) is outside castle.
-// Castle's honest slice is the full editor flow on the wire reads/writes
-// PLUS the routing truth: the edited record gates which routes fire, so
-// the refired card's assignment proves the edit is live.
+// RESIDUAL (owed by criteria-k8s before the Option B program is declared
+// closed): the resolved ciGateCmd never leaves castle/internal/confighome
+// — the configSlots assembly that lifts a route's configRef into the
+// rendered ConfigMap the platform consumes is outside castle, and
+// SubmitProjectAssignment checks route names only — so this suite cannot
+// evidence the refired run executing WITH the edited ci gate command. What
+// is proven here: the editor flow (etag gate, lost-update conflict), the
+// edited record as the routing truth in both directions, the edit's
+// carriage in the rendered payload, and the refire routing through the
+// edited route.
 func TestOptionBEditConfigRefire(t *testing.T) {
 	fx := optionbSeed(t)
 	ctx := context.Background()
@@ -948,18 +975,24 @@ func TestOptionBEditConfigRefire(t *testing.T) {
 	optionbAwaitTerminal(t, clients, runID1)
 	fx.optionbAwaitColumn(t, optionbTicketID, "Done")
 
-	// EDIT: the console reads the record, adds the edited ci gate config
-	// entry, points the route's configRef at it, validates, and writes
-	// through the etag-gated surface — parapet's editor flow.
+	// EDIT: the console reads the record, renames the develop route and
+	// repoints it at the edited ci gate config entry, validates, and
+	// writes through the etag-gated surface — parapet's editor flow. The
+	// rename (not an added route) is what lets the assertions below
+	// discriminate the edit from the pre-edit record.
 	record, etag := fx.getConfigRecord(optionbFireProject)
-	const editEntry = "edited-gate"
-	const editCmd = "edited ci gate v2: make ci && make vuln-scan"
+	const (
+		editedRoute = "kanboard-develop-edited"
+		editEntry   = "edited-gate"
+		editCmd     = "edited ci gate v2: make ci && make vuln-scan"
+	)
 	if record.ConfigLibrary == nil {
 		record.ConfigLibrary = map[string]confighome.ConfigEntry{}
 	}
 	record.ConfigLibrary[editEntry] = confighome.ConfigEntry{CIGateCmd: editCmd}
 	for i := range record.Routes {
 		if record.Routes[i].Name == "kanboard-develop" {
+			record.Routes[i].Name = editedRoute
 			record.Routes[i].ConfigRef = editEntry
 		}
 	}
@@ -990,19 +1023,60 @@ func TestOptionBEditConfigRefire(t *testing.T) {
 		t.Fatalf("stale-etag write = %v, want FailedPrecondition conflict", err)
 	}
 
-	// The edited record is the routing truth the moment it is written: an
-	// unknown route name is rejected against the EDITED record (KB-339).
+	// REJECT direction (the load-bearing routing-truth assertion): the
+	// pre-edit route name is gone from the edited record, so submitting
+	// under it fails the route gate — this submit succeeds on the
+	// pre-edit record, so a dropped write cannot pass the test.
+	_, err = clients.SubmitProjectAssignment(ctx, connect.NewRequest(&castlev1.SubmitProjectAssignmentRequest{
+		ProjectId:      optionbFireProject,
+		WorkflowName:   "kanboard-develop",
+		WorkflowSource: "hcl-source",
+		IdempotencyKey: "optionb-edit-reject-probe",
+	}))
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument || !strings.Contains(err.Error(), "is not a route in project") {
+		t.Fatalf("pre-edit route name = %v, want InvalidArgument 'is not a route in project'", err)
+	}
+
+	// An unknown name fails the same gate (extra negative-path check; the
+	// pre-edit-name reject above is the load-bearing one).
 	_, err = clients.SubmitProjectAssignment(ctx, connect.NewRequest(&castlev1.SubmitProjectAssignmentRequest{
 		ProjectId:      optionbFireProject,
 		WorkflowName:   "kanboard-nonexistent",
 		WorkflowSource: "hcl-source",
 		IdempotencyKey: "optionb-edit-probe",
 	}))
-	if err == nil || !strings.Contains(err.Error(), "is not a route in project") {
-		t.Fatalf("unknown route rejected = %v, want the edited record's route gate", err)
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("unknown route rejected = %v, want InvalidArgument", err)
 	}
 
-	// The assembled payload the platform renders from carries the edit.
+	// ACCEPT direction: the renamed route is live on the edited record —
+	// the submit succeeds and dispatch leases the run to the project's
+	// operator, delivering the assignment on the member's control stream
+	// in order: first fire's (already consumed) → probe → later refire.
+	acceptProbe, err := clients.SubmitProjectAssignment(ctx, connect.NewRequest(&castlev1.SubmitProjectAssignmentRequest{
+		ProjectId:      optionbFireProject,
+		WorkflowName:   editedRoute,
+		WorkflowSource: "hcl-source",
+		IdempotencyKey: "optionb-edit-accept-probe",
+	}))
+	if err != nil {
+		t.Fatalf("renamed route submit: %v", err)
+	}
+	probeRunID := acceptProbe.Msg.GetRunId()
+	if got := optionbRunAssigned(t, ctrl, editedRoute); got != probeRunID {
+		t.Fatalf("control stream delivered run %s, want the accept probe's %s", got, probeRunID)
+	}
+
+	// The probe executes like any leased run — the adapter did not submit
+	// it, so nothing watches it and the card stays untouched in Done;
+	// settling it releases the operator's lease before the refire needs
+	// the member idle.
+	optionbRunEnvelopes(t, fx.oClient, agent.Token, probeRunID, editedRoute, "handler_complete", true)
+	optionbAwaitTerminal(t, clients, probeRunID)
+
+	// The assembled payload the platform renders from carries the edit:
+	// the renamed route points at the edited config entry and the
+	// pre-edit route name is gone from the rendered routes.
 	assembled, err := confighome.NewAssemblyFor(optionbFetchAllRecords(t, fx)).RenderRoutesPayload()
 	if err != nil {
 		t.Fatalf("render edited records: %v", err)
@@ -1014,30 +1088,42 @@ func TestOptionBEditConfigRefire(t *testing.T) {
 	if got := rendered.ConfigLibrary[editEntry].CIGateCmd; got != editCmd {
 		t.Fatalf("rendered configLibrary[%s] = %q, want %q", editEntry, got, editCmd)
 	}
-	sawRef := false
+	sawEdited := false
 	for _, r := range rendered.Routes {
 		if r.Name == "kanboard-develop" {
+			t.Fatalf("rendered routes still carry the pre-edit name %q", r.Name)
+		}
+		if r.Name == editedRoute {
 			if r.ConfigRef != editEntry {
-				t.Fatalf("rendered route %s configRef = %q, want %q", r.Name, r.ConfigRef, editEntry)
+				t.Fatalf("rendered route %s configRef = %q, want %q", editedRoute, r.ConfigRef, editEntry)
 			}
-			sawRef = true
+			sawEdited = true
 		}
 	}
-	if !sawRef {
-		t.Fatalf("rendered payload lost the kanboard-develop route")
+	if !sawEdited {
+		t.Fatalf("rendered payload lost the renamed route %s", editedRoute)
 	}
 
-	// REFIRE: the operator drags the settled card back into the trigger
-	// column; the next poll sees the column change and fires a fresh run
-	// through the edited record — the route gate reads the stored record
-	// live, so the refired assignment proves the edit is live. The refired
-	// run executes exactly like the first and settles the card on Done.
+	// REFIRE through the edited route: the lane's RouteName is static at
+	// boot, so the first adapter is stopped and a second one is booted
+	// pointed at the renamed route. The reboot happens while the card
+	// sits in Done — a fresh adapter treats the FIRST sighting of a card
+	// in a trigger column as an entry, so booting over a card already in
+	// Ready would fire spuriously; after the boot the operator drags the
+	// settled card back into Ready and the next poll's column change
+	// fires a fresh run whose assignment carries the edited route's
+	// workflow name — the refire went through the edited record's route.
+	// Stopping the first adapter first matters: the boot is otherwise
+	// double-fired, with the stale lane's submit failing the route gate
+	// and commenting failure on the card.
+	fx.boardStop()
+	fx.startBoard(t, optionbLaneConfig(editedRoute))
 	fx.board.moveCard(t, optionbTicketID, "Ready")
-	runID2 := optionbRunAssigned(t, ctrl, "kanboard-develop")
+	runID2 := optionbRunAssigned(t, ctrl, editedRoute)
 	if runID2 == runID1 {
 		t.Fatalf("refire re-used run id %s", runID2)
 	}
-	optionbRunEnvelopes(t, fx.oClient, agent.Token, runID2, "kanboard-develop", "handler_complete", true)
+	optionbRunEnvelopes(t, fx.oClient, agent.Token, runID2, editedRoute, "handler_complete", true)
 	optionbAwaitTerminal(t, clients, runID2)
 	fx.optionbAwaitColumn(t, optionbTicketID, "Done")
 	doneMove := fmt.Sprintf("task %d -> %d", optionbTicketID, fx.board.columnIDOf["Done"])
@@ -1130,8 +1216,24 @@ func TestOptionBCleanupCutoverFlip(t *testing.T) {
 	for _, slug := range slices.Sorted(maps.Keys(optionbProjects)) {
 		projectID := optionbProjects[slug]
 		record, etag := fx.getConfigRecord(projectID)
-		if record.Binding == nil {
+		attachedCriteriaJobs := record.Binding == nil
+		if attachedCriteriaJobs {
 			record.Binding = binding
+			// Round-trip the just-parsed binding through the record's
+			// render (mirrors the per-binding check in optionbImportSeeds):
+			// a malformed field would otherwise go unnoticed, since the
+			// binding is imported but nothing else reads it.
+			renderedBinding, err := record.RenderBinding()
+			if err != nil {
+				t.Fatalf("render criteria-jobs binding for %s: %v", projectID, err)
+			}
+			equal, _, err := confighome.EqualPayload(renderedBinding, bindingRaw)
+			if err != nil {
+				t.Fatalf("compare criteria-jobs binding for %s: %v", projectID, err)
+			}
+			if !equal {
+				t.Fatalf("criteria-jobs binding round-trip mismatch for %s", projectID)
+			}
 		}
 		if err := record.MarkCutoverDone(); err != nil {
 			t.Fatalf("flip %s post-cutover: %v", projectID, err)
@@ -1174,6 +1276,7 @@ func TestOptionBCleanupCutoverFlip(t *testing.T) {
 		t.Fatalf("no %s record in the assembled set", optionbFireProject)
 	}
 	zombieRecord := *zombie[last].Record
+	zombieRecord.Catalog = maps.Clone(zombieRecord.Catalog)
 	stale := zombieRecord.Catalog["kanboard-triage-url"]
 	stale.Volumes = []confighome.Volume{{
 		Name:      "stale-data",
