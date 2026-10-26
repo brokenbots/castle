@@ -2010,9 +2010,10 @@ type ListProjectRunsRequest struct {
 	// page_token continues a previous page (the token returned in the
 	// prior response). Unrecognized tokens are rejected as malformed.
 	PageToken string `protobuf:"bytes,4,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
-	// include_unscoped widens the page with the project's legacy unscoped
-	// runs (project_id NULL). Console admins only; every other caller is
-	// rejected without the flag's effects.
+	// include_unscoped widens the page with the instance's legacy unscoped
+	// runs (project_id IS NULL): every run recorded without a project,
+	// regardless of owner — not a project-scoped arm. Console admins only;
+	// every other caller is rejected without the flag's effects.
 	IncludeUnscoped bool `protobuf:"varint,5,opt,name=include_unscoped,json=includeUnscoped,proto3" json:"include_unscoped,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache

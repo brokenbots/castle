@@ -160,8 +160,9 @@ type ProjectServiceClient interface {
 	// ListProjectRuns pages a project's runs (newest-first) for the parapet
 	// project console (KB-340): the Runs page shows the project's work
 	// stream through the same run projection criteria callers see. Console
-	// admins may widen the page with include_unscoped so the legacy
-	// unscoped runs stay observable from the project view; every other
+	// admins may widen the page with include_unscoped so the instance-wide
+	// legacy unscoped runs (project_id IS NULL, any owner) stay observable
+	// from the project view; every other
 	// caller must hold project membership and is denied the unscoped arm.
 	ListProjectRuns(context.Context, *connect.Request[v1.ListProjectRunsRequest]) (*connect.Response[v1.ListProjectRunsResponse], error)
 }
@@ -436,8 +437,9 @@ type ProjectServiceHandler interface {
 	// ListProjectRuns pages a project's runs (newest-first) for the parapet
 	// project console (KB-340): the Runs page shows the project's work
 	// stream through the same run projection criteria callers see. Console
-	// admins may widen the page with include_unscoped so the legacy
-	// unscoped runs stay observable from the project view; every other
+	// admins may widen the page with include_unscoped so the instance-wide
+	// legacy unscoped runs (project_id IS NULL, any owner) stay observable
+	// from the project view; every other
 	// caller must hold project membership and is denied the unscoped arm.
 	ListProjectRuns(context.Context, *connect.Request[v1.ListProjectRunsRequest]) (*connect.Response[v1.ListProjectRunsResponse], error)
 }

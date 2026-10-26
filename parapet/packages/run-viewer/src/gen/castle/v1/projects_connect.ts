@@ -217,8 +217,9 @@ export const ProjectService = {
      * ListProjectRuns pages a project's runs (newest-first) for the parapet
      * project console (KB-340): the Runs page shows the project's work
      * stream through the same run projection criteria callers see. Console
-     * admins may widen the page with include_unscoped so the legacy
-     * unscoped runs stay observable from the project view; every other
+     * admins may widen the page with include_unscoped so the instance-wide
+     * legacy unscoped runs (project_id IS NULL, any owner) stay observable
+     * from the project view; every other
      * caller must hold project membership and is denied the unscoped arm.
      *
      * @generated from rpc castle.v1.ProjectService.ListProjectRuns

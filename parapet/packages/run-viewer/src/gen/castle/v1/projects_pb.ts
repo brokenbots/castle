@@ -1713,9 +1713,10 @@ export class ListProjectRunsRequest extends Message<ListProjectRunsRequest> {
   pageToken = "";
 
   /**
-   * include_unscoped widens the page with the project's legacy unscoped
-   * runs (project_id NULL). Console admins only; every other caller is
-   * rejected without the flag's effects.
+   * include_unscoped widens the page with the instance's legacy unscoped
+   * runs (project_id IS NULL): every run recorded without a project,
+   * regardless of owner — not a project-scoped arm. Console admins only;
+   * every other caller is rejected without the flag's effects.
    *
    * @generated from field: bool include_unscoped = 5;
    */
