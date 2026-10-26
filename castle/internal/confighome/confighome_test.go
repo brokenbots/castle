@@ -263,9 +263,6 @@ func TestPartitionRejectsEmptyStatesList(t *testing.T) {
 // TestPartitionRejectsUnknownFields: the imported payload's decode is
 // DisallowUnknownFields everywhere — a drifted live payload imports
 // nowhere.
-// TestPartitionRejectsUnknownFields: the imported payload's decode is
-// DisallowUnknownFields everywhere — a drifted live payload imports
-// nowhere.
 func TestPartitionRejectsUnknownFields(t *testing.T) {
 	payload := []byte(`{
 		"apiVersion": "criteria.brokenbots.dev/v1",
@@ -438,5 +435,135 @@ func TestRecordValidateShapeRejects(t *testing.T) {
 	// mutation and not the baseline.
 	if err := shapeProbe().Validate(); err != nil {
 		t.Fatalf("baseline probe rejected: %v", err)
+	}
+}
+
+// TestPartitionConfigRefOwnership: a configLibrary entry a route
+// references owns that route's record, entries no route references are
+// platform overlay data, and a configRef shared across projects'
+// records fails the import closed — the non-owner record's validation
+// rejects it instead of silently rendering a record that cannot
+// resolve its own reference.
+func TestPartitionConfigRefOwnership(t *testing.T) {
+	payload := []byte(`{
+		"apiVersion": "criteria.brokenbots.dev/v1",
+		"kind": "Routes",
+		"workflowLibrary": {
+			"wf-i": {"type": "image", "image": "registry.local/wf-i:v1"},
+			"wf-p": {"type": "image", "image": "registry.local/wf-p:v1"}
+		},
+		"configLibrary": {"cfg-x": {"buildCmd": "make build"}},
+		"projectRegistry": {"P1": {"namespace": "proj-ns-1"}, "P2": {"namespace": "proj-ns-2"}},
+		"routes": [
+			{"name": "r-p1", "workflow": "wf-i", "project": "P1", "states": ["Ready"], "configRef": "cfg-x"}
+		]
+	}`)
+	records, err := Partition("P2", payload)
+	if err != nil {
+		t.Fatalf("Partition: %v", err)
+	}
+	if got := records["P1"].ConfigLibrary; len(got) != 1 || got["cfg-x"].BuildCmd != "make build" {
+		t.Fatalf("route-owned configLibrary entry must live on the referencing record, P1 owns %v", keys(got))
+	}
+	if got := records["P2"].ConfigLibrary; len(got) != 0 {
+		t.Fatalf("referenced configLibrary entry must not land on the platform record, P2 owns %v", keys(got))
+	}
+	rendered, err := testAssembly(t, records).RenderRoutesPayload()
+	if err != nil {
+		t.Fatalf("RenderRoutesPayload: %v", err)
+	}
+	if equal, _, err := EqualPayload(payload, rendered); err != nil || !equal {
+		t.Fatalf("configRef route does not round-trip: %v (equal %v)", err, equal)
+	}
+
+	// Cross-project sharing: the first referencing route owns the
+	// entry, so a second project's record cannot resolve it — refused
+	// at partition time instead of a silent divergence.
+	shared := []byte(`{
+		"apiVersion": "criteria.brokenbots.dev/v1",
+		"kind": "Routes",
+		"workflowLibrary": {
+			"wf-i": {"type": "image", "image": "registry.local/wf-i:v1"},
+			"wf-p": {"type": "image", "image": "registry.local/wf-p:v1"}
+		},
+		"configLibrary": {"cfg-x": {"buildCmd": "make build"}},
+		"projectRegistry": {"P1": {"namespace": "proj-ns-1"}, "P2": {"namespace": "proj-ns-2"}},
+		"routes": [
+			{"name": "r-p1", "workflow": "wf-i", "project": "P1", "states": ["Ready"], "configRef": "cfg-x"},
+			{"name": "r-p2", "workflow": "wf-p", "project": "P2", "states": ["Ready"], "configRef": "cfg-x"}
+		]
+	}`)
+	if _, err := Partition("P2", shared); err == nil || !strings.Contains(err.Error(), "cfg-x") {
+		t.Fatalf("cross-project shared configRef must fail closed, got %v", err)
+	}
+}
+
+// TestRecordMarkCutoverDone pins the structural castle-authoritative
+// flip (KB-313, ADR 307): the flip is binding-first — a record with no
+// namespace binding refuses — and a flipped record loses the deprecated
+// global run-config surfaces so the flipped records re-assemble and
+// render post-cutover.
+func TestRecordMarkCutoverDone(t *testing.T) {
+	records, _ := partitionFixture(t)
+	kanboard := records["Kanboard Tickets"]
+	if err := kanboard.MarkCutoverDone(); err == nil || !strings.Contains(err.Error(), "binding-first") {
+		t.Fatalf("unbound record must refuse the flip, got %v", err)
+	}
+	godev := records["Criteria Go Dev"]
+	stale, ok := godev.Catalog["kanboard-develop-url"]
+	if !ok || len(stale.Volumes) == 0 || len(stale.AdapterImages) == 0 {
+		t.Fatalf("fixture's go-dev catalog entry must carry the stale global surfaces pre-flip")
+	}
+	// The fixture's registry carries some pre-cut entries; reset the
+	// probe so the flip itself moves the state.
+	for _, rec := range records {
+		if rec.Cutover == CutoverDone {
+			rec.Cutover = ""
+		}
+		rec.Binding = &Binding{APIVersion: APIVersion, Kind: KindBinding}
+		if err := rec.Validate(); err != nil {
+			t.Fatalf("binding attachment must not break the record: %v", err)
+		}
+	}
+	// Every record flips its own copies of shared entries too, so the
+	// stripped copies stay equal (workflowsEqual) and the assembly is a
+	// valid post-cutover payload with no stale surfaces. (A PARTIAL
+	// flip over shared trees cannot render — the import tool refuses
+	// that state pre-write; see the cmd tests.)
+	for _, rec := range records {
+		if err := rec.MarkCutoverDone(); err != nil {
+			t.Fatalf("MarkCutoverDone %q: %v", rec.RegistryName, err)
+		}
+	}
+	flipped := godev.Catalog["kanboard-develop-url"]
+	if godev.Cutover != CutoverDone || len(flipped.Volumes) != 0 || len(flipped.Secrets) != 0 ||
+		len(flipped.Env) != 0 || len(flipped.AdapterImages) != 0 {
+		t.Fatalf("flipped record must be done and stripped, got %q %+v", godev.Cutover, flipped)
+	}
+	if err := godev.Validate(); err != nil {
+		t.Fatalf("flipped record must still validate: %v", err)
+	}
+	// Every record flips its OWN copies of shared entries too, so the
+	// stripped copies stay equal (workflowsEqual) and the assembly is a
+	// valid post-cutover payload with no stale surfaces.
+	if _, err := testAssembly(t, records).RenderRoutesPayload(); err != nil {
+		t.Fatalf("flipped assembly must render post-cutover: %v", err)
+	}
+
+	// A non-conflicting MIXED state stays valid mid-migration: a
+	// flipped record whose trees no un-flipped record shares renders
+	// alongside pre-cut stale entries (allow-with-warning window).
+	mixedGodev := godev
+	mixedKanboard := &Record{
+		APIVersion: APIVersion, Kind: KindRecord,
+		RegistryName: "Kanboard Tickets", Namespace: "criteria-jobs",
+		Catalog: map[string]Workflow{"kb-only": {Type: TypeImage, Image: "registry.local/kb-only:v1"}},
+		Routes:  []Route{{Name: "kb-route", Workflow: "kb-only", Project: "Kanboard Tickets", States: []string{"Ready"}}},
+	}
+	if _, err := NewAssemblyFor([]ProjectRecord{
+		{ProjectID: "criteria-go-dev", Record: mixedGodev},
+		{ProjectID: "kanboard-tickets", Record: mixedKanboard},
+	}).RenderRoutesPayload(); err != nil {
+		t.Fatalf("mixed pre/post-cutover assembly must render in the migration window: %v", err)
 	}
 }

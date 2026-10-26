@@ -538,6 +538,13 @@ func (b BindingRules) Validate() error {
 }
 
 // ValidateBinding checks a binding payload's apiVersion/kind and shape.
+//
+// Scope note (KB-339 item 1): binding validation is shape validation
+// only. Cross-checking a binding's volumes/secrets against the
+// mounts/secretEnv lanes of the interfaces the project's trees declare
+// is out of scope here — castle stores and validates shape only; the
+// interface-lane cross-check belongs to the consuming path that knows
+// which tree a run matched.
 func ValidateBinding(b *Binding) error {
 	if b.APIVersion != APIVersion {
 		return fmt.Errorf("binding apiVersion must be %q, got %q", APIVersion, b.APIVersion)

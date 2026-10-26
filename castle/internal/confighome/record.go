@@ -117,7 +117,9 @@ type Record struct {
 	// Repos are the advisory owner/name repo members (never routed).
 	Repos []string `json:"repos,omitempty"`
 	// Cutover holds "done" once the project's namespace serves its own
-	// binding; absent keeps the pre-cutover behavior.
+	// binding; absent keeps the pre-cutover behavior. The flip goes
+	// through MarkCutoverDone (binding-first: no binding, no flip) so
+	// the record's post-cutover state is always a valid assembly state.
 	Cutover string `json:"cutover,omitempty"`
 	// ImageConflictPolicy is the project's KB-319 per-project conflict
 	// policy — the FINAL authority over its catalog entries' policies.

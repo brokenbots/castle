@@ -24,6 +24,16 @@ import (
 // The payload's namespace is ConfigMap metadata, not payload data, so it
 // never lands in records; the binding payloads are imported separately
 // (ParseBinding).
+//
+// Round-trip fidelity limits (both fail closed at the import's
+// pre-write checksum check, never a silent shape change): a live route
+// that omits its states materializes the default in the record, so the
+// rendered payload re-emits states and diverges from a live payload
+// that truly omits them; and routes of different projects interleaved
+// in the live array render as contiguous per-record blocks, so the
+// first-match-wins order — and the payload — differ. Both abort the
+// import; re-materialize the live payload first (states defaults,
+// grouped routes) before importing.
 func Partition(platformRegistryName string, payload []byte) (map[string]*Record, error) {
 	var doc routesPayloadDoc
 	dec := json.NewDecoder(bytes.NewReader(payload))

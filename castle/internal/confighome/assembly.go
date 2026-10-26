@@ -235,6 +235,28 @@ func staleBindingShapes(doc *routesPayloadDoc) []string {
 	return stale
 }
 
+// MarkCutoverDone flips a record to its post-cutover state (KB-313,
+// ADR 307) — the castle-authoritative flip: the namespace serves its
+// run config from its own binding payload from here on, so the record's
+// catalog entries lose the deprecated global run-config surfaces
+// (volumes, secrets, env, adapterImages) that the assembled
+// workflowLibrary must not render post-cutover, and a post-cutover
+// validation still passes. The flip is structural and binding-first:
+// a record with no namespace binding cannot go post-cutover (its
+// namespace would lose the only run config it ever had), and the full
+// record re-validates.
+func (r *Record) MarkCutoverDone() error {
+	if r.Binding == nil {
+		return fmt.Errorf("record %q: binding-first cutover requires a namespace binding (KB-313, ADR 307)", r.RegistryName)
+	}
+	r.Cutover = CutoverDone
+	for name, wf := range r.Catalog {
+		wf.Volumes, wf.Secrets, wf.Env, wf.AdapterImages = nil, nil, nil, nil
+		r.Catalog[name] = wf
+	}
+	return r.Validate()
+}
+
 // validateAssembledPayload enforces the assembled payload's integrity —
 // the shape rules the criteria-k8s operator applies to the ConfigMap:
 // non-empty libraries, route-workflow/configRef/project resolution,
