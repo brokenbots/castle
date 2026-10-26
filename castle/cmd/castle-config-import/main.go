@@ -14,15 +14,24 @@
 //     to the live file (checksum equality — no silent shape changes), and
 //     each record's rendered binding must be canonically equal to its live
 //     file;
-//   - with --cutover the verified records are marked cutover=done — the
-//     castle-authoritative flip — so the payload's stale pre-cutover
-//     shapes stop rendering. The flip is applied after the round-trip
-//     checks, never instead of them.
+//   - with --cutover the flip marks the verified records cutover=done
+//     binding-first (KB-313): only records that carry a namespace
+//     binding flip and lose the deprecated global run-config surfaces
+//     (their assembly stays renderable post-cutover); a record with no
+//     binding stays pre-cutover with an explicit warning, and a run
+//     where no record is bound refuses before any write. The flip is
+//     applied after the round-trip checks never instead of them, and
+//     the flipped records must re-render a routes payload before the
+//     first write — a partial flip over a tree another un-flipped
+//     record shares refuses here instead of writing an un-renderable
+//     castle-authoritative state.
 //
 // --create-projects also creates missing castle projects (open membership
-// by default, see --policy). Import writes each record with the empty
-// expected etag (a project that already holds a DIFFERENT record conflicts
-// and must be resolved by the operator).
+// by default, see --policy). The write phase is all-or-nothing at record
+// granularity: every target is pre-flighted for an already-imported
+// record before anything is written (import never overwrites; the
+// operator clears a stale record via SetProjectConfig with the empty
+// document to re-import a project).
 //
 // Exit codes: 0 success, 1 operational/verification failure, 2 usage error.
 package main
@@ -278,14 +287,43 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 	}
 
 	// The castle-authoritative flip rides AFTER the verified round-trips:
-	// cutover=done marks each record so the payload's stale shapes stop
-	// rendering from castle.
+	// cutover=done marks the castle-authoritative records — binding-first
+	// (KB-313): only records carrying a namespace binding flip, and they
+	// strip the deprecated global run-config surfaces so the flipped
+	// state still re-renders. Unbound records stay pre-cutover with an
+	// explicit warning; a run with no bindings at all refuses.
 	if cfg.cutover {
+		flipped := 0
 		for _, pr := range projRecords {
-			pr.Record.Cutover = confighome.CutoverDone
-			if err := pr.Record.Validate(); err != nil {
-				return fmt.Errorf("record %q after cutover flip: %w", pr.Record.RegistryName, err)
+			if pr.Record.Binding != nil {
+				if err := pr.Record.MarkCutoverDone(); err != nil {
+					return fmt.Errorf("record %q after cutover flip: %w", pr.Record.RegistryName, err)
+				}
+				flipped++
+				continue
 			}
+			fmt.Fprintf(stderr, "--cutover: project %q (%s) stays pre-cutover (binding-first: no namespace binding in the import; import its binding, then re-run)\n",
+				pr.Record.RegistryName, pr.ProjectID)
+		}
+		if flipped == 0 {
+			return errors.New("cutover refuses to flip: no record carries a namespace binding (binding-first; import namespace bindings with --binding, then re-run)")
+		}
+		// Re-verify post-flip, still BEFORE any write: each flipped
+		// record's binding renders, and the flipped records re-assemble
+		// into a routes payload castle accepts. A partial flip over a
+		// tree another un-flipped record still carries (identical name,
+		// un-stripped copy) refuses here rather than landing an
+		// un-renderable castle-authoritative state.
+		for _, pr := range projRecords {
+			if pr.Record.Binding == nil || pr.Record.Cutover != confighome.CutoverDone {
+				continue
+			}
+			if _, err := pr.Record.RenderBinding(); err != nil {
+				return fmt.Errorf("render binding for %s after the cutover flip: %w", pr.ProjectID, err)
+			}
+		}
+		if _, err := confighome.NewAssemblyFor(projRecords).RenderRoutesPayload(); err != nil {
+			return fmt.Errorf("re-render routes payload after the cutover flip: %w (import aborted; no writes happened)", err)
 		}
 	}
 
@@ -327,6 +365,29 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 		default:
 			return fmt.Errorf("load project %q: %w", pr.ProjectID, err)
 		}
+	}
+
+	// All-or-nothing pre-flight: a target that already carries a config
+	// record conflicts BEFORE anything is written — import never
+	// overwrites an existing record (the empty-etag write still races on
+	// it, below) and a partial prior import must not strand a
+	// half-imported set. The operator clears a stale record explicitly
+	// (SetProjectConfig with the empty document) to re-import a project.
+	var imported []string
+	for _, t := range targets {
+		if !t.exists {
+			continue
+		}
+		live, _, err := st.GetProjectConfig(ctx, t.slug)
+		if err != nil {
+			return fmt.Errorf("load config for project %q: %w", t.slug, err)
+		}
+		if len(live) > 0 {
+			imported = append(imported, t.slug)
+		}
+	}
+	if len(imported) > 0 {
+		return fmt.Errorf("workflow config already imported for: %s (import never overwrites an existing record; clear it via SetProjectConfig with the empty document to re-import)", strings.Join(imported, ", "))
 	}
 
 	// Create first (one pass), then write every record with the empty
