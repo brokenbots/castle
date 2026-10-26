@@ -42,6 +42,24 @@ type ordered struct {
 	record    *Record
 }
 
+// ProjectRecord pairs a castle project id with its config record — the
+// exported bridge the KB-339 config import path uses to construct an
+// assembly outside the package.
+type ProjectRecord struct {
+	ProjectID string
+	Record    *Record
+}
+
+// NewAssemblyFor orders the paired records the way NewAssembly orders
+// plain records (RoutesOrdinal, then project id).
+func NewAssemblyFor(records []ProjectRecord) *Assembly {
+	inner := make([]projectRecord, len(records))
+	for i, pr := range records {
+		inner[i] = projectRecord{projectID: pr.ProjectID, record: pr.Record}
+	}
+	return NewAssembly(inner)
+}
+
 // NewAssembly orders the records for rendering: by RoutesOrdinal (the
 // imported payload position) then project id (records post-import
 // append deterministically at the end).

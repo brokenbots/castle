@@ -140,11 +140,12 @@ type Record struct {
 	Digests map[string]string `json:"digests,omitempty"`
 
 	// RoutesOrdinal is import bookkeeping: this record's first route's
-	// ordinal in the imported payload. Storage-only (json:"-") — the
-	// rendered payload's route order comes from the record's Routes
-	// slice, ordered by these ordinals for the array's
-	// first-match-wins semantics.
-	RoutesOrdinal int `json:"-"`
+	// ordinal in the imported payload. It rides the record doc (imported
+	// projects keep their assembly order across etag swaps and re-reads)
+	// but never renders — the rendered payload's route order comes from
+	// the record's Routes slice, ordered by these ordinals for the
+	// array's first-match-wins semantics.
+	RoutesOrdinal int `json:"routesOrdinal,omitempty"`
 }
 
 // Workflow is a workflowLibrary object: how a run obtains its workflow
