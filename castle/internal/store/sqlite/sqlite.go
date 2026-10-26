@@ -2059,13 +2059,14 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		return nil, nil, err
 	}
 	if status != "online" {
-		if err := stampLeaseHeadRejectionTx(ctx, tx, store.LeaseRejectionAgentOffline); err != nil {
+		headID, err := stampLeaseHeadRejectionTx(ctx, tx, store.LeaseRejectionAgentOffline)
+		if err != nil {
 			return nil, nil, err
 		}
 		if err := tx.Commit(); err != nil {
 			return nil, nil, err
 		}
-		return nil, &store.LeaseDecision{Rejection: store.LeaseRejectionAgentOffline,
+		return nil, &store.LeaseDecision{Rejection: store.LeaseRejectionAgentOffline, AssignmentID: headID,
 			Details: "agent " + criteriaID + " status " + status}, store.ErrNotFound
 	}
 
@@ -2085,13 +2086,14 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 	case err != nil:
 		return nil, nil, err
 	default:
-		if err := stampLeaseHeadRejectionTx(ctx, tx, store.LeaseRejectionAgentPendingLease); err != nil {
+		headID, err := stampLeaseHeadRejectionTx(ctx, tx, store.LeaseRejectionAgentPendingLease)
+		if err != nil {
 			return nil, nil, err
 		}
 		if err := tx.Commit(); err != nil {
 			return nil, nil, err
 		}
-		return nil, &store.LeaseDecision{Rejection: store.LeaseRejectionAgentPendingLease,
+		return nil, &store.LeaseDecision{Rejection: store.LeaseRejectionAgentPendingLease, AssignmentID: headID,
 			Details: "agent " + criteriaID + " holds an unstarted lease for assignment " + heldAssignment + " (run " + heldRun + ")"}, store.ErrNotFound
 	}
 
@@ -2252,6 +2254,12 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 	}
 
 	if firstRejection != "" {
+		// Persist the stamps earned during the scan before reporting the
+		// decision (KB-343): the stamps are the queryable "why didn't X run"
+		// disposition, not tx bookkeeping.
+		if err := tx.Commit(); err != nil {
+			return nil, nil, err
+		}
 		return nil, &store.LeaseDecision{
 			Matched:      false,
 			AssignmentID: firstID,
@@ -2331,26 +2339,29 @@ func stampLeaseRejectionTx(ctx context.Context, tx *sql.Tx, assignmentID, reject
 
 // stampLeaseHeadRejectionTx stamps an agent-level rejection (offline,
 // pending lease — a gate that blocks every candidate at once) on the oldest
-// queued assignment row (KB-343). With an empty queue there is no row to
-// carry the disposition and the stamp is a no-op.
-func stampLeaseHeadRejectionTx(ctx context.Context, tx *sql.Tx, rejection string) error {
+// queued assignment row (KB-343) and returns that row's ID so the decision
+// names the assignment it stamped. With an empty queue there is no row to
+// carry the disposition; the returned ID is empty.
+func stampLeaseHeadRejectionTx(ctx context.Context, tx *sql.Tx, rejection string) (string, error) {
 	var headID string
 	err := tx.QueryRowContext(ctx,
 		`SELECT id FROM workflow_assignments
 		 WHERE state=? ORDER BY created_at ASC, id ASC LIMIT 1`,
 		store.WorkflowAssignmentStateQueued).Scan(&headID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, err = tx.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE workflow_assignments
 		 SET lease_attempt=lease_attempt+1, last_lease_rejection=?
 		 WHERE id=? AND state=?`,
-		rejection, headID, store.WorkflowAssignmentStateQueued)
-	return err
+		rejection, headID, store.WorkflowAssignmentStateQueued); err != nil {
+		return "", err
+	}
+	return headID, nil
 }
 
 type assignmentCandidate struct {
