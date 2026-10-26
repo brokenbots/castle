@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddProjectMemberRequest, AddProjectMemberResponse, CreateProjectRequest, CreateProjectResponse, GetProjectRequest, GetProjectResponse, GetProjectSettingsRequest, GetProjectSettingsResponse, GetRefirePolicyRequest, GetRefirePolicyResponse, ListProjectMembersRequest, ListProjectMembersResponse, ListProjectsRequest, ListProjectsResponse, RemoveProjectMemberRequest, RemoveProjectMemberResponse, SetProjectSettingsRequest, SetProjectSettingsResponse, SetRefirePolicyRequest, SetRefirePolicyResponse, SubmitProjectAssignmentRequest, SubmitProjectAssignmentResponse } from "./projects_pb.js";
+import { AddProjectMemberRequest, AddProjectMemberResponse, CreateProjectRequest, CreateProjectResponse, GetProjectConfigRequest, GetProjectConfigResponse, GetProjectRequest, GetProjectResponse, GetProjectSettingsRequest, GetProjectSettingsResponse, GetRefirePolicyRequest, GetRefirePolicyResponse, ListProjectMembersRequest, ListProjectMembersResponse, ListProjectsRequest, ListProjectsResponse, ListWorkflowCatalogRequest, ListWorkflowCatalogResponse, RemoveProjectMemberRequest, RemoveProjectMemberResponse, SetProjectConfigRequest, SetProjectConfigResponse, SetProjectSettingsRequest, SetProjectSettingsResponse, SetRefirePolicyRequest, SetRefirePolicyResponse, SubmitProjectAssignmentRequest, SubmitProjectAssignmentResponse } from "./projects_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -137,6 +137,54 @@ export const ProjectService = {
       name: "SetProjectSettings",
       I: SetProjectSettingsRequest,
       O: SetProjectSettingsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetProjectConfig returns the project's ONE workflow config record
+     * (KB-339): per-project routes, workflow catalog entries, configLibrary
+     * entries, the namespace binding payload, and castle-only digests, as
+     * canonical JSON of a criteria.brokenbots.dev/v1
+     * ProjectWorkflowConfig record (see confighome). The rendered
+     * ConfigMap payloads derive FROM this record — castle is the config
+     * home and a config edit here re-renders the namespace CMs.
+     *
+     * @generated from rpc castle.v1.ProjectService.GetProjectConfig
+     */
+    getProjectConfig: {
+      name: "GetProjectConfig",
+      I: GetProjectConfigRequest,
+      O: GetProjectConfigResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetProjectConfig swaps the whole workflow config record under
+     * optimistic etag semantics like SetProjectSettings: expected_etag must
+     * be the etag the caller last read, or "" exactly when the record is
+     * still unset. A writer whose expectation no longer holds is rejected
+     * without clobbering; the response carries the new etag. The document
+     * must parse and validate as a ProjectWorkflowConfig record
+     * (fail-closed shape; values stay opaque).
+     *
+     * @generated from rpc castle.v1.ProjectService.SetProjectConfig
+     */
+    setProjectConfig: {
+      name: "SetProjectConfig",
+      I: SetProjectConfigRequest,
+      O: SetProjectConfigResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListWorkflowCatalog lists a project's workflow catalog — the
+     * workflowLibrary entries the record owns, resolved with the tree's
+     * learning digest when castle has one — so consumers (parapet, route
+     * editors) pick from the same records assignment validation consults.
+     *
+     * @generated from rpc castle.v1.ProjectService.ListWorkflowCatalog
+     */
+    listWorkflowCatalog: {
+      name: "ListWorkflowCatalog",
+      I: ListWorkflowCatalogRequest,
+      O: ListWorkflowCatalogResponse,
       kind: MethodKind.Unary,
     },
     /**

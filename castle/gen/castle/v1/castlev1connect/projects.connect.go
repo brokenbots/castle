@@ -68,6 +68,15 @@ const (
 	// ProjectServiceSetProjectSettingsProcedure is the fully-qualified name of the ProjectService's
 	// SetProjectSettings RPC.
 	ProjectServiceSetProjectSettingsProcedure = "/castle.v1.ProjectService/SetProjectSettings"
+	// ProjectServiceGetProjectConfigProcedure is the fully-qualified name of the ProjectService's
+	// GetProjectConfig RPC.
+	ProjectServiceGetProjectConfigProcedure = "/castle.v1.ProjectService/GetProjectConfig"
+	// ProjectServiceSetProjectConfigProcedure is the fully-qualified name of the ProjectService's
+	// SetProjectConfig RPC.
+	ProjectServiceSetProjectConfigProcedure = "/castle.v1.ProjectService/SetProjectConfig"
+	// ProjectServiceListWorkflowCatalogProcedure is the fully-qualified name of the ProjectService's
+	// ListWorkflowCatalog RPC.
+	ProjectServiceListWorkflowCatalogProcedure = "/castle.v1.ProjectService/ListWorkflowCatalog"
 	// ProjectServiceGetRefirePolicyProcedure is the fully-qualified name of the ProjectService's
 	// GetRefirePolicy RPC.
 	ProjectServiceGetRefirePolicyProcedure = "/castle.v1.ProjectService/GetRefirePolicy"
@@ -116,6 +125,27 @@ type ProjectServiceClient interface {
 	// present, must be a JSON boolean (see Project.settings) — any other
 	// shape is rejected.
 	SetProjectSettings(context.Context, *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error)
+	// GetProjectConfig returns the project's ONE workflow config record
+	// (KB-339): per-project routes, workflow catalog entries, configLibrary
+	// entries, the namespace binding payload, and castle-only digests, as
+	// canonical JSON of a criteria.brokenbots.dev/v1
+	// ProjectWorkflowConfig record (see confighome). The rendered
+	// ConfigMap payloads derive FROM this record — castle is the config
+	// home and a config edit here re-renders the namespace CMs.
+	GetProjectConfig(context.Context, *connect.Request[v1.GetProjectConfigRequest]) (*connect.Response[v1.GetProjectConfigResponse], error)
+	// SetProjectConfig swaps the whole workflow config record under
+	// optimistic etag semantics like SetProjectSettings: expected_etag must
+	// be the etag the caller last read, or "" exactly when the record is
+	// still unset. A writer whose expectation no longer holds is rejected
+	// without clobbering; the response carries the new etag. The document
+	// must parse and validate as a ProjectWorkflowConfig record
+	// (fail-closed shape; values stay opaque).
+	SetProjectConfig(context.Context, *connect.Request[v1.SetProjectConfigRequest]) (*connect.Response[v1.SetProjectConfigResponse], error)
+	// ListWorkflowCatalog lists a project's workflow catalog — the
+	// workflowLibrary entries the record owns, resolved with the tree's
+	// learning digest when castle has one — so consumers (parapet, route
+	// editors) pick from the same records assignment validation consults.
+	ListWorkflowCatalog(context.Context, *connect.Request[v1.ListWorkflowCatalogRequest]) (*connect.Response[v1.ListWorkflowCatalogResponse], error)
 	// GetRefirePolicy returns the policy row for (project_id, route) — the
 	// exact key, not the engine's resolution ladder. The project-scoped
 	// default row uses an empty route; the global default uses empty
@@ -191,6 +221,24 @@ func NewProjectServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(projectServiceMethods.ByName("SetProjectSettings")),
 			connect.WithClientOptions(opts...),
 		),
+		getProjectConfig: connect.NewClient[v1.GetProjectConfigRequest, v1.GetProjectConfigResponse](
+			httpClient,
+			baseURL+ProjectServiceGetProjectConfigProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("GetProjectConfig")),
+			connect.WithClientOptions(opts...),
+		),
+		setProjectConfig: connect.NewClient[v1.SetProjectConfigRequest, v1.SetProjectConfigResponse](
+			httpClient,
+			baseURL+ProjectServiceSetProjectConfigProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("SetProjectConfig")),
+			connect.WithClientOptions(opts...),
+		),
+		listWorkflowCatalog: connect.NewClient[v1.ListWorkflowCatalogRequest, v1.ListWorkflowCatalogResponse](
+			httpClient,
+			baseURL+ProjectServiceListWorkflowCatalogProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("ListWorkflowCatalog")),
+			connect.WithClientOptions(opts...),
+		),
 		getRefirePolicy: connect.NewClient[v1.GetRefirePolicyRequest, v1.GetRefirePolicyResponse](
 			httpClient,
 			baseURL+ProjectServiceGetRefirePolicyProcedure,
@@ -217,6 +265,9 @@ type projectServiceClient struct {
 	submitProjectAssignment *connect.Client[v1.SubmitProjectAssignmentRequest, v1.SubmitProjectAssignmentResponse]
 	getProjectSettings      *connect.Client[v1.GetProjectSettingsRequest, v1.GetProjectSettingsResponse]
 	setProjectSettings      *connect.Client[v1.SetProjectSettingsRequest, v1.SetProjectSettingsResponse]
+	getProjectConfig        *connect.Client[v1.GetProjectConfigRequest, v1.GetProjectConfigResponse]
+	setProjectConfig        *connect.Client[v1.SetProjectConfigRequest, v1.SetProjectConfigResponse]
+	listWorkflowCatalog     *connect.Client[v1.ListWorkflowCatalogRequest, v1.ListWorkflowCatalogResponse]
 	getRefirePolicy         *connect.Client[v1.GetRefirePolicyRequest, v1.GetRefirePolicyResponse]
 	setRefirePolicy         *connect.Client[v1.SetRefirePolicyRequest, v1.SetRefirePolicyResponse]
 }
@@ -264,6 +315,21 @@ func (c *projectServiceClient) GetProjectSettings(ctx context.Context, req *conn
 // SetProjectSettings calls castle.v1.ProjectService.SetProjectSettings.
 func (c *projectServiceClient) SetProjectSettings(ctx context.Context, req *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error) {
 	return c.setProjectSettings.CallUnary(ctx, req)
+}
+
+// GetProjectConfig calls castle.v1.ProjectService.GetProjectConfig.
+func (c *projectServiceClient) GetProjectConfig(ctx context.Context, req *connect.Request[v1.GetProjectConfigRequest]) (*connect.Response[v1.GetProjectConfigResponse], error) {
+	return c.getProjectConfig.CallUnary(ctx, req)
+}
+
+// SetProjectConfig calls castle.v1.ProjectService.SetProjectConfig.
+func (c *projectServiceClient) SetProjectConfig(ctx context.Context, req *connect.Request[v1.SetProjectConfigRequest]) (*connect.Response[v1.SetProjectConfigResponse], error) {
+	return c.setProjectConfig.CallUnary(ctx, req)
+}
+
+// ListWorkflowCatalog calls castle.v1.ProjectService.ListWorkflowCatalog.
+func (c *projectServiceClient) ListWorkflowCatalog(ctx context.Context, req *connect.Request[v1.ListWorkflowCatalogRequest]) (*connect.Response[v1.ListWorkflowCatalogResponse], error) {
+	return c.listWorkflowCatalog.CallUnary(ctx, req)
 }
 
 // GetRefirePolicy calls castle.v1.ProjectService.GetRefirePolicy.
@@ -316,6 +382,27 @@ type ProjectServiceHandler interface {
 	// present, must be a JSON boolean (see Project.settings) — any other
 	// shape is rejected.
 	SetProjectSettings(context.Context, *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error)
+	// GetProjectConfig returns the project's ONE workflow config record
+	// (KB-339): per-project routes, workflow catalog entries, configLibrary
+	// entries, the namespace binding payload, and castle-only digests, as
+	// canonical JSON of a criteria.brokenbots.dev/v1
+	// ProjectWorkflowConfig record (see confighome). The rendered
+	// ConfigMap payloads derive FROM this record — castle is the config
+	// home and a config edit here re-renders the namespace CMs.
+	GetProjectConfig(context.Context, *connect.Request[v1.GetProjectConfigRequest]) (*connect.Response[v1.GetProjectConfigResponse], error)
+	// SetProjectConfig swaps the whole workflow config record under
+	// optimistic etag semantics like SetProjectSettings: expected_etag must
+	// be the etag the caller last read, or "" exactly when the record is
+	// still unset. A writer whose expectation no longer holds is rejected
+	// without clobbering; the response carries the new etag. The document
+	// must parse and validate as a ProjectWorkflowConfig record
+	// (fail-closed shape; values stay opaque).
+	SetProjectConfig(context.Context, *connect.Request[v1.SetProjectConfigRequest]) (*connect.Response[v1.SetProjectConfigResponse], error)
+	// ListWorkflowCatalog lists a project's workflow catalog — the
+	// workflowLibrary entries the record owns, resolved with the tree's
+	// learning digest when castle has one — so consumers (parapet, route
+	// editors) pick from the same records assignment validation consults.
+	ListWorkflowCatalog(context.Context, *connect.Request[v1.ListWorkflowCatalogRequest]) (*connect.Response[v1.ListWorkflowCatalogResponse], error)
 	// GetRefirePolicy returns the policy row for (project_id, route) — the
 	// exact key, not the engine's resolution ladder. The project-scoped
 	// default row uses an empty route; the global default uses empty
@@ -387,6 +474,24 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 		connect.WithSchema(projectServiceMethods.ByName("SetProjectSettings")),
 		connect.WithHandlerOptions(opts...),
 	)
+	projectServiceGetProjectConfigHandler := connect.NewUnaryHandler(
+		ProjectServiceGetProjectConfigProcedure,
+		svc.GetProjectConfig,
+		connect.WithSchema(projectServiceMethods.ByName("GetProjectConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
+	projectServiceSetProjectConfigHandler := connect.NewUnaryHandler(
+		ProjectServiceSetProjectConfigProcedure,
+		svc.SetProjectConfig,
+		connect.WithSchema(projectServiceMethods.ByName("SetProjectConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
+	projectServiceListWorkflowCatalogHandler := connect.NewUnaryHandler(
+		ProjectServiceListWorkflowCatalogProcedure,
+		svc.ListWorkflowCatalog,
+		connect.WithSchema(projectServiceMethods.ByName("ListWorkflowCatalog")),
+		connect.WithHandlerOptions(opts...),
+	)
 	projectServiceGetRefirePolicyHandler := connect.NewUnaryHandler(
 		ProjectServiceGetRefirePolicyProcedure,
 		svc.GetRefirePolicy,
@@ -419,6 +524,12 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 			projectServiceGetProjectSettingsHandler.ServeHTTP(w, r)
 		case ProjectServiceSetProjectSettingsProcedure:
 			projectServiceSetProjectSettingsHandler.ServeHTTP(w, r)
+		case ProjectServiceGetProjectConfigProcedure:
+			projectServiceGetProjectConfigHandler.ServeHTTP(w, r)
+		case ProjectServiceSetProjectConfigProcedure:
+			projectServiceSetProjectConfigHandler.ServeHTTP(w, r)
+		case ProjectServiceListWorkflowCatalogProcedure:
+			projectServiceListWorkflowCatalogHandler.ServeHTTP(w, r)
 		case ProjectServiceGetRefirePolicyProcedure:
 			projectServiceGetRefirePolicyHandler.ServeHTTP(w, r)
 		case ProjectServiceSetRefirePolicyProcedure:
@@ -466,6 +577,18 @@ func (UnimplementedProjectServiceHandler) GetProjectSettings(context.Context, *c
 
 func (UnimplementedProjectServiceHandler) SetProjectSettings(context.Context, *connect.Request[v1.SetProjectSettingsRequest]) (*connect.Response[v1.SetProjectSettingsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.SetProjectSettings is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) GetProjectConfig(context.Context, *connect.Request[v1.GetProjectConfigRequest]) (*connect.Response[v1.GetProjectConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.GetProjectConfig is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) SetProjectConfig(context.Context, *connect.Request[v1.SetProjectConfigRequest]) (*connect.Response[v1.SetProjectConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.SetProjectConfig is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) ListWorkflowCatalog(context.Context, *connect.Request[v1.ListWorkflowCatalogRequest]) (*connect.Response[v1.ListWorkflowCatalogResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("castle.v1.ProjectService.ListWorkflowCatalog is not implemented"))
 }
 
 func (UnimplementedProjectServiceHandler) GetRefirePolicy(context.Context, *connect.Request[v1.GetRefirePolicyRequest]) (*connect.Response[v1.GetRefirePolicyResponse], error) {

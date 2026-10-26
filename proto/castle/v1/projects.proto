@@ -62,6 +62,30 @@ service ProjectService {
   // shape is rejected.
   rpc SetProjectSettings(SetProjectSettingsRequest) returns (SetProjectSettingsResponse);
 
+  // GetProjectConfig returns the project's ONE workflow config record
+  // (KB-339): per-project routes, workflow catalog entries, configLibrary
+  // entries, the namespace binding payload, and castle-only digests, as
+  // canonical JSON of a criteria.brokenbots.dev/v1
+  // ProjectWorkflowConfig record (see confighome). The rendered
+  // ConfigMap payloads derive FROM this record — castle is the config
+  // home and a config edit here re-renders the namespace CMs.
+  rpc GetProjectConfig(GetProjectConfigRequest) returns (GetProjectConfigResponse);
+
+  // SetProjectConfig swaps the whole workflow config record under
+  // optimistic etag semantics like SetProjectSettings: expected_etag must
+  // be the etag the caller last read, or "" exactly when the record is
+  // still unset. A writer whose expectation no longer holds is rejected
+  // without clobbering; the response carries the new etag. The document
+  // must parse and validate as a ProjectWorkflowConfig record
+  // (fail-closed shape; values stay opaque).
+  rpc SetProjectConfig(SetProjectConfigRequest) returns (SetProjectConfigResponse);
+
+  // ListWorkflowCatalog lists a project's workflow catalog — the
+  // workflowLibrary entries the record owns, resolved with the tree's
+  // learning digest when castle has one — so consumers (parapet, route
+  // editors) pick from the same records assignment validation consults.
+  rpc ListWorkflowCatalog(ListWorkflowCatalogRequest) returns (ListWorkflowCatalogResponse);
+
   // GetRefirePolicy returns the policy row for (project_id, route) — the
   // exact key, not the engine's resolution ladder. The project-scoped
   // default row uses an empty route; the global default uses empty
@@ -265,6 +289,73 @@ message SetProjectSettingsRequest {
 
 message SetProjectSettingsResponse {
   string etag = 1;
+}
+
+message GetProjectConfigRequest {
+  string project_id = 1;
+}
+
+message GetProjectConfigResponse {
+  // document is the canonical JSON of the project's workflow config
+  // record; empty when the record is unset.
+  bytes document = 1;
+  // etag is the record's content-addressed etag (empty when the record
+  // is unset).
+  string etag = 2;
+}
+
+message SetProjectConfigRequest {
+  string project_id = 1;
+  // document is the complete replacement record — config is swapped
+  // whole, never merged. Canonical JSON of a ProjectWorkflowConfig
+  // record; the server validates shape fail-closed and stores the
+  // canonical form.
+  bytes document = 2;
+  // expected_etag is the etag the caller last read: the current etag, or
+  // "" exactly when the record is still unset.
+  string expected_etag = 3;
+}
+
+message SetProjectConfigResponse {
+  string etag = 1;
+}
+
+// WorkflowCatalogEntry is one workflowLibrary entry of the project's
+// workflow config record as the catalog list presents it (KB-339): the
+// workflow identity (type, and for url trees the url+ref+digest) plus the
+// execution placement (namespace/class/image) and the declared interface
+// name when the tree carries one.
+message WorkflowCatalogEntry {
+  // name is the catalog entry name (the workflowLibrary key).
+  string name = 1;
+  // type is "image" or "url".
+  string type = 2;
+  // url and ref identify a url-type tree. image-type entries carry the
+  // image.
+  string url = 3;
+  string ref = 4;
+  // digest is the tree content digest castle has learned for url+ref
+  // (KB-310 bookkeeping; "" when none is learned).
+  string digest = 5;
+  // namespace, class and image are the execution placement fields.
+  string namespace = 6;
+  string class = 7;
+  string image = 8;
+  // interface_name is the declared interface's workflow name when the
+  // tree carries an interface declaration.
+  string interface_name = 9;
+}
+
+message ListWorkflowCatalogRequest {
+  string project_id = 1;
+}
+
+message ListWorkflowCatalogResponse {
+  repeated WorkflowCatalogEntry entries = 1;
+  // etag is the workflow config record's content-addressed etag (empty
+  // when the record is unset) — callers use it as the config cache
+  // handle for the listing they just read.
+  string etag = 2;
 }
 
 message GetRefirePolicyRequest {

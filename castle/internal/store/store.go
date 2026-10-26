@@ -988,5 +988,26 @@ type Store interface {
 	// key (allow_anonymous_reads) as a JSON boolean.
 	SetProjectSettings(ctx context.Context, projectID string, settings map[string]string, expectedETag string) (string, error)
 
+	// Project workflow config (KB-339)
+	// GetProjectConfig returns the project's ONE workflow config record —
+	// per-project routes, workflow catalog entries, configLibrary entries,
+	// the namespace binding payload, and castle-only digest bookkeeping —
+	// as the stored (canonical) JSON doc bytes, plus the doc's
+	// content-addressed etag (store.ProjectConfigETag). ErrNotFound when
+	// the project does not exist. A fresh project reads as an empty doc
+	// with an empty etag. Castle is the config home: the rendered
+	// ConfigMap payloads derive from this record, and shape validation is
+	// the rpc layer's contract (castle stores+validates shape only).
+	GetProjectConfig(ctx context.Context, projectID string) ([]byte, string, error)
+	// SetProjectConfig atomically swaps the whole workflow config record
+	// when the caller has seen the current one: expectedETag must equal
+	// the record's current etag, or the empty etag exactly when the
+	// project's record is still unset (or emptied again). On success it
+	// returns the new etag. Any concurrent writer between the caller's
+	// read and this swap fails with ErrProjectConfigConflict. ErrNotFound
+	// when the project does not exist; ErrInvalidWorkflowConfig when the
+	// doc is not JSON the store can canonicalize.
+	SetProjectConfig(ctx context.Context, projectID string, doc []byte, expectedETag string) (string, error)
+
 	Close() error
 }

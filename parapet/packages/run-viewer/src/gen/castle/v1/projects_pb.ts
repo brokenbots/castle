@@ -1131,6 +1131,376 @@ export class SetProjectSettingsResponse extends Message<SetProjectSettingsRespon
 }
 
 /**
+ * @generated from message castle.v1.GetProjectConfigRequest
+ */
+export class GetProjectConfigRequest extends Message<GetProjectConfigRequest> {
+  /**
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  constructor(data?: PartialMessage<GetProjectConfigRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.GetProjectConfigRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetProjectConfigRequest {
+    return new GetProjectConfigRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetProjectConfigRequest {
+    return new GetProjectConfigRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetProjectConfigRequest {
+    return new GetProjectConfigRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetProjectConfigRequest | PlainMessage<GetProjectConfigRequest> | undefined, b: GetProjectConfigRequest | PlainMessage<GetProjectConfigRequest> | undefined): boolean {
+    return proto3.util.equals(GetProjectConfigRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.GetProjectConfigResponse
+ */
+export class GetProjectConfigResponse extends Message<GetProjectConfigResponse> {
+  /**
+   * document is the canonical JSON of the project's workflow config
+   * record; empty when the record is unset.
+   *
+   * @generated from field: bytes document = 1;
+   */
+  document = new Uint8Array(0);
+
+  /**
+   * etag is the record's content-addressed etag (empty when the record
+   * is unset).
+   *
+   * @generated from field: string etag = 2;
+   */
+  etag = "";
+
+  constructor(data?: PartialMessage<GetProjectConfigResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.GetProjectConfigResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "document", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
+    { no: 2, name: "etag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetProjectConfigResponse {
+    return new GetProjectConfigResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetProjectConfigResponse {
+    return new GetProjectConfigResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetProjectConfigResponse {
+    return new GetProjectConfigResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetProjectConfigResponse | PlainMessage<GetProjectConfigResponse> | undefined, b: GetProjectConfigResponse | PlainMessage<GetProjectConfigResponse> | undefined): boolean {
+    return proto3.util.equals(GetProjectConfigResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.SetProjectConfigRequest
+ */
+export class SetProjectConfigRequest extends Message<SetProjectConfigRequest> {
+  /**
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  /**
+   * document is the complete replacement record — config is swapped
+   * whole, never merged. Canonical JSON of a ProjectWorkflowConfig
+   * record; the server validates shape fail-closed and stores the
+   * canonical form.
+   *
+   * @generated from field: bytes document = 2;
+   */
+  document = new Uint8Array(0);
+
+  /**
+   * expected_etag is the etag the caller last read: the current etag, or
+   * "" exactly when the record is still unset.
+   *
+   * @generated from field: string expected_etag = 3;
+   */
+  expectedEtag = "";
+
+  constructor(data?: PartialMessage<SetProjectConfigRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.SetProjectConfigRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "document", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
+    { no: 3, name: "expected_etag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetProjectConfigRequest {
+    return new SetProjectConfigRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetProjectConfigRequest {
+    return new SetProjectConfigRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetProjectConfigRequest {
+    return new SetProjectConfigRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetProjectConfigRequest | PlainMessage<SetProjectConfigRequest> | undefined, b: SetProjectConfigRequest | PlainMessage<SetProjectConfigRequest> | undefined): boolean {
+    return proto3.util.equals(SetProjectConfigRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.SetProjectConfigResponse
+ */
+export class SetProjectConfigResponse extends Message<SetProjectConfigResponse> {
+  /**
+   * @generated from field: string etag = 1;
+   */
+  etag = "";
+
+  constructor(data?: PartialMessage<SetProjectConfigResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.SetProjectConfigResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "etag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetProjectConfigResponse {
+    return new SetProjectConfigResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetProjectConfigResponse {
+    return new SetProjectConfigResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetProjectConfigResponse {
+    return new SetProjectConfigResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetProjectConfigResponse | PlainMessage<SetProjectConfigResponse> | undefined, b: SetProjectConfigResponse | PlainMessage<SetProjectConfigResponse> | undefined): boolean {
+    return proto3.util.equals(SetProjectConfigResponse, a, b);
+  }
+}
+
+/**
+ * WorkflowCatalogEntry is one workflowLibrary entry of the project's
+ * workflow config record as the catalog list presents it (KB-339): the
+ * workflow identity (type, and for url trees the url+ref+digest) plus the
+ * execution placement (namespace/class/image) and the declared interface
+ * name when the tree carries one.
+ *
+ * @generated from message castle.v1.WorkflowCatalogEntry
+ */
+export class WorkflowCatalogEntry extends Message<WorkflowCatalogEntry> {
+  /**
+   * name is the catalog entry name (the workflowLibrary key).
+   *
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * type is "image" or "url".
+   *
+   * @generated from field: string type = 2;
+   */
+  type = "";
+
+  /**
+   * url and ref identify a url-type tree. image-type entries carry the
+   * image.
+   *
+   * @generated from field: string url = 3;
+   */
+  url = "";
+
+  /**
+   * @generated from field: string ref = 4;
+   */
+  ref = "";
+
+  /**
+   * digest is the tree content digest castle has learned for url+ref
+   * (KB-310 bookkeeping; "" when none is learned).
+   *
+   * @generated from field: string digest = 5;
+   */
+  digest = "";
+
+  /**
+   * namespace, class and image are the execution placement fields.
+   *
+   * @generated from field: string namespace = 6;
+   */
+  namespace = "";
+
+  /**
+   * @generated from field: string class = 7;
+   */
+  class = "";
+
+  /**
+   * @generated from field: string image = 8;
+   */
+  image = "";
+
+  /**
+   * interface_name is the declared interface's workflow name when the
+   * tree carries an interface declaration.
+   *
+   * @generated from field: string interface_name = 9;
+   */
+  interfaceName = "";
+
+  constructor(data?: PartialMessage<WorkflowCatalogEntry>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.WorkflowCatalogEntry";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "digest", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "namespace", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "class", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 9, name: "interface_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowCatalogEntry {
+    return new WorkflowCatalogEntry().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WorkflowCatalogEntry {
+    return new WorkflowCatalogEntry().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WorkflowCatalogEntry {
+    return new WorkflowCatalogEntry().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WorkflowCatalogEntry | PlainMessage<WorkflowCatalogEntry> | undefined, b: WorkflowCatalogEntry | PlainMessage<WorkflowCatalogEntry> | undefined): boolean {
+    return proto3.util.equals(WorkflowCatalogEntry, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.ListWorkflowCatalogRequest
+ */
+export class ListWorkflowCatalogRequest extends Message<ListWorkflowCatalogRequest> {
+  /**
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  constructor(data?: PartialMessage<ListWorkflowCatalogRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.ListWorkflowCatalogRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkflowCatalogRequest {
+    return new ListWorkflowCatalogRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListWorkflowCatalogRequest {
+    return new ListWorkflowCatalogRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListWorkflowCatalogRequest {
+    return new ListWorkflowCatalogRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListWorkflowCatalogRequest | PlainMessage<ListWorkflowCatalogRequest> | undefined, b: ListWorkflowCatalogRequest | PlainMessage<ListWorkflowCatalogRequest> | undefined): boolean {
+    return proto3.util.equals(ListWorkflowCatalogRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message castle.v1.ListWorkflowCatalogResponse
+ */
+export class ListWorkflowCatalogResponse extends Message<ListWorkflowCatalogResponse> {
+  /**
+   * @generated from field: repeated castle.v1.WorkflowCatalogEntry entries = 1;
+   */
+  entries: WorkflowCatalogEntry[] = [];
+
+  /**
+   * etag is the workflow config record's content-addressed etag (empty
+   * when the record is unset) — callers use it as the config cache
+   * handle for the listing they just read.
+   *
+   * @generated from field: string etag = 2;
+   */
+  etag = "";
+
+  constructor(data?: PartialMessage<ListWorkflowCatalogResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "castle.v1.ListWorkflowCatalogResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "entries", kind: "message", T: WorkflowCatalogEntry, repeated: true },
+    { no: 2, name: "etag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListWorkflowCatalogResponse {
+    return new ListWorkflowCatalogResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListWorkflowCatalogResponse {
+    return new ListWorkflowCatalogResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListWorkflowCatalogResponse {
+    return new ListWorkflowCatalogResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListWorkflowCatalogResponse | PlainMessage<ListWorkflowCatalogResponse> | undefined, b: ListWorkflowCatalogResponse | PlainMessage<ListWorkflowCatalogResponse> | undefined): boolean {
+    return proto3.util.equals(ListWorkflowCatalogResponse, a, b);
+  }
+}
+
+/**
  * @generated from message castle.v1.GetRefirePolicyRequest
  */
 export class GetRefirePolicyRequest extends Message<GetRefirePolicyRequest> {

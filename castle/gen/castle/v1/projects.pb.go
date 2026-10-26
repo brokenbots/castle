@@ -1356,6 +1356,437 @@ func (x *SetProjectSettingsResponse) GetEtag() string {
 	return ""
 }
 
+type GetProjectConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProjectId     string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProjectConfigRequest) Reset() {
+	*x = GetProjectConfigRequest{}
+	mi := &file_castle_v1_projects_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProjectConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProjectConfigRequest) ProtoMessage() {}
+
+func (x *GetProjectConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProjectConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetProjectConfigRequest) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *GetProjectConfigRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+type GetProjectConfigResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// document is the canonical JSON of the project's workflow config
+	// record; empty when the record is unset.
+	Document []byte `protobuf:"bytes,1,opt,name=document,proto3" json:"document,omitempty"`
+	// etag is the record's content-addressed etag (empty when the record
+	// is unset).
+	Etag          string `protobuf:"bytes,2,opt,name=etag,proto3" json:"etag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProjectConfigResponse) Reset() {
+	*x = GetProjectConfigResponse{}
+	mi := &file_castle_v1_projects_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProjectConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProjectConfigResponse) ProtoMessage() {}
+
+func (x *GetProjectConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProjectConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetProjectConfigResponse) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *GetProjectConfigResponse) GetDocument() []byte {
+	if x != nil {
+		return x.Document
+	}
+	return nil
+}
+
+func (x *GetProjectConfigResponse) GetEtag() string {
+	if x != nil {
+		return x.Etag
+	}
+	return ""
+}
+
+type SetProjectConfigRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ProjectId string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	// document is the complete replacement record — config is swapped
+	// whole, never merged. Canonical JSON of a ProjectWorkflowConfig
+	// record; the server validates shape fail-closed and stores the
+	// canonical form.
+	Document []byte `protobuf:"bytes,2,opt,name=document,proto3" json:"document,omitempty"`
+	// expected_etag is the etag the caller last read: the current etag, or
+	// "" exactly when the record is still unset.
+	ExpectedEtag  string `protobuf:"bytes,3,opt,name=expected_etag,json=expectedEtag,proto3" json:"expected_etag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetProjectConfigRequest) Reset() {
+	*x = SetProjectConfigRequest{}
+	mi := &file_castle_v1_projects_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetProjectConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetProjectConfigRequest) ProtoMessage() {}
+
+func (x *SetProjectConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetProjectConfigRequest.ProtoReflect.Descriptor instead.
+func (*SetProjectConfigRequest) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *SetProjectConfigRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *SetProjectConfigRequest) GetDocument() []byte {
+	if x != nil {
+		return x.Document
+	}
+	return nil
+}
+
+func (x *SetProjectConfigRequest) GetExpectedEtag() string {
+	if x != nil {
+		return x.ExpectedEtag
+	}
+	return ""
+}
+
+type SetProjectConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Etag          string                 `protobuf:"bytes,1,opt,name=etag,proto3" json:"etag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetProjectConfigResponse) Reset() {
+	*x = SetProjectConfigResponse{}
+	mi := &file_castle_v1_projects_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetProjectConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetProjectConfigResponse) ProtoMessage() {}
+
+func (x *SetProjectConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetProjectConfigResponse.ProtoReflect.Descriptor instead.
+func (*SetProjectConfigResponse) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *SetProjectConfigResponse) GetEtag() string {
+	if x != nil {
+		return x.Etag
+	}
+	return ""
+}
+
+// WorkflowCatalogEntry is one workflowLibrary entry of the project's
+// workflow config record as the catalog list presents it (KB-339): the
+// workflow identity (type, and for url trees the url+ref+digest) plus the
+// execution placement (namespace/class/image) and the declared interface
+// name when the tree carries one.
+type WorkflowCatalogEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// name is the catalog entry name (the workflowLibrary key).
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// type is "image" or "url".
+	Type string `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	// url and ref identify a url-type tree. image-type entries carry the
+	// image.
+	Url string `protobuf:"bytes,3,opt,name=url,proto3" json:"url,omitempty"`
+	Ref string `protobuf:"bytes,4,opt,name=ref,proto3" json:"ref,omitempty"`
+	// digest is the tree content digest castle has learned for url+ref
+	// (KB-310 bookkeeping; "" when none is learned).
+	Digest string `protobuf:"bytes,5,opt,name=digest,proto3" json:"digest,omitempty"`
+	// namespace, class and image are the execution placement fields.
+	Namespace string `protobuf:"bytes,6,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Class     string `protobuf:"bytes,7,opt,name=class,proto3" json:"class,omitempty"`
+	Image     string `protobuf:"bytes,8,opt,name=image,proto3" json:"image,omitempty"`
+	// interface_name is the declared interface's workflow name when the
+	// tree carries an interface declaration.
+	InterfaceName string `protobuf:"bytes,9,opt,name=interface_name,json=interfaceName,proto3" json:"interface_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowCatalogEntry) Reset() {
+	*x = WorkflowCatalogEntry{}
+	mi := &file_castle_v1_projects_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowCatalogEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowCatalogEntry) ProtoMessage() {}
+
+func (x *WorkflowCatalogEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowCatalogEntry.ProtoReflect.Descriptor instead.
+func (*WorkflowCatalogEntry) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *WorkflowCatalogEntry) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *WorkflowCatalogEntry) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *WorkflowCatalogEntry) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *WorkflowCatalogEntry) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
+}
+
+func (x *WorkflowCatalogEntry) GetDigest() string {
+	if x != nil {
+		return x.Digest
+	}
+	return ""
+}
+
+func (x *WorkflowCatalogEntry) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *WorkflowCatalogEntry) GetClass() string {
+	if x != nil {
+		return x.Class
+	}
+	return ""
+}
+
+func (x *WorkflowCatalogEntry) GetImage() string {
+	if x != nil {
+		return x.Image
+	}
+	return ""
+}
+
+func (x *WorkflowCatalogEntry) GetInterfaceName() string {
+	if x != nil {
+		return x.InterfaceName
+	}
+	return ""
+}
+
+type ListWorkflowCatalogRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProjectId     string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListWorkflowCatalogRequest) Reset() {
+	*x = ListWorkflowCatalogRequest{}
+	mi := &file_castle_v1_projects_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListWorkflowCatalogRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListWorkflowCatalogRequest) ProtoMessage() {}
+
+func (x *ListWorkflowCatalogRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListWorkflowCatalogRequest.ProtoReflect.Descriptor instead.
+func (*ListWorkflowCatalogRequest) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ListWorkflowCatalogRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+type ListWorkflowCatalogResponse struct {
+	state   protoimpl.MessageState  `protogen:"open.v1"`
+	Entries []*WorkflowCatalogEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// etag is the workflow config record's content-addressed etag (empty
+	// when the record is unset) — callers use it as the config cache
+	// handle for the listing they just read.
+	Etag          string `protobuf:"bytes,2,opt,name=etag,proto3" json:"etag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListWorkflowCatalogResponse) Reset() {
+	*x = ListWorkflowCatalogResponse{}
+	mi := &file_castle_v1_projects_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListWorkflowCatalogResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListWorkflowCatalogResponse) ProtoMessage() {}
+
+func (x *ListWorkflowCatalogResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_castle_v1_projects_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListWorkflowCatalogResponse.ProtoReflect.Descriptor instead.
+func (*ListWorkflowCatalogResponse) Descriptor() ([]byte, []int) {
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *ListWorkflowCatalogResponse) GetEntries() []*WorkflowCatalogEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *ListWorkflowCatalogResponse) GetEtag() string {
+	if x != nil {
+		return x.Etag
+	}
+	return ""
+}
+
 type GetRefirePolicyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// project_id of the policy row ("" selects the global default slot).
@@ -1368,7 +1799,7 @@ type GetRefirePolicyRequest struct {
 
 func (x *GetRefirePolicyRequest) Reset() {
 	*x = GetRefirePolicyRequest{}
-	mi := &file_castle_v1_projects_proto_msgTypes[21]
+	mi := &file_castle_v1_projects_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1380,7 +1811,7 @@ func (x *GetRefirePolicyRequest) String() string {
 func (*GetRefirePolicyRequest) ProtoMessage() {}
 
 func (x *GetRefirePolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_castle_v1_projects_proto_msgTypes[21]
+	mi := &file_castle_v1_projects_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1393,7 +1824,7 @@ func (x *GetRefirePolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRefirePolicyRequest.ProtoReflect.Descriptor instead.
 func (*GetRefirePolicyRequest) Descriptor() ([]byte, []int) {
-	return file_castle_v1_projects_proto_rawDescGZIP(), []int{21}
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetRefirePolicyRequest) GetProjectId() string {
@@ -1420,7 +1851,7 @@ type GetRefirePolicyResponse struct {
 
 func (x *GetRefirePolicyResponse) Reset() {
 	*x = GetRefirePolicyResponse{}
-	mi := &file_castle_v1_projects_proto_msgTypes[22]
+	mi := &file_castle_v1_projects_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1432,7 +1863,7 @@ func (x *GetRefirePolicyResponse) String() string {
 func (*GetRefirePolicyResponse) ProtoMessage() {}
 
 func (x *GetRefirePolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_castle_v1_projects_proto_msgTypes[22]
+	mi := &file_castle_v1_projects_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1445,7 +1876,7 @@ func (x *GetRefirePolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRefirePolicyResponse.ProtoReflect.Descriptor instead.
 func (*GetRefirePolicyResponse) Descriptor() ([]byte, []int) {
-	return file_castle_v1_projects_proto_rawDescGZIP(), []int{22}
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetRefirePolicyResponse) GetPolicy() *RefirePolicy {
@@ -1473,7 +1904,7 @@ type SetRefirePolicyRequest struct {
 
 func (x *SetRefirePolicyRequest) Reset() {
 	*x = SetRefirePolicyRequest{}
-	mi := &file_castle_v1_projects_proto_msgTypes[23]
+	mi := &file_castle_v1_projects_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1485,7 +1916,7 @@ func (x *SetRefirePolicyRequest) String() string {
 func (*SetRefirePolicyRequest) ProtoMessage() {}
 
 func (x *SetRefirePolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_castle_v1_projects_proto_msgTypes[23]
+	mi := &file_castle_v1_projects_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1498,7 +1929,7 @@ func (x *SetRefirePolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRefirePolicyRequest.ProtoReflect.Descriptor instead.
 func (*SetRefirePolicyRequest) Descriptor() ([]byte, []int) {
-	return file_castle_v1_projects_proto_rawDescGZIP(), []int{23}
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SetRefirePolicyRequest) GetProjectId() string {
@@ -1531,7 +1962,7 @@ type SetRefirePolicyResponse struct {
 
 func (x *SetRefirePolicyResponse) Reset() {
 	*x = SetRefirePolicyResponse{}
-	mi := &file_castle_v1_projects_proto_msgTypes[24]
+	mi := &file_castle_v1_projects_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1543,7 +1974,7 @@ func (x *SetRefirePolicyResponse) String() string {
 func (*SetRefirePolicyResponse) ProtoMessage() {}
 
 func (x *SetRefirePolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_castle_v1_projects_proto_msgTypes[24]
+	mi := &file_castle_v1_projects_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1556,7 +1987,7 @@ func (x *SetRefirePolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRefirePolicyResponse.ProtoReflect.Descriptor instead.
 func (*SetRefirePolicyResponse) Descriptor() ([]byte, []int) {
-	return file_castle_v1_projects_proto_rawDescGZIP(), []int{24}
+	return file_castle_v1_projects_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SetRefirePolicyResponse) GetUpdatedAt() *timestamppb.Timestamp {
@@ -1674,7 +2105,36 @@ const file_castle_v1_projects_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"0\n" +
 	"\x1aSetProjectSettingsResponse\x12\x12\n" +
-	"\x04etag\x18\x01 \x01(\tR\x04etag\"M\n" +
+	"\x04etag\x18\x01 \x01(\tR\x04etag\"8\n" +
+	"\x17GetProjectConfigRequest\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x01 \x01(\tR\tprojectId\"J\n" +
+	"\x18GetProjectConfigResponse\x12\x1a\n" +
+	"\bdocument\x18\x01 \x01(\fR\bdocument\x12\x12\n" +
+	"\x04etag\x18\x02 \x01(\tR\x04etag\"y\n" +
+	"\x17SetProjectConfigRequest\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x1a\n" +
+	"\bdocument\x18\x02 \x01(\fR\bdocument\x12#\n" +
+	"\rexpected_etag\x18\x03 \x01(\tR\fexpectedEtag\".\n" +
+	"\x18SetProjectConfigResponse\x12\x12\n" +
+	"\x04etag\x18\x01 \x01(\tR\x04etag\"\xeb\x01\n" +
+	"\x14WorkflowCatalogEntry\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12\x10\n" +
+	"\x03url\x18\x03 \x01(\tR\x03url\x12\x10\n" +
+	"\x03ref\x18\x04 \x01(\tR\x03ref\x12\x16\n" +
+	"\x06digest\x18\x05 \x01(\tR\x06digest\x12\x1c\n" +
+	"\tnamespace\x18\x06 \x01(\tR\tnamespace\x12\x14\n" +
+	"\x05class\x18\a \x01(\tR\x05class\x12\x14\n" +
+	"\x05image\x18\b \x01(\tR\x05image\x12%\n" +
+	"\x0einterface_name\x18\t \x01(\tR\rinterfaceName\";\n" +
+	"\x1aListWorkflowCatalogRequest\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x01 \x01(\tR\tprojectId\"l\n" +
+	"\x1bListWorkflowCatalogResponse\x129\n" +
+	"\aentries\x18\x01 \x03(\v2\x1f.castle.v1.WorkflowCatalogEntryR\aentries\x12\x12\n" +
+	"\x04etag\x18\x02 \x01(\tR\x04etag\"M\n" +
 	"\x16GetRefirePolicyRequest\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x14\n" +
@@ -1698,7 +2158,8 @@ const file_castle_v1_projects_proto_rawDesc = "" +
 	"\x11ProjectMemberKind\x12#\n" +
 	"\x1fPROJECT_MEMBER_KIND_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16PROJECT_MEMBER_KIND_AI\x10\x01\x12\x1d\n" +
-	"\x19PROJECT_MEMBER_KIND_HUMAN\x10\x022\x92\b\n" +
+	"\x19PROJECT_MEMBER_KIND_HUMAN\x10\x022\xb2\n" +
+	"\n" +
 	"\x0eProjectService\x12R\n" +
 	"\rCreateProject\x12\x1f.castle.v1.CreateProjectRequest\x1a .castle.v1.CreateProjectResponse\x12I\n" +
 	"\n" +
@@ -1709,7 +2170,10 @@ const file_castle_v1_projects_proto_rawDesc = "" +
 	"\x12ListProjectMembers\x12$.castle.v1.ListProjectMembersRequest\x1a%.castle.v1.ListProjectMembersResponse\x12p\n" +
 	"\x17SubmitProjectAssignment\x12).castle.v1.SubmitProjectAssignmentRequest\x1a*.castle.v1.SubmitProjectAssignmentResponse\x12a\n" +
 	"\x12GetProjectSettings\x12$.castle.v1.GetProjectSettingsRequest\x1a%.castle.v1.GetProjectSettingsResponse\x12a\n" +
-	"\x12SetProjectSettings\x12$.castle.v1.SetProjectSettingsRequest\x1a%.castle.v1.SetProjectSettingsResponse\x12X\n" +
+	"\x12SetProjectSettings\x12$.castle.v1.SetProjectSettingsRequest\x1a%.castle.v1.SetProjectSettingsResponse\x12[\n" +
+	"\x10GetProjectConfig\x12\".castle.v1.GetProjectConfigRequest\x1a#.castle.v1.GetProjectConfigResponse\x12[\n" +
+	"\x10SetProjectConfig\x12\".castle.v1.SetProjectConfigRequest\x1a#.castle.v1.SetProjectConfigResponse\x12d\n" +
+	"\x13ListWorkflowCatalog\x12%.castle.v1.ListWorkflowCatalogRequest\x1a&.castle.v1.ListWorkflowCatalogResponse\x12X\n" +
 	"\x0fGetRefirePolicy\x12!.castle.v1.GetRefirePolicyRequest\x1a\".castle.v1.GetRefirePolicyResponse\x12X\n" +
 	"\x0fSetRefirePolicy\x12!.castle.v1.SetRefirePolicyRequest\x1a\".castle.v1.SetRefirePolicyResponseB<Z:github.com/brokenbots/castle/castle/gen/castle/v1;castlev1b\x06proto3"
 
@@ -1726,7 +2190,7 @@ func file_castle_v1_projects_proto_rawDescGZIP() []byte {
 }
 
 var file_castle_v1_projects_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_castle_v1_projects_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_castle_v1_projects_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
 var file_castle_v1_projects_proto_goTypes = []any{
 	(ProjectMembershipPolicy)(0),            // 0: castle.v1.ProjectMembershipPolicy
 	(ProjectMemberKind)(0),                  // 1: castle.v1.ProjectMemberKind
@@ -1751,28 +2215,35 @@ var file_castle_v1_projects_proto_goTypes = []any{
 	(*GetProjectSettingsResponse)(nil),      // 20: castle.v1.GetProjectSettingsResponse
 	(*SetProjectSettingsRequest)(nil),       // 21: castle.v1.SetProjectSettingsRequest
 	(*SetProjectSettingsResponse)(nil),      // 22: castle.v1.SetProjectSettingsResponse
-	(*GetRefirePolicyRequest)(nil),          // 23: castle.v1.GetRefirePolicyRequest
-	(*GetRefirePolicyResponse)(nil),         // 24: castle.v1.GetRefirePolicyResponse
-	(*SetRefirePolicyRequest)(nil),          // 25: castle.v1.SetRefirePolicyRequest
-	(*SetRefirePolicyResponse)(nil),         // 26: castle.v1.SetRefirePolicyResponse
-	nil,                                     // 27: castle.v1.Project.SettingsEntry
-	nil,                                     // 28: castle.v1.Project.InfoEntry
-	nil,                                     // 29: castle.v1.SubmitProjectAssignmentRequest.LabelsEntry
-	nil,                                     // 30: castle.v1.SubmitProjectAssignmentRequest.InputValuesEntry
-	nil,                                     // 31: castle.v1.SubmitProjectAssignmentRequest.TargetMetadataEntry
-	nil,                                     // 32: castle.v1.GetProjectSettingsResponse.SettingsEntry
-	nil,                                     // 33: castle.v1.SetProjectSettingsRequest.SettingsEntry
-	(*timestamppb.Timestamp)(nil),           // 34: google.protobuf.Timestamp
-	(v1.WorkflowAssignmentState)(0),         // 35: criteria.v1.WorkflowAssignmentState
+	(*GetProjectConfigRequest)(nil),         // 23: castle.v1.GetProjectConfigRequest
+	(*GetProjectConfigResponse)(nil),        // 24: castle.v1.GetProjectConfigResponse
+	(*SetProjectConfigRequest)(nil),         // 25: castle.v1.SetProjectConfigRequest
+	(*SetProjectConfigResponse)(nil),        // 26: castle.v1.SetProjectConfigResponse
+	(*WorkflowCatalogEntry)(nil),            // 27: castle.v1.WorkflowCatalogEntry
+	(*ListWorkflowCatalogRequest)(nil),      // 28: castle.v1.ListWorkflowCatalogRequest
+	(*ListWorkflowCatalogResponse)(nil),     // 29: castle.v1.ListWorkflowCatalogResponse
+	(*GetRefirePolicyRequest)(nil),          // 30: castle.v1.GetRefirePolicyRequest
+	(*GetRefirePolicyResponse)(nil),         // 31: castle.v1.GetRefirePolicyResponse
+	(*SetRefirePolicyRequest)(nil),          // 32: castle.v1.SetRefirePolicyRequest
+	(*SetRefirePolicyResponse)(nil),         // 33: castle.v1.SetRefirePolicyResponse
+	nil,                                     // 34: castle.v1.Project.SettingsEntry
+	nil,                                     // 35: castle.v1.Project.InfoEntry
+	nil,                                     // 36: castle.v1.SubmitProjectAssignmentRequest.LabelsEntry
+	nil,                                     // 37: castle.v1.SubmitProjectAssignmentRequest.InputValuesEntry
+	nil,                                     // 38: castle.v1.SubmitProjectAssignmentRequest.TargetMetadataEntry
+	nil,                                     // 39: castle.v1.GetProjectSettingsResponse.SettingsEntry
+	nil,                                     // 40: castle.v1.SetProjectSettingsRequest.SettingsEntry
+	(*timestamppb.Timestamp)(nil),           // 41: google.protobuf.Timestamp
+	(v1.WorkflowAssignmentState)(0),         // 42: criteria.v1.WorkflowAssignmentState
 }
 var file_castle_v1_projects_proto_depIdxs = []int32{
 	0,  // 0: castle.v1.Project.membership_policy:type_name -> castle.v1.ProjectMembershipPolicy
-	27, // 1: castle.v1.Project.settings:type_name -> castle.v1.Project.SettingsEntry
-	28, // 2: castle.v1.Project.info:type_name -> castle.v1.Project.InfoEntry
-	34, // 3: castle.v1.Project.created_at:type_name -> google.protobuf.Timestamp
-	34, // 4: castle.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
+	34, // 1: castle.v1.Project.settings:type_name -> castle.v1.Project.SettingsEntry
+	35, // 2: castle.v1.Project.info:type_name -> castle.v1.Project.InfoEntry
+	41, // 3: castle.v1.Project.created_at:type_name -> google.protobuf.Timestamp
+	41, // 4: castle.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
 	1,  // 5: castle.v1.ProjectMember.kind:type_name -> castle.v1.ProjectMemberKind
-	34, // 6: castle.v1.ProjectMember.created_at:type_name -> google.protobuf.Timestamp
+	41, // 6: castle.v1.ProjectMember.created_at:type_name -> google.protobuf.Timestamp
 	2,  // 7: castle.v1.CreateProjectRequest.project:type_name -> castle.v1.Project
 	2,  // 8: castle.v1.CreateProjectResponse.project:type_name -> castle.v1.Project
 	2,  // 9: castle.v1.GetProjectResponse.project:type_name -> castle.v1.Project
@@ -1780,44 +2251,51 @@ var file_castle_v1_projects_proto_depIdxs = []int32{
 	1,  // 11: castle.v1.AddProjectMemberRequest.kind:type_name -> castle.v1.ProjectMemberKind
 	3,  // 12: castle.v1.AddProjectMemberResponse.member:type_name -> castle.v1.ProjectMember
 	3,  // 13: castle.v1.ListProjectMembersResponse.members:type_name -> castle.v1.ProjectMember
-	29, // 14: castle.v1.SubmitProjectAssignmentRequest.labels:type_name -> castle.v1.SubmitProjectAssignmentRequest.LabelsEntry
-	30, // 15: castle.v1.SubmitProjectAssignmentRequest.input_values:type_name -> castle.v1.SubmitProjectAssignmentRequest.InputValuesEntry
-	31, // 16: castle.v1.SubmitProjectAssignmentRequest.target_metadata:type_name -> castle.v1.SubmitProjectAssignmentRequest.TargetMetadataEntry
-	35, // 17: castle.v1.SubmitProjectAssignmentResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
-	34, // 18: castle.v1.SubmitProjectAssignmentResponse.created_at:type_name -> google.protobuf.Timestamp
-	32, // 19: castle.v1.GetProjectSettingsResponse.settings:type_name -> castle.v1.GetProjectSettingsResponse.SettingsEntry
-	33, // 20: castle.v1.SetProjectSettingsRequest.settings:type_name -> castle.v1.SetProjectSettingsRequest.SettingsEntry
-	18, // 21: castle.v1.GetRefirePolicyResponse.policy:type_name -> castle.v1.RefirePolicy
-	34, // 22: castle.v1.GetRefirePolicyResponse.updated_at:type_name -> google.protobuf.Timestamp
-	18, // 23: castle.v1.SetRefirePolicyRequest.policy:type_name -> castle.v1.RefirePolicy
-	34, // 24: castle.v1.SetRefirePolicyResponse.updated_at:type_name -> google.protobuf.Timestamp
-	4,  // 25: castle.v1.ProjectService.CreateProject:input_type -> castle.v1.CreateProjectRequest
-	6,  // 26: castle.v1.ProjectService.GetProject:input_type -> castle.v1.GetProjectRequest
-	8,  // 27: castle.v1.ProjectService.ListProjects:input_type -> castle.v1.ListProjectsRequest
-	10, // 28: castle.v1.ProjectService.AddProjectMember:input_type -> castle.v1.AddProjectMemberRequest
-	12, // 29: castle.v1.ProjectService.RemoveProjectMember:input_type -> castle.v1.RemoveProjectMemberRequest
-	14, // 30: castle.v1.ProjectService.ListProjectMembers:input_type -> castle.v1.ListProjectMembersRequest
-	16, // 31: castle.v1.ProjectService.SubmitProjectAssignment:input_type -> castle.v1.SubmitProjectAssignmentRequest
-	19, // 32: castle.v1.ProjectService.GetProjectSettings:input_type -> castle.v1.GetProjectSettingsRequest
-	21, // 33: castle.v1.ProjectService.SetProjectSettings:input_type -> castle.v1.SetProjectSettingsRequest
-	23, // 34: castle.v1.ProjectService.GetRefirePolicy:input_type -> castle.v1.GetRefirePolicyRequest
-	25, // 35: castle.v1.ProjectService.SetRefirePolicy:input_type -> castle.v1.SetRefirePolicyRequest
-	5,  // 36: castle.v1.ProjectService.CreateProject:output_type -> castle.v1.CreateProjectResponse
-	7,  // 37: castle.v1.ProjectService.GetProject:output_type -> castle.v1.GetProjectResponse
-	9,  // 38: castle.v1.ProjectService.ListProjects:output_type -> castle.v1.ListProjectsResponse
-	11, // 39: castle.v1.ProjectService.AddProjectMember:output_type -> castle.v1.AddProjectMemberResponse
-	13, // 40: castle.v1.ProjectService.RemoveProjectMember:output_type -> castle.v1.RemoveProjectMemberResponse
-	15, // 41: castle.v1.ProjectService.ListProjectMembers:output_type -> castle.v1.ListProjectMembersResponse
-	17, // 42: castle.v1.ProjectService.SubmitProjectAssignment:output_type -> castle.v1.SubmitProjectAssignmentResponse
-	20, // 43: castle.v1.ProjectService.GetProjectSettings:output_type -> castle.v1.GetProjectSettingsResponse
-	22, // 44: castle.v1.ProjectService.SetProjectSettings:output_type -> castle.v1.SetProjectSettingsResponse
-	24, // 45: castle.v1.ProjectService.GetRefirePolicy:output_type -> castle.v1.GetRefirePolicyResponse
-	26, // 46: castle.v1.ProjectService.SetRefirePolicy:output_type -> castle.v1.SetRefirePolicyResponse
-	36, // [36:47] is the sub-list for method output_type
-	25, // [25:36] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	36, // 14: castle.v1.SubmitProjectAssignmentRequest.labels:type_name -> castle.v1.SubmitProjectAssignmentRequest.LabelsEntry
+	37, // 15: castle.v1.SubmitProjectAssignmentRequest.input_values:type_name -> castle.v1.SubmitProjectAssignmentRequest.InputValuesEntry
+	38, // 16: castle.v1.SubmitProjectAssignmentRequest.target_metadata:type_name -> castle.v1.SubmitProjectAssignmentRequest.TargetMetadataEntry
+	42, // 17: castle.v1.SubmitProjectAssignmentResponse.state:type_name -> criteria.v1.WorkflowAssignmentState
+	41, // 18: castle.v1.SubmitProjectAssignmentResponse.created_at:type_name -> google.protobuf.Timestamp
+	39, // 19: castle.v1.GetProjectSettingsResponse.settings:type_name -> castle.v1.GetProjectSettingsResponse.SettingsEntry
+	40, // 20: castle.v1.SetProjectSettingsRequest.settings:type_name -> castle.v1.SetProjectSettingsRequest.SettingsEntry
+	27, // 21: castle.v1.ListWorkflowCatalogResponse.entries:type_name -> castle.v1.WorkflowCatalogEntry
+	18, // 22: castle.v1.GetRefirePolicyResponse.policy:type_name -> castle.v1.RefirePolicy
+	41, // 23: castle.v1.GetRefirePolicyResponse.updated_at:type_name -> google.protobuf.Timestamp
+	18, // 24: castle.v1.SetRefirePolicyRequest.policy:type_name -> castle.v1.RefirePolicy
+	41, // 25: castle.v1.SetRefirePolicyResponse.updated_at:type_name -> google.protobuf.Timestamp
+	4,  // 26: castle.v1.ProjectService.CreateProject:input_type -> castle.v1.CreateProjectRequest
+	6,  // 27: castle.v1.ProjectService.GetProject:input_type -> castle.v1.GetProjectRequest
+	8,  // 28: castle.v1.ProjectService.ListProjects:input_type -> castle.v1.ListProjectsRequest
+	10, // 29: castle.v1.ProjectService.AddProjectMember:input_type -> castle.v1.AddProjectMemberRequest
+	12, // 30: castle.v1.ProjectService.RemoveProjectMember:input_type -> castle.v1.RemoveProjectMemberRequest
+	14, // 31: castle.v1.ProjectService.ListProjectMembers:input_type -> castle.v1.ListProjectMembersRequest
+	16, // 32: castle.v1.ProjectService.SubmitProjectAssignment:input_type -> castle.v1.SubmitProjectAssignmentRequest
+	19, // 33: castle.v1.ProjectService.GetProjectSettings:input_type -> castle.v1.GetProjectSettingsRequest
+	21, // 34: castle.v1.ProjectService.SetProjectSettings:input_type -> castle.v1.SetProjectSettingsRequest
+	23, // 35: castle.v1.ProjectService.GetProjectConfig:input_type -> castle.v1.GetProjectConfigRequest
+	25, // 36: castle.v1.ProjectService.SetProjectConfig:input_type -> castle.v1.SetProjectConfigRequest
+	28, // 37: castle.v1.ProjectService.ListWorkflowCatalog:input_type -> castle.v1.ListWorkflowCatalogRequest
+	30, // 38: castle.v1.ProjectService.GetRefirePolicy:input_type -> castle.v1.GetRefirePolicyRequest
+	32, // 39: castle.v1.ProjectService.SetRefirePolicy:input_type -> castle.v1.SetRefirePolicyRequest
+	5,  // 40: castle.v1.ProjectService.CreateProject:output_type -> castle.v1.CreateProjectResponse
+	7,  // 41: castle.v1.ProjectService.GetProject:output_type -> castle.v1.GetProjectResponse
+	9,  // 42: castle.v1.ProjectService.ListProjects:output_type -> castle.v1.ListProjectsResponse
+	11, // 43: castle.v1.ProjectService.AddProjectMember:output_type -> castle.v1.AddProjectMemberResponse
+	13, // 44: castle.v1.ProjectService.RemoveProjectMember:output_type -> castle.v1.RemoveProjectMemberResponse
+	15, // 45: castle.v1.ProjectService.ListProjectMembers:output_type -> castle.v1.ListProjectMembersResponse
+	17, // 46: castle.v1.ProjectService.SubmitProjectAssignment:output_type -> castle.v1.SubmitProjectAssignmentResponse
+	20, // 47: castle.v1.ProjectService.GetProjectSettings:output_type -> castle.v1.GetProjectSettingsResponse
+	22, // 48: castle.v1.ProjectService.SetProjectSettings:output_type -> castle.v1.SetProjectSettingsResponse
+	24, // 49: castle.v1.ProjectService.GetProjectConfig:output_type -> castle.v1.GetProjectConfigResponse
+	26, // 50: castle.v1.ProjectService.SetProjectConfig:output_type -> castle.v1.SetProjectConfigResponse
+	29, // 51: castle.v1.ProjectService.ListWorkflowCatalog:output_type -> castle.v1.ListWorkflowCatalogResponse
+	31, // 52: castle.v1.ProjectService.GetRefirePolicy:output_type -> castle.v1.GetRefirePolicyResponse
+	33, // 53: castle.v1.ProjectService.SetRefirePolicy:output_type -> castle.v1.SetRefirePolicyResponse
+	40, // [40:54] is the sub-list for method output_type
+	26, // [26:40] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_castle_v1_projects_proto_init() }
@@ -1831,7 +2309,7 @@ func file_castle_v1_projects_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_castle_v1_projects_proto_rawDesc), len(file_castle_v1_projects_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   32,
+			NumMessages:   39,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
