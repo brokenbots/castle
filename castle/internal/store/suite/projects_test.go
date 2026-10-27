@@ -275,13 +275,13 @@ func TestLeaseProjectScoping(t *testing.T) {
 
 		// A member of a different project (matching labels) must not lease
 		// proj-a's work.
-		if _, err := s.LeaseWorkflowAssignment(ctx, "agent-b", gpuOn, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "agent-b", gpuOn, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("non-member lease = %v, want ErrNotFound", err)
 		}
 
 		// The member leases it; the record carries the project scope and
 		// the leased run is stamped with the executing agent's identity.
-		leased, err := s.LeaseWorkflowAssignment(ctx, "agent-a", gpuOn, now, time.Minute)
+		leased, _, err := s.LeaseWorkflowAssignment(ctx, "agent-a", gpuOn, now, time.Minute)
 		if err != nil {
 			t.Fatalf("member lease: %v", err)
 		}
@@ -312,7 +312,7 @@ func TestLeaseProjectScoping(t *testing.T) {
 		}); err != nil || !created {
 			t.Fatalf("create zone assignment: created=%v err=%v", created, err)
 		}
-		if _, err := s.LeaseWorkflowAssignment(ctx, "agent-a", gpuOn, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "agent-a", gpuOn, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("label-mismatched member lease = %v, want ErrNotFound", err)
 		}
 	})
@@ -346,7 +346,7 @@ func TestLeaseUnscopedStaysGlobal(t *testing.T) {
 			t.Fatalf("create: created=%v err=%v", created, err)
 		}
 
-		globalLease, err := s.LeaseWorkflowAssignment(ctx, "plain-agent", nil, now, time.Minute)
+		globalLease, _, err := s.LeaseWorkflowAssignment(ctx, "plain-agent", nil, now, time.Minute)
 		if err != nil {
 			t.Fatalf("unscoped lease: %v", err)
 		}
@@ -456,7 +456,7 @@ func TestLeasedPendingListCarriesProjectAndConventions(t *testing.T) {
 			t.Fatalf("create: created=%v err=%v", created, err)
 		}
 
-		leased, err := s.LeaseWorkflowAssignment(ctx, "agent-a", nil, now, time.Minute)
+		leased, _, err := s.LeaseWorkflowAssignment(ctx, "agent-a", nil, now, time.Minute)
 		if err != nil {
 			t.Fatalf("lease: %v", err)
 		}

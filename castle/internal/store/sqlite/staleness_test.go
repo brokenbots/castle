@@ -339,6 +339,83 @@ func TestListOverseers_HealsLaggingReaderView(t *testing.T) {
 	}
 }
 
+// TestListOverseers_FreshnessConvergesSoak is the KB-343 acceptance soak in
+// its sqlite form: a 100-read steady state after real writes must produce
+// zero freshness telemetry (no heal notices, no staleness warnings).
+func TestListOverseers_FreshnessConvergesSoak(t *testing.T) {
+	s := tempStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	buf := &bytes.Buffer{}
+	s.log = newTestLogger(buf)
+
+	registerOverseer(t, s, "agent-soak-a", now.Add(-2*time.Second))
+	registerOverseer(t, s, "agent-soak-b", now)
+
+	for i := range 100 {
+		if _, err := s.ListOverseers(ctx); err != nil {
+			t.Fatalf("ListOverseers read %d: %v", i, err)
+		}
+	}
+	if lines := buf.String(); strings.Contains(lines, "healed") || strings.Contains(lines, "stale WAL") {
+		t.Fatalf("freshness audit did not converge across 100 soak reads:\n%s", lines)
+	}
+}
+
+// TestReaderFreshness_HealNarratesOncePerDivergence pins the KB-343 heal
+// latch: a divergence narrates exactly once no matter how many reads run
+// while it persists (existing sqlite tests only ever pass through a single
+// heal call, so the rate limiter alone cannot distinguish a persisting gap
+// from a new one); once a read converges the episode ends and the next
+// divergence narrates again.
+func TestReaderFreshness_HealNarratesOncePerDivergence(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	var f readerFreshness
+
+	// Episode 1: a committed write the served view cannot show.
+	f.recordWrite(now.Add(2 * staleReaderGrace))
+
+	buf := &bytes.Buffer{}
+	log := newTestLogger(buf)
+	if !f.check(ctx, now, log) {
+		t.Fatal("check did not report the divergence")
+	}
+	if !strings.Contains(buf.String(), "stale WAL snapshot") {
+		t.Fatalf("divergence audit did not warn; log = %q", buf.String())
+	}
+
+	buf.Reset()
+	f.healed(ctx, log)
+	if !strings.Contains(buf.String(), "served the authoritative writer view") {
+		t.Fatalf("first heal of the divergence was not logged; log = %q", buf.String())
+	}
+
+	// A persisting (or false-positive) divergence never narrates again, even
+	// once the rate limiter window would allow it.
+	for range 5 {
+		f.lastHeal = f.lastHeal.Add(-2 * staleReaderWarnInterval)
+		buf.Reset()
+		f.healed(ctx, log)
+		if strings.Contains(buf.String(), "served the authoritative writer view") {
+			t.Fatalf("heal logged again while the same divergence persisted; log = %q", buf.String())
+		}
+	}
+
+	// The reader view converges: the episode ends and the latch clears.
+	f.converged()
+
+	// Episode 2 narrates again.
+	f.recordWrite(now.Add(4 * staleReaderGrace))
+	f.lastHeal = time.Time{} // bypass the 30s limiter so the latch alone gates this leg
+	buf.Reset()
+	f.healed(ctx, log)
+	if !strings.Contains(buf.String(), "served the authoritative writer view") {
+		t.Fatalf("heal after a converged read was not logged; log = %q", buf.String())
+	}
+}
+
 // TestListOverseers_NoSelfHealWhenReaderFresh pins the steady state: no heal
 // logging, no behind flag, and a gated-off presence probe that never touches
 // the writer.

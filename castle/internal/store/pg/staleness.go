@@ -35,6 +35,11 @@ type readerFreshness struct {
 	// committed overseer write, or proved fresh after a gap. It gates the
 	// OverseerTokenHashPresent writer probe (KB-223).
 	behind bool
+	// narrated records that the current divergence episode already produced
+	// its heal notice (KB-343): a gap that persists across reads — or a
+	// false-positive one — narrates once and then stays quiet, and a
+	// converged read ends the episode so the next gap narrates anew.
+	narrated bool
 }
 
 // recordWrite notes a creation timestamp observed on the writer pool.
@@ -109,17 +114,32 @@ func (f *readerFreshness) check(ctx context.Context, readerNewest time.Time, log
 	return stale
 }
 
-// healed clears the behind flag and rate-limits a recovery notice once the
-// authoritative read confirmed the previously-missing rows (KB-223).
+// converged records that the reader view caught up with committed writes,
+// ending the current divergence episode so a later gap narrates anew (KB-343).
+func (f *readerFreshness) converged() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.narrated = false
+}
+
+// healed clears the behind flag and narrates the recovery once the
+// authoritative read confirmed the previously-missing rows (KB-223). A
+// divergence episode narrates exactly once (KB-343): ListOverseers calls
+// healed on every read while a gap persists, and the latch keeps repeat
+// calls — including rate-limiter-window ones — from re-flooding the log.
 func (f *readerFreshness) healed(ctx context.Context, log *slog.Logger) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.behind = false
+	if f.narrated {
+		return
+	}
 	if log == nil {
 		log = slog.Default()
 	}
 	if f.lastHeal.IsZero() || time.Since(f.lastHeal) >= staleReaderWarnInterval {
 		f.lastHeal = time.Now()
+		f.narrated = true
 		log.WarnContext(ctx, "pg: reader view healed; authoritative overseer rows are visible again")
 	}
 }

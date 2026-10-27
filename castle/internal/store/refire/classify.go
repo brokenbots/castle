@@ -9,14 +9,15 @@ import (
 )
 
 // Disposition is the policy engine's decision for one terminal-failed run
-// family attempt (KB-321): refire / park / cosmetic / none, matching the
-// store.RefireDisposition* constants.
+// family attempt (KB-321): refire / park / cosmetic / requeue / none,
+// matching the store.RefireDisposition* constants.
 type Disposition string
 
 const (
 	DispositionRefire   = store.RefireDispositionRefire
 	DispositionPark     = store.RefireDispositionPark
 	DispositionCosmetic = store.RefireDispositionCosmetic
+	DispositionRequeue  = store.RefireDispositionRequeue
 	DispositionNone     = store.RefireDispositionNone
 )
 
@@ -48,6 +49,19 @@ func Classify(p Policy, failureReason string, ev *LastEvent) (Disposition, strin
 	}
 	if needle, ok := matchAny(p.Parks, failureReason); ok {
 		return DispositionPark, "parks vocabulary match: " + needle
+	}
+	// KB-343: the dispatch-transport class — a run reaped by the KB-233
+	// rule-2 stamp (created, but execution never began) is a dispatch-layer
+	// condition, not a provider stall. Matching is EXACT: only the reaper's
+	// own verdict reason enters this class, since the general vocabulary is
+	// substring-matched and policy rows keep their shape
+	// (created_never_started stays in the default Transient list — the row
+	// data is unchanged, the classifier precedence takes it out of the
+	// budget path). The verdict requeues the SAME attempt: the attempt
+	// budget must only be consumed by real execution failures.
+	if failureReason == reap.ReasonCreatedNeverStarted {
+		return DispositionRequeue,
+			"dispatch-layer reap: the run was created but execution never began (requeue, attempt budget untouched)"
 	}
 	if needle, ok := matchAny(p.Cosmetics, failureReason); ok {
 		return DispositionCosmetic, "cosmetics vocabulary match: " + needle

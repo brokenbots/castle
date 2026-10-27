@@ -199,14 +199,14 @@ func TestLeaseWorkflowAssignment_SkipsStoppedRun(t *testing.T) {
 	if err := s.SetRunStopped(ctx, a.RunID); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound leasing parked run's queued work, got %v", err)
 	}
 
 	if err := s.ClearRunStopped(ctx, a.RunID); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	leased, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
+	leased, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
 	if err != nil {
 		t.Fatalf("expected lease after resume, got %v", err)
 	}
@@ -249,7 +249,7 @@ func TestLeaseWorkflowAssignment_SkipsTerminalRun(t *testing.T) {
 		t.Fatalf("cancel run: %v", err)
 	}
 
-	if _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound leasing terminal run's queued work, got %v", err)
 	}
 }
@@ -284,7 +284,7 @@ func TestMarkRunUnstartedReturnsToLeasableBucket(t *testing.T) {
 
 	// Lease the run to the agent without any acceptance event: the
 	// assignment is leased and the run has started_at NULL.
-	leased, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
+	leased, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now, time.Minute)
 	if err != nil {
 		t.Fatalf("lease assignment: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestMarkRunUnstartedReturnsToLeasableBucket(t *testing.T) {
 
 	// The agent still holds the lease, so a competing lease attempt is
 	// refused: redelivery goes through the held lease, not a re-lease.
-	if _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now.Add(time.Second), time.Minute); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := s.LeaseWorkflowAssignment(ctx, "o1", map[string]string{}, now.Add(time.Second), time.Minute); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound while the agent holds the redeliverable lease, got %v", err)
 	}
 

@@ -38,6 +38,11 @@ type readerFreshness struct {
 	// reaches the writer connection while a visibility gap is actually
 	// suspected (KB-223).
 	behind bool
+	// narrated records that the current divergence episode already produced
+	// its heal notice (KB-343): a gap that persists across reads — or a
+	// false-positive one — narrates once and then stays quiet, and a
+	// converged read ends the episode so the next gap narrates anew.
+	narrated bool
 }
 
 // recordWrite notes a creation timestamp observed on the writer handle.
@@ -112,10 +117,20 @@ func (f *readerFreshness) check(ctx context.Context, readerNewest time.Time, log
 	return stale
 }
 
-// healed logs (rate-limited) that a ListOverseers call served the writer view
-// because the reader view was behind committed writes (KB-223). Heal events
-// are bounded by the registration rate, so each is logged; the limiter only
-// exists so a rapidly repeating gap cannot flood the log.
+// converged records that the reader view caught up with committed writes,
+// ending the current divergence episode so a later gap narrates anew (KB-343).
+func (f *readerFreshness) converged() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.narrated = false
+}
+
+// healed logs that a ListOverseers call served the writer view because the
+// reader view was behind committed writes (KB-223), and records the behind
+// flag that gates the OverseerTokenHashPresent probe. A divergence episode
+// narrates exactly once (KB-343): ListOverseers calls healed on every read
+// while a gap persists, and the latch keeps repeat calls — including
+// rate-limiter-window ones — from re-flooding the log.
 func (f *readerFreshness) healed(ctx context.Context, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
@@ -123,8 +138,12 @@ func (f *readerFreshness) healed(ctx context.Context, log *slog.Logger) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.behind = true
+	if f.narrated {
+		return
+	}
 	if f.lastHeal.IsZero() || time.Since(f.lastHeal) >= staleReaderWarnInterval {
 		f.lastHeal = time.Now()
+		f.narrated = true
 		log.WarnContext(ctx,
 			"sqlite: reader view was behind the writer; served the authoritative writer view for overseers (token resolution is unaffected, but investigate reader staleness)",
 			"newest_writer_overseer", f.newest.Format(store.TimestampLayout))

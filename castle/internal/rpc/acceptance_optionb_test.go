@@ -612,6 +612,25 @@ func (fx *optionbFixture) optionbAwaitColumn(t *testing.T, taskID int, column st
 	}
 }
 
+// optionbAwaitComments polls the fake board until the task carries exactly
+// n comments. The adapter's failure park moves the card and posts the
+// comment as separate RPCs (KB-302), and a failed comment post is retried
+// on the next poll: asserting between the two RPCs observes 0 comments.
+func (fx *optionbFixture) optionbAwaitComments(t *testing.T, taskID int, n int) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		comments := fx.board.commentsOn(taskID)
+		if len(comments) >= n {
+			return comments
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("card %d never reached %d comments (has %d)", taskID, n, len(comments))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // optionbRunEnvelopes plays the agent side of the run: RunStarted executes
 // the run in its project, StepEntered records the attempt (decision-trail
 // layer), RunCompleted settles it. success=false parks the mirror on the
@@ -828,7 +847,7 @@ func TestOptionBFireFailureRefirePolicy(t *testing.T) {
 	if got := len(fx.board.moveTargets()); got != 1 {
 		t.Fatalf("mirror moved the failed card %d times (%v), want the single park", got, fx.board.moveTargets())
 	}
-	comments := fx.board.commentsOn(optionbTicketID)
+	comments := fx.optionbAwaitComments(t, optionbTicketID, 1)
 	if len(comments) != 1 {
 		t.Fatalf("failed card carries %d comments (%v), want the single failure comment", len(comments), comments)
 	}

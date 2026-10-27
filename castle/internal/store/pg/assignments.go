@@ -18,7 +18,7 @@ const assignmentColumns = `
 	id, owner_criteria_id, run_id, workflow_name, workflow_source, lockfile_source,
 	idempotency_key, state, terminal_reason, leased_criteria_id, lease_expires_at,
 	created_at, updated_at, project_id, input_values, target_metadata,
-	refire_root_run_id, refire_attempt`
+	refire_root_run_id, refire_attempt, lease_attempt, last_lease_rejection`
 
 // expireLeasesHook is test-only mutable state: a hook fired by
 // ExpireWorkflowAssignmentLeases after the candidate scan and before the
@@ -171,11 +171,12 @@ func scanAssignmentRow(scan func(...any) error) (*store.WorkflowAssignment, erro
 	var lockfile, terminalReason, leasedID sql.NullString
 	var expires sql.NullTime
 	var projectID, inputValues, targetMetadata sql.NullString
+	var lastRejection sql.NullString
 	err := scan(
 		&a.ID, &a.OwnerCriteriaID, &a.RunID, &a.WorkflowName, &a.WorkflowSource, &lockfile,
 		&a.IdempotencyKey, &a.State, &terminalReason, &leasedID, &expires,
 		&created, &updated, &projectID, &inputValues, &targetMetadata,
-		&a.RefireRootRunID, &a.RefireAttempt)
+		&a.RefireRootRunID, &a.RefireAttempt, &a.LeaseAttempt, &lastRejection)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -199,6 +200,9 @@ func scanAssignmentRow(scan func(...any) error) (*store.WorkflowAssignment, erro
 	}
 	if projectID.Valid {
 		a.ProjectID = projectID.String
+	}
+	if lastRejection.Valid {
+		a.LastLeaseRejection = lastRejection.String
 	}
 	a.InputValues = store.UnmarshalLabels(inputValues.String)
 	a.TargetMetadata = store.UnmarshalLabels(targetMetadata.String)
@@ -246,17 +250,17 @@ func (s *Store) loadAssignmentLabels(ctx context.Context, assignmentID string) (
 // first attempt is recorded in workflow_assignment_attempts. The associated
 // run's overseer_id is updated to criteriaID. Invariant commentary mirrors
 // the sqlite profile — the guards, ordering and error mapping are identical.
-func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*store.WorkflowAssignment, error) {
+func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*store.WorkflowAssignment, *store.LeaseDecision, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	if criteriaID == "" {
-		return nil, errors.New("criteria_id required")
+		return nil, nil, errors.New("criteria_id required")
 	}
 	expiresAt := us(now.Add(leaseDuration))
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -271,7 +275,7 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		 )`,
 		store.WorkflowAssignmentStateQueued, us(now),
 		store.WorkflowAssignmentStateLeased, us(now)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Clear the stale overseer_id for any runs whose lease just expired.
 	if _, err := tx.ExecContext(ctx,
@@ -284,82 +288,92 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		     )
 		 )`,
 		store.WorkflowAssignmentStateQueued); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Verify the agent is online and read its identity block for the
-	// exact-build stamp on the leased run (KB-318).
+	// exact-build stamp on the leased run (KB-318). A non-matching scan
+	// reports ErrNotFound WITH a *store.LeaseDecision naming the dispatch
+	// rule that declined the work (KB-343): agent-level gates (unknown,
+	// offline, pending lease) and per-candidate rules (non-executable run,
+	// project membership, label mismatch) are classified per candidate, and
+	// every declined candidate carries the decision on its row
+	// (lease_attempt/last_lease_rejection) so "why didn't X run" is
+	// queryable. Matching semantics themselves are unchanged.
 	var status, identity string
 	if err := tx.QueryRowContext(ctx, `SELECT status, COALESCE(identity, '') FROM overseers WHERE id=$1`, criteriaID).Scan(&status, &identity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, store.ErrNotFound
+			return nil, &store.LeaseDecision{Rejection: store.LeaseRejectionAgentUnknown,
+				Details: "agent " + criteriaID + " has no overseer row"}, store.ErrNotFound
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if status != "online" {
-		return nil, store.ErrNotFound
+		headID, err := stampLeaseHeadRejectionTx(ctx, tx, store.LeaseRejectionAgentOffline)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, nil, err
+		}
+		return nil, &store.LeaseDecision{Rejection: store.LeaseRejectionAgentOffline, AssignmentID: headID,
+			Details: "agent " + criteriaID + " status " + status}, store.ErrNotFound
 	}
 
 	// Ensure the agent does not already hold an unstarted lease. This enforces
 	// sequential execution: an agent receives the next assignment only after it
 	// has accepted (RunStarted) the current one.
-	var hasPendingLease bool
-	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM workflow_assignments a
-			JOIN runs r ON r.id = a.run_id
-			WHERE a.leased_criteria_id=$1 AND a.state=$2 AND r.status='pending'
-		)`, criteriaID, store.WorkflowAssignmentStateLeased).Scan(&hasPendingLease); err != nil {
-		return nil, err
-	}
-	if hasPendingLease {
-		return nil, store.ErrNotFound
+	var heldAssignment, heldRun string
+	err = tx.QueryRowContext(ctx, `
+		SELECT a.id, a.run_id FROM workflow_assignments a
+		JOIN runs r ON r.id = a.run_id
+		WHERE a.leased_criteria_id=$1 AND a.state=$2 AND r.status='pending'
+		ORDER BY a.created_at ASC, a.id ASC
+		LIMIT 1`, criteriaID, store.WorkflowAssignmentStateLeased).Scan(&heldAssignment, &heldRun)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// No unstarted lease.
+	case err != nil:
+		return nil, nil, err
+	default:
+		headID, err := stampLeaseHeadRejectionTx(ctx, tx, store.LeaseRejectionAgentPendingLease)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, nil, err
+		}
+		return nil, &store.LeaseDecision{Rejection: store.LeaseRejectionAgentPendingLease, AssignmentID: headID,
+			Details: "agent " + criteriaID + " holds an unstarted lease for assignment " + heldAssignment + " (run " + heldRun + ")"}, store.ErrNotFound
 	}
 
-	// Find queued assignments and their required labels, oldest first. Only
-	// work whose run is still executable is eligible (CRI-207): the dispatch
-	// path must never lease an assignment whose run the operator parked as
-	// stopped, or whose run already reached a terminal state — only an
-	// explicit ResumeRun moves a stopped run back to running (and back into
-	// this scan), so parked work is delivered only through resume. Runs
-	// parked at a human gate (awaiting_human, KB-226) are not executable
-	// work either: the engine already completed them for a human decision,
-	// so re-dispatching would re-run finished work.
-	//
-	// Project scoping (KB-318) is enforced here, at the store layer: the
-	// scan only offers an assignment carrying a project_id to an agent in
-	// that project's member set. Unscoped assignments (project_id IS NULL)
-	// stay visible to every agent.
+	// Find queued assignments and their required labels, oldest first. The
+	// eligibility rules (CRI-207 executable run, KB-318 project membership,
+	// label match) are classified in Go against the full queued set instead
+	// of SQL predicates, so a scan that matches nothing can report WHICH rule
+	// declined each candidate and stamp the rule onto the row (KB-343).
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.id, a.run_id, a.workflow_name, a.workflow_source, a.lockfile_source,
-		       a.idempotency_key, a.created_at, a.updated_at, a.project_id, l.key, l.value
+		       a.idempotency_key, a.created_at, a.updated_at, a.project_id, r.status, l.key, l.value
 		FROM workflow_assignments a
 		JOIN runs r ON r.id = a.run_id
 		LEFT JOIN workflow_assignment_labels l ON l.assignment_id = a.id
 		WHERE a.state = $1
-		  AND r.status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped', '`+store.RunStatusAwaitingHuman+`')
-		  AND (
-		          a.project_id IS NULL
-		          OR EXISTS (
-		              SELECT 1 FROM project_members pm
-		              WHERE pm.project_id = a.project_id AND pm.member_id = $2
-		          )
-		      )
 		ORDER BY a.created_at ASC, a.id ASC`,
-		store.WorkflowAssignmentStateQueued, criteriaID)
+		store.WorkflowAssignmentStateQueued)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	candidates := make(map[string]*assignmentCandidate)
 	for rows.Next() {
-		var id, runID, wfName, wfSource, idemp string
+		var id, runID, wfName, wfSource, idemp, runStatus string
 		var created, updated time.Time
 		var lockfile, projectID, lkey, lvalue sql.NullString
 		if err := rows.Scan(&id, &runID, &wfName, &wfSource, &lockfile, &idemp,
-			&created, &updated, &projectID, &lkey, &lvalue); err != nil {
+			&created, &updated, &projectID, &runStatus, &lkey, &lvalue); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		c, ok := candidates[id]
 		if !ok {
@@ -375,7 +389,8 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 					UpdatedAt:      updated,
 					Labels:         make(map[string]string),
 				},
-				required: make(map[string]string),
+				required:  make(map[string]string),
+				runStatus: runStatus,
 			}
 			if lockfile.Valid {
 				c.assignment.LockfileSource = lockfile.String
@@ -391,7 +406,7 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	rows.Close()
 
@@ -406,18 +421,50 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		return ordered[i].assignment.ID < ordered[j].assignment.ID
 	})
 
+	// One membership query feeds the project rule for every candidate
+	// (KB-318): an assignment scoped to a project leases only to members;
+	// unscoped assignments stay visible to every agent.
+	memberProjects := make(map[string]bool)
+	memberRows, err := tx.QueryContext(ctx,
+		`SELECT project_id FROM project_members WHERE member_id=$1`, criteriaID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for memberRows.Next() {
+		var projectID string
+		if err := memberRows.Scan(&projectID); err != nil {
+			memberRows.Close()
+			return nil, nil, err
+		}
+		memberProjects[projectID] = true
+	}
+	if err := memberRows.Err(); err != nil {
+		memberRows.Close()
+		return nil, nil, err
+	}
+	memberRows.Close()
+
+	var firstRejection, firstDetails, firstID string
 	for _, c := range ordered {
-		if !labelsSatisfy(agentLabels, c.required) {
+		rejection, details := classifyLeaseCandidate(c, criteriaID, agentLabels, memberProjects)
+		if rejection != "" {
+			if firstRejection == "" {
+				firstRejection, firstDetails, firstID = rejection, details, c.assignment.ID
+			}
+			if err := stampLeaseRejectionTx(ctx, tx, c.assignment.ID, rejection); err != nil {
+				return nil, nil, err
+			}
 			continue
 		}
 		res, err := tx.ExecContext(ctx,
 			`UPDATE workflow_assignments
-			 SET state=$1, leased_criteria_id=$2, lease_expires_at=$3, updated_at=$4
+			 SET state=$1, leased_criteria_id=$2, lease_expires_at=$3, updated_at=$4,
+			     lease_attempt=lease_attempt+1, last_lease_rejection=NULL
 			 WHERE id=$5 AND state=$6`,
 			store.WorkflowAssignmentStateLeased, criteriaID, expiresAt,
 			us(now), c.assignment.ID, store.WorkflowAssignmentStateQueued)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		affected, _ := res.RowsAffected()
 		if affected == 0 {
@@ -425,43 +472,153 @@ func (s *Store) LeaseWorkflowAssignment(ctx context.Context, criteriaID string, 
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE runs SET overseer_id=$1, agent_identity=$2 WHERE id=$3`, criteriaID, identity, c.assignment.RunID); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		leaseID := uuid.NewString()
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO workflow_assignment_leases(id, assignment_id, criteria_id, created_at, expires_at)
 			 VALUES($1, $2, $3, $4, $5)`,
 			leaseID, c.assignment.ID, criteriaID, us(now), expiresAt); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		var attempt int
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COALESCE(MAX(attempt),0)+1 FROM workflow_assignment_attempts WHERE assignment_id=$1`,
 			c.assignment.ID).Scan(&attempt); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO workflow_assignment_attempts(assignment_id, attempt, criteria_id, created_at)
 			 VALUES($1, $2, $3, $4)`,
 			c.assignment.ID, attempt, criteriaID, us(now)); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := tx.Commit(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		c.assignment.State = store.WorkflowAssignmentStateLeased
 		c.assignment.LeasedCriteriaID = criteriaID
 		c.assignment.LeaseExpiresAt = &expiresAt
 		c.assignment.Labels = c.required
-		return c.assignment, nil
+		c.assignment.LeaseAttempt++
+		return c.assignment, &store.LeaseDecision{Matched: true, AssignmentID: c.assignment.ID}, nil
 	}
 
-	return nil, store.ErrNotFound
+	if firstRejection != "" {
+		// Persist the stamps earned during the scan before reporting the
+		// decision (KB-343): the stamps are the queryable "why didn't X run"
+		// disposition, not tx bookkeeping.
+		if err := tx.Commit(); err != nil {
+			return nil, nil, err
+		}
+		return nil, &store.LeaseDecision{
+			Matched:      false,
+			AssignmentID: firstID,
+			Rejection:    firstRejection,
+			Details:      firstDetails,
+		}, store.ErrNotFound
+	}
+	// No queued candidates: a quiet, non-operator signal (Debug in the
+	// dispatch layer) — ErrNotFound without a named rule.
+	return nil, &store.LeaseDecision{}, store.ErrNotFound
 }
 
 type assignmentCandidate struct {
 	assignment *store.WorkflowAssignment
 	required   map[string]string
+	runStatus  string
+}
+
+// classifyLeaseCandidate applies the per-candidate dispatch eligibility rules
+// in precedence order and reports the rule that declines this candidate for
+// criteriaID/agentLabels, or empty strings when the candidate is leasable
+// (CRI-207, KB-318; KB-343 decision classification).
+func classifyLeaseCandidate(c *assignmentCandidate, criteriaID string, agentLabels map[string]string, memberProjects map[string]bool) (rejection, details string) {
+	if nonExecutableRunStatus[c.runStatus] {
+		return store.LeaseRejectionRunNotExecutable,
+			"assignment " + c.assignment.ID + " run " + c.assignment.RunID + " status " + c.runStatus + " is not executable"
+	}
+	if c.assignment.ProjectID != "" && !memberProjects[c.assignment.ProjectID] {
+		return store.LeaseRejectionProjectNotMember,
+			"assignment " + c.assignment.ID + " scoped to project " + c.assignment.ProjectID + "; agent " + criteriaID + " is not a member"
+	}
+	if !labelsSatisfy(agentLabels, c.required) {
+		return store.LeaseRejectionLabelsMismatch,
+			"assignment " + c.assignment.ID + " requires " + formatLabelPairs(c.required) + "; agent " + criteriaID + " labels " + formatLabelPairs(agentLabels) + " do not satisfy it"
+	}
+	return "", ""
+}
+
+// nonExecutableRunStatus is the CRI-207 guard set the lease scan refuses to
+// hand out: operator-parked (stopped), settled (succeeded, failed,
+// cancelled), and human-gated (awaiting_human) runs are re-delivered only
+// through resume or the refire pass, never re-dispatched (KB-343). The set
+// mirrors the scan's previous SQL NOT IN filter exactly.
+var nonExecutableRunStatus = map[string]bool{
+	"succeeded":                  true,
+	"failed":                     true,
+	"cancelled":                  true,
+	"stopped":                    true,
+	store.RunStatusAwaitingHuman: true,
+}
+
+// formatLabelPairs renders a label map as a stable, human-readable pair list
+// (sorted keys) for lease-rejection details.
+func formatLabelPairs(m map[string]string) string {
+	if len(m) == 0 {
+		return "(none)"
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	quoted := make([]string, 0, len(keys))
+	for _, k := range keys {
+		quoted = append(quoted, k+"="+m[k])
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// stampLeaseRejectionTx records a dispatch-scan visit that declined this
+// queued assignment row (KB-343): lease_attempt counts the visit and
+// last_lease_rejection names the declining rule. updated_at is intentionally
+// untouched — this is disposition telemetry, not lease bookkeeping, and
+// bumping it would churn lease-expiry ordering.
+func stampLeaseRejectionTx(ctx context.Context, tx *sql.Tx, assignmentID, rejection string) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET lease_attempt=lease_attempt+1, last_lease_rejection=$1
+		 WHERE id=$2 AND state=$3`,
+		rejection, assignmentID, store.WorkflowAssignmentStateQueued)
+	return err
+}
+
+// stampLeaseHeadRejectionTx stamps an agent-level rejection (offline,
+// pending lease — a gate that blocks every candidate at once) on the oldest
+// queued assignment row (KB-343) and returns that row's ID so the decision
+// names the assignment it stamped. With an empty queue there is no row to
+// carry the disposition; the returned ID is empty.
+func stampLeaseHeadRejectionTx(ctx context.Context, tx *sql.Tx, rejection string) (string, error) {
+	var headID string
+	err := tx.QueryRowContext(ctx,
+		`SELECT id FROM workflow_assignments
+		 WHERE state=$1 ORDER BY created_at ASC, id ASC LIMIT 1`,
+		store.WorkflowAssignmentStateQueued).Scan(&headID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET lease_attempt=lease_attempt+1, last_lease_rejection=$1
+		 WHERE id=$2 AND state=$3`,
+		rejection, headID, store.WorkflowAssignmentStateQueued); err != nil {
+		return "", err
+	}
+	return headID, nil
 }
 
 func labelsSatisfy(agentLabels, required map[string]string) bool {

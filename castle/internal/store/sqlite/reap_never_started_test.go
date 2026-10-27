@@ -237,7 +237,7 @@ func TestReapNeverStartedRuns_RequeueResetsWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create overseer: %v", err)
 	}
-	if _, err := f.s.LeaseWorkflowAssignment(f.ctx, "o1", map[string]string{}, f.now.Add(-2*time.Hour), time.Minute); err != nil {
+	if _, _, err := f.s.LeaseWorkflowAssignment(f.ctx, "o1", map[string]string{}, f.now.Add(-2*time.Hour), time.Minute); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	if err := f.s.SetRunStopped(f.ctx, a.RunID); err != nil {

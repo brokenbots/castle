@@ -178,7 +178,7 @@ func TestReapStaleAgentRuns_MarksAssignmentTerminal(t *testing.T) {
 	}
 
 	// The stale agent leases the work; the run now belongs to it.
-	leased, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-stale", nil, f.now, time.Minute)
+	leased, _, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-stale", nil, f.now, time.Minute)
 	if err != nil {
 		t.Fatalf("lease: %v", err)
 	}

@@ -864,16 +864,28 @@ func (s *ServerServer) dispatchAssignment(ctx context.Context, a *store.Workflow
 			continue
 		}
 		if o.Status != "online" {
+			// The lease scan would decline every candidate behind this gate
+			// (KB-343): name the rule instead of returning silently.
+			s.Log.Info("dispatch assignment: assignment not leased",
+				"criteria_id", criteriaID,
+				"reason", store.LeaseRejectionAgentOffline,
+				"details", "agent "+criteriaID+" status "+o.Status)
 			continue
 		}
 
 		s.controls.LeaseLock()
 		now := time.Now().UTC()
-		leased, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, s.leaseDuration())
+		leased, decision, err := s.Store.LeaseWorkflowAssignment(ctx, criteriaID, o.Labels, now, s.leaseDuration())
 		s.controls.LeaseUnlock()
 		if err != nil {
 			if !errors.Is(err, store.ErrNotFound) {
 				s.Log.Debug("dispatch assignment: lease failed", "criteria_id", criteriaID, "err", err)
+			} else if decision != nil && decision.Rejection != "" {
+				s.Log.Info("dispatch assignment: assignment not leased",
+					"criteria_id", criteriaID,
+					"reason", decision.Rejection,
+					"assignment_id", decision.AssignmentID,
+					"details", decision.Details)
 			}
 			continue
 		}

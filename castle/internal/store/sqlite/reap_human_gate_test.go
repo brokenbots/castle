@@ -138,7 +138,7 @@ func TestReapStaleAgentRuns_ParkedRunKeepsResumableShape(t *testing.T) {
 	}
 	// The stale agent leases the work so the minted run has an owning agent
 	// and its heartbeat is the one tracked by the reaper.
-	if _, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-stale", nil, f.now, time.Minute); err != nil {
+	if _, _, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-stale", nil, f.now, time.Minute); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	// Seed the parked shape: the leased run's engine reached the gate.
@@ -167,10 +167,10 @@ func TestReapStaleAgentRuns_ParkedRunKeepsResumableShape(t *testing.T) {
 
 	// Dispatch eligibility: the parked run's assignment must never be leased
 	// again — re-dispatching would re-run completed work (the spurious refire).
-	if _, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-fresh", nil, f.now.Add(3*time.Minute), time.Minute); !errIsNotFound(err) {
+	if _, _, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-fresh", nil, f.now.Add(3*time.Minute), time.Minute); !errIsNotFound(err) {
 		t.Fatalf("lease for parked run: want ErrNotFound, got %v", err)
 	}
-	if _, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-stale", nil, f.now.Add(3*time.Minute), time.Minute); !errIsNotFound(err) {
+	if _, _, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-stale", nil, f.now.Add(3*time.Minute), time.Minute); !errIsNotFound(err) {
 		t.Fatalf("lease for parked run by its own agent: want ErrNotFound, got %v", err)
 	}
 }

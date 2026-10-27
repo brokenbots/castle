@@ -86,8 +86,15 @@ func newTestStackWithLog(t *testing.T, log *slog.Logger) *testStack {
 //
 // The returned error is for direct callers that want to assert teardown
 // cleanliness; the cleanup wrappers use t.Errorf on it.
-func teardownStack(t testing.TB, ts *testStack, s *sqlite.Store, dbPath string) error {
+//
+// A zero dbPath marks an engine-neutral store (a pg-backed suite store whose
+// directory lifecycle pgtest owns): teardown stops at the drain+close, and
+// the SQLite sidecar/sweep stages are skipped (KB-343 chain parity).
+func teardownStack(t testing.TB, ts *testStack, s store.Store, dbPath string) error {
 	closeErr := teardownStackStop(ts, s)
+	if dbPath == "" {
+		return closeErr
+	}
 	dir := filepath.Dir(dbPath)
 	if leaked := waitForSidecarDrain(dir, filepath.Base(dbPath), sidecarGraceWindow); len(leaked) > 0 {
 		t.Logf("test stack teardown: WAL sidecar(s) %v survived the %s grace window after store close (driver removal is asynchronous); the sweep below removes them",
@@ -116,7 +123,7 @@ const (
 // teardownStackStop is teardownStack without any directory side effects:
 // drains debounced writers, then closes the store (idempotent). Callers that
 // still want to read the store after teardown reopen it on the same path.
-func teardownStackStop(ts *testStack, s *sqlite.Store) error {
+func teardownStackStop(ts *testStack, s store.Store) error {
 	ts.criteria.DrainBackgroundWriters()
 	return s.Close()
 }
@@ -169,12 +176,14 @@ func sweepStoreDir(dir string, attempts int, backoff time.Duration) error {
 }
 
 // newTestStackOnStore builds the wire-level server set on a caller-owned
-// store. Used by tests that reopen persistence (restart simulations) or wrap
-// the store to control visibility. The caller owns teardown: it must combine
-// draining the stack's debounced writers with the store close and a
-// sweepStoreDir of the store directory under one t.Cleanup (see
-// newTestStackWithStore and newCursorSpyStack).
-func newTestStackOnStore(t *testing.T, s *sqlite.Store, log *slog.Logger) *testStack {
+// store. Used by tests that reopen persistence (restart simulations), wrap
+// the store to control visibility, or run the wire stack over a different
+// suite engine (KB-343 dispatch-chain parity). The caller owns teardown: it
+// must combine draining the stack's debounced writers with the store close
+// and a sweepStoreDir of the store directory under one t.Cleanup (see
+// newTestStackWithStore and newCursorSpyStack). For engines that own their
+// own directory lifecycle (pgtest), call teardownStack with a zero dbPath.
+func newTestStackOnStore(t *testing.T, s store.Store, log *slog.Logger) *testStack {
 	t.Helper()
 	h := hub.New()
 	controls := NewControlRegistry()

@@ -171,11 +171,11 @@ func TestAgentCredentialJoinFailsClosed(t *testing.T) {
 		// (membership is checked in the scan itself — the assignment is
 		// simply not visible): leasing while the assignment is still queued
 		// reports the same not-found as an empty pool.
-		if _, err := s.LeaseWorkflowAssignment(ctx, "proj-b-agent", nil, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
+		if _, _, err := s.LeaseWorkflowAssignment(ctx, "proj-b-agent", nil, now, time.Minute); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("foreign agent leased project assignment: %v", err)
 		}
 
-		a, err := s.LeaseWorkflowAssignment(ctx, "proj-a-agent", nil, now, time.Minute)
+		a, _, err := s.LeaseWorkflowAssignment(ctx, "proj-a-agent", nil, now, time.Minute)
 		if err != nil {
 			t.Fatalf("lease as proj-a member: %v", err)
 		}
