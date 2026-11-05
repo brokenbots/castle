@@ -31,7 +31,10 @@ import { eventBelongsToStep, selectNodeOverlay } from './workflowGraph/nodeStatu
  * field carries the full workflow source (castle rpc mapping), so the graph
  * is derived entirely client-side. Any parse failure — or a source with no
  * parseable nodes — yields null and the page keeps the text-edge fallback,
- * so the panel never blanks.
+ * so the panel never blanks. Dispatch-lane runs (KB-357) carry the upstream
+ * dispatch envelope here instead of workflow HCL, so a null parse is not
+ * final: the resolver falls through to the compiled `root` layer of the
+ * run's workflow.graphs event.
  */
 function parseGraph(source: string): WorkflowGraphSpec | null {
   if (!source) return null;
@@ -185,11 +188,6 @@ export function RunDetailPage({
   useDocumentTitle(run.data?.workflowName);
 
   const workflowSource = run.data?.workflowHash ?? '';
-  const graph = useMemo(() => parseGraph(workflowSource), [workflowSource]);
-  const fallbackEdges = useMemo(
-    () => (graph ? [] : workflowSource ? extractTextEdges(workflowSource) : []),
-    [graph, workflowSource],
-  );
   // Subworkflow drill-down (CRI-257): workflow.graphs events carry the
   // compiled subworkflow layers of the run's workflow; steps whose target
   // crosses a subworkflow open their layer graph here. The stack is
@@ -207,6 +205,25 @@ export function RunDetailPage({
     }
     return map;
   }, [graphsPayload]);
+  // Root graph resolution (KB-357), one precedence chain consulted once:
+  // the HCL parse of the workflow source is authoritative (legacy runs keep
+  // exactly their current rendering, even when a workflow.graphs event
+  // carries a root layer); for dispatch-lane runs the workflowHash carries
+  // the upstream dispatch envelope — not workflow HCL — so a null parse
+  // falls back to the compiled `root` layer the event carries. The event
+  // typically lands after the run row; the memos keep the resolved graph
+  // live without a reload. A compiled root that parses to zero nodes is no
+  // root graph (the same result an empty HCL parse takes).
+  const hclGraph = useMemo(() => parseGraph(workflowSource), [workflowSource]);
+  const rootGraph = useMemo(() => {
+    if (hclGraph) return hclGraph;
+    const rootLayer = layersByName.get('root')?.graph ?? null;
+    return rootLayer && rootLayer.nodes.length > 0 ? rootLayer : null;
+  }, [hclGraph, layersByName]);
+  const fallbackEdges = useMemo(
+    () => (rootGraph ? [] : workflowSource ? extractTextEdges(workflowSource) : []),
+    [rootGraph, workflowSource],
+  );
   const layerStackLayers = useMemo(() => {
     const names = layerStack.runId === (run.data?.runId ?? '') ? layerStack.names : [];
     // A stack entry whose layer graph is missing or unparsable drops out;
@@ -216,7 +233,7 @@ export function RunDetailPage({
       .filter((layer): layer is SubworkflowLayer => Boolean(layer?.graph));
   }, [layerStack, layersByName, run.data]);
   const topLayer = layerStackLayers[layerStackLayers.length - 1] ?? null;
-  const currentGraph = topLayer?.graph ?? graph;
+  const currentGraph = topLayer?.graph ?? rootGraph;
   // Subworkflow names whose graphs resolved — nodes carrying one of these
   // render an enabled explore affordance; the rest stay grayed out.
   const exploreableLayers = useMemo(() => {
@@ -257,7 +274,7 @@ export function RunDetailPage({
   // is re-tinted failed — the message carries the final state, and the
   // overall failure verdict comes from the run itself.
   const overlay = useMemo(() => {
-    const base = graph ? selectNodeOverlay(viewEvents) : { statuses: {}, forEach: {} };
+    const base = rootGraph ? selectNodeOverlay(viewEvents) : { statuses: {}, forEach: {} };
     if (run.data?.status === 'failed') {
       for (let i = viewEvents.length - 1; i >= 0; i -= 1) {
         const e = viewEvents[i];
@@ -274,8 +291,8 @@ export function RunDetailPage({
     // node never receives its own event): the parent step's outcome IS the
     // sub-workflow's exit verdict — success polarity → the child's success
     // terminal, anything else → the non-success one.
-    if (graph) {
-      for (const node of graph.nodes) {
+    if (rootGraph) {
+      for (const node of rootGraph.nodes) {
         if (!node.subworkflow) continue;
         const last = [...viewEvents].reverse().find((e) => {
           if (e.type === 'stepOutcome') return (e.payload as { step?: unknown })?.step === node.id;
@@ -299,7 +316,7 @@ export function RunDetailPage({
       }
     }
     return base;
-  }, [graph, viewEvents, run.data?.status, layersByName]);
+  }, [rootGraph, viewEvents, run.data?.status, layersByName]);
   // The status pill is the run's ground truth from castle at all times —
   // replay animates the graph/event surface underneath and never fakes the
   // run row's state (a stopped/failed/succeeded run keeps its real pill;
@@ -319,10 +336,10 @@ export function RunDetailPage({
       }
       return ids;
     };
-    map.set('', byGraph(graph));
+    map.set('', byGraph(rootGraph));
     for (const layer of layersByName.values()) map.set(layer.name, byGraph(layer.graph));
     return map;
-  }, [overlay, graph, layersByName]);
+  }, [overlay, rootGraph, layersByName]);
   // The node the engine (or the replay cursor, while replaying) is
   // currently inside — the newest stepEntered of the view window. The
   // follow target for the graph pan and the auto-traversal.
@@ -342,8 +359,8 @@ export function RunDetailPage({
   // acts while the live graph does not already contain the step.
   const autoTraversing = useRef(false);
   const followPath = useMemo(
-    () => (followMode ? followLayerPath(graph, currentStepId, layersByName) : null),
-    [followMode, graph, currentStepId, layersByName],
+    () => (followMode ? followLayerPath(rootGraph, currentStepId, layersByName) : null),
+    [followMode, rootGraph, currentStepId, layersByName],
   );
   useEffect(() => {
     if (!followPath) return;
@@ -673,7 +690,7 @@ export function RunDetailPage({
               {layerStackLayers.length > 0 || exploreableLayers.size > 0 ? (
                 <WorkflowLayerNav
                   rootName={run.data?.workflowName || 'Workflow'}
-                  rootGraph={graph}
+                  rootGraph={rootGraph}
                   stack={layerStackLayers}
                   onNavigate={navigateLayers}
                   activeIdsByLayer={activeIdsByLayer as Map<string, ReadonlySet<string>>}
