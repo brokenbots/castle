@@ -19,6 +19,8 @@ import { selectRunEvents, runsSlice } from './runsSlice';
 import { server } from '../../test/mocks/server';
 import { serverPath } from '../../test/mocks/handlers';
 import wirePayload from './workflowGraph/fixtures/workflow_graphs_fd98126e.json';
+import { buildSubworkflowLayers } from './workflowGraph/layers';
+import type { EventEnvelope } from '../../api/castleApi';
 
 vi.mock('./watchRun', () => ({
   startWatch: vi.fn().mockResolvedValue(undefined),
@@ -2010,5 +2012,348 @@ describe('RunDetailPage capabilities', () => {
       expect(button).toBeDisabled();
       expect(button).toHaveAttribute('title', NO_CONTROLS_TOOLTIP);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch-lane root graph (KB-357). Dispatch-lane runs carry the upstream
+// dispatch envelope — not workflow HCL — as their `workflowHash` (castle
+// stores `workflow_source` verbatim), so the root view must resolve its
+// graph from the workflow.graphs event's compiled `root` layer when the HCL
+// parse has nothing to parse. Precedence is fixed: the HCL parse is
+// authoritative for legacy runs and the event's root layer never overrides
+// it. The fixtures below are structural stand-ins for the report's live
+// bytes (the exact stored envelope and the real 17-node/28-edge root module
+// are not capturable): the defect is insensitive to the envelope's
+// contents, the quoted step chain (fetch_ticket --success-->
+// ensure_confirmed_workstream) is preserved, and `develop_ticket` declares
+// the subworkflow to exercise the drill-down guard.
+// ---------------------------------------------------------------------------
+describe('RunDetailPage dispatch-lane root graph (KB-357)', () => {
+  // The dispatch envelope rides the run row's workflowHash verbatim; a
+  // JSON object is not workflow HCL (parsed as HCL it throws, and the
+  // text-edge regex finds no `step` blocks).
+  const DISPATCH_ENVELOPE =
+    '{"kind":"criteria-workflow-assignment/1","ticket":"KB-357","repo":"brokenbots/castle","class":"develop"}';
+
+  // Compiled root module (the CRI-294 `criteria compile --format json`
+  // shape the workflow.graphs emitter ships as layer bodies). It parses to
+  // 6 nodes / 8 edges; the report's live module is 17/28.
+  const DISPATCH_ROOT_MODULE = {
+    name: 'kanboard_develop_v1',
+    initial_state: 'fetch_ticket',
+    target_state: 'done',
+    policy: { MaxTotalSteps: 200, MaxStepRetries: 0, MaxToolDepth: 8 },
+    adapters: [
+      { type: 'copilot', name: 'planner', on_crash: 'fail', config_keys: null },
+      { type: 'shell', name: 'repo', on_crash: 'fail', config_keys: null },
+    ],
+    steps: [
+      {
+        name: 'fetch_ticket',
+        adapter: 'shell.repo',
+        input_keys: ['command'],
+        allow_tools: null,
+        outcomes: [
+          { name: 'failure', next: 'failed' },
+          { name: 'success', next: 'ensure_confirmed_workstream' },
+        ],
+      },
+      {
+        name: 'ensure_confirmed_workstream',
+        adapter: 'copilot.planner',
+        input_keys: ['prompt'],
+        allow_tools: ['*'],
+        outcomes: [
+          { name: 'failure', next: 'failed' },
+          { name: 'success', next: 'develop_ticket' },
+        ],
+      },
+      {
+        name: 'develop_ticket',
+        adapter: 'copilot.planner',
+        subworkflow: 'inner_task',
+        input_keys: ['prompt'],
+        allow_tools: ['*'],
+        outcomes: [
+          { name: 'failure', next: 'failed' },
+          { name: 'success', next: 'route_ticket' },
+        ],
+      },
+    ],
+    states: [
+      { name: 'done', terminal: true, success: true },
+      { name: 'failed', terminal: true, success: false },
+    ],
+    outputs: [{ name: 'pr_url', type: 'string' }],
+    switches: [
+      {
+        name: 'route_ticket',
+        conditions: [
+          { match: 'steps.develop_ticket.exit_code == "0"', next: 'done' },
+        ],
+        default_next: 'develop_ticket',
+      },
+    ],
+    plugins_required: ['copilot', 'shell'],
+    metadata: { schema_version: 1 },
+  };
+
+  // Compiled subworkflow module the root's develop_ticket step targets.
+  const DISPATCH_INNER_MODULE = {
+    name: 'inner_task',
+    initial_state: 'prepare',
+    target_state: 'done',
+    policy: { MaxTotalSteps: 60, MaxStepRetries: 0, MaxToolDepth: 8 },
+    adapters: [
+      { type: 'shell', name: 'repo', on_crash: 'fail', config_keys: null },
+    ],
+    steps: [
+      {
+        name: 'prepare',
+        adapter: 'shell.repo',
+        input_keys: ['command'],
+        allow_tools: null,
+        outcomes: [
+          { name: 'failure', next: 'failed' },
+          { name: 'success', next: 'done' },
+        ],
+      },
+    ],
+    states: [
+      { name: 'done', terminal: true, success: true },
+      { name: 'failed', terminal: true, success: false },
+    ],
+    outputs: [],
+    switches: [],
+    plugins_required: ['shell'],
+    metadata: { schema_version: 1 },
+  };
+
+  // A dispatch-lane run's workflow.graphs payload: the root module rides as
+  // the `root` layer (CRI-294 contract).
+  const DISPATCH_GRAPHS_PAYLOAD = {
+    subworkflows: [
+      { name: 'root', sourcePath: 'kanboard_develop_v1', body: JSON.stringify(DISPATCH_ROOT_MODULE) },
+      {
+        name: 'inner_task',
+        sourcePath: 'kanboard_develop_v1/workflows/inner_task',
+        body: JSON.stringify(DISPATCH_INNER_MODULE),
+      },
+    ],
+  };
+  // Degraded payload shapes: a producer without the root contract ships
+  // subworkflow layers only; a root body can fail to parse, or parse to a
+  // zero-node module.
+  const GRAPHS_PAYLOAD_NO_ROOT = {
+    subworkflows: [DISPATCH_GRAPHS_PAYLOAD.subworkflows[1]],
+  };
+  const UNPARSEABLE_ROOT_BODY = '(not a module at all';
+  const ZERO_NODE_ROOT_BODY = '{"name":"empty_root","initial_state":"","steps":[]}';
+
+  function runEvent(type: string, payload: unknown, seq: number): EventEnvelope {
+    return {
+      schemaVersion: 1,
+      runId: 'run-1',
+      seq,
+      type,
+      ts: new Date(0).toISOString(),
+      correlationId: '',
+      payload,
+    };
+  }
+
+  function renderRun(events: EventEnvelope[], workflowHash: string) {
+    fixture.data.status = 'running';
+    fixture.data.finalState = '';
+    fixture.data.workflowHash = workflowHash;
+    // A fresh store per test: events are seeded before the render, so no
+    // act/waitFor ordering around a live stream is needed and nothing leaks
+    // from the shared store the rest of the file uses.
+    const localStore = createRunViewerStore();
+    for (const e of events) localStore.dispatch(runsSlice.actions.eventReceived(e));
+    render(
+      <Provider store={localStore}>
+        <MemoryRouter
+          initialEntries={['/runs/run-1']}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </Provider>,
+    );
+    return localStore;
+  }
+
+  function nodeById(id: string): HTMLElement {
+    const node = document.querySelector(`[data-testid="workflow-graph"] [data-node-id="${id}"]`);
+    if (!node) throw new Error(`graph node "${id}" is not rendered`);
+    return node as HTMLElement;
+  }
+
+  test('the payload root layer registers and parses through the layer builder', () => {
+    const layers = buildSubworkflowLayers({
+      subworkflows: DISPATCH_GRAPHS_PAYLOAD.subworkflows,
+    });
+    const root = layers.find((l) => l.name === 'root');
+    expect(root).toBeDefined();
+    expect(root!.compiledJson).toBe(true);
+    expect(root!.graph).not.toBeNull();
+    expect(root!.graph!.nodes.some((n) => n.id === 'fetch_ticket')).toBe(true);
+    expect(root!.graph!.edges).toContainEqual({
+      from: 'fetch_ticket',
+      via: 'success',
+      to: 'ensure_confirmed_workstream',
+    });
+    expect(root!.graph!.nodes.find((n) => n.id === 'develop_ticket')?.subworkflow).toBe('inner_task');
+  });
+
+  test('a dispatch-lane run renders its root graph from the workflow.graphs root layer', async () => {
+    renderRun([runEvent('workflowGraphs', DISPATCH_GRAPHS_PAYLOAD, 1)], DISPATCH_ENVELOPE);
+    expect(await screen.findByText('Step graph')).toBeInTheDocument();
+
+    // The root graph renders from the compiled root module the event
+    // carries, and the placeholder stays out.
+    await vi.waitFor(
+      () => {
+        nodeById('fetch_ticket');
+        nodeById('develop_ticket');
+      },
+      { timeout: 1500 },
+    );
+    expect(document.querySelector('[data-testid="workflow-graph"]')).not.toBeNull();
+    expect(screen.queryByText('No step transitions found.')).toBeNull();
+
+    // The rail's root miniature mirrors the resolved graph (its text used
+    // to read literal "no graph" with zero rects).
+    const rootThumb = document.querySelector('[data-testid="layer-thumb-root"]');
+    expect(rootThumb).not.toBeNull();
+    expect(rootThumb?.textContent).not.toContain('no graph');
+    expect(rootThumb?.querySelectorAll('rect')).toHaveLength(6);
+
+    // Drill-down guard: a root step declaring a subworkflow exposes its
+    // enabled explore affordance once the target layer parses.
+    expect(
+      within(nodeById('develop_ticket')).getByTestId('graph-node-explore'),
+    ).toBeEnabled();
+  });
+
+  test('a workflow.graphs event landing after the run row updates the root view without a reload', async () => {
+    const localStore = renderRun([], DISPATCH_ENVELOPE);
+    await screen.findByText('Step graph');
+    expect(screen.getByText('No step transitions found.')).toBeInTheDocument();
+
+    act(() => {
+      localStore.dispatch(runsSlice.actions.eventReceived(runEvent('workflowGraphs', DISPATCH_GRAPHS_PAYLOAD, 1)));
+    });
+
+    await vi.waitFor(
+      () => {
+        nodeById('fetch_ticket');
+      },
+      { timeout: 1500 },
+    );
+    expect(screen.queryByText('No step transitions found.')).toBeNull();
+    const rootThumb = document.querySelector('[data-testid="layer-thumb-root"]');
+    expect(rootThumb?.querySelectorAll('rect')).toHaveLength(6);
+  });
+
+  test('run progress overlays the compiled root graph as the event stream advances', async () => {
+    const localStore = renderRun(
+      [
+        runEvent('workflowGraphs', DISPATCH_GRAPHS_PAYLOAD, 1),
+        runEvent('stepEntered', { step: 'fetch_ticket' }, 2),
+      ],
+      DISPATCH_ENVELOPE,
+    );
+    await screen.findByText('Step graph');
+    await vi.waitFor(() => nodeById('fetch_ticket'), { timeout: 1500 });
+
+    // The entered step pulses; unvisited nodes stay dim.
+    const fetchCard = nodeById('fetch_ticket');
+    expect(fetchCard.className).toContain('animate-pulse');
+    expect(screen.getByLabelText('status running')).toBeInTheDocument();
+
+    // A later outcome moves the tint: the finished node succeeds and the
+    // next step pulses (the same overlay pipeline legacy runs use).
+    act(() => {
+      localStore.dispatch(
+        runsSlice.actions.eventReceived(
+          runEvent('stepOutcome', { step: 'fetch_ticket', outcome: 'success' }, 3),
+        ),
+      );
+      localStore.dispatch(
+        runsSlice.actions.eventReceived(
+          runEvent('stepEntered', { step: 'ensure_confirmed_workstream' }, 4),
+        ),
+      );
+    });
+    expect(nodeById('fetch_ticket').className).toContain('border-success/70');
+    expect(nodeById('ensure_confirmed_workstream').className).toContain('animate-pulse');
+    expect(screen.getByLabelText('status succeeded')).toBeInTheDocument();
+  });
+
+  test('a legacy HCL run renders from the parse; the event root layer does not override it', async () => {
+    renderRun([runEvent('workflowGraphs', DISPATCH_GRAPHS_PAYLOAD, 1)], DEFAULT_WORKFLOW_SOURCE);
+    await screen.findByText('Step graph');
+
+    // The HCL parse is authoritative: its 3 nodes render and the payload's
+    // compiled root module (fetch_ticket…) never takes the root view.
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelectorAll('[data-testid="workflow-graph"] [data-testid="graph-node"]'),
+        ).toHaveLength(3);
+      },
+      { timeout: 1500 },
+    );
+    expect(document.querySelector('[data-testid="workflow-graph"] [data-node-id="build"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="workflow-graph"] [data-node-id="fetch_ticket"]')).toBeNull();
+    expect(screen.queryByText('No step transitions found.')).toBeNull();
+    const rootThumb = document.querySelector('[data-testid="layer-thumb-root"]');
+    expect(rootThumb?.querySelectorAll('rect')).toHaveLength(3);
+  });
+
+  test('a dispatch envelope with no workflow.graphs event keeps the empty notice', async () => {
+    renderRun([], DISPATCH_ENVELOPE);
+    await screen.findByText('Step graph');
+    expect(screen.getByText('No step transitions found.')).toBeInTheDocument();
+    expect(document.querySelector('[data-testid="workflow-graph"]')).toBeNull();
+  });
+
+  test('a payload without a root entry keeps the empty notice', async () => {
+    renderRun([runEvent('workflowGraphs', GRAPHS_PAYLOAD_NO_ROOT, 1)], DISPATCH_ENVELOPE);
+    await screen.findByText('Step graph');
+    expect(screen.getByText('No step transitions found.')).toBeInTheDocument();
+    expect(document.querySelector('[data-testid="workflow-graph"]')).toBeNull();
+  });
+
+  test('an unparseable root body keeps the empty notice and the dead layer out of drill-down', async () => {
+    const payload = {
+      subworkflows: [{ name: 'root', sourcePath: 'kanboard_develop_v1', body: UNPARSEABLE_ROOT_BODY }],
+    };
+    renderRun([runEvent('workflowGraphs', payload, 1)], DISPATCH_ENVELOPE);
+    await screen.findByText('Step graph');
+    expect(screen.getByText('No step transitions found.')).toBeInTheDocument();
+    expect(document.querySelector('[data-testid="workflow-graph"]')).toBeNull();
+
+    // The dead layer's record survives with graph null — drill-down stays
+    // closed for it instead of dropping the entry.
+    const layers = buildSubworkflowLayers({ subworkflows: payload.subworkflows });
+    expect(layers).toHaveLength(1);
+    expect(layers[0].graph).toBeNull();
+  });
+
+  test('a root body that parses to a zero-node graph takes the empty-source path', async () => {
+    const payload = {
+      subworkflows: [{ name: 'root', sourcePath: 'kanboard_develop_v1', body: ZERO_NODE_ROOT_BODY }],
+    };
+    renderRun([runEvent('workflowGraphs', payload, 1)], DISPATCH_ENVELOPE);
+    await screen.findByText('Step graph');
+    // Zero nodes is not a root graph: same result as an empty HCL parse.
+    expect(screen.getByText('No step transitions found.')).toBeInTheDocument();
+    expect(document.querySelector('[data-testid="workflow-graph"]')).toBeNull();
   });
 });
