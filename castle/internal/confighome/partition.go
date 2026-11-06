@@ -41,7 +41,6 @@ func rejectLegacyWorkflowSurfaces(payload []byte) error {
 				surfaces = append(surfaces, key)
 			}
 		}
-		slices.Sort(surfaces)
 		if len(surfaces) > 0 {
 			return fmt.Errorf("routes payload: workflowLibrary[%q] declares deprecated global run-config surface(s) %s — the KB-313 migration window is closed (ADR 307): per-project records and namespace bindings own run config; re-materialize the payload without these keys before import",
 				name, strings.Join(surfaces, ", "))
