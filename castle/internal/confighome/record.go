@@ -152,19 +152,21 @@ type Record struct {
 
 // Workflow is a workflowLibrary object: how a run obtains its workflow
 // and where/how it executes. Shape mirrors the routes payload entry.
+// The catalog is the tree source and its declared interface ONLY
+// (KB-313, ADR 307): the former global run-config surfaces — volumes,
+// secrets, env, adapterImages — are gone; run config lives on the
+// project's namespace binding, and any payload or record doc declaring
+// the surfaces is a validation error (the decoder's unknown-field
+// rejection, Partition's KB-313 error names the entry precisely).
 type Workflow struct {
-	Type                string            `json:"type"`
-	Namespace           string            `json:"namespace,omitempty"`
-	Class               string            `json:"class,omitempty"`
-	Image               string            `json:"image,omitempty"`
-	URL                 string            `json:"url,omitempty"`
-	Ref                 string            `json:"ref,omitempty"`
-	Volumes             []Volume          `json:"volumes,omitempty"`
-	Secrets             []Secret          `json:"secrets,omitempty"`
-	Env                 map[string]string `json:"env,omitempty"`
-	AdapterImages       map[string]string `json:"adapterImages,omitempty"`
-	ImageConflictPolicy string            `json:"imageConflictPolicy,omitempty"`
-	Interface           *Interface        `json:"interface,omitempty"`
+	Type                string     `json:"type"`
+	Namespace           string     `json:"namespace,omitempty"`
+	Class               string     `json:"class,omitempty"`
+	Image               string     `json:"image,omitempty"`
+	URL                 string     `json:"url,omitempty"`
+	Ref                 string     `json:"ref,omitempty"`
+	ImageConflictPolicy string     `json:"imageConflictPolicy,omitempty"`
+	Interface           *Interface `json:"interface,omitempty"`
 }
 
 // Interface is the workflow tree's machine-readable interface

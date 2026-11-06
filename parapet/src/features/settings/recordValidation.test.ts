@@ -118,31 +118,19 @@ describe('workflow shape (validateWorkflowShape)', () => {
     );
   });
 
-  test('volume and secret names are unique within the workflow', () => {
-    const wf: Workflow = {
-      type: 'image',
-      image: 'i',
-      volumes: [
-        { name: 'work', kind: 'tmp', mountPath: '/tmp/work' },
-        { name: 'work', kind: 'tmp', mountPath: '/tmp/other' },
-      ],
-      secrets: [
-        { name: 'creds', secretProviderClass: 'spc', mountPath: '/secrets' },
-        { name: 'creds', secretProviderClass: 'spc', mountPath: '/alt' },
-      ],
-    };
-    const errs = validateWorkflowShape('ship', wf).join('\n');
-    expect(errs).toMatch(/volumes\[1\] \(work\): name is not unique within the workflow/);
-    expect(errs).toMatch(/secrets\[1\] \(creds\): name is not unique within the workflow/);
-  });
-
-  test('adapterImages reject blank or whitespace references', () => {
-    const errs = validateWorkflowShape('ship', {
-      type: 'image',
-      image: 'i',
-      adapterImages: { reviewer: ' ' },
-    }).join('\n');
-    expect(errs).toMatch(/adapterImages\.reviewer must be a non-empty image reference without whitespace/);
+  test('global run-config surfaces are gone from the catalog (KB-313)', () => {
+    // The migration window is closed: the record shape cannot express
+    // the surfaces, so the docs carry them only as unknown fields —
+    // splice them at the JSON level like a pre-cleanup record doc.
+    for (const surface of ['volumes', 'secrets', 'env', 'adapterImages']) {
+      const rec = minimalRecord();
+      // The typed shape cannot express the surfaces — splice one into the
+      // catalog entry the way a pre-cleanup record doc would carry it.
+      const entry = rec.catalog['ship-it'] as unknown as Record<string, unknown>;
+      entry[surface] = surface === 'env' || surface === 'adapterImages' ? {} : [];
+      const errs = validateRecord(rec).join('\n');
+      expect(errs).toMatch(new RegExp(`catalog\\["ship-it"\\]: unknown field "${surface}"`));
+    }
   });
 });
 
@@ -397,9 +385,8 @@ describe('unknown-field rejection (ParseRecord discipline)', () => {
 
   test('the clean record and its nested shapes carry no unknown fields', () => {
     const rec = minimalRecord();
-    rec.binding = { apiVersion: API_VERSION, kind: 'CriteriaBinding', images: {}, env: {}, volumes: [], secrets: [], config: {} };
+    rec.binding = { apiVersion: API_VERSION, kind: 'CriteriaBinding', images: {}, env: {}, volumes: [{ name: 'work', kind: 'tmp', mountPath: '/w' }], secrets: [], config: {} };
     rec.catalog['ship-it'].interface = { ...emptyInterface(), workflow: 'ship-it' };
-    rec.catalog['ship-it'].volumes = [{ name: 'work', kind: 'tmp', mountPath: '/w' }];
     expect(unknownFieldErrors(rec)).toEqual([]);
   });
 

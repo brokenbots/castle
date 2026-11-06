@@ -111,9 +111,8 @@ func (a *Assembly) RenderRoutesPayload() ([]byte, error) {
 }
 
 // Assemble builds the payload document and enforces the assembled
-// payload's integrity: workflow/config/library reference resolution,
-// route-name uniqueness, project resolution, and the KB-313
-// post-cutover gate.
+// payload's integrity: workflow/config library reference resolution,
+// route-name uniqueness, and project resolution.
 func (a *Assembly) Assemble() (*routesPayloadDoc, error) {
 	for _, pr := range a.order {
 		if err := validateProjectRecord(pr); err != nil {
@@ -169,104 +168,29 @@ func (a *Assembly) Assemble() (*routesPayloadDoc, error) {
 	return doc, nil
 }
 
-// DeprecationWarnings lists the deprecated global run-config surfaces
-// the assembled workflowLibrary still carries (KB-313, ADR 307) while
-// any registry project is un-cut; the migration window is
-// allow-with-warning. Empty on a post-cutover payload — the assembly
-// hard-rejects the stale surfaces there.
-func (a *Assembly) DeprecationWarnings() []string {
-	doc, err := a.Assemble()
-	if err != nil {
-		return nil
-	}
-	stale := staleBindingShapes(doc)
-	if len(stale) == 0 || postCutover(doc) {
-		return nil
-	}
-	warnings := make([]string, 0, len(stale))
-	for _, entry := range stale {
-		warnings = append(warnings, entry+": deprecated global run-config surfaces (KB-313, ADR 307) — per-project bindings own run config; these reject once every projectRegistry entry is cutover-done")
-	}
-	return warnings
-}
-
-// postCutover reports whether the migration window is closed: a
-// non-empty registry in which every project is cutover-done.
-func postCutover(doc *routesPayloadDoc) bool {
-	if len(doc.ProjectRegistry) == 0 {
-		return false
-	}
-	for _, entry := range doc.ProjectRegistry {
-		if entry.Cutover != CutoverDone {
-			return false
-		}
-	}
-	return true
-}
-
-// staleBindingShapes names the workflowLibrary entries still carrying
-// deprecated global run-config surfaces, sorted for stable output.
-func staleBindingShapes(doc *routesPayloadDoc) []string {
-	var stale []string
-	names := make([]string, 0, len(doc.WorkflowLibrary))
-	for name := range doc.WorkflowLibrary {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		wf := doc.WorkflowLibrary[name]
-		var keys []string
-		if len(wf.Volumes) > 0 {
-			keys = append(keys, "volumes")
-		}
-		if len(wf.Secrets) > 0 {
-			keys = append(keys, "secrets")
-		}
-		if len(wf.Env) > 0 {
-			keys = append(keys, "env")
-		}
-		if len(wf.AdapterImages) > 0 {
-			keys = append(keys, "adapterImages")
-		}
-		if len(keys) > 0 {
-			stale = append(stale, fmt.Sprintf("workflowLibrary[%q]: %s", name, strings.Join(keys, ", ")))
-		}
-	}
-	return stale
-}
-
 // MarkCutoverDone flips a record to its post-cutover state (KB-313,
-// ADR 307) — the castle-authoritative flip: the namespace serves its
-// run config from its own binding payload from here on, so the record's
-// catalog entries lose the deprecated global run-config surfaces
-// (volumes, secrets, env, adapterImages) that the assembled
-// workflowLibrary must not render post-cutover, and a post-cutover
-// validation still passes. The flip is structural and binding-first:
-// a record with no namespace binding cannot go post-cutover (its
-// namespace would lose the only run config it ever had), and the full
-// record re-validates.
+// ADR 307): the namespace serves its run config from its own binding
+// payload from here on. The flip is binding-first — a record with no
+// namespace binding cannot go post-cutover (its namespace would lose
+// the only run config it ever had) — and the full record re-validates.
+// The catalog no longer carries the global run-config surfaces at all
+// (KB-313 promise executed), so the flip is a marker flip, not a
+// content edit.
 func (r *Record) MarkCutoverDone() error {
 	if r.Binding == nil {
 		return fmt.Errorf("record %q: binding-first cutover requires a namespace binding (KB-313, ADR 307)", r.RegistryName)
 	}
 	r.Cutover = CutoverDone
-	for name, wf := range r.Catalog {
-		wf.Volumes, wf.Secrets, wf.Env, wf.AdapterImages = nil, nil, nil, nil
-		r.Catalog[name] = wf
-	}
 	return r.Validate()
 }
 
 // validateAssembledPayload enforces the assembled payload's integrity —
 // the shape rules the criteria-k8s operator applies to the ConfigMap:
-// non-empty libraries, route-workflow/configRef/project resolution,
-// global route-name uniqueness, and the KB-313 post-cutover gate.
+// non-empty libraries, route-workflow/configRef/project resolution, and
+// global route-name uniqueness.
 func validateAssembledPayload(doc *routesPayloadDoc) error {
 	if len(doc.WorkflowLibrary) == 0 {
 		return fmt.Errorf("workflowLibrary must not be empty")
-	}
-	if stale := staleBindingShapes(doc); len(stale) > 0 && postCutover(doc) {
-		return fmt.Errorf("post-cutover payload still carries global run-config surfaces the CM no longer owns (KB-313, ADR 307): %s", strings.Join(stale, "; "))
 	}
 	if len(doc.Routes) == 0 {
 		return fmt.Errorf("routes must not be empty")
@@ -308,65 +232,10 @@ func workflowsEqual(a, b Workflow) bool {
 		a.URL != b.URL || a.Ref != b.Ref || a.ImageConflictPolicy != b.ImageConflictPolicy || a.Interface != nil != (b.Interface != nil) {
 		return false
 	}
-	if len(a.Env) != len(b.Env) {
-		return false
-	}
-	for k, v := range a.Env {
-		if b.Env[k] != v {
-			return false
-		}
-	}
-	if len(a.AdapterImages) != len(b.AdapterImages) {
-		return false
-	}
-	for k, v := range a.AdapterImages {
-		if b.AdapterImages[k] != v {
-			return false
-		}
-	}
-	if len(a.Volumes) != len(b.Volumes) || len(a.Secrets) != len(b.Secrets) {
-		return false
-	}
-	for i := range a.Volumes {
-		if !volumesEqual(a.Volumes[i], b.Volumes[i]) {
-			return false
-		}
-	}
-	for i := range a.Secrets {
-		if !secretsEqual(a.Secrets[i], b.Secrets[i]) {
-			return false
-		}
-	}
 	if a.Interface == nil {
 		return true
 	}
 	return interfacesEqual(a.Interface, b.Interface)
-}
-
-func volumesEqual(a, b Volume) bool {
-	if a.Name != b.Name || a.Kind != b.Kind || a.MountPath != b.MountPath || a.SubPath != b.SubPath ||
-		a.ReadOnly != b.ReadOnly || a.Claim != b.Claim || a.Server != b.Server || a.Path != b.Path ||
-		a.SizeLimit != b.SizeLimit || a.SecretName != b.SecretName || len(a.Env) != len(b.Env) {
-		return false
-	}
-	for k, v := range a.Env {
-		if b.Env[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-func secretsEqual(a, b Secret) bool {
-	if a.Name != b.Name || a.SecretProviderClass != b.SecretProviderClass || a.MountPath != b.MountPath || len(a.Env) != len(b.Env) {
-		return false
-	}
-	for k, v := range a.Env {
-		if b.Env[k] != v {
-			return false
-		}
-	}
-	return true
 }
 
 func interfacesEqual(a, b *Interface) bool {

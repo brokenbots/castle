@@ -16,15 +16,13 @@
 //     file;
 //   - with --cutover the flip marks the verified records cutover=done
 //     binding-first (KB-313): only records that carry a namespace
-//     binding flip and lose the deprecated global run-config surfaces
-//     (their assembly stays renderable post-cutover); a record with no
-//     binding stays pre-cutover with an explicit warning, and a run
-//     where no record is bound refuses before any write. The flip is
-//     applied after the round-trip checks — never instead of them — and
-//     the flipped records must re-render a routes payload before the
-//     first write: a partial flip over a tree another un-flipped
-//     record shares refuses here instead of writing an un-renderable
-//     castle-authoritative state.
+//     binding flip (cutover markers are per-project state — the catalog
+//     is ref + declared interface only now); a record with no binding
+//     stays pre-cutover with an explicit warning, and a run where no
+//     record is bound refuses before any write. The flip is applied
+//     after the round-trip checks — never instead of them — and the
+//     flipped records must still re-render a routes payload before the
+//     first write.
 //
 // --create-projects also creates missing castle projects (open membership
 // by default, see --policy). The write phase is all-or-nothing at record
@@ -246,10 +244,9 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 	// The verified round-trip: the records' assembly must render a routes
 	// payload canonically equal to the live file, and each binding payload
 	// must render canonically equal to its live file. With --cutover the
-	// checksum reported at the end is the post-flip render (the stored
-	// state intentionally differs from live: the stale surfaces are
-	// stripped), so the print never implies the flipped records still
-	// equal the live payload.
+	// checksum reported at the end is the post-flip render (the records
+	// carry their cutover markers), so the print never implies the
+	// flipped records still equal the live payload.
 	assembly := confighome.NewAssemblyFor(projRecords)
 	renderedRoutes, err := assembly.RenderRoutesPayload()
 	if err != nil {
@@ -293,9 +290,10 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 
 	// The castle-authoritative flip rides AFTER the verified round-trips:
 	// cutover=done marks the castle-authoritative records — binding-first
-	// (KB-313): only records carrying a namespace binding flip, and they
-	// strip the deprecated global run-config surfaces so the flipped
-	// state still re-renders. Unbound records stay pre-cutover with an
+	// (KB-313): only records carrying a namespace binding flip, and the
+	// flip is a per-project marker (the catalog no longer carries the
+	// surfaces the flip used to strip — the KB-313 promise is executed
+	// at the shape level). Unbound records stay pre-cutover with an
 	// explicit warning; a run with no bindings at all refuses.
 	cutoverFlipped := 0
 	if cfg.cutover {
@@ -315,10 +313,7 @@ func importConfig(cfg *config, stdout, stderr io.Writer) error {
 		}
 		// Re-verify post-flip, still BEFORE any write: each flipped
 		// record's binding renders, and the flipped records re-assemble
-		// into a routes payload castle accepts. A partial flip over a
-		// tree another un-flipped record still carries (identical name,
-		// un-stripped copy) refuses here rather than landing an
-		// un-renderable castle-authoritative state.
+		// into a routes payload castle accepts.
 		for _, pr := range projRecords {
 			if pr.Record.Binding == nil || pr.Record.Cutover != confighome.CutoverDone {
 				continue

@@ -8,43 +8,6 @@
       "ref": "0b8136650d5622381bf18a597ed93b8c272ba19b",
       "class": "triage",
       "namespace": "criteria-jobs",
-      "volumes": [
-        {
-          "name": "data",
-          "kind": "pvc",
-          "claim": "criteria-data",
-          "mountPath": "/data",
-          "env": {
-            "CRITERIA_RUN_DIR_ROOT": "/data/.criteria/runs",
-            "CRITERIA_SHELL_ALLOWED_PATHS": "/data"
-          }
-        },
-        {
-          "name": "repo",
-          "kind": "pvc",
-          "claim": "criteria-repo",
-          "mountPath": "/repo"
-        }
-      ],
-      "secrets": [
-        {
-          "name": "linear-api-key",
-          "secretProviderClass": "linear-spc",
-          "mountPath": "/home/criteria/linear-secrets",
-          "env": {
-            "LINEAR_API_KEY": "linear_api_key"
-          }
-        },
-        {
-          "name": "github-tokens",
-          "secretProviderClass": "copilot-spc",
-          "mountPath": "/home/criteria/secrets"
-        }
-      ],
-      "adapterImages": {
-        "shell": "localhost:5000/criteria-adapter-shell-peer:k8s-0.5.56-1",
-        "copilot": "localhost:5000/criteria-adapter-copilot-peer:k8s-0.5.56-1"
-      },
       "interface": {
         "apiVersion": "criteria.brokenbots.dev/v1",
         "kind": "WorkflowInterface",
@@ -78,54 +41,6 @@
       "ref": "63535719e37750301a8b7cc9be2c74b2d18c847e",
       "class": "triage",
       "namespace": "criteria-jobs",
-      "volumes": [
-        {
-          "name": "data",
-          "kind": "pvc",
-          "claim": "criteria-data",
-          "mountPath": "/data",
-          "env": {
-            "CRITERIA_RUN_DIR_ROOT": "/data/.criteria/runs",
-            "CRITERIA_SHELL_ALLOWED_PATHS": "/data",
-            "CRITERIA_COPILOT_INCLUDE_SENSITIVE_PERMISSION_DETAILS": "1"
-          }
-        },
-        {
-          "name": "repo",
-          "kind": "pvc",
-          "claim": "criteria-repo",
-          "mountPath": "/repo"
-        },
-        {
-          "name": "scratch",
-          "kind": "tmp",
-          "mountPath": "/tmp/scratch",
-          "sizeLimit": "8Gi"
-        }
-      ],
-      "secrets": [
-        {
-          "name": "github-tokens",
-          "secretProviderClass": "copilot-spc",
-          "mountPath": "/home/criteria/secrets",
-          "env": {
-            "WORKFLOW_GITHUB_TOKEN": "workflow_github_token"
-          }
-        },
-        {
-          "name": "kanboard-secrets",
-          "secretProviderClass": "kanboard-spc",
-          "mountPath": "/home/criteria/kanboard-secrets",
-          "env": {
-            "KANBOARD_APP_TOKEN": "kanboard_app_token",
-            "KANBOARD_URL": "kanboard_url"
-          }
-        }
-      ],
-      "adapterImages": {
-        "shell": "localhost:5000/criteria-adapter-shell-peer:k8s-0.5.56-1",
-        "copilot": "localhost:5000/criteria-adapter-copilot-peer:k8s-0.5.56-1"
-      },
       "interface": {
         "apiVersion": "criteria.brokenbots.dev/v1",
         "kind": "WorkflowInterface",
@@ -179,55 +94,6 @@
       "url": "git::https://github.com/brokenbots/workflow-example.git//kanboard_develop_v1?ref=63535719e37750301a8b7cc9be2c74b2d18c847e",
       "ref": "63535719e37750301a8b7cc9be2c74b2d18c847e",
       "namespace": "criteria-jobs",
-      "volumes": [
-        {
-          "name": "data",
-          "kind": "pvc",
-          "claim": "criteria-data",
-          "mountPath": "/data",
-          "env": {
-            "CRITERIA_RUN_DIR_ROOT": "/data/.criteria/runs",
-            "CRITERIA_SHELL_ALLOWED_PATHS": "/data",
-            "CRITERIA_COPILOT_INCLUDE_SENSITIVE_PERMISSION_DETAILS": "1"
-          }
-        },
-        {
-          "name": "repo",
-          "kind": "pvc",
-          "claim": "criteria-repo",
-          "mountPath": "/repo"
-        },
-        {
-          "name": "scratch",
-          "kind": "tmp",
-          "mountPath": "/tmp/scratch",
-          "sizeLimit": "8Gi"
-        }
-      ],
-      "secrets": [
-        {
-          "name": "github-tokens",
-          "secretProviderClass": "copilot-spc",
-          "mountPath": "/home/criteria/secrets",
-          "env": {
-            "WORKFLOW_GITHUB_TOKEN": "workflow_github_token",
-            "REVIEWER_GITHUB_TOKEN": "reviewer_github_token"
-          }
-        },
-        {
-          "name": "kanboard-secrets",
-          "secretProviderClass": "kanboard-spc",
-          "mountPath": "/home/criteria/kanboard-secrets",
-          "env": {
-            "KANBOARD_APP_TOKEN": "kanboard_app_token",
-            "KANBOARD_URL": "kanboard_url"
-          }
-        }
-      ],
-      "adapterImages": {
-        "shell": "localhost:5000/criteria-adapter-shell-peer:k8s-0.5.56-1",
-        "copilot": "localhost:5000/criteria-adapter-copilot-peer:k8s-0.5.56-1"
-      },
       "interface": {
         "apiVersion": "criteria.brokenbots.dev/v1",
         "kind": "WorkflowInterface",
@@ -298,44 +164,6 @@
       "url": "git::https://github.com/brokenbots/workflow-example.git//harness_contracts_v1",
       "class": "triage",
       "namespace": "criteria-jobs",
-      "volumes": [
-        {
-          "name": "data",
-          "kind": "pvc",
-          "claim": "criteria-data",
-          "mountPath": "/data",
-          "env": {
-            "CRITERIA_RUN_DIR_ROOT": "/data/.criteria/runs",
-            "CRITERIA_SHELL_ALLOWED_PATHS": "/data"
-          }
-        },
-        {
-          "name": "repo",
-          "kind": "pvc",
-          "claim": "criteria-repo",
-          "mountPath": "/repo"
-        },
-        {
-          "name": "scratch",
-          "kind": "tmp",
-          "mountPath": "/tmp/scratch",
-          "sizeLimit": "8Gi"
-        }
-      ],
-      "secrets": [
-        {
-          "name": "github-tokens",
-          "secretProviderClass": "copilot-spc",
-          "mountPath": "/home/criteria/secrets",
-          "env": {
-            "WORKFLOW_GITHUB_TOKEN": "workflow_github_token"
-          }
-        }
-      ],
-      "adapterImages": {
-        "shell": "localhost:5000/criteria-adapter-shell-peer:k8s-0.5.56-1",
-        "copilot": "localhost:5000/criteria-adapter-copilot-peer:k8s-0.5.56-1"
-      },
       "interface": {
         "apiVersion": "criteria.brokenbots.dev/v1",
         "kind": "WorkflowInterface",
@@ -374,44 +202,6 @@
       "url": "git::https://github.com/brokenbots/workflow-example.git//harness_wire_v1",
       "class": "triage",
       "namespace": "criteria-jobs",
-      "volumes": [
-        {
-          "name": "data",
-          "kind": "pvc",
-          "claim": "criteria-data",
-          "mountPath": "/data",
-          "env": {
-            "CRITERIA_RUN_DIR_ROOT": "/data/.criteria/runs",
-            "CRITERIA_SHELL_ALLOWED_PATHS": "/data"
-          }
-        },
-        {
-          "name": "repo",
-          "kind": "pvc",
-          "claim": "criteria-repo",
-          "mountPath": "/repo"
-        },
-        {
-          "name": "scratch",
-          "kind": "tmp",
-          "mountPath": "/tmp/scratch",
-          "sizeLimit": "8Gi"
-        }
-      ],
-      "secrets": [
-        {
-          "name": "github-tokens",
-          "secretProviderClass": "copilot-spc",
-          "mountPath": "/home/criteria/secrets",
-          "env": {
-            "WORKFLOW_GITHUB_TOKEN": "workflow_github_token"
-          }
-        }
-      ],
-      "adapterImages": {
-        "shell": "localhost:5000/criteria-adapter-shell-peer:k8s-0.5.56-1",
-        "copilot": "localhost:5000/criteria-adapter-copilot-peer:k8s-0.5.56-1"
-      },
       "interface": {
         "apiVersion": "criteria.brokenbots.dev/v1",
         "kind": "WorkflowInterface",
@@ -450,34 +240,6 @@
       "url": "git::https://github.com/brokenbots/workflow-example.git//harness_composition_v1",
       "class": "triage",
       "namespace": "criteria-jobs",
-      "volumes": [
-        {
-          "name": "data",
-          "kind": "pvc",
-          "claim": "criteria-data",
-          "mountPath": "/data",
-          "env": {
-            "CRITERIA_RUN_DIR_ROOT": "/data/.criteria/runs",
-            "CRITERIA_SHELL_ALLOWED_PATHS": "/data"
-          }
-        },
-        {
-          "name": "repo",
-          "kind": "pvc",
-          "claim": "criteria-repo",
-          "mountPath": "/repo"
-        },
-        {
-          "name": "scratch",
-          "kind": "tmp",
-          "mountPath": "/tmp/scratch",
-          "sizeLimit": "8Gi"
-        }
-      ],
-      "adapterImages": {
-        "shell": "localhost:5000/criteria-adapter-shell-peer:k8s-0.5.56-1",
-        "copilot": "localhost:5000/criteria-adapter-copilot-peer:k8s-0.5.56-1"
-      },
       "interface": {
         "apiVersion": "criteria.brokenbots.dev/v1",
         "kind": "WorkflowInterface",
@@ -513,34 +275,6 @@
       "url": "git::https://github.com/brokenbots/workflow-example.git//harness_failures_v1",
       "class": "triage",
       "namespace": "criteria-jobs",
-      "volumes": [
-        {
-          "name": "data",
-          "kind": "pvc",
-          "claim": "criteria-data",
-          "mountPath": "/data",
-          "env": {
-            "CRITERIA_RUN_DIR_ROOT": "/data/.criteria/runs",
-            "CRITERIA_SHELL_ALLOWED_PATHS": "/data"
-          }
-        },
-        {
-          "name": "repo",
-          "kind": "pvc",
-          "claim": "criteria-repo",
-          "mountPath": "/repo"
-        },
-        {
-          "name": "scratch",
-          "kind": "tmp",
-          "mountPath": "/tmp/scratch",
-          "sizeLimit": "8Gi"
-        }
-      ],
-      "adapterImages": {
-        "shell": "localhost:5000/criteria-adapter-shell-peer:k8s-0.5.56-1",
-        "copilot": "localhost:5000/criteria-adapter-copilot-peer:k8s-0.5.56-1"
-      },
       "interface": {
         "apiVersion": "criteria.brokenbots.dev/v1",
         "kind": "WorkflowInterface",
@@ -576,33 +310,6 @@
       "url": "git::https://github.com/brokenbots/workflow-example.git//harness_fleet_smoke_v1",
       "class": "triage",
       "namespace": "criteria-jobs",
-      "volumes": [
-        {
-          "name": "data",
-          "kind": "pvc",
-          "claim": "criteria-data",
-          "mountPath": "/data",
-          "env": {
-            "CRITERIA_RUN_DIR_ROOT": "/data/.criteria/runs",
-            "CRITERIA_SHELL_ALLOWED_PATHS": "/data"
-          }
-        },
-        {
-          "name": "repo",
-          "kind": "pvc",
-          "claim": "criteria-repo",
-          "mountPath": "/repo"
-        },
-        {
-          "name": "scratch",
-          "kind": "tmp",
-          "mountPath": "/tmp/scratch",
-          "sizeLimit": "8Gi"
-        }
-      ],
-      "adapterImages": {
-        "shell": "localhost:5000/criteria-adapter-shell-peer:k8s-0.5.56-1"
-      },
       "interface": {
         "apiVersion": "criteria.brokenbots.dev/v1",
         "kind": "WorkflowInterface",

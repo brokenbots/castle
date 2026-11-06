@@ -428,20 +428,29 @@ func TestOptionBSeedImport(t *testing.T) {
 	fx := optionbSeed(t)
 	verifyAgentMembers(t, fx)
 
-	// The transition window is real: the written tree carries pre-cutover
-	// namespaces, so the assembly reports the KB-313 deprecation warnings
-	// (the allowed window) — the two un-cut projects ("Kanboard Tickets"
-	// and "Criteria K8s Workflow Runner") still carry workflows with the
-	// global run-config surfaces the per-project bindings replace.
+	// The KB-313 promise is executed at the shape level: the written
+	// tree's catalog entries carry the tree source and declared interface
+	// ONLY — the former global run-config surfaces reject at the record
+	// decode, so there is no deprecation warning window to report anymore.
 	assembled := confighome.NewAssemblyFor(optionbFetchAllRecords(t, fx))
-	if warnings := assembled.DeprecationWarnings(); len(warnings) == 0 {
-		t.Fatalf("expected deprecation warnings for the pre-cutover registry, got none")
-	}
-	if _, err := assembled.RenderRoutesPayload(); err != nil {
+	rendered, err := assembled.RenderRoutesPayload()
+	if err != nil {
 		t.Fatalf("render the written tree: %v", err)
 	}
+	var payload struct {
+		WorkflowLibrary map[string]map[string]json.RawMessage `json:"workflowLibrary"`
+	}
+	if err := json.Unmarshal(rendered, &payload); err != nil {
+		t.Fatalf("parse rendered payload: %v", err)
+	}
+	for name, entry := range payload.WorkflowLibrary {
+		for _, surface := range []string{"volumes", "secrets", "env", "adapterImages"} {
+			if _, ok := entry[surface]; ok {
+				t.Fatalf("written tree's workflowLibrary[%q] still carries deprecated surface %q", name, surface)
+			}
+		}
+	}
 }
-
 // optionbLaneConfig is the board adapter's lane configuration for the demo:
 // one develop lane pointing at the given route of the kanboard-tickets
 // record (the first fire uses the imported "kanboard-develop" route; the
@@ -1216,11 +1225,42 @@ func TestOptionBIsolationRejectsWrongProject(t *testing.T) {
 	}
 }
 
+// jsonSpliceRecordSurface marshals a record document to generic JSON,
+// splices a deprecated global run-config surface into one catalog entry,
+// and re-marshals — simulating a pre-cleanup record doc that the typed
+// record shape can no longer express (KB-313 rejects it at decode).
+func jsonSpliceRecordSurface(t *testing.T, record *confighome.Record, wfName string) []byte {
+	t.Helper()
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal record: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal record doc: %v", err)
+	}
+	catalog, ok := doc["catalog"].(map[string]any)
+	if !ok {
+		t.Fatalf("record doc carrys no catalog object")
+	}
+	wf, ok := catalog[wfName].(map[string]any)
+	if !ok {
+		t.Fatalf("record doc catalog has no entry %q", wfName)
+	}
+	wf["volumes"] = []any{}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("re-marshal record doc: %v", err)
+	}
+	return out
+}
+
 // TestOptionBCleanupCutoverFlip is step 6: the flag-flip decision. Every
-// registry record imports its namespace binding, flips post-cutover
-// through the console's etag-gated editor, and the assembled CM payload
-// ends warning-free — with the stale run-config surfaces hard-rejected
-// (no zombie routes) and the post-flip pipeline still firing.
+// registry record imports its namespace binding and flips post-cutover
+// through the console's etag-gated marker flip — the catalog already
+// carries the tree refs and interfaces ONLY (KB-313 executed at the
+// shape level), stale run-config surfaces hard-reject at the record
+// decode (no zombie routes), and the post-flip pipeline still fires.
 func TestOptionBCleanupCutoverFlip(t *testing.T) {
 	fx := optionbSeed(t)
 
@@ -1249,6 +1289,10 @@ func TestOptionBCleanupCutoverFlip(t *testing.T) {
 	for _, slug := range slices.Sorted(maps.Keys(optionbProjects)) {
 		projectID := optionbProjects[slug]
 		record, etag := fx.getConfigRecord(projectID)
+		// The fixture pre-marks some registry entries done (KB-339's
+		// already-cut projects): the marker flip is a no-op for those,
+		// so only a TRANSITIONING record must change its etag.
+		wasDone := record.Cutover == confighome.CutoverDone
 		attachedCriteriaJobs := record.Binding == nil
 		if attachedCriteriaJobs {
 			record.Binding = binding
@@ -1272,7 +1316,7 @@ func TestOptionBCleanupCutoverFlip(t *testing.T) {
 			t.Fatalf("flip %s post-cutover: %v", projectID, err)
 		}
 		newEtag := fx.seedConfigImport(projectID, record, etag)
-		if newEtag == etag {
+		if !wasDone && newEtag == etag {
 			t.Fatalf("%s: flip produced the same etag", projectID)
 		}
 		readback, _ := fx.getConfigRecord(projectID)
@@ -1284,22 +1328,38 @@ func TestOptionBCleanupCutoverFlip(t *testing.T) {
 		}
 	}
 
-	// The CM payload is now assembled warning-free, with the registry
-	// fully post-cutover.
+	// The KB-313 promise executed at the shape level: the flipped CM
+	// payload is assembled with the registry fully post-cutover, and the
+	// workflowLibrary carries the tree refs and interfaces ONLY — the
+	// clean-catalog flip is a per-project marker, so there is no
+	// deprecation warning channel to report on anymore.
 	all := optionbFetchAllRecords(t, fx)
 	asm := confighome.NewAssemblyFor(all)
-	if warnings := asm.DeprecationWarnings(); len(warnings) != 0 {
-		t.Fatalf("post-cutover assembly still emits deprecation warnings: %v", warnings)
-	}
-	if _, err := asm.RenderRoutesPayload(); err != nil {
+	rendered, err := asm.RenderRoutesPayload()
+	if err != nil {
 		t.Fatalf("post-cutover render: %v", err)
+	}
+	var payload struct {
+		WorkflowLibrary map[string]map[string]json.RawMessage `json:"workflowLibrary"`
+	}
+	if err := json.Unmarshal(rendered, &payload); err != nil {
+		t.Fatalf("parse post-cutover payload: %v", err)
+	}
+	for name, entry := range payload.WorkflowLibrary {
+		for _, surface := range []string{"volumes", "secrets", "env", "adapterImages"} {
+			if _, ok := entry[surface]; ok {
+				t.Fatalf("post-cutover workflowLibrary[%q] still carries deprecated surface %q", name, surface)
+			}
+		}
 	}
 
 	// No zombie routes: reintroducing a stale global run-config surface
-	// on a post-cutover registry hard-rejects the assembled payload.
+	// on a record document hard-rejects at the record decode (KB-313 is
+	// a validation error now, not an assembly-time check) — the doc is
+	// spliced at the JSON level since the typed shape no longer carries
+	// the surfaces.
 	last := -1
-	zombie := append([]confighome.ProjectRecord(nil), all...)
-	for i, pr := range zombie {
+	for i, pr := range all {
 		if pr.ProjectID == optionbFireProject {
 			last = i
 			break
@@ -1308,19 +1368,10 @@ func TestOptionBCleanupCutoverFlip(t *testing.T) {
 	if last == -1 {
 		t.Fatalf("no %s record in the assembled set", optionbFireProject)
 	}
-	zombieRecord := *zombie[last].Record
-	zombieRecord.Catalog = maps.Clone(zombieRecord.Catalog)
-	stale := zombieRecord.Catalog["kanboard-triage-url"]
-	stale.Volumes = []confighome.Volume{{
-		Name:      "stale-data",
-		Kind:      "pvc",
-		Claim:     "criteria-data",
-		MountPath: "/data",
-	}}
-	zombieRecord.Catalog["kanboard-triage-url"] = stale
-	zombie[last].Record = &zombieRecord
-	if _, err := confighome.NewAssemblyFor(zombie).RenderRoutesPayload(); err == nil || !strings.Contains(err.Error(), "post-cutover payload still carries global run-config surfaces") {
-		t.Fatalf("zombie render = %v, want the KB-313 hard error", err)
+	zombieRecord := all[last].Record
+	zombieJSON := jsonSpliceRecordSurface(t, zombieRecord, "kanboard-triage-url")
+	if _, err := confighome.ParseRecord(zombieJSON); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("record doc carrying a stale global run-config surface must hard-reject at decode, got %v", err)
 	}
 
 	// The post-flip pipeline still fires: a fresh card routes through the

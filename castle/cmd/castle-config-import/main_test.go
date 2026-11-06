@@ -192,30 +192,37 @@ func TestConfigImportRoundTripAndWrites(t *testing.T) {
 	}
 }
 
-// TestConfigImportCutoverRefusesUnrenderableFlip pins the KB-313 gate
-// on the flip itself (KB-339 BL-1): with the live fixtures, --cutover
-// flips only the two bound records (binding-first) and the flip's
-// post-write check is the pre-ASSEMBLY render — the flipped records
-// share the kanboard-develop-url tree with the un-flipped Kanboard
-// Tickets record, so the partial flip cannot re-render and the run
-// refuses BEFORE any write instead of landing an un-renderable
-// castle-authoritative state. Unbound records are named in stderr and
-// left untouched.
-func TestConfigImportCutoverRefusesUnrenderableFlip(t *testing.T) {
+// mustLiveRoutes reads the live routes fixture the import round-trips
+// against.
+func mustLiveRoutes(t *testing.T) []byte {
+	t.Helper()
+	live, err := os.ReadFile(filepath.Join("testdata", "routes.json"))
+	if err != nil {
+		t.Fatalf("read live routes: %v", err)
+	}
+	return live
+}
+
+// TestConfigImportCutoverPartialFlipWritesBoundRecords pins the KB-313
+// end state on the flip: with the live fixtures, --cutover flips ONLY
+// the two bound records (binding-first) and the partial flip now
+// renders — the catalog is ref + declared interface only, so a flipped
+// record's tree copies stay equal to the un-flipped record's copies and
+// the mixed state assembles. Unbound records are named in stderr and
+// stay pre-cutover, and the bound records land done.
+func TestConfigImportCutoverPartialFlipWritesBoundRecords(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "castle.db")
 	var stdout, stderr bytes.Buffer
 	code := run(importArgs(db, "--create-projects", "--cutover"), &stdout, &stderr)
 	msg := stderr.String()
-	if code != 1 || !strings.Contains(msg, "re-render routes payload after the cutover flip") ||
-		!strings.Contains(msg, "kanboard-develop-url") || !strings.Contains(msg, "no writes happened") {
-		t.Fatalf("partial flip over a shared tree: exit %d msg %s, want 1 naming the refused render before any write", code, msg)
+	if code != 0 {
+		t.Fatalf("partial flip must write now that catalogs are clean (KB-313): exit %d msg %s", code, msg)
 	}
 	if !strings.Contains(msg, `"Kanboard Tickets" (kanboard-tickets) stays pre-cutover`) ||
 		!strings.Contains(msg, `"Criteria K8s Workflow Runner" (criteria-k8s-workflow-runner) stays pre-cutover`) {
-		t.Fatalf("unbound records must be named and left pre-cutover: %s", msg)
+		t.Fatalf("unbound records must be named and stay pre-cutover: %s", msg)
 	}
 
-	// Nothing landed: no project, no config record.
 	st, err := sqlite.Open(db)
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
@@ -223,22 +230,43 @@ func TestConfigImportCutoverRefusesUnrenderableFlip(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 	for _, id := range projectSlugs {
-		if _, _, err := st.GetProjectConfig(ctx, id); err == nil {
-			t.Fatalf("refused import left a config record for %s", id)
+		doc, etag, err := st.GetProjectConfig(ctx, id)
+		if err != nil || etag == "" {
+			t.Fatalf("get %s: %v etag %q", id, err, etag)
 		}
-		if _, err := st.GetProject(ctx, id); err == nil {
-			t.Fatalf("refused import created %s", id)
+		record, err := confighome.ParseRecord(doc)
+		if err != nil {
+			t.Fatalf("parse %s: %v", id, err)
 		}
+		switch id {
+		case "criteria-go-dev", "typescript-sdk":
+			if record.Cutover != confighome.CutoverDone || record.Binding == nil {
+				t.Fatalf("%s must land cutover-done with its binding, got %q binding %v", id, record.Cutover, record.Binding != nil)
+			}
+		default:
+			if record.Cutover != "" {
+				t.Fatalf("%s must stay pre-cutover, got %q", id, record.Cutover)
+			}
+		}
+	}
+
+	// The stored records re-assemble into a valid payload where flipped
+	// registry entries carry done and the un-flipped ones do not.
+	rendered, err := loadStoredAssembly(t, st)
+	if err != nil {
+		t.Fatalf("mixed stored records must re-assemble: %v", err)
+	}
+	if equal, _, err := confighome.EqualPayload(rendered, mustLiveRoutes(t)); err != nil || !equal {
+		t.Fatalf("mixed flip state must render the live payload: equal %v err %v", equal, err)
 	}
 }
 
 // TestConfigImportCutoverFlipsBoundRecords pins the successful
 // castle-authoritative flip end to end: when EVERY record imports a
-// namespace binding, --cutover marks them all done, the deprecated
-// global run-config surfaces leave every catalog entry, the flipped
-// state re-assembles into a valid post-cutover routes payload with no
-// stale surfaces and no registry entry left pre-cut, and each flipped
-// record's binding still renders.
+// namespace binding, --cutover marks them all done, the rendered
+// workflowLibrary carries the tree refs and interfaces ONLY (the
+// catalog no longer carries run-config surfaces — the record shape
+// rejects them), and each flipped record's binding still renders.
 func TestConfigImportCutoverFlipsBoundRecords(t *testing.T) {
 	jobsBinding := filepath.Join(t.TempDir(), "binding-jobs.json")
 	// criteria-jobs carries both the Kanboard Tickets and the platform
@@ -267,35 +295,33 @@ func TestConfigImportCutoverFlipsBoundRecords(t *testing.T) {
 		if _, err := record.RenderBinding(); err != nil {
 			t.Fatalf("%s binding render post-flip: %v", id, err)
 		}
-		for _, wf := range record.Catalog {
-			if len(wf.Volumes) != 0 || len(wf.Secrets) != 0 || len(wf.Env) != 0 || len(wf.AdapterImages) != 0 {
-				t.Fatalf("%s catalog entry %q (type %s) still carries a stale global surface post-flip", id, wf.Namespace, wf.Type)
-			}
-		}
 	}
 
-	// The stored records re-assemble into a valid post-cutover payload:
-	// no stale surfaces anywhere and every registry entry done.
+	// The stored records re-assemble into a valid routes payload whose
+	// workflowLibrary carries tree refs and declared interfaces ONLY:
+	// no global run-config surface key renders, even raw (KB-313).
 	rendered, err := loadStoredAssembly(t, st)
 	if err != nil {
 		t.Fatalf("stored records must re-assemble post-cutover: %v", err)
 	}
-	var doc struct {
-		WorkflowLibrary map[string]confighome.Workflow      `json:"workflowLibrary"`
-		ProjectRegistry map[string]confighome.RegistryEntry `json:"projectRegistry"`
+	var raw struct {
+		WorkflowLibrary map[string]map[string]json.RawMessage `json:"workflowLibrary"`
+		ProjectRegistry map[string]confighome.RegistryEntry   `json:"projectRegistry"`
 	}
-	if err := json.Unmarshal(rendered, &doc); err != nil {
+	if err := json.Unmarshal(rendered, &raw); err != nil {
 		t.Fatalf("parse rendered payload: %v", err)
 	}
-	if len(doc.WorkflowLibrary) == 0 {
+	if len(raw.WorkflowLibrary) == 0 {
 		t.Fatalf("rendered payload must carry the workflowLibrary")
 	}
-	for name, wf := range doc.WorkflowLibrary {
-		if len(wf.Volumes) != 0 || len(wf.Secrets) != 0 || len(wf.Env) != 0 || len(wf.AdapterImages) != 0 {
-			t.Fatalf("rendered post-cutover payload still carries stale surfaces on %q", name)
+	for name, entry := range raw.WorkflowLibrary {
+		for _, surface := range []string{"volumes", "secrets", "env", "adapterImages"} {
+			if _, ok := entry[surface]; ok {
+				t.Fatalf("rendered workflowLibrary[%q] carries deprecated surface %q", name, surface)
+			}
 		}
 	}
-	for name, entry := range doc.ProjectRegistry {
+	for name, entry := range raw.ProjectRegistry {
 		if entry.Cutover != confighome.CutoverDone {
 			t.Fatalf("rendered registry entry %s cutover = %q, want all done", name, entry.Cutover)
 		}
