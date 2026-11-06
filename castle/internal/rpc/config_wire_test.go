@@ -39,11 +39,8 @@ func wireConfigRecord() *confighome.Record {
 				},
 			},
 			"image-wf": {
-				Type:    confighome.TypeImage,
-				Image:   "registry.example.com/runner:v1",
-				Volumes: []confighome.Volume{},
-				Secrets: []confighome.Secret{},
-				Env:     map[string]string{},
+				Type:  confighome.TypeImage,
+				Image: "registry.example.com/runner:v1",
 			},
 		},
 		Digests: map[string]string{"url-wf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},

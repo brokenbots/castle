@@ -89,6 +89,14 @@ export interface Secret {
   env?: Record<string, string>;
 }
 
+/**
+ * A workflowLibrary object: how a run obtains its workflow and where/how
+ * it executes. The catalog carries the tree source and its declared
+ * interface ONLY (KB-313, ADR 307): the former global run-config
+ * surfaces (volumes, secrets, env, adapterImages) are gone — run config
+ * lives on the project's namespace binding, and a record doc declaring
+ * the surfaces is a validation error (unknown-field rejection).
+ */
 export interface Workflow {
   type: string;
   namespace?: string;
@@ -96,10 +104,6 @@ export interface Workflow {
   image?: string;
   url?: string;
   ref?: string;
-  volumes?: Volume[];
-  secrets?: Secret[];
-  env?: Record<string, string>;
-  adapterImages?: Record<string, string>;
   imageConflictPolicy?: string;
   interface?: Interface;
 }

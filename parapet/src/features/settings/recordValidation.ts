@@ -190,21 +190,6 @@ export function validateWorkflowShape(name: string, wf: Workflow): string[] {
   if ((wf.namespace ?? '') !== '' && !LABEL_RE.test(wf.namespace!)) {
     out.push(`namespace "${wf.namespace}" is not a DNS-1123 label`);
   }
-  out.push(...envMapErrors(wf.env, 'env'));
-  out.push(...validateAdapterImages(wf.adapterImages));
-
-  const seenV: string[] = [];
-  (wf.volumes ?? []).forEach((v, i) => {
-    out.push(...validateVolume(v).map((e) => `volumes[${i}] (${v.name}): ${e}`));
-    if (seenV.includes(v.name)) out.push(`volumes[${i}] (${v.name}): name is not unique within the workflow`);
-    seenV.push(v.name);
-  });
-  const seenS: string[] = [];
-  (wf.secrets ?? []).forEach((s, i) => {
-    out.push(...validateSecret(s).map((e) => `secrets[${i}] (${s.name}): ${e}`));
-    if (seenS.includes(s.name)) out.push(`secrets[${i}] (${s.name}): name is not unique within the workflow`);
-    seenS.push(s.name);
-  });
   return out;
 }
 
@@ -498,8 +483,8 @@ const RECORD_FIELDS = new Set([
   'digests', 'routesOrdinal',
 ]);
 const WORKFLOW_FIELDS = new Set([
-  'type', 'namespace', 'class', 'image', 'url', 'ref', 'volumes', 'secrets',
-  'env', 'adapterImages', 'imageConflictPolicy', 'interface',
+  'type', 'namespace', 'class', 'image', 'url', 'ref',
+  'imageConflictPolicy', 'interface',
 ]);
 const INTERFACE_FIELDS = new Set([
   'apiVersion', 'kind', 'workflow', 'description', 'adapters', 'mounts',
@@ -570,8 +555,6 @@ export function unknownFieldErrors(json: unknown): string[] {
       if (wf === undefined) continue;
       checkKeys(wf, WORKFLOW_FIELDS, `catalog["${name}"]`, out);
       if (wf.interface !== undefined) checkInterface(wf.interface, `catalog["${name}"].interface`, out);
-      checkVolumes(wf.volumes, `catalog["${name}"].volumes`, out);
-      checkSecrets(wf.secrets, `catalog["${name}"].secrets`, out);
     }
   }
   const lib = objectAt(rec.configLibrary);
