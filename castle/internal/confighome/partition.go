@@ -4,14 +4,57 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
+	"strings"
 )
+
+// legacyWorkflowSurfaceKeys are the former global run-config surfaces
+// (KB-313, ADR 307): a workflowLibrary entry that declares any of them
+// is a validation error now — per-project records and namespace
+// bindings own run config.
+var legacyWorkflowSurfaceKeys = []string{"volumes", "secrets", "env", "adapterImages"}
+
+// rejectLegacyWorkflowSurfaces pre-scans the payload's workflowLibrary
+// entries for the deprecated global run-config surfaces and names the
+// offending entry and keys precisely. Structural problems (malformed
+// JSON, non-object entries) return nil here and let the typed decode
+// surface them.
+func rejectLegacyWorkflowSurfaces(payload []byte) error {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &probe); err != nil {
+		return nil
+	}
+	rawLib, ok := probe["workflowLibrary"]
+	if !ok {
+		return nil
+	}
+	var lib map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(rawLib, &lib); err != nil {
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(lib)) {
+		var surfaces []string
+		for _, key := range legacyWorkflowSurfaceKeys {
+			if _, ok := lib[name][key]; ok {
+				surfaces = append(surfaces, key)
+			}
+		}
+		slices.Sort(surfaces)
+		if len(surfaces) > 0 {
+			return fmt.Errorf("routes payload: workflowLibrary[%q] declares deprecated global run-config surface(s) %s — the KB-313 migration window is closed (ADR 307): per-project records and namespace bindings own run config; re-materialize the payload without these keys before import",
+				name, strings.Join(surfaces, ", "))
+		}
+	}
+	return nil
+}
 
 // Partition splits the routes payload into per-project records: each
 // projectRegistry entry becomes a record carrying its routes, the
 // catalog objects those routes reference, and the configLibrary entries
-// its routes' configRefs name. Unreferenced platform overlay entries land
-// on the platformRegistryName record — the import tool passes the
+// its routes' configRefs name. Unreferenced platform overlay entries
+// land on the platformRegistryName record — the import tool passes the
 // registry name that should own the platform overlay data (config
 // entries not referenced by any route), which keeps the assembled
 // configLibrary byte-faithful without inventing ownership.
@@ -35,6 +78,9 @@ import (
 // import; re-materialize the live payload first (states defaults,
 // grouped routes) before importing.
 func Partition(platformRegistryName string, payload []byte) (map[string]*Record, error) {
+	if err := rejectLegacyWorkflowSurfaces(payload); err != nil {
+		return nil, err
+	}
 	var doc routesPayloadDoc
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	dec.DisallowUnknownFields()

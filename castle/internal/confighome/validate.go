@@ -3,7 +3,6 @@ package confighome
 import (
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 )
 
@@ -221,32 +220,6 @@ func validateWorkflowShape(name string, wf Workflow) error {
 	}
 	if wf.Namespace != "" && !labelRe.MatchString(wf.Namespace) {
 		return fmt.Errorf("namespace %q is not a DNS-1123 label", wf.Namespace)
-	}
-	if err := validateEnvMap(wf.Env, "env"); err != nil {
-		return err
-	}
-	if err := validateAdapterImages(wf.AdapterImages); err != nil {
-		return err
-	}
-	var seenV []string
-	for i, v := range wf.Volumes {
-		if err := validateVolume(v); err != nil {
-			return fmt.Errorf("volumes[%d] (%s): %w", i, v.Name, err)
-		}
-		if slices.Contains(seenV, v.Name) {
-			return fmt.Errorf("volumes[%d] (%s): name is not unique within the workflow", i, v.Name)
-		}
-		seenV = append(seenV, v.Name)
-	}
-	var seenS []string
-	for i, s := range wf.Secrets {
-		if err := validateSecret(s); err != nil {
-			return fmt.Errorf("secrets[%d] (%s): %w", i, s.Name, err)
-		}
-		if slices.Contains(seenS, s.Name) {
-			return fmt.Errorf("secrets[%d] (%s): name is not unique within the workflow", i, s.Name)
-		}
-		seenS = append(seenS, s.Name)
 	}
 	return nil
 }

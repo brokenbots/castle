@@ -2,6 +2,7 @@ package confighome
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -328,11 +329,8 @@ func shapeProbe() *Record {
 				},
 			},
 			"image-wf": {
-				Type:    TypeImage,
-				Image:   "registry.example.com/runner:v1",
-				Volumes: []Volume{},
-				Secrets: []Secret{},
-				Env:     map[string]string{},
+				Type:  TypeImage,
+				Image: "registry.example.com/runner:v1",
 			},
 		},
 		ConfigLibrary: map[string]ConfigEntry{
@@ -358,11 +356,11 @@ func TestRecordValidateShapeRejects(t *testing.T) {
 	}{
 		{"bad namespace label", func(p *Record) { p.Namespace = "Bad_NS!" }},
 		{"unknown volume kind", func(p *Record) {
-			c := shapeProbe()
-			wf := c.Catalog["image-wf"]
-			wf.Volumes = []Volume{{Name: "scratch", MountPath: "/scratch", Kind: "ebs", SizeLimit: "1Gi"}}
-			c.Catalog["image-wf"] = wf
-			*p = *c
+			p.Binding = &Binding{
+				APIVersion: APIVersion,
+				Kind:       KindBinding,
+				Volumes:    []Volume{{Name: "scratch", MountPath: "/scratch", Kind: "ebs", SizeLimit: "1Gi"}},
+			}
 		}},
 		{"duplicate route names", func(p *Record) {
 			p.Routes[1] = p.Routes[0]
@@ -498,11 +496,87 @@ func TestPartitionConfigRefOwnership(t *testing.T) {
 	}
 }
 
-// TestRecordMarkCutoverDone pins the structural castle-authoritative
-// flip (KB-313, ADR 307): the flip is binding-first — a record with no
-// namespace binding refuses — and a flipped record loses the deprecated
-// global run-config surfaces so the flipped records re-assemble and
-// render post-cutover.
+// TestParseRecordRejectsLegacyWorkflowSurfaces pins the KB-313 record
+// half of the promise: the migration window is closed, so a record doc
+// whose catalog entries declare the former global run-config surfaces
+// is a hard validation error (unknown-field rejection at the typed
+// decode), not a warning.
+func TestParseRecordRejectsLegacyWorkflowSurfaces(t *testing.T) {
+	for _, surface := range []string{"volumes", "secrets", "env", "adapterImages"} {
+		t.Run(surface, func(t *testing.T) {
+			doc := fmt.Sprintf(`{
+				"apiVersion": %q, "kind": %q,
+				"registryName": "shape-proj", "namespace": "criteria-jobs",
+				"catalog": {
+					"url-wf": {
+						"type": "url", "url": "https://example.com/tree",
+						%q: []
+					}
+				},
+				"routes": []
+			}`, APIVersion, KindRecord, surface)
+			if _, err := ParseRecord([]byte(doc)); err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("catalog entry declaring %q must be a hard validation error, got %v", surface, err)
+			}
+		})
+	}
+}
+
+// TestPartitionRejectsLegacyWorkflowSurfaces pins the KB-313 import
+// half: a routes payload whose workflowLibrary entries still carry the
+// deprecated surfaces is rejected naming the entry and the surface keys
+// (the re-materialization instruction lands with the failure).
+func TestPartitionRejectsLegacyWorkflowSurfaces(t *testing.T) {
+	cases := []struct {
+		name     string
+		surfaces string
+		want     []string
+	}{
+		{"volumes+secrets", `"volumes": [{"name": "scratch", "mountPath": "/scratch", "kind": "emptyDir"}], "secrets": [{"name": "tok", "mountPath": "/tok", "secretProviderClass": "vault"}]`, []string{"volumes", "secrets"}},
+		{"env", `"env": {"A": "B"}`, []string{"env"}},
+		{"adapterImages", `"adapterImages": {"shell": "registry.local/shell:v1"}`, []string{"adapterImages"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := []byte(fmt.Sprintf(`{
+				"apiVersion": %q, "kind": "Routes",
+				"workflowLibrary": {
+					"nice-wf": {"type": "url", "url": "https://example.com/tree"},
+					"stale-wf": {"type": "url", "url": "https://example.com/tree", %s}
+				},
+				"projectRegistry": {"P1": {"namespace": "criteria-jobs"}},
+				"routes": [{"name": "r1", "workflow": "nice-wf", "project": "P1", "states": ["Ready"]}]
+			}`, APIVersion, tc.surfaces))
+			_, err := Partition("P1", payload)
+			if err == nil {
+				t.Fatalf("payload carrying %s must be rejected, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "stale-wf") {
+				t.Fatalf("error must name the entry, got %v", err)
+			}
+			for _, surface := range tc.want {
+				if !strings.Contains(err.Error(), surface) {
+					t.Fatalf("error must name surface %q, got %v", surface, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "KB-313") {
+				t.Fatalf("error must reference the contract, got %v", err)
+			}
+		})
+	}
+	// The cleaned fixture still partitions: the rejection is about the
+	// surfaces, not the payload shape.
+	if _, err := Partition("Kanboard Tickets", readFixture(t, "routes.json")); err != nil {
+		t.Fatalf("cleaned fixture must partition, got %v", err)
+	}
+}
+
+// TestRecordMarkCutoverDone pins the binding-first flip (KB-313, ADR
+// 307): a record with no namespace binding refuses — its namespace
+// would lose the only run config it ever had — and a flipped record is
+// cutover-done with the catalog unchanged: the KB-313 promise is
+// executed at the shape level, so the flip is a marker flip, not a
+// content edit, and the flipped records still re-assemble and render.
 func TestRecordMarkCutoverDone(t *testing.T) {
 	records, _ := partitionFixture(t)
 	kanboard := records["Kanboard Tickets"]
@@ -510,12 +584,9 @@ func TestRecordMarkCutoverDone(t *testing.T) {
 		t.Fatalf("unbound record must refuse the flip, got %v", err)
 	}
 	godev := records["Criteria Go Dev"]
-	stale, ok := godev.Catalog["kanboard-develop-url"]
-	if !ok || len(stale.Volumes) == 0 || len(stale.AdapterImages) == 0 {
-		t.Fatalf("fixture's go-dev catalog entry must carry the stale global surfaces pre-flip")
-	}
 	// The fixture's registry carries some pre-cut entries; reset the
-	// probe so the flip itself moves the state.
+	// probe so the flip itself moves the state. Attach real-shaped
+	// bindings: the flip is binding-first and the record re-validates.
 	for _, rec := range records {
 		if rec.Cutover == CutoverDone {
 			rec.Cutover = ""
@@ -525,20 +596,17 @@ func TestRecordMarkCutoverDone(t *testing.T) {
 			t.Fatalf("binding attachment must not break the record: %v", err)
 		}
 	}
-	// Every record flips its own copies of shared entries too, so the
-	// stripped copies stay equal (workflowsEqual) and the assembly is a
-	// valid post-cutover payload with no stale surfaces. (A PARTIAL
-	// flip over shared trees cannot render — the import tool refuses
-	// that state pre-write; see the cmd tests.)
 	for _, rec := range records {
 		if err := rec.MarkCutoverDone(); err != nil {
 			t.Fatalf("MarkCutoverDone %q: %v", rec.RegistryName, err)
 		}
 	}
 	flipped := godev.Catalog["kanboard-develop-url"]
-	if godev.Cutover != CutoverDone || len(flipped.Volumes) != 0 || len(flipped.Secrets) != 0 ||
-		len(flipped.Env) != 0 || len(flipped.AdapterImages) != 0 {
-		t.Fatalf("flipped record must be done and stripped, got %q %+v", godev.Cutover, flipped)
+	if godev.Cutover != CutoverDone {
+		t.Fatalf("flipped record must be cutover-done, got %q", godev.Cutover)
+	}
+	if flipped.Interface == nil || len(flipped.Interface.Mounts) == 0 {
+		t.Fatalf("catalog entries keep their declared interface across the flip: %+v", flipped)
 	}
 	if err := godev.Validate(); err != nil {
 		t.Fatalf("flipped record must still validate: %v", err)
@@ -547,9 +615,10 @@ func TestRecordMarkCutoverDone(t *testing.T) {
 		t.Fatalf("flipped assembly must render post-cutover: %v", err)
 	}
 
-	// A non-conflicting MIXED state stays valid mid-migration: a
-	// flipped record whose trees no un-flipped record shares renders
-	// alongside pre-cut stale entries (allow-with-warning window).
+	// A non-conflicting MIXED state stays valid: a flipped record whose
+	// trees no un-flipped record shares renders alongside pre-cut
+	// entries — cutover markers are per-project state, not payload
+	// shape.
 	mixedGodev := godev
 	mixedKanboard := &Record{
 		APIVersion: APIVersion, Kind: KindRecord,
@@ -561,6 +630,6 @@ func TestRecordMarkCutoverDone(t *testing.T) {
 		{ProjectID: "criteria-go-dev", Record: mixedGodev},
 		{ProjectID: "kanboard-tickets", Record: mixedKanboard},
 	}).RenderRoutesPayload(); err != nil {
-		t.Fatalf("mixed pre/post-cutover assembly must render in the migration window: %v", err)
+		t.Fatalf("mixed pre/post-cutover assembly must render: %v", err)
 	}
 }
