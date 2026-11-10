@@ -185,14 +185,14 @@ func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, creat
 						FROM overseers o
 						WHERE o.id = a.leased_criteria_id
 						  AND o.status = 'online'
-						  AND o.last_seen_at > ` + d.P(2) + `
+						  AND o.last_seen_at > ` + d.P(3) + `
 					)
 				)
 			  )
 		  )`
-	args := []any{d.TS(createdBefore), d.TS(heartbeatBefore)}
+	args := []any{d.TS(createdBefore), d.TS(heartbeatBefore), d.TS(heartbeatBefore)}
 	if len(ids) > 0 {
-		q += ` AND r.id IN (` + d.Placeholders(3, len(ids)) + `)`
+		q += ` AND r.id IN (` + d.Placeholders(4, len(ids)) + `)`
 		for _, id := range ids {
 			args = append(args, id)
 		}
