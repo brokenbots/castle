@@ -29,8 +29,10 @@ func TestRefireRequeueCreatedNeverStarted(t *testing.T) {
 
 		// The dispatch layer never leases: the run is reaped as
 		// created_never_started (KB-233 rule 2) — the real writer, not a
-		// hand stamp.
-		reaped, err := s.ReapNeverStartedRuns(ctx, now, now.Add(time.Minute))
+		// hand stamp. The heartbeat bound passed as `now` disables the
+		// KB-371 dispatch-eligibility pause: no heartbeat can be fresher, so the
+		// queued work reaps by timer even if its assignment were dispatchable.
+		reaped, err := s.ReapNeverStartedRuns(ctx, now, now.Add(time.Minute), now, now)
 		if err != nil || len(reaped) != 1 || reaped[0].RunID != a.RunID {
 			t.Fatalf("reap = %v, %v; want one created_never_started verdict for %s", reaped, err, a.RunID)
 		}
@@ -113,9 +115,11 @@ func TestRefireRequeueBudgetNotBurnedByRepeatCycles(t *testing.T) {
 		a := f.submit("owner-repeat", "kb-343-repeat")
 		// Cursor: each cycle reaps at `at`, requeues at `at+2s` (which
 		// refreshes run.created_at), and the next reap's window clears it.
+		// heartbeatBefore = at disables the KB-371 lane pause: the owner
+		// here has no overseer row, so reaping applies by timer alone.
 		at := f.now.Add(time.Minute)
 		for cycle := 1; cycle <= 3; cycle++ {
-			reaped, err := s.ReapNeverStartedRuns(ctx, at, at)
+			reaped, err := s.ReapNeverStartedRuns(ctx, at, at, at, at)
 			if err != nil || len(reaped) != 1 || reaped[0].RunID != a.RunID {
 				t.Fatalf("cycle %d: reap = %v, %v; want one verdict for %s", cycle, reaped, err, a.RunID)
 			}

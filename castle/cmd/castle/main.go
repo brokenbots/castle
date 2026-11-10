@@ -189,6 +189,12 @@ func main() {
 	agentHeartbeatInterval := flag.Duration("agent-heartbeat-interval", envOrDefaultDuration("CASTLE_AGENT_HEARTBEAT_INTERVAL", 10*time.Second), "nominal criteria agent heartbeat cadence (or CASTLE_AGENT_HEARTBEAT_INTERVAL); the run reaper multiplies this to derive staleness")
 	runReapMultiplier := flag.Int("run-reap-multiplier", envOrDefaultInt("CASTLE_RUN_REAP_MULTIPLIER", 6), "reap pending/running runs whose agent heartbeat is older than this multiple of the heartbeat interval (or CASTLE_RUN_REAP_MULTIPLIER); 0 disables run reaping")
 	createdNeverStartedWindow := flag.Duration("created-never-started-window", envOrDefaultDuration("CASTLE_CREATED_NEVER_STARTED_WINDOW", 10*time.Minute), "reap pending/running runs whose started_at is still unset this long after created_at (KB-233 rule 2: CreateRun that never reached RunStarted, reason created_never_started) (or CASTLE_CREATED_NEVER_STARTED_WINDOW); 0 disables created_never_started reaping")
+	// KB-371: the created_never_started queue pause survives as long as the
+	// executor's lane is occupied, and the grace covers the succession gap
+	// after the evidence ends — the time between a lane anchor (most recent
+	// terminal sibling run or lease expiry) and the timer-driven successor
+	// grant (lease TTL/2 in the production configuration, so 5m fits it).
+	createdNeverStartedLaneGrace := flag.Duration("created-never-started-lane-grace", envOrDefaultDuration("CASTLE_CREATED_NEVER_STARTED_LANE_GRACE", 5*time.Minute), "KB-371 queue pause: how long after a lane anchor (most recent terminal sibling run or lease expiry) queued work may still wait for the successor dispatch grant; keep at least the lease-expiry-to-regrant gap (lease TTL/2) (or CASTLE_CREATED_NEVER_STARTED_LANE_GRACE); <= 0 pauses only while the lane evidence is live")
 	refireInterval := flag.Duration("refire-interval", envOrDefaultDuration("CASTLE_REFIRE_INTERVAL", 15*time.Second), "run the refire/classification policy pass this often (KB-321: failed runs requeue under policy limits, designed-park endings reclassify to awaiting_human); 0 disables refiring")
 	refirePolicyFile := flag.String("refire-policy-file", envOrDefault("CASTLE_REFIRE_POLICY_FILE", ""), "policy file to upsert as refire_policies rows at boot (KB-321); rows are (project_id,route,policy) records, empty strings are the global default scope")
 	flag.Parse()
@@ -502,10 +508,20 @@ func main() {
 	// runs created more than the window ago whose started_at is still unset —
 	// CreateRun without a RunStarted — are stamped failed with reason
 	// "created_never_started" so unstartable and orphan-minted runs die by
-	// timer instead of sitting pending forever. Independent of the heartbeat
-	// reaper: the verdict is derivable from the run record alone.
+	// timer instead of sitting pending forever. Runs whose workflow
+	// assignment is leased with a live holder, or queued behind a live
+	// occupied lane (KB-371), are exempt: an online, fresh-heartbeat,
+	// membership-, and label-eligible executor whose lane holds an unstarted
+	// lease or a running sibling pauses the pass, and stays paused —
+	// unbounded in wall-clock time — while the evidence holds and then
+	// through the successor-grant grace. Genuinely undispatchable queued
+	// work (label-uneligible, offline or stale executors, undispatchable
+	// membership, no lane progress on an idle lane) reaps by timer with its
+	// created_never_started verdict. A disabled heartbeat reaper
+	// (multiplier 0, zero staleness) disables the pause and restores
+	// timer-only semantics.
 	if *createdNeverStartedWindow > 0 {
-		log.Info("created_never_started reaper enabled", "created_never_started_window", *createdNeverStartedWindow)
+		log.Info("created_never_started reaper enabled", "created_never_started_window", *createdNeverStartedWindow, "queued_pause_heartbeat_staleness", runReapStaleness, "queued_pause_lane_grace", *createdNeverStartedLaneGrace)
 		go func() {
 			t := time.NewTicker(15 * time.Second)
 			defer t.Stop()
@@ -514,7 +530,7 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					reapNeverStartedRunsOnce(context.Background(), st, log, *createdNeverStartedWindow)
+					reapNeverStartedRunsOnce(context.Background(), st, log, *createdNeverStartedWindow, runReapStaleness, *createdNeverStartedLaneGrace)
 				}
 			}
 		}()
@@ -590,11 +606,19 @@ func reapStaleRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, st
 // pending/running whose started_at is still unset and whose created_at is
 // older than window are stamped failed with reason "created_never_started",
 // unless their record ends at a human gate — those park as awaiting_human
-// (KB-226) with the reclassification reason logged. Split out of the ticker
+// (KB-226) with the reclassification reason logged. The heartbeat staleness
+// bound (same derivation as the CRI-142 run reaper) and the lane grace carry
+// the KB-371 queue pause: queued or leased assignments that are handed out,
+// or held behind a live occupied lane, are exempt — a live label-eligible
+// executor with an unstarted held lease, a running sibling run, or a lane
+// anchor (most recent terminal sibling run / lease expiry) no older than the
+// grace keeps the work queued through arbitrarily many lease cadences and
+// the succession gap; stale heartbeats and expired grace restore timer
+// semantics. Zero staleness disables the pause. Split out of the ticker
 // goroutine so the now/createdBefore derivation is unit-testable.
-func reapNeverStartedRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, window time.Duration) {
+func reapNeverStartedRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, window, staleness, laneGrace time.Duration) {
 	now := time.Now().UTC()
-	outcomes, err := st.ReapNeverStartedRuns(ctx, now, now.Add(-window))
+	outcomes, err := st.ReapNeverStartedRuns(ctx, now, now.Add(-window), now.Add(-staleness), now.Add(-laneGrace))
 	if err != nil {
 		log.Error("created_never_started reaper", "err", err)
 		return

@@ -828,16 +828,46 @@ type Store interface {
 	// ReapNeverStartedRuns stamps runs in status pending or running as failed
 	// with reason "created_never_started" (KB-233 rule 2) when started_at is
 	// still NULL and created_at is older than createdBefore: a run that was
-	// minted but never began executing. The verdict is derivable from the run
-	// record alone — created_at and started_at — never from heartbeat or
-	// assignment heuristics. Paused and stopped runs (operator-parked,
-	// CRI-207) are reaper-exempt regardless of age, and terminal runs are
-	// never rewritten. A never-started candidate whose record ends at a human
-	// gate is parked instead of failed (KB-226), like the heartbeat reaper.
-	// Each reaped run's workflow assignment is marked terminal so the dead
-	// work is never re-dispatched. Returns one RunReapOutcome per stamped
-	// run.
-	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]RunReapOutcome, error)
+	// minted but never began executing. Paused and stopped runs
+	// (operator-parked, CRI-207) are reaper-exempt regardless of age, and
+	// terminal runs are never rewritten. A never-started candidate whose
+	// record ends at a human gate is parked instead of failed (KB-226), like
+	// the heartbeat reaper. Each reaped run's workflow assignment is marked
+	// terminal so the dead work is never re-dispatched. Returns one
+	// RunReapOutcome per stamped run.
+	//
+	// heartbeatBefore and graceBefore carry the KB-371 queue pause: a
+	// candidate whose workflow assignment is still queued or leased is
+	// exempt while the work is either handed out or held behind a live
+	// occupied lane.
+	//   - leased: the lease holder itself stays online with a fresh
+	//     heartbeat (claimed work waits for its executor).
+	//   - queued: BOTH a live dispatch-eligible executor and lane
+	//     evidence must hold — an online agent heartbeating after
+	//     heartbeatBefore that could take the work (any agent for unscoped
+	//     assignments, a project member for scoped ones) and whose labels
+	//     satisfy the assignment's required labels exactly as the lease
+	//     grant checks them, AND whose serial lane is occupied or only
+	//     recently vacated: it holds an unstarted lease, has a sibling run
+	//     actively running, or its lane anchor (the most recent of its
+	//     latest terminal sibling run's ended_at and its latest lease
+	//     expiry) is newer than graceBefore.
+	//
+	// The lane is keyed on the executing path, never on the assignment's
+	// submitter, so board-fired (trigger-identity) assignments pause like
+	// every other queued run: queued work survives arbitrarily long busy
+	// lanes and the succession gap instead of dying by timer mid-rotation.
+	// graceBefore must be no younger than the dispatch's own succession
+	// window (the gap between a lane anchor and the next dispatch grant —
+	// lease TTL/2 in the production configuration) so healthy succession
+	// survives the pause's backstop.
+	// Genuinely undispatchable work is not exempt and reaches the
+	// created_never_started verdict by timer: required labels no eligible
+	// agent carries, offline or stale executors, undispatchable membership,
+	// a queued assignment with no lane progress at all on an idle lane (the
+	// KB-227 orphan-minted population among them), and terminal or rejected
+	// assignments.
+	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore, graceBefore time.Time) ([]RunReapOutcome, error)
 	// CancelRun stamps runID terminal as "cancelled" with the given reason
 	// (CRI-142). Terminal runs are never rewritten: an already terminal run
 	// returns ErrRunTerminal, an unknown id ErrNotFound. The cancelled run

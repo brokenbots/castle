@@ -144,7 +144,7 @@ func TestReapNeverStartedRunsOnce(t *testing.T) {
 		}
 	}
 
-	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute)
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 60*time.Second, 5*time.Minute)
 
 	orphan, err := s.GetRun(ctx, "r-never-started")
 	if err != nil {
@@ -159,6 +159,89 @@ func TestReapNeverStartedRunsOnce(t *testing.T) {
 	}
 	if recent.Status != "pending" || recent.FailureReason != "" {
 		t.Fatalf("in-window run reaped: status=%q reason=%q", recent.Status, recent.FailureReason)
+	}
+}
+
+// TestReapNeverStartedRunsOnceDispatchPause pins the main.go wiring of the
+// KB-371 lane-occupancy pause: with the operator's heartbeat staleness in
+// force, a queued assignment behind a live executor's busy serial lane is
+// exempt; with zero staleness (heartbeat reaping disabled) the pause is
+// disabled and the same record reaps by timer.
+func TestReapNeverStartedRunsOnceDispatchPause(t *testing.T) {
+	s, err := sqlite.Open(t.TempDir() + "/castle.db")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(testWriter{}, nil))
+
+	now := time.Now().UTC()
+	old := now.Add(-15 * time.Minute)
+	if err := s.CreateOverseer(ctx, &store.Overseer{
+		ID: "agent-live", Name: "agent-live", TokenHash: "x", Status: "online",
+		CreatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+	// The busy lane sibling first: agent-live leases and starts an unscoped
+	// assignment, so the serial lane is occupied when the incident candidate
+	// is created (the lease grant must not take it instead).
+	busy, created, err := s.CreateWorkflowAssignment(ctx, &store.WorkflowAssignment{
+		OwnerCriteriaID: "agent-live",
+		WorkflowName:    "wf",
+		WorkflowSource:  "workflow main {}",
+		IdempotencyKey:  "key-lane-first",
+		CreatedAt:       old,
+		UpdatedAt:       old,
+	})
+	if err != nil || !created {
+		t.Fatalf("create lane-first assignment: %v created=%v", err, created)
+	}
+	if _, _, err := s.LeaseWorkflowAssignment(ctx, "agent-live", map[string]string{}, now, time.Hour); err != nil {
+		t.Fatalf("lease lane-first: %v", err)
+	}
+	if err := s.UpdateRun(ctx, &store.Run{
+		ID: busy.RunID, Status: "running", StartedAt: &now,
+	}); err != nil {
+		t.Fatalf("start lane-first run: %v", err)
+	}
+
+	// The incident shape: a trigger-owned unscoped assignment with a minted
+	// never-started run far past the window, queued behind the run the live
+	// executor is already progressing.
+	a, created, err := s.CreateWorkflowAssignment(ctx, &store.WorkflowAssignment{
+		OwnerCriteriaID: "trigger-remote",
+		WorkflowName:    "wf",
+		WorkflowSource:  "workflow main {}",
+		IdempotencyKey:  "key-pause",
+		CreatedAt:       old,
+		UpdatedAt:       old,
+	})
+	if err != nil || !created {
+		t.Fatalf("create assignment: %v created=%v", err, created)
+	}
+
+	// In-force staleness: the lane-occupancy pause holds, the run stays
+	// pending.
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 60*time.Second, 5*time.Minute)
+	if r, err := s.GetRun(ctx, a.RunID); err != nil {
+		t.Fatalf("get paused run: %v", err)
+	} else if r.Status != "pending" || r.FailureReason != "" || r.StartedAt != nil {
+		t.Fatalf("dispatchable run reaped at 60s staleness: status=%q reason=%q", r.Status, r.FailureReason)
+	}
+
+	// Zero staleness disables the pause: the same record reaps by timer.
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 0, 5*time.Minute)
+	if r, err := s.GetRun(ctx, a.RunID); err != nil {
+		t.Fatalf("get reaped run: %v", err)
+	} else if r.Status != "failed" || r.FailureReason != "created_never_started" || r.EndedAt == nil {
+		t.Fatalf("dispatchable run not reaped at zero staleness: status=%q reason=%q", r.Status, r.FailureReason)
+	}
+	if a, err := s.GetWorkflowAssignment(ctx, a.ID); err != nil {
+		t.Fatalf("get assignment: %v", err)
+	} else if a.State != store.WorkflowAssignmentStateTerminal || a.TerminalReason != "created_never_started" {
+		t.Fatalf("assignment after zero-staleness reap = state %q reason %q, want terminal/created_never_started", a.State, a.TerminalReason)
 	}
 }
 
