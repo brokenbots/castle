@@ -605,7 +605,18 @@ func newNeverStartedFixture(t *testing.T, ctx context.Context, s store.Store) *n
 
 func (f *neverStartedFixture) reapNeverStarted() []store.RunReapOutcome {
 	f.t.Helper()
-	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore)
+	// Default grace is set before every fixture anchor in this suite, so the
+	// helper calls run under pure timer semantics; succession-style tests
+	// that want lane-occupancy evidence to bind pass a live grace explicitly
+	// to ReapNeverStartedRuns instead.
+	return f.reapNeverStartedGraced(f.createdBefore.Add(-time.Hour))
+}
+
+// reapNeverStartedGraced runs the never-started reaper with an explicit
+// lane-occupancy succession grace.
+func (f *neverStartedFixture) reapNeverStartedGraced(graceBefore time.Time) []store.RunReapOutcome {
+	f.t.Helper()
+	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, graceBefore)
 	if err != nil {
 		f.t.Fatalf("reap never-started: %v", err)
 	}
@@ -722,18 +733,27 @@ func TestReapNeverStartedRuns_StatusMatrix(t *testing.T) {
 // TestReapNeverStartedRuns_MarksAssignmentTerminal pins that the rule-2 reap
 // terminates the still-queued or leased workflow assignment so orphan-minted
 // work can never be re-dispatched after the run dies. The assignment is
-// project-scoped with only a dead member: no live executor can dispatch it,
-// so the KB-371 dispatch-eligibility pause does not hold and rule 2 kills it
-// by timer.
+// project-scoped and the only member is online with a fresh heartbeat but an
+// idle lane, so the KB-371 queue pause holds no lane-occupancy evidence and
+// rule 2 still kills it by timer — this is the KB-227 orphan-minted shape
+// that must reach a terminal verdict even with a live project member.
 func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
 		f := newNeverStartedFixture(t, ctx, s)
 
-		f.newProjectWithMember("proj-orphan", "agent-stale", f.now.Add(-10*time.Minute))
+		// The project's only member is an online agent with a fresh heartbeat,
+		// but the lane is idle: the agent has held no lease and runs no
+		// sibling, so the KB-371 queue pause holds no evidence — the
+		// orphan-minted assignment is undispatched dead weight and rule 2
+		// kills it by timer.
+		f.newProjectWithMember("proj-orphan", "agent-lively", f.now)
+		f.overseer("agent-lively", f.now)
 
 		// A queued assignment owned by an identity with no overseer record:
-		// the orphan-minted shape the heartbeat reaper deliberately leaves
-		// alone (no heartbeating agent exists) but rule 2 kills by timer.
+		// the KB-227 orphan-minted shape the heartbeat reaper deliberately
+		// leaves alone (no heartbeating agent owns the work) but rule 2 still
+		// kills by timer (KB-233 rule 2 — a queued assignment nobody ever
+		// leased, on an idle lane).
 		a, created, err := s.CreateWorkflowAssignment(ctx, &store.WorkflowAssignment{
 			OwnerCriteriaID: "orphan-job",
 			WorkflowName:    "wf",
@@ -811,7 +831,7 @@ func TestReapNeverStartedRuns_RequeueResetsWindow(t *testing.T) {
 
 		// Past the fresh window with the run still unstarted, it dies by timer.
 		later := resumedAt.Add(11 * time.Minute)
-		reaped, err := s.ReapNeverStartedRuns(ctx, later, later.Add(-10*time.Minute), later.Add(-60*time.Second))
+		reaped, err := s.ReapNeverStartedRuns(ctx, later, later.Add(-10*time.Minute), later.Add(-60*time.Second), later)
 		if err != nil {
 			t.Fatalf("reap later: %v", err)
 		}

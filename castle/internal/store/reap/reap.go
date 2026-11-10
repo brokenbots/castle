@@ -61,15 +61,21 @@ func (SQLiteDialect) Placeholders(_ int, n int) string {
 
 func (SQLiteDialect) TS(t time.Time) any { return t.Format(store.TimestampLayout) }
 
-// json_quote escapes the key into a JSON string literal that the bracket
-// path form then reads, so keys holding dots or quotes match the object's
-// exact key. json_valid guards the column: store.MarshalLabels stores
-// "no labels" as empty text, and an unparseable column also reads as NULL
-// (label ineligibility — it can never prove a match) instead of erroring
-// the whole reaper pass.
+// JSONLabelValue renders a scalar subquery over the top-level members of the
+// labels JSON object: json_each(CASE WHEN json_valid(COALESCE(col,”)) THEN
+// col END, '$') keyed on je.key = keyCol. json_each is used instead of a
+// json_extract path because the path would have to be built per required
+// label at query time and SQLite's JSON1 path grammar only accepts
+// dotted/`$."label"` forms — the bracket-string form silently yields NULL
+// (probing modernc.org/sqlite proved this), which would turn every special
+// key into "label not carried". json_each matches the object's exact key,
+// including dots and quotes, and reads JSON string values as their TEXT.
+// json_valid guards the column: store.MarshalLabels stores "no labels" as
+// empty text and an unparseable column yields no members (NULL — label
+// ineligibility, never a match) instead of erroring the whole reaper pass.
 func (SQLiteDialect) JSONLabelValue(labelsCol, keyCol string) string {
 	return fmt.Sprintf(
-		`CASE WHEN json_valid(COALESCE(%s,'')) THEN json_extract(%s, '$[' || json_quote(%s) || ']') END`,
+		`(SELECT je.value FROM json_each(CASE WHEN json_valid(COALESCE(%s,'')) THEN '' || %s END, '$') je WHERE je.key = %s)`,
 		labelsCol, labelsCol, keyCol)
 }
 

@@ -71,7 +71,7 @@ func TestReapNeverStartedRuns_Acceptance(t *testing.T) {
 	// never set, and nobody will ever start it.
 	f.createRunAt(t, "r-orphan", "agent-stale", "pending", f.createdBefore.Add(-time.Minute))
 
-	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore)
+	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore)
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestReapNeverStartedRuns_Acceptance(t *testing.T) {
 
 	// Idempotent: the terminal record is never rewritten, the next pass finds
 	// nothing left.
-	reaped, err = f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore)
+	reaped, err = f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore)
 	if err != nil {
 		t.Fatalf("second reap: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestReapNeverStartedRuns_StatusMatrix(t *testing.T) {
 	f.createRunAt(t, "r-old-pending", "agent-stale", "pending", old)
 	f.createRunAt(t, "r-old-running-unstarted", "agent-stale", "running", old)
 
-	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore)
+	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore)
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
@@ -178,9 +178,11 @@ func TestReapNeverStartedRuns_StatusMatrix(t *testing.T) {
 // TestReapNeverStartedRuns_MarksAssignmentTerminal pins that the rule-2 reap
 // terminates the still-queued or leased workflow assignment so orphan-minted
 // work (KB-227's surviving-Job mints) can never be re-dispatched after the
-// run dies. The assignment is project-scoped with only a dead member: no
-// live executor can dispatch it, so the KB-371 dispatch-eligibility pause
-// does not hold and rule 2 kills it by timer.
+// run dies. The assignment is project-scoped and the only member is online
+// with a fresh heartbeat but an idle lane, so the KB-371 queue pause holds
+// no lane-occupancy evidence and rule 2 still kills it by timer — the
+// KB-227 orphan-minted shape must reach a terminal verdict even with a live
+// project member.
 func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 	f := newNeverStartedFixture(t)
 
@@ -191,10 +193,16 @@ func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	if err := f.s.AddProjectMember(f.ctx, &store.ProjectMember{
-		ProjectID: "proj-orphan", MemberID: "agent-stale", Kind: store.ProjectMemberKindAI,
+		ProjectID: "proj-orphan", MemberID: "agent-lively", Kind: store.ProjectMemberKindAI,
 		CreatedAt: f.now.Add(-10 * time.Minute),
 	}); err != nil {
 		t.Fatalf("add member: %v", err)
+	}
+	if err := f.s.CreateOverseer(f.ctx, &store.Overseer{
+		ID: "agent-lively", Name: "agent-lively", TokenHash: "t", Status: "online",
+		CreatedAt: f.now, LastSeenAt: f.now,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
 	}
 
 	// A queued assignment owned by an identity with no overseer record: the
@@ -214,7 +222,7 @@ func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 		t.Fatalf("create assignment: %v created=%v", err, created)
 	}
 
-	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore)
+	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore)
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
@@ -267,7 +275,7 @@ func TestReapNeverStartedRuns_RequeueResetsWindow(t *testing.T) {
 	}
 
 	// Parked: exempt from the rule-2 reaper no matter how old the record is.
-	if reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore); err != nil || len(reaped) != 0 {
+	if reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore); err != nil || len(reaped) != 0 {
 		t.Fatalf("parked run reaped: %v err=%v", reaped, err)
 	}
 
@@ -277,13 +285,13 @@ func TestReapNeverStartedRuns_RequeueResetsWindow(t *testing.T) {
 	if err := f.s.MarkRunUnstarted(f.ctx, a.RunID, resumedAt); err != nil {
 		t.Fatalf("mark unstarted: %v", err)
 	}
-	if reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore); err != nil || len(reaped) != 0 {
+	if reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore); err != nil || len(reaped) != 0 {
 		t.Fatalf("just-resumed run reaped inside its fresh window: %v err=%v", reaped, err)
 	}
 
 	// Past the fresh window with the run still unstarted, it dies by timer.
 	later := resumedAt.Add(11 * time.Minute)
-	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, later, later.Add(-10*time.Minute), later.Add(-60*time.Second))
+	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, later, later.Add(-10*time.Minute), later.Add(-60*time.Second), later)
 	if err != nil {
 		t.Fatalf("reap later: %v", err)
 	}
@@ -324,9 +332,29 @@ func TestReapNeverStartedRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 
 	// Candidate whose assignment is still dispatchable: an unscoped queued
 	// assignment (trigger-owned — no overseer record) while agent-fresh
-	// heartbeats. The write-transaction re-validation drops it the same way
-	// the scan does: the KB-371 pause must hold inside the write transaction,
-	// not only at scan time.
+	// heartbeats AND its serial lane is occupied — an unscoped sibling the
+	// agent is running. The write-transaction re-validation drops it the
+	// same way the scan does: the KB-371 pause must hold inside the write
+	// transaction, not only at scan time.
+	busyFirst, created, err := f.s.CreateWorkflowAssignment(f.ctx, &store.WorkflowAssignment{
+		OwnerCriteriaID: "agent-fresh",
+		WorkflowName:    "wf",
+		WorkflowSource:  "workflow main {}",
+		IdempotencyKey:  "key-lane-first",
+		CreatedAt:       old.Add(-time.Minute),
+		UpdatedAt:       old.Add(-time.Minute),
+	})
+	if err != nil || !created {
+		t.Fatalf("create lane-first assignment: %v created=%v", err, created)
+	}
+	if _, _, err := f.s.LeaseWorkflowAssignment(f.ctx, "agent-fresh", map[string]string{}, f.now, 3*time.Hour); err != nil {
+		t.Fatalf("lease lane-first: %v", err)
+	}
+	if err := f.s.UpdateRun(f.ctx, &store.Run{
+		ID: busyFirst.RunID, Status: "running", StartedAt: &f.now,
+	}); err != nil {
+		t.Fatalf("start lane-first run: %v", err)
+	}
 	a, created, err := f.s.CreateWorkflowAssignment(f.ctx, &store.WorkflowAssignment{
 		OwnerCriteriaID: "trigger-paused",
 		WorkflowName:    "wf",
@@ -342,7 +370,7 @@ func TestReapNeverStartedRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 	// paused candidate under the re-validation ids.
 
 	candidates := []string{"r-zombie-1", "r-zombie-2", "r-started", "r-resolved", "r-paused", a.RunID}
-	reaped, err := f.s.reapNeverStartedRunIDs(ctx, f.now, f.createdBefore, f.heartbeatBefore, candidates)
+	reaped, err := f.s.reapNeverStartedRunIDs(ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore, candidates)
 	if err != nil {
 		t.Fatalf("reap with partially resolved candidates: %v", err)
 	}
@@ -372,7 +400,7 @@ func TestReapNeverStartedRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 // errors on an empty database.
 func TestReapNeverStartedRuns_EmptyStore(t *testing.T) {
 	f := newNeverStartedFixture(t)
-	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore)
+	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore)
 	if err != nil {
 		t.Fatalf("reap empty store: %v", err)
 	}
@@ -386,7 +414,7 @@ func TestReapNeverStartedRuns_EmptyStore(t *testing.T) {
 // reporting store.ErrNotFound rather than a swallowed error.
 func TestReapNeverStartedRuns_GetUnknownRunIsNotFound(t *testing.T) {
 	f := newNeverStartedFixture(t)
-	if _, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore); err != nil {
+	if _, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore); err != nil {
 		t.Fatalf("reap: %v", err)
 	}
 	if _, err := f.s.GetRun(f.ctx, "does-not-exist"); !errors.Is(err, store.ErrNotFound) {
@@ -407,7 +435,7 @@ func TestReapNeverStartedRuns_AwaitingHumanParksNotFails(t *testing.T) {
 	f.appendRunEvent(t, "r-gated-never", "run.completed",
 		`{"finalState":"awaiting_human","success":false}`)
 
-	outcomes, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore)
+	outcomes, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore, f.createdBefore)
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
@@ -429,7 +457,7 @@ func TestReapNeverStartedRuns_AwaitingHumanParksNotFails(t *testing.T) {
 
 	// Parked runs leave the rule-2 scan: a later pass stamps nothing.
 	later := f.now.Add(time.Hour)
-	outcomes, err = f.s.ReapNeverStartedRuns(f.ctx, later, later.Add(-10*time.Minute), later.Add(-60*time.Second))
+	outcomes, err = f.s.ReapNeverStartedRuns(f.ctx, later, later.Add(-10*time.Minute), later.Add(-60*time.Second), later)
 	if err != nil {
 		t.Fatalf("later reap: %v", err)
 	}

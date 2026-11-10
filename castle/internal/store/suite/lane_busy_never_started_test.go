@@ -111,15 +111,57 @@ func (f *neverStartedFixture) newUnscopedAssignment(owner, idem string, createdA
 	return a
 }
 
+// newLabeledAssignment mints an unscoped queued assignment carrying required
+// labels: the lease scan only grants it to executors whose labels satisfy
+// the set, and the reaper's queued arm must mirror the same rule.
+func (f *neverStartedFixture) newLabeledAssignment(owner, idem string, labels map[string]string, createdAt time.Time) *store.WorkflowAssignment {
+	f.t.Helper()
+	a, created, err := f.s.CreateWorkflowAssignment(f.ctx, &store.WorkflowAssignment{
+		OwnerCriteriaID: owner,
+		WorkflowName:    "wf",
+		WorkflowSource:  "workflow main {}",
+		IdempotencyKey:  idem,
+		Labels:          labels,
+		CreatedAt:       createdAt,
+		UpdatedAt:       createdAt,
+	})
+	if err != nil || !created {
+		f.t.Fatalf("create labeled assignment %s: %v created=%v", idem, err, created)
+	}
+	return a
+}
+
+// leaseOnly leases the agent's oldest eligible assignment WITHOUT starting
+// its run: the claimed-but-not-started shape the serial-lane gate leaves
+// holding the lane, and the held-unstarted-lease lane evidence for queued
+// work behind the same agent.
+func (f *neverStartedFixture) leaseOnly(agent string, at time.Time, ttl time.Duration) *store.WorkflowAssignment {
+	f.t.Helper()
+	a, _, err := f.s.LeaseWorkflowAssignment(f.ctx, agent, map[string]string{}, microUTC(at), ttl)
+	if err != nil {
+		f.t.Fatalf("lease (unstarted) for %s: %v", agent, err)
+	}
+	return a
+}
+
+// overseerLabels registers an online fresh overseer with an explicit label
+// set — the executor side of the lease scan's label eligibility, mirrored in
+// the reaper's queued arm.
+func (f *neverStartedFixture) overseerLabels(id string, seen time.Time, labels map[string]string) {
+	f.t.Helper()
+	newOverseer(f.t, f.s, id, microUTC(seen), labels)
+}
+
 // TestReapNeverStartedRuns_DispatchEligibilityPause pins the KB-371 gate
-// arms: a never-started run whose assignment is still dispatchable — a
-// board-fired (trigger-owned) assignment a live project member could take,
-// an unscoped one any live agent could take, or a leased one whose holder
-// is alive — pauses. Every degraded variant reaps by timer as before: a
-// lease holder whose heartbeat stopped, a project whose members are gone,
-// a project with no members at all, an offline executor with a fresh
-// last_seen, and terminal work. Under the pre-fix submitter-keyed gate every
-// pause arm reaped, because trigger identities have no overseer row.
+// arms: the queue pause needs BOTH a live dispatch-eligible executor AND
+// lane-occupancy evidence for that same executor. Pausing shapes — the
+// incident board assignment behind a running sibling, unscoped work behind a
+// busy unscoped agent, a queued assignment whose serial-gate rotation has
+// the agent holding an unstarted lease, and a claimed lease whose holder is
+// alive — survive the timer. Every arm without lane evidence reaps by
+// timer now, including the idle-lane queued case: with no lease progress
+// and no running sibling, rule 2 (KB-233 — a queued assignment nobody ever
+// leased) must reach the created_never_started verdict.
 func TestReapNeverStartedRuns_DispatchEligibilityPause(t *testing.T) {
 	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
 		f := newNeverStartedFixture(t, ctx, s)
@@ -135,35 +177,52 @@ func TestReapNeverStartedRuns_DispatchEligibilityPause(t *testing.T) {
 		f.leaseAndStart("agent-op", f.now)
 		pausedBoard := f.newBoardAssignment("trigger-board", "kb-371-busy-queued", "proj-kb371", f.createdBefore.Add(-30*time.Second))
 
-		// Arm B — an unscoped assignment queues while any live agent exists:
-		// dispatch to a live executor is still possible, so the work survives
-		// the timer.
+		// Arm B — unscoped work behind a busy agent: the idle executor
+		// population alone no longer holds the pause, so the arm carries
+		// explicit lane evidence — an unscoped sibling the agent is running.
+		f.overseer("agent-lane", f.now)
+		f.newUnscopedAssignment("agent-lane", "kb-371-unscoped-first", old)
+		f.leaseAndStart("agent-lane", f.now)
 		pausedUnscoped := f.newUnscopedAssignment("trigger-unscoped", "kb-371-unscoped-queued", f.createdBefore.Add(-30*time.Second))
 
-		// Arm C — a leased assignment whose holder is online with a fresh
+		// Arm C — serial-gate rotation: the member holds an unstarted lease on
+		// another assignment while the candidate stays queued. The dispatch
+		// gate hands the lane over on the designed succession, so rule 2 must
+		// not kill the queued work mid-rotation.
+		f.newProjectWithMember("proj-rotation", "agent-claimer", f.now)
+		f.overseer("agent-claimer", f.now)
+		f.newBoardAssignment("agent-claimer", "kb-371-rot-first", "proj-rotation", old)
+		f.leaseOnly("agent-claimer", f.now, 3*time.Hour)
+		rotNext := f.newBoardAssignment("trigger-rotation", "kb-371-rot-queued", "proj-rotation", f.createdBefore.Add(-30*time.Second))
+
+		// Arm D — a leased assignment whose holder is online with a fresh
 		// heartbeat: claimed work waits for the executor to call RunStarted.
 		f.newProjectWithMember("proj-holder", "agent-holder", f.now)
 		f.overseer("agent-holder", f.now)
-		claimed := f.newBoardAssignment("trigger-holder", "kb-371-holder", "proj-holder", old)
-		if _, _, err := s.LeaseWorkflowAssignment(ctx, "agent-holder", map[string]string{}, microUTC(f.now.Add(-2*time.Hour)), 3*time.Hour); err != nil {
-			t.Fatalf("lease claimed: %v", err)
-		}
+		claimed := f.newBoardAssignment("trigger-holder", "kb-371-holder", "proj-holder", old.Add(-time.Minute))
+		f.leaseOnly("agent-holder", f.now, 3*time.Hour)
 
-		// Arm D — leased but the holder's heartbeat stopped: the executor is
+		// Arm E — leased but the holder's heartbeat stopped: the executor is
 		// gone, so the claimed run dies by timer even though the lease has
 		// not expired.
 		f.overseer("agent-died", f.now.Add(-2*time.Minute))
 		died := f.newUnscopedAssignment("trigger-died", "kb-371-died-holder", old)
-		if _, _, err := s.LeaseWorkflowAssignment(ctx, "agent-died", map[string]string{}, microUTC(f.now.Add(-2*time.Hour)), 3*time.Hour); err != nil {
-			t.Fatalf("lease died-holder: %v", err)
-		}
+		f.leaseOnly("agent-died", f.now, 3*time.Hour)
 
-		// Arm E — project-scoped, but the only member's heartbeat stopped:
+		// Arm F — the idle-lane queued case: the only member is online with a
+		// fresh heartbeat, but nobody ever leased the work and no sibling is
+		// progressing. Rule 2 reaps it — this is the arm that kept the
+		// original implementation from ever reaching a verdict.
+		f.newProjectWithMember("proj-idle", "agent-idle", f.now)
+		f.overseer("agent-idle", f.now)
+		quiet := f.newBoardAssignment("trigger-idle", "kb-371-idle-queued", "proj-idle", old)
+
+		// Arm G — project-scoped, but the only member's heartbeat stopped:
 		// nobody can dispatch the work, so it reaps.
 		f.newProjectWithMember("proj-stale-member", "agent-e-stale", f.now.Add(-2*time.Minute))
 		deadMembership := f.newBoardAssignment("trigger-stale-membership", "kb-371-dead-members", "proj-stale-member", old)
 
-		// Arm F — project-scoped with no members at all: undispatchable, so
+		// Arm H — project-scoped with no members at all: undispatchable, so
 		// it reaps even though live agents exist elsewhere.
 		p := &store.Project{
 			ID: "proj-no-members", MembershipPolicy: store.ProjectMembershipClosed,
@@ -174,7 +233,7 @@ func TestReapNeverStartedRuns_DispatchEligibilityPause(t *testing.T) {
 		}
 		undispatchable := f.newBoardAssignment("trigger-nomembers", "kb-371-nomembers", "proj-no-members", old)
 
-		// Arm G — the only member is a live-heartbeat overseer whose status
+		// Arm I — the only member is a live-heartbeat overseer whose status
 		// is offline: an offline executor cannot dispatch, so it reaps.
 		f.newProjectWithMember("proj-offline", "agent-offline", f.now)
 		if err := s.UpdateOverseerStatus(ctx, "agent-offline", "offline"); err != nil {
@@ -189,18 +248,18 @@ func TestReapNeverStartedRuns_DispatchEligibilityPause(t *testing.T) {
 		}
 
 		reaped := f.reapNeverStarted()
-		want := []string{died.RunID, undispatchable.RunID, offlineExecutor.RunID, deadMembership.RunID}
+		want := []string{died.RunID, quiet.RunID, undispatchable.RunID, offlineExecutor.RunID, deadMembership.RunID}
 		got := reapedIDs(reaped)
 		if len(got) != len(want) || !slices.Contains(got, died.RunID) ||
-			!slices.Contains(got, undispatchable.RunID) || !slices.Contains(got, offlineExecutor.RunID) ||
-			!slices.Contains(got, deadMembership.RunID) {
-			t.Fatalf("reaped = %v, want %v (board %s, unscoped %s paused; claimed holder fresh)",
-				got, want, pausedBoard.RunID, pausedUnscoped.RunID)
+			!slices.Contains(got, quiet.RunID) || !slices.Contains(got, offlineExecutor.RunID) ||
+			!slices.Contains(got, deadMembership.RunID) || !slices.Contains(got, undispatchable.RunID) {
+			t.Fatalf("reaped = %v, want %v (board %s, unscoped %s, rotation %s paused; claimed holder fresh)",
+				got, want, pausedBoard.RunID, pausedUnscoped.RunID, rotNext.RunID)
 		}
 
 		// The paused arms: runs stay pending and unstamped, assignments keep
 		// cycling through dispatch instead of going terminal. The claimed
-		// assignment holds its live lease; the two queued ones stay queued.
+		// assignment holds its live lease; the queued ones stay queued.
 		if run := f.getRun(pausedBoard.RunID); run.Status != "pending" || run.FailureReason != "" || run.StartedAt != nil {
 			t.Fatalf("board-queued run = %+v, want pending unstarted without failure_reason", run)
 		}
@@ -210,6 +269,7 @@ func TestReapNeverStartedRuns_DispatchEligibilityPause(t *testing.T) {
 		}{
 			{pausedBoard, store.WorkflowAssignmentStateQueued},
 			{pausedUnscoped, store.WorkflowAssignmentStateQueued},
+			{rotNext, store.WorkflowAssignmentStateQueued},
 			{claimed, store.WorkflowAssignmentStateLeased},
 		} {
 			a, err := s.GetWorkflowAssignment(ctx, pa.a.ID)
@@ -224,7 +284,7 @@ func TestReapNeverStartedRuns_DispatchEligibilityPause(t *testing.T) {
 
 		// The reaped arms: terminal runs and assignments carry the rule-2
 		// verdict.
-		for _, qa := range []*store.WorkflowAssignment{died, undispatchable, offlineExecutor, deadMembership} {
+		for _, qa := range []*store.WorkflowAssignment{died, quiet, undispatchable, offlineExecutor, deadMembership} {
 			if run := f.getRun(qa.RunID); run.Status != "failed" || run.FailureReason != reap.ReasonCreatedNeverStarted || run.StartedAt != nil {
 				t.Errorf("reaped run %s = %+v, want failed/created_never_started", qa.RunID, run)
 			}
@@ -241,6 +301,99 @@ func TestReapNeverStartedRuns_DispatchEligibilityPause(t *testing.T) {
 		// the pass never touched it.
 		if run := f.getRun(first.RunID); run.Status != "running" || run.StartedAt == nil {
 			t.Errorf("executing sibling %s rewritten: %q", first.RunID, run.Status)
+		}
+	})
+}
+
+// TestReapNeverStartedRuns_LabelEligibilityMirror pins the lease-scan label
+// mirror in the queued arm: required labels are matched key-by-key against
+// the executor's labels exactly as labelsSatisfy does, so required labels
+// that no live executor carries make the work undispatchable and rule 2
+// reaps it even with lanes busy, while work whose labels the busy executor
+// does carry waits for the lane. JSON keys containing '.' and '"' must
+// resolve exactly, not as path segments or pattern characters.
+func TestReapNeverStartedRuns_LabelEligibilityMirror(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		f := newNeverStartedFixture(t, ctx, s)
+		old := f.createdBefore.Add(-time.Minute)
+
+		f.overseerLabels("agent-gpu", f.now, map[string]string{"gpu": "true", `weird.key"q`: "v"})
+
+		// The busy lane: the GPU agent runs an unscoped sibling.
+		gpuFirst := f.newUnscopedAssignment("agent-gpu", "kb-371-gpu-first", old)
+		f.leaseAndStart("agent-gpu", f.now)
+
+		// Pauses: every required label is present on the busy executor with
+		// the matching value, including the JSON-special key resolved
+		// exactly.
+		mirror := f.newLabeledAssignment("trigger-gpu-mirror", "kb-371-label-mirror", map[string]string{"gpu": "true"}, f.createdBefore.Add(-30*time.Second))
+		weirdMirror := f.newLabeledAssignment("trigger-gpu-weird", "kb-371-label-weird", map[string]string{`weird.key"q`: "v"}, f.createdBefore.Add(-30*time.Second))
+
+		// Reaps: the required label is absent on the busy executor (a
+		// different accelerator nobody carries) or the key exists with a
+		// mismatched value — undispatchable work must reach the verdict.
+		tpuRequired := f.newLabeledAssignment("trigger-tpu", "kb-371-label-tpu", map[string]string{"tpu": "true"}, f.createdBefore.Add(-30*time.Second))
+		valueMismatch := f.newLabeledAssignment("trigger-value", "kb-371-label-value", map[string]string{`weird.key"q`: "wrong-value"}, f.createdBefore.Add(-30*time.Second))
+
+		reaped := f.reapNeverStarted()
+		got := reapedIDs(reaped)
+		if len(got) != 2 || !slices.Contains(got, tpuRequired.RunID) || !slices.Contains(got, valueMismatch.RunID) {
+			t.Fatalf("reaped = %v, want [%s %s]", got, tpuRequired.RunID, valueMismatch.RunID)
+		}
+		if run := f.getRun(mirror.RunID); run.Status != "pending" || run.FailureReason != "" || run.StartedAt != nil {
+			t.Fatalf("label-mirror run = %+v, want pending unstarted without failure reason", run)
+		}
+		for _, qa := range []*store.WorkflowAssignment{tpuRequired, valueMismatch} {
+			if a, err := s.GetWorkflowAssignment(ctx, qa.ID); err != nil {
+				t.Fatalf("get reaped assignment %s: %v", qa.ID, err)
+			} else if a.State != store.WorkflowAssignmentStateTerminal || a.TerminalReason != reap.ReasonCreatedNeverStarted {
+				t.Fatalf("reaped assignment %s = state %q reason %q, want terminal/created_never_started", qa.ID, a.State, a.TerminalReason)
+			}
+		}
+		for _, pa := range []*store.WorkflowAssignment{mirror, weirdMirror} {
+			a, err := s.GetWorkflowAssignment(ctx, pa.ID)
+			if err != nil {
+				t.Fatalf("get mirror assignment %s: %v", pa.ID, err)
+			}
+			if a.State != store.WorkflowAssignmentStateQueued || a.TerminalReason != "" {
+				t.Fatalf("mirror assignment %s = state %q reason %q, want queued with no terminal story", pa.ID, a.State, a.TerminalReason)
+			}
+		}
+		gpuFirstRun := f.getRun(gpuFirst.RunID)
+		if gpuFirstRun.Status != "running" || gpuFirstRun.StartedAt == nil {
+			t.Fatalf("gpu sibling = %+v, want running untouched", gpuFirstRun)
+		}
+	})
+}
+
+// TestReapNeverStartedRuns_IdleLaneQueuedReaps pins the idle-lane queued
+// case on both scoping arms: an online, fresh executor exists (even several)
+// but holds no lease, runs no sibling, and carries no recently vacated lane
+// — so the assignment nobody ever leased reaches the created_never_started
+// verdict by timer, on a project-scoped assignment and an unscoped one.
+func TestReapNeverStartedRuns_IdleLaneQueuedReaps(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		f := newNeverStartedFixture(t, ctx, s)
+
+		f.newProjectWithMember("proj-idle-standalone", "agent-idle-standalone", f.now)
+		f.overseer("agent-idle-standalone", f.now)
+		scopedIdle := f.newBoardAssignment("trigger-idle-scoped", "kb-371-idle-scoped", "proj-idle-standalone", f.createdBefore.Add(-time.Minute))
+		unscopedIdle := f.newUnscopedAssignment("trigger-idle-unscoped", "kb-371-idle-unscoped", f.createdBefore.Add(-time.Minute))
+
+		reaped := f.reapNeverStarted()
+		got := reapedIDs(reaped)
+		if len(got) != 2 || !slices.Contains(got, scopedIdle.RunID) || !slices.Contains(got, unscopedIdle.RunID) {
+			t.Fatalf("reaped = %v, want [%s %s]", got, scopedIdle.RunID, unscopedIdle.RunID)
+		}
+		for _, qa := range []*store.WorkflowAssignment{scopedIdle, unscopedIdle} {
+			if run := f.getRun(qa.RunID); run.Status != "failed" || run.FailureReason != reap.ReasonCreatedNeverStarted || run.StartedAt != nil {
+				t.Errorf("idle reaped run %s = %+v, want failed/created_never_started", qa.RunID, run)
+			}
+			if a, err := s.GetWorkflowAssignment(f.ctx, qa.ID); err != nil {
+				t.Fatalf("get idle reaped assignment %s: %v", qa.ID, err)
+			} else if a.State != store.WorkflowAssignmentStateTerminal || a.TerminalReason != reap.ReasonCreatedNeverStarted {
+				t.Errorf("idle reaped assignment %s = state %q reason %q, want terminal/created_never_started", qa.ID, a.State, a.TerminalReason)
+			}
 		}
 	})
 }
@@ -290,7 +443,7 @@ func TestNeverStartedRunSurvivesBusyLaneThenLeasesAtSuccession(t *testing.T) {
 				t.Fatalf("cycle %d: rotation leased %s, want %s", cycle, leased.ID, queued.ID)
 			}
 			pass := microUTC(at.Add(45 * time.Second))
-			reaped, err := s.ReapNeverStartedRuns(ctx, pass, pass.Add(-2*time.Minute), pass.Add(-60*time.Second))
+			reaped, err := s.ReapNeverStartedRuns(ctx, pass, pass.Add(-2*time.Minute), pass.Add(-60*time.Second), pass.Add(-5*time.Minute))
 			if err != nil {
 				t.Fatalf("cycle %d: reap pass: %v", cycle, err)
 			}
@@ -323,16 +476,19 @@ func TestNeverStartedRunSurvivesBusyLaneThenLeasesAtSuccession(t *testing.T) {
 		}
 
 		// Reaper passes at the production tick cadence (15 s) across the gap
-		// assert zero reaps. First while the cycle-4 lease is still recorded:
-		// even past the lease's wall-clock expiry the assignment is leased
-		// state with a live holder, so the leased arm holds the pause until
-		// the expiry sweep requeues it.
+		// assert zero reaps. The first two passes run while the assignment is
+		// still in leased state with a live holder, so the leased arm holds
+		// the pause. At the +30 s pass the cycle-4 lease expiry (+9m30s)
+		// equals the pass instant exactly and the expiry sweep uses a strict
+		// `<`, so the assignment is still leased there too; the queued-arm
+		// gap coverage only begins after the sweep at +35 s requeues the
+		// assignment, at the +45 s passes below.
 		for _, offset := range []time.Duration{15 * time.Second, 30 * time.Second} {
 			pass := microUTC(doneAt.Add(offset))
 			if err := s.UpdateOverseerSeen(ctx, agent, microUTC(pass.Add(-time.Second))); err != nil {
 				t.Fatalf("gap pass %v: heartbeat agent: %v", offset, err)
 			}
-			reaped, err := s.ReapNeverStartedRuns(ctx, pass, pass.Add(-2*time.Minute), pass.Add(-60*time.Second))
+			reaped, err := s.ReapNeverStartedRuns(ctx, pass, pass.Add(-2*time.Minute), pass.Add(-60*time.Second), pass.Add(-5*time.Minute))
 			if err != nil {
 				t.Fatalf("gap pass %v: reap: %v", offset, err)
 			}
@@ -362,14 +518,16 @@ func TestNeverStartedRunSurvivesBusyLaneThenLeasesAtSuccession(t *testing.T) {
 		}
 
 		// Continuation of the gap, now under the queued arm: the assignment
-		// is dispatch-eligible (live project member) while the timer-driven
-		// dispatch has not yet fired.
+		// is dispatch-eligible (live project member) and the lane-anchor
+		// evidence (the sibling's ended_at and the cycle-4 lease expiry) is
+		// younger than the succession grace, while the timer-driven dispatch
+		// has not yet fired.
 		for _, offset := range []time.Duration{45 * time.Second, 50 * time.Second} {
 			pass := microUTC(doneAt.Add(offset))
 			if err := s.UpdateOverseerSeen(ctx, agent, microUTC(pass.Add(-time.Second))); err != nil {
 				t.Fatalf("gap pass %v: heartbeat agent: %v", offset, err)
 			}
-			reaped, err := s.ReapNeverStartedRuns(ctx, pass, pass.Add(-2*time.Minute), pass.Add(-60*time.Second))
+			reaped, err := s.ReapNeverStartedRuns(ctx, pass, pass.Add(-2*time.Minute), pass.Add(-60*time.Second), pass.Add(-5*time.Minute))
 			if err != nil {
 				t.Fatalf("gap pass %v: reap: %v", offset, err)
 			}
@@ -408,7 +566,7 @@ func TestNeverStartedRunSurvivesBusyLaneThenLeasesAtSuccession(t *testing.T) {
 			t.Fatalf("start succession run %s: %v", queued.RunID, err)
 		}
 		finalPass := microUTC(successionAt.Add(time.Minute))
-		finalReaped, err := s.ReapNeverStartedRuns(ctx, finalPass, finalPass.Add(-2*time.Minute), finalPass.Add(-60*time.Second))
+		finalReaped, err := s.ReapNeverStartedRuns(ctx, finalPass, finalPass.Add(-2*time.Minute), finalPass.Add(-60*time.Second), finalPass.Add(-5*time.Minute))
 		if err != nil {
 			t.Fatalf("final reap pass: %v", err)
 		}

@@ -32,7 +32,7 @@ func TestRefireRequeueCreatedNeverStarted(t *testing.T) {
 		// hand stamp. The heartbeat bound passed as `now` disables the
 		// KB-371 dispatch-eligibility pause: no heartbeat can be fresher, so the
 		// queued work reaps by timer even if its assignment were dispatchable.
-		reaped, err := s.ReapNeverStartedRuns(ctx, now, now.Add(time.Minute), now)
+		reaped, err := s.ReapNeverStartedRuns(ctx, now, now.Add(time.Minute), now, now)
 		if err != nil || len(reaped) != 1 || reaped[0].RunID != a.RunID {
 			t.Fatalf("reap = %v, %v; want one created_never_started verdict for %s", reaped, err, a.RunID)
 		}
@@ -119,7 +119,7 @@ func TestRefireRequeueBudgetNotBurnedByRepeatCycles(t *testing.T) {
 		// here has no overseer row, so reaping applies by timer alone.
 		at := f.now.Add(time.Minute)
 		for cycle := 1; cycle <= 3; cycle++ {
-			reaped, err := s.ReapNeverStartedRuns(ctx, at, at, at)
+			reaped, err := s.ReapNeverStartedRuns(ctx, at, at, at, at)
 			if err != nil || len(reaped) != 1 || reaped[0].RunID != a.RunID {
 				t.Fatalf("cycle %d: reap = %v, %v; want one verdict for %s", cycle, reaped, err, a.RunID)
 			}

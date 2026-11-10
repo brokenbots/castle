@@ -144,7 +144,7 @@ func TestReapNeverStartedRunsOnce(t *testing.T) {
 		}
 	}
 
-	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 60*time.Second)
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 60*time.Second, 5*time.Minute)
 
 	orphan, err := s.GetRun(ctx, "r-never-started")
 	if err != nil {
@@ -163,10 +163,10 @@ func TestReapNeverStartedRunsOnce(t *testing.T) {
 }
 
 // TestReapNeverStartedRunsOnceDispatchPause pins the main.go wiring of the
-// KB-371 dispatch-eligibility pause: with the operator's heartbeat staleness
-// in force, an assignment a live executor could still take is exempt; with
-// zero staleness (heartbeat reaping disabled) the pause is disabled and the
-// same record reaps by timer.
+// KB-371 lane-occupancy pause: with the operator's heartbeat staleness in
+// force, a queued assignment behind a live executor's busy serial lane is
+// exempt; with zero staleness (heartbeat reaping disabled) the pause is
+// disabled and the same record reaps by timer.
 func TestReapNeverStartedRunsOnceDispatchPause(t *testing.T) {
 	s, err := sqlite.Open(t.TempDir() + "/castle.db")
 	if err != nil {
@@ -184,8 +184,32 @@ func TestReapNeverStartedRunsOnceDispatchPause(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create overseer: %v", err)
 	}
+	// The busy lane sibling first: agent-live leases and starts an unscoped
+	// assignment, so the serial lane is occupied when the incident candidate
+	// is created (the lease grant must not take it instead).
+	busy, created, err := s.CreateWorkflowAssignment(ctx, &store.WorkflowAssignment{
+		OwnerCriteriaID: "agent-live",
+		WorkflowName:    "wf",
+		WorkflowSource:  "workflow main {}",
+		IdempotencyKey:  "key-lane-first",
+		CreatedAt:       old,
+		UpdatedAt:       old,
+	})
+	if err != nil || !created {
+		t.Fatalf("create lane-first assignment: %v created=%v", err, created)
+	}
+	if _, _, err := s.LeaseWorkflowAssignment(ctx, "agent-live", map[string]string{}, now, time.Hour); err != nil {
+		t.Fatalf("lease lane-first: %v", err)
+	}
+	if err := s.UpdateRun(ctx, &store.Run{
+		ID: busy.RunID, Status: "running", StartedAt: &now,
+	}); err != nil {
+		t.Fatalf("start lane-first run: %v", err)
+	}
+
 	// The incident shape: a trigger-owned unscoped assignment with a minted
-	// never-started run far past the window.
+	// never-started run far past the window, queued behind the run the live
+	// executor is already progressing.
 	a, created, err := s.CreateWorkflowAssignment(ctx, &store.WorkflowAssignment{
 		OwnerCriteriaID: "trigger-remote",
 		WorkflowName:    "wf",
@@ -198,8 +222,9 @@ func TestReapNeverStartedRunsOnceDispatchPause(t *testing.T) {
 		t.Fatalf("create assignment: %v created=%v", err, created)
 	}
 
-	// In-force staleness: the pause holds, the run stays pending.
-	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 60*time.Second)
+	// In-force staleness: the lane-occupancy pause holds, the run stays
+	// pending.
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 60*time.Second, 5*time.Minute)
 	if r, err := s.GetRun(ctx, a.RunID); err != nil {
 		t.Fatalf("get paused run: %v", err)
 	} else if r.Status != "pending" || r.FailureReason != "" || r.StartedAt != nil {
@@ -207,7 +232,7 @@ func TestReapNeverStartedRunsOnceDispatchPause(t *testing.T) {
 	}
 
 	// Zero staleness disables the pause: the same record reaps by timer.
-	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 0)
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 0, 5*time.Minute)
 	if r, err := s.GetRun(ctx, a.RunID); err != nil {
 		t.Fatalf("get reaped run: %v", err)
 	} else if r.Status != "failed" || r.FailureReason != "created_never_started" || r.EndedAt == nil {
