@@ -1359,27 +1359,33 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 // assignment is marked terminal so the dead work is never re-dispatched.
 // Returns one RunReapOutcome per stamped run.
 //
-// KB-371 dispatch-eligibility pause: a candidate is exempt while its
-// workflow assignment is still queued or leased AND dispatch to a live
-// executor remains possible — an online overseer heartbeating after
-// heartbeatBefore that could take the work (any agent for unscoped
-// assignments, a project_members entry for scoped ones), or the lease
-// holder itself for leased ones. The lane is keyed on the executing path,
-// never on the assignment's submitter, so board-fired (trigger-identity)
-// assignments pause like every other queued run. Queued work survives both
-// busy-lane occupancy and the succession gap and leases at the designed
-// dispatch point instead of dying by timer mid-rotation. The bound is the
-// staleness the CRI-142 heartbeat reaper derives; a disabled heartbeat
-// reaper (zero staleness) disables the pause.
+// KB-371 queue pause: a candidate is exempt while its workflow assignment is
+// still queued or leased and the work is handed out or held behind a live
+// occupied lane. The lane is keyed on the executing path, never on the
+// assignment's submitter, so board-fired (trigger-identity) assignments
+// pause like every other queued run. The queued arm requires BOTH a live
+// dispatch-eligible executor (online, heartbeat fresher than heartbeatBefore,
+// membership, labels satisfying the required labels as the lease grant
+// checks them) and lane evidence for it (an unstarted held lease, an
+// actively running sibling run, or a lane anchor — the latest terminal
+// sibling run's ended_at or lease expiry — newer than graceBefore): queued
+// work survives arbitrarily long busy-lane occupancy and the succession gap
+// and leases at the designed dispatch point instead of dying by timer
+// mid-rotation. The bounds backstop the pause: a stale heartbeat disables it
+// (reaping by timer), and graceBefore bounds how long queued work may wait
+// for the successor grant after its lane evidence ends. Genuinely
+// undispatchable queued work — label-uneligible, undispatchable membership,
+// no lane progress on an idle lane (the KB-227 orphan-minted population) —
+// reaps by timer.
 //
 // Like ReapStaleAgentRuns (CRI-143), the scan runs on the dedicated reader
 // connection and the writes go through one short transaction on the serialized
 // writer pool; transient sqlite faults are retried with backoff (retry.go).
-func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]store.RunReapOutcome, error) {
+func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore, graceBefore time.Time) ([]store.RunReapOutcome, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	outcomes, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]store.RunReapOutcome, error) {
-		return s.reapNeverStartedRunsAttempt(ctx, now, createdBefore, heartbeatBefore)
+		return s.reapNeverStartedRunsAttempt(ctx, now, createdBefore, heartbeatBefore, graceBefore)
 	})
 	if isInterrupt(err) {
 		s.recoverWriter(ctx)
@@ -1390,14 +1396,14 @@ func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, created
 // reapNeverStartedRunsAttempt performs one rule-2 reaping pass. The candidate
 // scan is a plain read on the reader connection: with nothing to reap — the
 // common case — the writer connection is not touched at all.
-func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]store.RunReapOutcome, error) {
+func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore, heartbeatBefore, graceBefore time.Time) ([]store.RunReapOutcome, error) {
 	// Bound the pass so a wedged writer connection fails the tick instead of
 	// pinning the reaper goroutine (CRI-143). Each retry attempt gets a fresh
 	// budget.
 	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)
 	defer cancel()
 
-	ids, err := reap.NeverStartedCandidates(ctx, s.reader, reap.SQLite, createdBefore, heartbeatBefore, nil)
+	ids, err := reap.NeverStartedCandidates(ctx, s.reader, reap.SQLite, createdBefore, heartbeatBefore, graceBefore, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1405,7 +1411,7 @@ func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, 
 		return nil, nil
 	}
 
-	return s.reapNeverStartedRunIDs(ctx, now, createdBefore, heartbeatBefore, ids)
+	return s.reapNeverStartedRunIDs(ctx, now, createdBefore, heartbeatBefore, graceBefore, ids)
 }
 
 // reapNeverStartedRunIDs stamps the rule-2 candidates on the serialized writer
@@ -1416,7 +1422,7 @@ func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, 
 // (KB-371), are never clobbered. Classification and stamping are delegated to
 // the shared verdict stage (KB-226), which reads the candidate's own record
 // inside this transaction.
-func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time, candidates []string) ([]store.RunReapOutcome, error) {
+func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore, heartbeatBefore, graceBefore time.Time, candidates []string) ([]store.RunReapOutcome, error) {
 	// Nothing to reap: return before opening the transaction. An empty
 	// candidate list must not reach the query builders below.
 	if len(candidates) == 0 {
@@ -1430,9 +1436,9 @@ func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, creat
 
 	// Re-validate inside the write transaction against the same criteria as
 	// the scan: only still-unstarted, still-active runs older than
-	// createdBefore that are not held by the KB-371 dispatch-eligibility
-	// pause survive into the UPDATE.
-	ids, err := reap.NeverStartedCandidates(ctx, tx, reap.SQLite, createdBefore, heartbeatBefore, candidates)
+	// createdBefore that the KB-371 queue pause no longer holds survive
+	// into the UPDATE.
+	ids, err := reap.NeverStartedCandidates(ctx, tx, reap.SQLite, createdBefore, heartbeatBefore, graceBefore, candidates)
 	if err != nil {
 		return nil, err
 	}

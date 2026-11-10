@@ -836,22 +836,38 @@ type Store interface {
 	// terminal so the dead work is never re-dispatched. Returns one
 	// RunReapOutcome per stamped run.
 	//
-	// The heartbeatBefore bound carries the KB-371 dispatch-eligibility
-	// pause: a candidate whose workflow assignment is still queued or leased
-	// AND whose dispatch to a live executor remains possible is exempt —
-	// an online agent heartbeating after heartbeatBefore that could take the
-	// work (any agent for unscoped assignments, a project member for scoped
-	// ones), or the lease holder itself for leased ones. The lane is keyed
-	// on the executing path, never on the assignment's submitter, so
-	// board-fired (trigger-identity) assignments pause like every other
-	// queued run: queued work survives busy-lane occupancy and the
-	// succession gap instead of dying by timer mid-rotation. Callers pass
-	// the staleness the CRI-142 heartbeat reaper derives; a disabled
-	// heartbeat reaper (zero staleness) disables the pause and restores pure
-	// timer semantics. Runs without a workflow assignment, offline or stale
-	// executors, undispatchable membership, and terminal or rejected
-	// assignments are unaffected.
-	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]RunReapOutcome, error)
+	// heartbeatBefore and graceBefore carry the KB-371 queue pause: a
+	// candidate whose workflow assignment is still queued or leased is
+	// exempt while the work is either handed out or held behind a live
+	// occupied lane.
+	//   - leased: the lease holder itself stays online with a fresh
+	//     heartbeat (claimed work waits for its executor).
+	//   - queued: BOTH a live dispatch-eligible executor and lane
+	//     evidence must hold — an online agent heartbeating after
+	//     heartbeatBefore that could take the work (any agent for unscoped
+	//     assignments, a project member for scoped ones) and whose labels
+	//     satisfy the assignment's required labels exactly as the lease
+	//     grant checks them, AND whose serial lane is occupied or only
+	//     recently vacated: it holds an unstarted lease, has a sibling run
+	//     actively running, or its lane anchor (the most recent of its
+	//     latest terminal sibling run's ended_at and its latest lease
+	//     expiry) is newer than graceBefore.
+	//
+	// The lane is keyed on the executing path, never on the assignment's
+	// submitter, so board-fired (trigger-identity) assignments pause like
+	// every other queued run: queued work survives arbitrarily long busy
+	// lanes and the succession gap instead of dying by timer mid-rotation.
+	// graceBefore must be no younger than the dispatch's own succession
+	// window (the gap between a lane anchor and the next dispatch grant —
+	// lease TTL/2 in the production configuration) so healthy succession
+	// survives the pause's backstop.
+	// Genuinely undispatchable work is not exempt and reaches the
+	// created_never_started verdict by timer: required labels no eligible
+	// agent carries, offline or stale executors, undispatchable membership,
+	// a queued assignment with no lane progress at all on an idle lane (the
+	// KB-227 orphan-minted population among them), and terminal or rejected
+	// assignments.
+	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore, graceBefore time.Time) ([]RunReapOutcome, error)
 	// CancelRun stamps runID terminal as "cancelled" with the given reason
 	// (CRI-142). Terminal runs are never rewritten: an already terminal run
 	// returns ErrRunTerminal, an unknown id ErrNotFound. The cancelled run

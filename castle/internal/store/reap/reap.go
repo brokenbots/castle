@@ -30,6 +30,17 @@ type Dialect interface {
 	// timestamp columns (RFC3339Nano text for sqlite's TEXT columns, the
 	// time itself for pg's TIMESTAMPTZ).
 	TS(t time.Time) any
+	// JSONLabelValue renders the scalar TEXT expression that reads the
+	// value a JSON object column holds for a string key (KB-371: the
+	// reaper's label-eligibility check mirrors the lease scan's
+	// labelsSatisfy). labelsCol must render the JSON object column (store
+	// labels are a JSON object text per store.MarshalLabels — empty text
+	// means "no labels"); keyCol renders the TEXT key. The expression
+	// yields NULL when the column is empty, unparseable, or lacks the key,
+	// which callers treat as "label not carried" (label ineligibility).
+	// Keys with JSON-significant characters (dots, quotes) must resolve to
+	// the stored object's exact key.
+	JSONLabelValue(labelsCol, keyCol string) string
 }
 
 // SQLiteDialect is the sqlite grammar: ?-placeholders, timestamp TEXT.
@@ -50,6 +61,18 @@ func (SQLiteDialect) Placeholders(_ int, n int) string {
 
 func (SQLiteDialect) TS(t time.Time) any { return t.Format(store.TimestampLayout) }
 
+// json_quote escapes the key into a JSON string literal that the bracket
+// path form then reads, so keys holding dots or quotes match the object's
+// exact key. json_valid guards the column: store.MarshalLabels stores
+// "no labels" as empty text, and an unparseable column also reads as NULL
+// (label ineligibility — it can never prove a match) instead of erroring
+// the whole reaper pass.
+func (SQLiteDialect) JSONLabelValue(labelsCol, keyCol string) string {
+	return fmt.Sprintf(
+		`CASE WHEN json_valid(COALESCE(%s,'')) THEN json_extract(%s, '$[' || json_quote(%s) || ']') END`,
+		labelsCol, labelsCol, keyCol)
+}
+
 // PostgresDialect is the pg grammar: $n placeholders, native timestamps.
 type PostgresDialect struct{}
 
@@ -67,6 +90,14 @@ func (PostgresDialect) Placeholders(first, n int) string {
 }
 
 func (PostgresDialect) TS(t time.Time) any { return t }
+
+// overseers.labels is TEXT (store.MarshalLabels convention): NULLIF folds the
+// empty text to NULL, the cast then yields a NULL jsonb and `->> key` reads
+// NULL without the key ever matching. The key arrives as a bound TEXT value,
+// so keys holding dots or quotes resolve to the object's exact key.
+func (PostgresDialect) JSONLabelValue(labelsCol, keyCol string) string {
+	return fmt.Sprintf(`(NULLIF(%s,'')::jsonb) ->> %s`, labelsCol, keyCol)
+}
 
 // SQLite and Postgres are the dialect instances the engines use.
 var (
@@ -113,43 +144,64 @@ func StaleCandidates(ctx context.Context, runner Runner, d Dialect, staleBefore 
 // or agent parked is reaper-exempt regardless of age, because park states
 // have no live execution by design (CRI-207) and stay resumable.
 //
-// KB-371 dispatch-eligibility pause: a candidate is excluded — reaping
-// pauses — while its workflow assignment (1:1 via run_id) is still queued or
-// leased AND dispatch to a live executor is still possible. The lane is
-// keyed on the executing path, never on the assignment's submitter
+// KB-371 queue pause: a candidate is excluded — reaping pauses — while its
+// workflow assignment (1:1 via run_id) is still queued or leased and the
+// work is either handed out or held behind a live occupied lane. The lane
+// is keyed on the executing path, never on the assignment's submitter
 // (OwnerCriteriaID): board-fired assignments are submitted under trigger
 // identities that have no overseer record, so submitter keying never pauses
 // the exact population this fixes (KB-371 incidents). Concretely:
 //
-//   - queued: EXISTS an online overseer whose last_seen_at is still fresher
-//     than heartbeatBefore and that could take the work — any such agent for
-//     unscoped assignments, or a project_members entry for project-scoped
-//     ones. This mirrors the lease scan's own eligibility. A queued
-//     assignment therefore waits through both busy-lane occupancy (serial
-//     lane: expired leases requeue and redeliver) and the succession gap
-//     after the sibling finishes, because until the designed dispatch
-//     grants the lease the work remains queued with a live eligible agent.
-//   - leased: EXISTS an online fresh overseer matching
-//     a.leased_criteria_id — the holder itself. A dead executor's stale
-//     lease does not stay immortal.
+//   - leased: EXISTS the lease holder itself as an online overseer whose
+//     last_seen_at is still fresher than heartbeatBefore. The grant already
+//     enforced label eligibility at lease time, so live claimed work waits
+//     for its executor; a dead executor's stale lease does not stay
+//     immortal.
 //
-// Liveness is heartbeat-freshness only: a wedged-but-heartbeating sibling or
-// holder holds the pause, deliberately — queued work survives arbitrarily
-// long lane occupancy, and the CRI-142 heartbeat reaper frees it once the
-// heartbeat goes stale, after which normal timer semantics resume. No
-// current_step advancement is required for the pause to hold. Offline or
-// no-overseer-record holders, stale heartbeats, members that cannot
-// dispatch, and terminal/rejected assignments reap by timer as before.
-// Callers pass the same staleness bound the heartbeat reaper derives; with
-// run reaping disabled they pass a past or present bound (no heartbeat can
-// be fresher), which disables the pause and restores pure timer semantics.
+//   - queued: the assignment pauses only while BOTH hold.
 //
-// Runs with no workflow assignment (orphan-minted, standalone) are
-// unaffected: they die by timer as before.
+//     (a) a live dispatch-eligible executor E exists: an overseer whose
+//     status is 'online', whose last_seen_at is fresher than
+//     heartbeatBefore, whose label set satisfies the assignment's
+//     required labels with the same labelsSatisfy contract the lease
+//     grant enforces (every required key present with the matching
+//     value), and that could take the work — any such agent for
+//     unscoped assignments, a project_members entry for scoped ones;
+//     (b) E's serial lane is occupied or only recently vacated: E holds an
+//     unstarted lease on another assignment (claimed but not started),
+//     or E has a sibling run actively running, or E's lane anchor —
+//     the most recent of its latest terminal sibling run's ended_at
+//     and its latest workflow_assignment_leases expires_at (including
+//     a lease E held on the candidate assignment itself during the
+//     designed rotation) — is newer than graceBefore.
+//
+// The (b) evidence makes the pause unbounded in wall-clock time: queued
+// work survives arbitrarily long lane occupancy and the succession gap
+// after a sibling finishes, then leases at the designed dispatch point
+// without consuming its refire budget. The bounds backstop it: a stale
+// heartbeat fails (a)'s freshness and restores pure timer semantics (callers
+// pass the staleness the CRI-142 heartbeat reaper derives; a disabled
+// heartbeat reaper — zero staleness — disables the pause), and graceBefore
+// bounds how long the queued work may wait for the timer-driven successor
+// grant after its lane evidence ends. graceBefore must be no younger than
+// the dispatch's own succession window — the lease-expiry sweep is what
+// requeues the work and grants the next lease, so the gap between a lane
+// anchor's timestamp and the next dispatch grant (lease TTL/2 in the
+// production configuration) has to fit inside it — otherwise healthy
+// succession would reap mid-gap (KB-371).
+//
+// Genuinely undispatchable work is NOT exempt and reaps by timer to a
+// created_never_started verdict (KB-233 rule 2, the KB-227 orphan-minted
+// population included — its assignments are queued): required labels no
+// eligible online agent carries, work scoped to a project whose only
+// members are offline or heartbeat-stale or absent, a queued assignment
+// with no lane progress at all on an idle lane, an offline or
+// no-overseer-record holder, and terminal/rejected assignments.
 // With ids empty this is the fresh reader-scan; with ids set it is the
 // re-validation inside the write transaction: runs that reached RunStarted or
 // a terminal state between the scan and the write are never clobbered.
-func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, createdBefore, heartbeatBefore time.Time, ids []string) ([]string, error) {
+func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, createdBefore, heartbeatBefore, graceBefore time.Time, ids []string) ([]string, error) {
+	jsonLabel := d.JSONLabelValue("o.labels", "l.key")
 	q := `
 		SELECT r.id
 		FROM runs r
@@ -161,12 +213,22 @@ func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, creat
 			  AND a.state IN ('queued', 'leased')
 			  AND (
 				(
+					a.state = 'leased'
+					AND EXISTS (
+						SELECT 1
+						FROM overseers o
+						WHERE o.id = a.leased_criteria_id
+						  AND o.status = 'online'
+						  AND o.last_seen_at > ` + d.P(2) + `
+					)
+				)
+				OR (
 					a.state = 'queued'
 					AND EXISTS (
 						SELECT 1
 						FROM overseers o
 						WHERE o.status = 'online'
-						  AND o.last_seen_at > ` + d.P(2) + `
+						  AND o.last_seen_at > ` + d.P(3) + `
 						  AND (
 							COALESCE(a.project_id, '') = ''
 							OR EXISTS (
@@ -176,23 +238,57 @@ func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, creat
 								  AND pm.member_id = o.id
 							)
 						  )
-					)
-				)
-				OR (
-					a.state = 'leased'
-					AND EXISTS (
-						SELECT 1
-						FROM overseers o
-						WHERE o.id = a.leased_criteria_id
-						  AND o.status = 'online'
-						  AND o.last_seen_at > ` + d.P(3) + `
+						  AND NOT EXISTS (
+							SELECT 1
+							FROM workflow_assignment_labels l
+							WHERE l.assignment_id = a.id
+							  AND (` + jsonLabel + ` IS NULL
+							  OR ` + jsonLabel + ` <> l.value)
+						  )
+						  AND (
+							EXISTS (
+								SELECT 1
+								FROM workflow_assignments a2
+								JOIN runs r2 ON r2.id = a2.run_id
+								WHERE a2.leased_criteria_id = o.id
+								  AND a2.id <> a.id
+								  AND a2.state = 'leased'
+								  AND r2.status = 'pending'
+								  AND r2.started_at IS NULL
+							)
+							OR EXISTS (
+								SELECT 1
+								FROM workflow_assignments a2
+								JOIN runs r2 ON r2.id = a2.run_id
+								WHERE a2.leased_criteria_id = o.id
+								  AND a2.id <> a.id
+								  AND r2.status = 'running'
+								  AND r2.started_at IS NOT NULL
+							)
+							OR EXISTS (
+								SELECT 1
+								FROM workflow_assignments a2
+								JOIN runs r2 ON r2.id = a2.run_id
+								WHERE a2.leased_criteria_id = o.id
+								  AND a2.id <> a.id
+								  AND r2.status IN ('succeeded', 'failed', 'cancelled')
+								  AND r2.ended_at IS NOT NULL
+								  AND r2.ended_at > ` + d.P(4) + `
+							)
+							OR EXISTS (
+								SELECT 1
+								FROM workflow_assignment_leases lw
+								WHERE lw.criteria_id = o.id
+								  AND lw.expires_at > ` + d.P(5) + `
+							)
+						  )
 					)
 				)
 			  )
 		  )`
-	args := []any{d.TS(createdBefore), d.TS(heartbeatBefore), d.TS(heartbeatBefore)}
+	args := []any{d.TS(createdBefore), d.TS(heartbeatBefore), d.TS(heartbeatBefore), d.TS(graceBefore), d.TS(graceBefore)}
 	if len(ids) > 0 {
-		q += ` AND r.id IN (` + d.Placeholders(4, len(ids)) + `)`
+		q += ` AND r.id IN (` + d.Placeholders(6, len(ids)) + `)`
 		for _, id := range ids {
 			args = append(args, id)
 		}

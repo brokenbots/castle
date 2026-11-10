@@ -96,16 +96,14 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 // reason "created_never_started" (KB-233 rule 2) when started_at is still NULL
 // and created_at is older than createdBefore. See the sqlite profile for the
 // full invariant commentary — the semantics are shared with the sqlite engine
-// through the reaper stage. The heartbeatBefore bound carries the KB-371
-// dispatch-eligibility pause: candidates whose assignment is still queued or
-// leased while dispatch to a live executor remains possible (an online fresh
-// agent that could take the work, or the lease holder itself) are exempt
-// (see reap.NeverStartedCandidates).
-func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]store.RunReapOutcome, error) {
+// through the reaper stage. heartbeatBefore and graceBefore carry the KB-371
+// queue pause (live dispatch-eligible executor plus lane evidence or the
+// bounded succession grace; see reap.NeverStartedCandidates).
+func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore, graceBefore time.Time) ([]store.RunReapOutcome, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	outcomes, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]store.RunReapOutcome, error) {
-		return s.reapNeverStartedRunsAttempt(ctx, now, createdBefore, heartbeatBefore)
+		return s.reapNeverStartedRunsAttempt(ctx, now, createdBefore, heartbeatBefore, graceBefore)
 	})
 	if isInterrupt(err) {
 		s.recoverWriter(ctx)
@@ -113,13 +111,13 @@ func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, created
 	return outcomes, err
 }
 
-func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]store.RunReapOutcome, error) {
+func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore, heartbeatBefore, graceBefore time.Time) ([]store.RunReapOutcome, error) {
 	// Bound the pass so contention fails the tick instead of pinning the
 	// reaper goroutine. Each retry attempt gets a fresh budget.
 	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)
 	defer cancel()
 
-	ids, err := reap.NeverStartedCandidates(ctx, s.reader, reap.Postgres, createdBefore, heartbeatBefore, nil)
+	ids, err := reap.NeverStartedCandidates(ctx, s.reader, reap.Postgres, createdBefore, heartbeatBefore, graceBefore, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -127,10 +125,10 @@ func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, 
 		return nil, nil
 	}
 
-	return s.reapNeverStartedRunIDs(ctx, now, createdBefore, heartbeatBefore, ids)
+	return s.reapNeverStartedRunIDs(ctx, now, createdBefore, heartbeatBefore, graceBefore, ids)
 }
 
-func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time, candidates []string) ([]store.RunReapOutcome, error) {
+func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore, heartbeatBefore, graceBefore time.Time, candidates []string) ([]store.RunReapOutcome, error) {
 	// Nothing to reap: return before opening the transaction. An empty
 	// candidate list must not reach the query builders below.
 	if len(candidates) == 0 {
@@ -144,9 +142,9 @@ func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, creat
 
 	// Re-validate inside the write transaction against the same criteria as
 	// the scan: only still-unstarted, still-active runs older than
-	// createdBefore that are not held by the KB-371 dispatch-eligibility
-	// pause survive into the UPDATE.
-	ids, err := reap.NeverStartedCandidates(ctx, tx, reap.Postgres, createdBefore, heartbeatBefore, candidates)
+	// createdBefore that the KB-371 queue pause no longer holds survive
+	// into the UPDATE.
+	ids, err := reap.NeverStartedCandidates(ctx, tx, reap.Postgres, createdBefore, heartbeatBefore, graceBefore, candidates)
 	if err != nil {
 		return nil, err
 	}
