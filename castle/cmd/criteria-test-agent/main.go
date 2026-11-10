@@ -74,10 +74,11 @@ type agent struct {
 	state     agentState
 	statePath string
 
-	resumeCh map[string]chan string // run_id -> resume signal channel
-	runCtx   map[string]*runHandle
-	runMu    sync.Mutex
-	runGen   atomic.Int64
+	resumeCh      map[string]chan string // run_id -> resume signal channel
+	pendingResume map[string]string      // run_id -> resume signal buffered before the executor registered its pause wait
+	runCtx        map[string]*runHandle
+	runMu         sync.Mutex
+	runGen        atomic.Int64
 }
 
 type config struct {
@@ -200,9 +201,10 @@ func main() {
 		state: agentState{
 			Runs: map[string]*runState{},
 		},
-		statePath: statePath,
-		resumeCh:  map[string]chan string{},
-		runCtx:    map[string]*runHandle{},
+		statePath:     statePath,
+		resumeCh:      map[string]chan string{},
+		pendingResume: map[string]string{},
+		runCtx:        map[string]*runHandle{},
 	}
 
 	if err := a.loadState(); err != nil {
@@ -332,6 +334,7 @@ func (a *agent) setRunState(rs *runState) {
 func (a *agent) deleteRunState(runID string) {
 	a.mu.Lock()
 	delete(a.state.Runs, runID)
+	delete(a.pendingResume, runID)
 	a.mu.Unlock()
 	if err := a.saveState(); err != nil {
 		a.log.Error("persist run state", "run_id", runID, "err", err)
@@ -535,13 +538,53 @@ func (a *agent) handleResumeRun(ctx context.Context, resume *pb.ResumeRun) {
 	}
 	a.mu.Lock()
 	ch, ok := a.resumeCh[resume.RunId]
-	a.mu.Unlock()
-	if ok {
-		select {
-		case ch <- resume.Signal:
-		default:
-		}
+	if !ok {
+		// The executor has not registered its pause wait yet: Castle marks the
+		// run paused while it acknowledges WaitEntered, so a resume can arrive
+		// before the executor reaches the wait. Buffer the signal instead of
+		// dropping it — the executor carries it into the wait when the wait
+		// registers (see registerResumeWait). Dropping it here is how a
+		// resumed pause run used to strand its executor forever.
+		a.pendingResume[resume.RunId] = resume.Signal
+		a.mu.Unlock()
+		a.log.Info("buffering resume signal ahead of pause wait", "run_id", resume.RunId, "signal", resume.Signal)
+		return
 	}
+	a.mu.Unlock()
+	select {
+	case ch <- resume.Signal:
+	default:
+		a.log.Warn("resume signal dropped, wait already signalled", "run_id", resume.RunId, "signal", resume.Signal)
+	}
+}
+
+// registerResumeWait creates the run's resume channel and returns the channel
+// the executor must read in its pause wait. It must be called BEFORE the
+// WaitEntered event is submitted: Castle marks the run paused while
+// acknowledging the wait, so the resume signal races the executor's
+// registration. A signal delivered before registration was buffered in
+// pendingResume and is carried into the fresh channel here.
+func (a *agent) registerResumeWait(runID string) chan string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ch := make(chan string, 1)
+	a.resumeCh[runID] = ch
+	if pending, ok := a.pendingResume[runID]; ok {
+		delete(a.pendingResume, runID)
+		// The channel is fresh and buffered and no other sender can deliver
+		// yet (handleResumeRun retrieves it under a.mu), so this cannot block.
+		ch <- pending
+	}
+	return ch
+}
+
+// releaseResumeWait removes the run's resume channel once the pause wait has
+// ended (resumed, or the executor gave up the wait), so a finished wait
+// cannot keep a stale channel that diverts later resume signals.
+func (a *agent) releaseResumeWait(runID string) {
+	a.mu.Lock()
+	delete(a.resumeCh, runID)
+	a.mu.Unlock()
 }
 
 func (a *agent) reattachRuns(ctx context.Context) {
@@ -725,10 +768,16 @@ func (a *agent) executeRun(ctx context.Context, rs *runState, gen int64) {
 
 	// Pause workflow: emit WaitEntered and block until resumed.
 	if strings.Contains(rs.WorkflowSource, "pause") {
+		// Register the resume channel before the wait is submitted: Castle
+		// marks the run paused while acknowledging WaitEntered, so the resume
+		// signal races this registration and must already find a channel.
+		ch := a.registerResumeWait(rs.RunID)
+
 		if !send(criteria.NewEnvelope(rs.RunID, &pb.WaitEntered{
 			Node:   "approval",
 			Signal: "resume-test",
 		})) {
+			a.releaseResumeWait(rs.RunID)
 			return
 		}
 
@@ -736,20 +785,17 @@ func (a *agent) executeRun(ctx context.Context, rs *runState, gen int64) {
 		rs.ResumeSignal = "resume-test"
 		a.setRunState(rs)
 
-		ch := make(chan string, 1)
-		a.mu.Lock()
-		a.resumeCh[rs.RunID] = ch
-		a.mu.Unlock()
-
 		select {
 		case <-ctx.Done():
 			// Agent is shutting down; leave the run in its persisted state so a
 			// restarted process can reattach. Do not emit a terminal event.
 			a.log.Info("pausing run execution on shutdown", "run_id", rs.RunID)
+			a.releaseResumeWait(rs.RunID)
 			return
 		case sig := <-ch:
 			a.log.Info("resuming paused run", "run_id", rs.RunID, "signal", sig)
 		}
+		a.releaseResumeWait(rs.RunID)
 
 		if !send(criteria.NewEnvelope(rs.RunID, &pb.WaitResumed{
 			Node:   "approval",
