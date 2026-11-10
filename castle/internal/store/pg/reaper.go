@@ -144,8 +144,8 @@ func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, creat
 
 	// Re-validate inside the write transaction against the same criteria as
 	// the scan: only still-unstarted, still-active runs older than
-	// createdBefore that are not paused by an occupied owner lane survive
-	// into the UPDATE.
+	// createdBefore that are not held by the KB-371 dispatch-eligibility
+	// pause survive into the UPDATE.
 	ids, err := reap.NeverStartedCandidates(ctx, tx, reap.Postgres, createdBefore, heartbeatBefore, candidates)
 	if err != nil {
 		return nil, err
