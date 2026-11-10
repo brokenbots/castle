@@ -131,6 +131,27 @@ func (f *neverStartedFixture) newLabeledAssignment(owner, idem string, labels ma
 	return a
 }
 
+// newProjectLabeledAssignment mints a project-scoped queued assignment
+// carrying required labels: the lease scan can only grant it to the
+// project's member executors whose labels satisfy the set.
+func (f *neverStartedFixture) newProjectLabeledAssignment(projectID, owner, idem string, labels map[string]string, createdAt time.Time) *store.WorkflowAssignment {
+	f.t.Helper()
+	a, created, err := f.s.CreateWorkflowAssignment(f.ctx, &store.WorkflowAssignment{
+		OwnerCriteriaID: owner,
+		WorkflowName:    "wf",
+		WorkflowSource:  "workflow main {}",
+		IdempotencyKey:  idem,
+		ProjectID:       projectID,
+		Labels:          labels,
+		CreatedAt:       createdAt,
+		UpdatedAt:       createdAt,
+	})
+	if err != nil || !created {
+		f.t.Fatalf("create project labeled assignment %s: %v created=%v", idem, err, created)
+	}
+	return a
+}
+
 // leaseOnly leases the agent's oldest eligible assignment WITHOUT starting
 // its run: the claimed-but-not-started shape the serial-lane gate leaves
 // holding the lane, and the held-unstarted-lease lane evidence for queued
@@ -307,7 +328,9 @@ func TestReapNeverStartedRuns_DispatchEligibilityPause(t *testing.T) {
 
 // TestReapNeverStartedRuns_LabelEligibilityMirror pins the lease-scan label
 // mirror in the queued arm: required labels are matched key-by-key against
-// the executor's labels exactly as labelsSatisfy does, so required labels
+// the executor's labels exactly as labelsSatisfy does — a missing key reads
+// as the empty string, so a required label with an empty value is satisfied
+// by any executor that carries no value for that key — so required labels
 // that no live executor carries make the work undispatchable and rule 2
 // reaps it even with lanes busy, while work whose labels the busy executor
 // does carry waits for the lane. JSON keys containing '.' and '"' must
@@ -323,6 +346,22 @@ func TestReapNeverStartedRuns_LabelEligibilityMirror(t *testing.T) {
 		gpuFirst := f.newUnscopedAssignment("agent-gpu", "kb-371-gpu-first", old)
 		f.leaseAndStart("agent-gpu", f.now)
 
+		// The empty-value arms: labelsSatisfy reads a missing key as the
+		// empty string, so a required {"k": ""} is satisfied by an executor
+		// that carries no value for k at all (agent-nok) and is NOT
+		// satisfied by an executor carrying a non-empty value (agent-kx).
+		// Each project's membership isolates its candidate to exactly one
+		// executor, and each executor holds a busy lane.
+		f.newProjectWithMember("proj-mirror-empty", "agent-nok", f.now)
+		f.overseerLabels("agent-nok", f.now, map[string]string{"tier": "free"})
+		nokFirst := f.newUnscopedAssignment("agent-nok", "kb-371-nok-first", old)
+		f.leaseAndStart("agent-nok", f.now)
+
+		f.newProjectWithMember("proj-mirror-filled", "agent-kx", f.now)
+		f.overseerLabels("agent-kx", f.now, map[string]string{"gpu": "true", "k": "x"})
+		kxFirst := f.newUnscopedAssignment("agent-kx", "kb-371-kx-first", old)
+		f.leaseAndStart("agent-kx", f.now)
+
 		// Pauses: every required label is present on the busy executor with
 		// the matching value, including the JSON-special key resolved
 		// exactly.
@@ -335,22 +374,35 @@ func TestReapNeverStartedRuns_LabelEligibilityMirror(t *testing.T) {
 		tpuRequired := f.newLabeledAssignment("trigger-tpu", "kb-371-label-tpu", map[string]string{"tpu": "true"}, f.createdBefore.Add(-30*time.Second))
 		valueMismatch := f.newLabeledAssignment("trigger-value", "kb-371-label-value", map[string]string{`weird.key"q`: "wrong-value"}, f.createdBefore.Add(-30*time.Second))
 
+		// Empty-value pause: the busy executor (agent-nok) does not carry k
+		// at all, which labelsSatisfy reads as satisfying {"k": ""} — the
+		// work must wait for the lane, not be reaped.
+		emptyRequired := f.newProjectLabeledAssignment("proj-mirror-empty", "trigger-empty", "kb-371-label-empty", map[string]string{"k": ""}, f.createdBefore.Add(-30*time.Second))
+		// Empty-value reap: the only eligible executor for the project
+		// carries k with a non-empty value, so {"k": ""} is unsatisfiable
+		// there — undispatchable work must reach the verdict even though
+		// the lane is busy.
+		filledRequired := f.newProjectLabeledAssignment("proj-mirror-filled", "trigger-filled", "kb-371-label-filled", map[string]string{"k": ""}, f.createdBefore.Add(-30*time.Second))
+
 		reaped := f.reapNeverStarted()
 		got := reapedIDs(reaped)
-		if len(got) != 2 || !slices.Contains(got, tpuRequired.RunID) || !slices.Contains(got, valueMismatch.RunID) {
-			t.Fatalf("reaped = %v, want [%s %s]", got, tpuRequired.RunID, valueMismatch.RunID)
+		if len(got) != 3 || !slices.Contains(got, tpuRequired.RunID) || !slices.Contains(got, valueMismatch.RunID) || !slices.Contains(got, filledRequired.RunID) {
+			t.Fatalf("reaped = %v, want [%s %s %s]", got, tpuRequired.RunID, valueMismatch.RunID, filledRequired.RunID)
 		}
 		if run := f.getRun(mirror.RunID); run.Status != "pending" || run.FailureReason != "" || run.StartedAt != nil {
 			t.Fatalf("label-mirror run = %+v, want pending unstarted without failure reason", run)
 		}
-		for _, qa := range []*store.WorkflowAssignment{tpuRequired, valueMismatch} {
+		if run := f.getRun(emptyRequired.RunID); run.Status != "pending" || run.FailureReason != "" || run.StartedAt != nil {
+			t.Fatalf("empty-required run = %+v, want pending unstarted without failure reason", run)
+		}
+		for _, qa := range []*store.WorkflowAssignment{tpuRequired, valueMismatch, filledRequired} {
 			if a, err := s.GetWorkflowAssignment(ctx, qa.ID); err != nil {
 				t.Fatalf("get reaped assignment %s: %v", qa.ID, err)
 			} else if a.State != store.WorkflowAssignmentStateTerminal || a.TerminalReason != reap.ReasonCreatedNeverStarted {
 				t.Fatalf("reaped assignment %s = state %q reason %q, want terminal/created_never_started", qa.ID, a.State, a.TerminalReason)
 			}
 		}
-		for _, pa := range []*store.WorkflowAssignment{mirror, weirdMirror} {
+		for _, pa := range []*store.WorkflowAssignment{mirror, weirdMirror, emptyRequired} {
 			a, err := s.GetWorkflowAssignment(ctx, pa.ID)
 			if err != nil {
 				t.Fatalf("get mirror assignment %s: %v", pa.ID, err)
@@ -359,9 +411,11 @@ func TestReapNeverStartedRuns_LabelEligibilityMirror(t *testing.T) {
 				t.Fatalf("mirror assignment %s = state %q reason %q, want queued with no terminal story", pa.ID, a.State, a.TerminalReason)
 			}
 		}
-		gpuFirstRun := f.getRun(gpuFirst.RunID)
-		if gpuFirstRun.Status != "running" || gpuFirstRun.StartedAt == nil {
-			t.Fatalf("gpu sibling = %+v, want running untouched", gpuFirstRun)
+		for _, sb := range []*store.WorkflowAssignment{gpuFirst, nokFirst, kxFirst} {
+			sbRun := f.getRun(sb.RunID)
+			if sbRun.Status != "running" || sbRun.StartedAt == nil {
+				t.Fatalf("busy sibling %s = %+v, want running untouched", sb.RunID, sbRun)
+			}
 		}
 	})
 }
@@ -585,6 +639,116 @@ func TestNeverStartedRunSurvivesBusyLaneThenLeasesAtSuccession(t *testing.T) {
 		}
 		if run := f.getRun(queued.RunID); run.Status != "running" || run.StartedAt == nil {
 			t.Fatalf("succession run = %+v, want running and started", run)
+		}
+	})
+}
+
+// TestReapNeverStartedRuns_GraceReleaseStaleLane pins the RELEASE side of
+// the lane-occupancy grace: the anchors that pause a queued assignment bind
+// only while their evidence is fresh relative to the grace horizon. An
+// anchor that predates graceBefore stops pausing — a terminal sibling that
+// ended before the grace and a lease row that expired before the grace are
+// dead lane traces, and work behind them reaps — while a single live anchor
+// (a lease row that has not yet expired past the grace) keeps holding the
+// work. Under the pure-timer semantics reapNeverStarted's default grace
+// provides, every anchor here would count as lane evidence forever, so this
+// test is what fails if the grace parameters are mis-wired, ignored, or
+// treated as always-true.
+func TestReapNeverStartedRuns_GraceReleaseStaleLane(t *testing.T) {
+	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
+		f := newNeverStartedFixture(t, ctx, s)
+		graceBefore := f.now.Add(-5 * time.Minute)
+
+		// Arm A — stale terminal sibling: the executor's only lane trace is
+		// a sibling whose lease was granted at a past time with a short TTL
+		// (so its lease row also expired before the grace) and whose run
+		// finished terminal with ended_at before the grace. The successor
+		// queued behind that dead trace must be reaped.
+		f.newProjectWithMember("proj-grace-a", "agent-grace-a", f.now)
+		f.overseer("agent-grace-a", f.now)
+		siblingA := f.newBoardAssignment("trigger-grace-a", "kb-371-grace-a-first", "proj-grace-a", f.now.Add(-40*time.Minute))
+		leasedA := f.leaseOnly("agent-grace-a", f.now.Add(-31*time.Minute), 15*time.Minute)
+		if leasedA.ID != siblingA.ID || leasedA.RunID != siblingA.RunID {
+			t.Fatalf("lease grabbed %s, want sibling %s", leasedA.ID, siblingA.ID)
+		}
+		f.finishRun(siblingA.RunID, "succeeded", "run completed", f.now.Add(-30*time.Minute))
+		staleA := f.newBoardAssignment("trigger-grace-a", "kb-371-grace-a-queued", "proj-grace-a", f.createdBefore.Add(-30*time.Second))
+
+		// Arm B — stale lease anchor only: no sibling runs at all; the
+		// executor's only lane trace is a lease row that expired before the
+		// grace, planted raw so no assignment sits in state leased. The
+		// queued successor behind that expired trace must be reaped too.
+		f.newProjectWithMember("proj-grace-b", "agent-grace-b", f.now)
+		f.overseer("agent-grace-b", f.now)
+		auxB := f.newBoardAssignment("trigger-grace-b-aux", "kb-371-grace-b-aux", "proj-grace-b", f.now)
+		if err := s.RecordWorkflowAssignmentLease(ctx, &store.WorkflowAssignmentLease{
+			AssignmentID: auxB.ID,
+			CriteriaID:   "agent-grace-b",
+			CreatedAt:    microUTC(f.now.Add(-31 * time.Minute)),
+			ExpiresAt:    microUTC(f.now.Add(-16 * time.Minute)),
+		}); err != nil {
+			t.Fatalf("record stale lease: %v", err)
+		}
+		staleB := f.newBoardAssignment("trigger-grace-b", "kb-371-grace-b-queued", "proj-grace-b", f.createdBefore.Add(-30*time.Second))
+
+		// Arm C — fresh-anchor control: the executor's only lane trace is a
+		// lease row that has NOT expired past the grace. The pause must
+		// hold: without this arm, an implementation whose every anchor went
+		// stale would satisfy arms A and B.
+		f.newProjectWithMember("proj-grace-c", "agent-grace-c", f.now)
+		f.overseer("agent-grace-c", f.now)
+		auxC := f.newBoardAssignment("trigger-grace-c-aux", "kb-371-grace-c-aux", "proj-grace-c", f.now)
+		if err := s.RecordWorkflowAssignmentLease(ctx, &store.WorkflowAssignmentLease{
+			AssignmentID: auxC.ID,
+			CriteriaID:   "agent-grace-c",
+			CreatedAt:    microUTC(f.now.Add(-31 * time.Minute)),
+			ExpiresAt:    microUTC(f.now.Add(time.Hour)),
+		}); err != nil {
+			t.Fatalf("record fresh lease: %v", err)
+		}
+		heldC := f.newBoardAssignment("trigger-grace-c", "kb-371-grace-c-queued", "proj-grace-c", f.createdBefore.Add(-30*time.Second))
+
+		reaped := f.reapNeverStartedGraced(graceBefore)
+		got := reapedIDs(reaped)
+		if len(got) != 2 || !slices.Contains(got, staleA.RunID) || !slices.Contains(got, staleB.RunID) {
+			t.Fatalf("reaped = %v, want [%s %s]", got, staleA.RunID, staleB.RunID)
+		}
+
+		for _, qa := range []*store.WorkflowAssignment{staleA, staleB} {
+			run := f.getRun(qa.RunID)
+			if run.Status != "failed" || run.FailureReason != reap.ReasonCreatedNeverStarted || run.StartedAt != nil {
+				t.Errorf("grace-released run %s = %+v, want failed/created_never_started unstarted", qa.RunID, run)
+			}
+			a, err := s.GetWorkflowAssignment(ctx, qa.ID)
+			if err != nil {
+				t.Fatalf("get grace-released assignment %s: %v", qa.ID, err)
+			}
+			if a.State != store.WorkflowAssignmentStateTerminal || a.TerminalReason != reap.ReasonCreatedNeverStarted {
+				t.Errorf("grace-released assignment %s = state %q reason %q, want terminal/created_never_started", qa.ID, a.State, a.TerminalReason)
+			}
+		}
+
+		if run := f.getRun(heldC.RunID); run.Status != "pending" || run.FailureReason != "" || run.StartedAt != nil {
+			t.Errorf("fresh-anchor run %s = %+v, want pending unstarted without failure reason", heldC.RunID, run)
+		}
+		c, err := s.GetWorkflowAssignment(ctx, heldC.ID)
+		if err != nil {
+			t.Fatalf("get held assignment: %v", err)
+		}
+		if c.State != store.WorkflowAssignmentStateQueued || c.TerminalReason != "" {
+			t.Errorf("held assignment %s = state %q reason %q, want queued with no terminal story", heldC.ID, c.State, c.TerminalReason)
+		}
+
+		// Containment: the terminal sibling stayed terminal, and both lease
+		// auxiliaries (created inside the reap window) were never touched.
+		sibRun := f.getRun(siblingA.RunID)
+		if sibRun.Status != "succeeded" {
+			t.Errorf("sibling A run = %q, want succeeded untouched", sibRun.Status)
+		}
+		for _, aux := range []*store.WorkflowAssignment{auxB, auxC} {
+			if run := f.getRun(aux.RunID); run.Status != "pending" {
+				t.Errorf("aux run %s = %q, want pending untouched", aux.RunID, run.Status)
+			}
 		}
 	})
 }

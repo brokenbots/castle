@@ -99,10 +99,16 @@ func (PostgresDialect) TS(t time.Time) any { return t }
 
 // overseers.labels is TEXT (store.MarshalLabels convention): NULLIF folds the
 // empty text to NULL, the cast then yields a NULL jsonb and `->> key` reads
-// NULL without the key ever matching. The key arrives as a bound TEXT value,
-// so keys holding dots or quotes resolve to the object's exact key.
+// NULL without the key ever matching. The read is error-free: pg_input_is_valid
+// (PG floor 16 — the repo's harness pins embedded PG 18) guards the cast, so a
+// malformed labels row yields NULL — the executor is label-ineligible and the
+// pass continues — never a cast error aborting the whole reaper pass, matching
+// the sqlite json_valid guard's failure mode. The key arrives as a bound TEXT
+// value, so keys holding dots or quotes resolve to the object's exact key.
 func (PostgresDialect) JSONLabelValue(labelsCol, keyCol string) string {
-	return fmt.Sprintf(`(NULLIF(%s,'')::jsonb) ->> %s`, labelsCol, keyCol)
+	return fmt.Sprintf(
+		`CASE WHEN pg_input_is_valid(%s,'jsonb') THEN (NULLIF(%s,'')::jsonb) ->> %s END`,
+		labelsCol, labelsCol, keyCol)
 }
 
 // SQLite and Postgres are the dialect instances the engines use.
@@ -169,10 +175,13 @@ func StaleCandidates(ctx context.Context, runner Runner, d Dialect, staleBefore 
 //     (a) a live dispatch-eligible executor E exists: an overseer whose
 //     status is 'online', whose last_seen_at is fresher than
 //     heartbeatBefore, whose label set satisfies the assignment's
-//     required labels with the same labelsSatisfy contract the lease
-//     grant enforces (every required key present with the matching
-//     value), and that could take the work — any such agent for
-//     unscoped assignments, a project_members entry for scoped ones;
+//     required labels with exactly the labelsSatisfy contract the
+//     lease grant enforces (agentLabels[k] == v, where a key missing
+//     from the executor's labels reads as the empty string — so a
+//     required label with an empty value is satisfied by any executor
+//     that carries no value for that key), and that could take the
+//     work — any such agent for unscoped assignments, a project_members
+//     entry for scoped ones;
 //     (b) E's serial lane is occupied or only recently vacated: E holds an
 //     unstarted lease on another assignment (claimed but not started),
 //     or E has a sibling run actively running, or E's lane anchor —
@@ -248,8 +257,7 @@ func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, creat
 							SELECT 1
 							FROM workflow_assignment_labels l
 							WHERE l.assignment_id = a.id
-							  AND (` + jsonLabel + ` IS NULL
-							  OR ` + jsonLabel + ` <> l.value)
+							  AND (COALESCE(` + jsonLabel + `, '') <> l.value)
 						  )
 						  AND (
 							EXISTS (

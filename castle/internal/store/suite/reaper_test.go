@@ -606,9 +606,10 @@ func newNeverStartedFixture(t *testing.T, ctx context.Context, s store.Store) *n
 func (f *neverStartedFixture) reapNeverStarted() []store.RunReapOutcome {
 	f.t.Helper()
 	// Default grace is set before every fixture anchor in this suite, so the
-	// helper calls run under pure timer semantics; succession-style tests
-	// that want lane-occupancy evidence to bind pass a live grace explicitly
-	// to ReapNeverStartedRuns instead.
+	// helper calls run under pure timer semantics and only pin the pause
+	// side. TestReapNeverStartedRuns_GraceReleaseStaleLane is the grace-bound
+	// release coverage: it pins that anchors OLDER than the grace stop
+	// pausing and that a fresh anchor alone holds it.
 	return f.reapNeverStartedGraced(f.createdBefore.Add(-time.Hour))
 }
 
