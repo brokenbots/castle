@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"path/filepath"
 	"testing"
@@ -11,11 +12,12 @@ import (
 
 func newTestAgent(home string) *agent {
 	return &agent{
-		log:       slog.Default(),
-		state:     agentState{Runs: map[string]*runState{}},
-		statePath: filepath.Join(home, stateFileName),
-		resumeCh:  map[string]chan string{},
-		runCtx:    map[string]*runHandle{},
+		log:           slog.Default(),
+		state:         agentState{Runs: map[string]*runState{}},
+		statePath:     filepath.Join(home, stateFileName),
+		resumeCh:      map[string]chan string{},
+		pendingResume: map[string]string{},
+		runCtx:        map[string]*runHandle{},
 	}
 }
 
@@ -110,6 +112,93 @@ func TestDeterministicCorrelationID(t *testing.T) {
 				t.Errorf("not deterministic: %q vs %q", got, got2)
 			}
 		})
+	}
+}
+
+// TestResumeSignalDeliveredBeforePauseWaitRegistration pins the pause→resume
+// handoff race: Castle marks the run paused while acknowledging WaitEntered,
+// so a resume signal can arrive before the executor registers its wait. The
+// agent must buffer the signal (no drop, no log-less loss) and hand it to the
+// executor the moment the wait registers, so the executor always leaves the
+// pause wait and the run completes. Against the pre-fix code this test fails:
+// handleResumeRun silently discarded the unmatched signal.
+func TestResumeSignalDeliveredBeforePauseWaitRegistration(t *testing.T) {
+	a := newTestAgent(t.TempDir())
+
+	// The executor has not reached its pause wait — no channel exists yet.
+	a.handleResumeRun(context.Background(), &pb.ResumeRun{RunId: "run-1", Signal: "resume-test"})
+
+	a.mu.Lock()
+	_, registered := a.resumeCh["run-1"]
+	a.mu.Unlock()
+	if registered {
+		t.Fatal("resume signal registration must not create the wait channel")
+	}
+
+	// The executor now reaches the pause wait and registers: the buffered
+	// signal must be waiting on the returned channel, so its select returns
+	// immediately and the run resumes.
+	ch := a.registerResumeWait("run-1")
+	select {
+	case sig := <-ch:
+		if sig != "resume-test" {
+			t.Fatalf("buffered signal = %q, want %q", sig, "resume-test")
+		}
+	default:
+		t.Fatal("resume signal delivered before wait registration was dropped")
+	}
+
+	// Delivery cleared the pending buffer: registering again (reattach replay)
+	// must not re-consume the stale signal.
+	a.mu.Lock()
+	_, pending := a.pendingResume["run-1"]
+	a.mu.Unlock()
+	if pending {
+		t.Fatal("pending resume signal not consumed by wait registration")
+	}
+}
+
+// TestResumeSignalDeliveredAfterPauseWaitRegistration covers the registered
+// path: the buffered channel carries the signal from delivery to the
+// executor's read, and ending the wait removes the stale channel so a later
+// signal for the finished wait is logged, not silently lost.
+func TestResumeSignalDeliveredAfterPauseWaitRegistration(t *testing.T) {
+	a := newTestAgent(t.TempDir())
+	ch := a.registerResumeWait("run-1")
+
+	// Signal delivered while the executor is between registration and its
+	// read: the buffered channel must carry it.
+	a.handleResumeRun(context.Background(), &pb.ResumeRun{RunId: "run-1", Signal: "resume-test"})
+	select {
+	case sig := <-ch:
+		if sig != "resume-test" {
+			t.Fatalf("delivered signal = %q, want %q", sig, "resume-test")
+		}
+	default:
+		t.Fatal("resume signal delivered after wait registration did not reach the executor channel")
+	}
+
+	// The wait ends: the registry must not keep the stale channel.
+	a.releaseResumeWait("run-1")
+	a.mu.Lock()
+	_, stale := a.resumeCh["run-1"]
+	_, pending := a.pendingResume["run-1"]
+	a.mu.Unlock()
+	if stale {
+		t.Fatal("stale resume channel left after the wait ended")
+	}
+	if pending {
+		t.Fatal("pending resume signal left after the wait ended")
+	}
+
+	// A finished run must not re-arm a wait: without a registered channel no
+	// entry is created, and deleteRunState drops any residual pending signal.
+	a.deleteRunState("run-1")
+	a.mu.Lock()
+	_, pending = a.pendingResume["run-1"]
+	a.mu.Unlock()
+	if pending {
+		t.Fatal("pending resume signal left after the run state was deleted")
 	}
 }
 

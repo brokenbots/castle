@@ -643,15 +643,31 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 			s.Log.Debug("applyRunStatus: ignoring completion event for stopped run", "run_id", env.RunId, "type", criteria.TypeString(env))
 			return
 		}
+		// KB-373 (CRI-142): stamp the run terminal and settle its queued or
+		// leased workflow assignment(s) in a single atomic store call. The
+		// previous two-write shape (UpdateRun, then a discarded
+		// MarkWorkflowAssignmentTerminal) left the assignment row stranded in
+		// state='leased' forever when the stamp committed but the cascade
+		// failed — the zombie lease rows of the original KB-373 report.
 		now := time.Now().UTC()
-		run.EndedAt = &now
+		stampStatus := "failed"
 		if p.RunCompleted != nil && p.RunCompleted.Success {
-			run.Status = "succeeded"
-		} else {
-			run.Status = "failed"
+			stampStatus = "succeeded"
 		}
-		_ = s.Store.UpdateRun(ctx, run)
-		_ = s.Store.MarkWorkflowAssignmentTerminal(ctx, env.RunId, "run completed")
+		// "run completed" remains the cascade reason for both outcomes: the
+		// refire candidate scan classifies endings by terminal_reason and
+		// treats this as a completed-run ending either way.
+		run, err = s.Store.StampRunTerminal(ctx, env.RunId, stampStatus, "", now, store.TerminalReasonRunCompleted)
+		if err != nil {
+			if errors.Is(err, store.ErrRunTerminal) {
+				// A concurrent writer (operator CancelRun, the reapers, or a
+				// duplicate completion) settled the run first (CRI-142).
+				// The event itself stays pollable via the event log.
+				return
+			}
+			s.Log.Warn("applyRunStatus: completion stamp failed", "run_id", env.RunId, "err", err)
+			return
+		}
 		if run.OverseerID != "" {
 			go s.dispatchForAgent(context.Background(), run.OverseerID)
 		}
@@ -673,14 +689,24 @@ func (s *CriteriaServer) applyRunStatus(ctx context.Context, env *criteria.Envel
 			s.Log.Debug("applyRunStatus: ignoring failure event for stopped run", "run_id", env.RunId, "type", criteria.TypeString(env))
 			return
 		}
+		// KB-373 (CRI-142): see the RunCompleted case for the single-atomic-
+		// stamp rationale; the failure reason rides along in the same
+		// transaction when the agent supplied one.
 		now := time.Now().UTC()
-		run.EndedAt = &now
-		run.Status = "failed"
-		if p.RunFailed != nil && p.RunFailed.Reason != "" {
-			run.FailureReason = p.RunFailed.Reason
+		failureReason := ""
+		if p.RunFailed != nil {
+			failureReason = p.RunFailed.Reason
 		}
-		_ = s.Store.UpdateRun(ctx, run)
-		_ = s.Store.MarkWorkflowAssignmentTerminal(ctx, env.RunId, "run failed")
+		run, err = s.Store.StampRunTerminal(ctx, env.RunId, "failed", failureReason, now, store.TerminalReasonRunFailed)
+		if err != nil {
+			if errors.Is(err, store.ErrRunTerminal) {
+				// See RunCompleted above: terminal stamps are final, and the
+				// event itself stays pollable via the event log.
+				return
+			}
+			s.Log.Warn("applyRunStatus: failure stamp failed", "run_id", env.RunId, "err", err)
+			return
+		}
 		if run.OverseerID != "" {
 			go s.dispatchForAgent(context.Background(), run.OverseerID)
 		}

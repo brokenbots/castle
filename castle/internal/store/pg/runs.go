@@ -389,3 +389,65 @@ func (s *Store) MarkRunUnstarted(ctx context.Context, runID string, requeuedAt t
 		us(requeuedAt), runID)
 	return err
 }
+
+// StampRunTerminal stamps runID's terminal transition and cascades its still
+// queued or leased workflow assignments to terminal in the SAME transaction
+// (KB-373, CRI-142): whoever stamps the run owns its dispatch cascade, so a
+// settling run can never strand a leased assignment behind — the pre-fix two
+// write path (stamp, then a separate discarded cascade) is exactly how the
+// zombie lease rows of KB-373 were born. See the store contract for the
+// argument semantics; this is the pg twin of the sqlite engine method.
+// Terminal and operator-parked stopped runs are never rewritten: the
+// conditional UPDATE yields zero rows there and the method resolves to
+// ErrRunTerminal after a GetRun distinguishes unknown ids.
+func (s *Store) StampRunTerminal(ctx context.Context, runID, status, failureReason string, endedAt time.Time, terminalReason string) (*store.Run, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	switch status {
+	case "succeeded", "failed", "cancelled":
+	default:
+		return nil, fmt.Errorf("stamp run terminal: status %q is not terminal", status)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE runs
+		 SET status=$1, ended_at=$2, failure_reason=COALESCE(NULLIF($3, ''), failure_reason)
+		 WHERE id=$4 AND status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped')`,
+		status, us(endedAt), failureReason, runID)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		// Settle the transaction before the GetRun below so the stamped
+		// terminal state is visible unambiguously and no connection is held
+		// while the row is fetched.
+		_ = tx.Rollback()
+		if _, getErr := s.GetRun(ctx, runID); getErr != nil {
+			return nil, getErr
+		}
+		return nil, store.ErrRunTerminal
+	}
+	// The in-transaction cascade (KB-373): idempotent by state guard, so an
+	// already terminal assignment is left with its first terminal_reason.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET state=$1, terminal_reason=$2, updated_at=$3
+		 WHERE run_id=$4 AND state IN ($5, $6)`,
+		store.WorkflowAssignmentStateTerminal, terminalReason, us(endedAt),
+		runID, store.WorkflowAssignmentStateQueued, store.WorkflowAssignmentStateLeased); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetRun(ctx, runID)
+}

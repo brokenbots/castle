@@ -631,9 +631,12 @@ func labelsSatisfy(agentLabels, required map[string]string) bool {
 }
 
 // ExpireWorkflowAssignmentLeases transitions leased assignments whose lease
-// has expired and whose run has not yet started back to queued. It clears the
-// associated run's overseer_id so the assignment can be safely redispatched to
-// a new agent. The returned IDs can be used by callers to redispatch the work.
+// has expired and whose run has not yet started back to queued, and
+// terminalizes (KB-373) leased assignments whose lease has expired and whose
+// run has settled terminal. It clears the associated run's overseer_id so the
+// requeued assignment can be safely redispatched to a new agent. The returned
+// IDs can be used by callers to redispatch the work; terminalized rows are
+// never returned.
 //
 // Every statement re-asserts all three expiry predicates — assignment
 // state='leased', lease_expires_at < now, and run status='pending' — because a
@@ -643,6 +646,17 @@ func labelsSatisfy(agentLabels, required map[string]string) bool {
 // expiry UPDATE — the same window LeaseWorkflowAssignment's inline
 // stale-lease sweep guards — would otherwise be requeued with a live run.
 // The run's overseer_id is cleared only while the run is still pending.
+//
+// KB-373: this pass also converges residual leases whose owning run
+// settled terminal before (or without) its dispatch cascade — the zombie
+// lease lifecycles of the original report. Disjoint from the pending-run
+// requeue below by the run-status guard on both sides, so the sweep runs
+// at the top of the same transaction: it only touches leased rows of
+// terminal runs, while the requeue only touches leased rows of pending
+// runs (and its test hook + candidate scan stay in their original
+// positions). Terminalized rows are deliberately not returned — terminal
+// work is never re-queued or re-dispatched. See the sqlite twin for the
+// full invariant commentary.
 func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Time) ([]string, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -651,6 +665,25 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	swept := 0
+	for _, status := range []string{"succeeded", "failed", "cancelled"} {
+		reason := store.TerminalReasonByRunStatus(status)
+		res, err := tx.ExecContext(ctx,
+			`UPDATE workflow_assignments
+			 SET state=$1, terminal_reason=$2, updated_at=$3
+			 WHERE state='leased' AND lease_expires_at < $4
+			   AND run_id IN (SELECT id FROM runs WHERE status=$5)`,
+			store.WorkflowAssignmentStateTerminal, reason, us(now), us(now), status)
+		if err != nil {
+			return nil, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		swept += int(n)
+	}
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.id
@@ -686,6 +719,12 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	}
 
 	if len(ids) == 0 {
+		// KB-373: the terminal-run sweep above may have transitioned rows
+		// even when nothing needs requeueing; only a genuinely read-only
+		// pass rolls back.
+		if swept > 0 {
+			return nil, tx.Commit()
+		}
 		_ = tx.Rollback()
 		return nil, nil
 	}

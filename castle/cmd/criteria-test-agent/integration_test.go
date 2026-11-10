@@ -89,11 +89,12 @@ func (w *testLogWriter) Write(p []byte) (n int, err error) {
 func newIntegrationAgent(t *testing.T, baseURL, dir, name string, labels map[string]string) *agent {
 	t.Helper()
 	a := &agent{
-		log:       slog.New(slog.NewTextHandler(&testLogWriter{t: t}, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		state:     agentState{Runs: map[string]*runState{}},
-		statePath: filepath.Join(dir, stateFileName),
-		resumeCh:  map[string]chan string{},
-		runCtx:    map[string]*runHandle{},
+		log:           slog.New(slog.NewTextHandler(&testLogWriter{t: t}, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		state:         agentState{Runs: map[string]*runState{}},
+		statePath:     filepath.Join(dir, stateFileName),
+		resumeCh:      map[string]chan string{},
+		pendingResume: map[string]string{},
+		runCtx:        map[string]*runHandle{},
 		cfg: config{
 			castleAddr:  baseURL,
 			name:        name,
