@@ -2478,18 +2478,15 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	// pending runs. Terminalized rows are deliberately not returned —
 	// terminal work is never re-queued or re-dispatched.
 	swept := 0
-	for _, sweep := range []struct{ runStatus, reason string }{
-		{"succeeded", store.TerminalReasonRunCompleted},
-		{"failed", store.TerminalReasonRunFailed},
-		{"cancelled", store.TerminalReasonRunCancelled},
-	} {
+	for _, status := range []string{"succeeded", "failed", "cancelled"} {
+		reason := store.TerminalReasonByRunStatus(status)
 		res, err := tx.ExecContext(ctx,
 			`UPDATE workflow_assignments
 			 SET state=?, terminal_reason=?, updated_at=?
 			 WHERE state='leased' AND lease_expires_at < ?
 			   AND run_id IN (SELECT id FROM runs WHERE status=?)`,
-			store.WorkflowAssignmentStateTerminal, sweep.reason, now.Format(store.TimestampLayout),
-			now.Format(store.TimestampLayout), sweep.runStatus)
+			store.WorkflowAssignmentStateTerminal, reason, now.Format(store.TimestampLayout),
+			now.Format(store.TimestampLayout), status)
 		if err != nil {
 			return nil, err
 		}
