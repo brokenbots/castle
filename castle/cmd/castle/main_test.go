@@ -144,7 +144,7 @@ func TestReapNeverStartedRunsOnce(t *testing.T) {
 		}
 	}
 
-	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute)
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 60*time.Second)
 
 	orphan, err := s.GetRun(ctx, "r-never-started")
 	if err != nil {

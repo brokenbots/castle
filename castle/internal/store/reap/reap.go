@@ -112,22 +112,57 @@ func StaleCandidates(ctx context.Context, runner Runner, d Dialect, staleBefore 
 // began. Paused and stopped runs are deliberately absent: a run an operator
 // or agent parked is reaper-exempt regardless of age, because park states
 // have no live execution by design (CRI-207) and stay resumable.
+//
+// KB-371 lane-busy pause: a candidate is excluded — reaping pauses — while
+// its workflow assignment's owner agent holds a busy lane. The serial-lane
+// contract gives one assignment lane per agent replica, so a run queued
+// behind a healthy sibling run waits through the lease rotation (expired
+// leases requeue and redeliver) until the lane frees. Killing it by timer
+// mid-rotation terminalizes queued work that the dispatch design would have
+// executed at the succession point. The pause holds only while the owner has
+// an overseer row with status 'online', its last_seen_at is still fresher
+// than heartbeatBefore (the agent is alive and, with it, the sibling's
+// execution is carried forward), and another of the owner's runs is actively
+// executing (status 'running' with started_at set — a sibling that never
+// started is itself rule-2 material and must not hold the pause). The pause
+// is bounded by the owner's heartbeat freshness: a wedged sibling is freed
+// by the CRI-142 heartbeat reaper once the heartbeat goes stale, after which
+// normal timer semantics resume. Callers pass the same staleness bound the
+// heartbeat reaper derives; with run reaping disabled they pass a past or
+// present bound (no heartbeat can be fresher), which disables the pause and
+// restores pure timer semantics.
+//
+// Runs with no workflow assignment (orphan-minted, standalone), assignments
+// whose owner has no overseer record, offline owners, stale heartbeats, and
+// idle lanes are unaffected: they die by timer as before.
 // With ids empty this is the fresh reader-scan; with ids set it is the
 // re-validation inside the write transaction: runs that reached RunStarted or
 // a terminal state between the scan and the write are never clobbered.
-func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, createdBefore time.Time, ids []string) ([]string, error) {
+func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, createdBefore, heartbeatBefore time.Time, ids []string) ([]string, error) {
 	q := `
-		SELECT id
-		FROM runs
-		WHERE status IN ('pending', 'running') AND started_at IS NULL AND created_at < ` + d.P(1)
-	args := []any{d.TS(createdBefore)}
+		SELECT r.id
+		FROM runs r
+		WHERE r.status IN ('pending', 'running') AND r.started_at IS NULL AND r.created_at < ` + d.P(1) + `
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM workflow_assignments a
+			JOIN overseers o ON o.id = a.owner_criteria_id
+			JOIN runs lane ON lane.overseer_id = o.id
+			                AND lane.status = 'running'
+			                AND lane.started_at IS NOT NULL
+			WHERE a.run_id = r.id
+			  AND o.status = 'online'
+			  AND o.last_seen_at > ` + d.P(2) + `
+			  AND lane.id <> r.id
+		  )`
+	args := []any{d.TS(createdBefore), d.TS(heartbeatBefore)}
 	if len(ids) > 0 {
-		q += ` AND id IN (` + d.Placeholders(2, len(ids)) + `)`
+		q += ` AND r.id IN (` + d.Placeholders(3, len(ids)) + `)`
 		for _, id := range ids {
 			args = append(args, id)
 		}
 	}
-	q += ` ORDER BY created_at ASC, id ASC`
+	q += ` ORDER BY r.created_at ASC, r.id ASC`
 	return scanIDs(ctx, runner, q, args)
 }
 

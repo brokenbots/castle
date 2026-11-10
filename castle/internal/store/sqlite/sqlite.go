@@ -1350,23 +1350,32 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 // whose execution never began — an orphan-job run minted after a card closed,
 // a queued assignment nobody ever leased, or a lease that claimed its run and
 // then died before RunStarted. Unlike the CRI-142 heartbeat reaper, the
-// verdict is derivable from the run record alone; no heartbeat or assignment
-// heuristics participate. Paused and stopped runs (operator-parked, CRI-207)
-// are reaper-exempt regardless of age, and terminal runs are never rewritten.
-// A never-started candidate whose record ends at a human gate is parked
-// instead of failed (KB-226), with the same reclassification semantics as
-// ReapStaleAgentRuns: execution demonstrably ran, so only the status stamp was
-// lost. Each reaped run's workflow assignment is marked terminal so the dead
-// work is never re-dispatched. Returns one RunReapOutcome per stamped run.
+// verdict is otherwise derivable from the run record alone. Paused and stopped
+// runs (operator-parked, CRI-207) are reaper-exempt regardless of age, and
+// terminal runs are never rewritten. A never-started candidate whose record
+// ends at a human gate is parked instead of failed (KB-226), with the same
+// reclassification semantics as ReapStaleAgentRuns: execution demonstrably
+// ran, so only the status stamp was lost. Each reaped run's workflow
+// assignment is marked terminal so the dead work is never re-dispatched.
+// Returns one RunReapOutcome per stamped run.
+//
+// KB-371 lane-busy pause: a candidate is exempt while its workflow
+// assignment's owner agent holds a busy lane — the owner is an online
+// overseer heartbeating after heartbeatBefore and another of the owner's
+// runs is actively executing (started, status running). Queued work
+// behind a healthy sibling run survives the lease rotation and leases at
+// the succession point instead of dying by timer mid-rotation. The bound
+// is the staleness the CRI-142 heartbeat reaper derives; a disabled
+// heartbeat reaper (zero staleness) disables the pause.
 //
 // Like ReapStaleAgentRuns (CRI-143), the scan runs on the dedicated reader
 // connection and the writes go through one short transaction on the serialized
 // writer pool; transient sqlite faults are retried with backoff (retry.go).
-func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]store.RunReapOutcome, error) {
+func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]store.RunReapOutcome, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
 	outcomes, err := retryOnTransient(ctx, reapRetryPolicy, func() ([]store.RunReapOutcome, error) {
-		return s.reapNeverStartedRunsAttempt(ctx, now, createdBefore)
+		return s.reapNeverStartedRunsAttempt(ctx, now, createdBefore, heartbeatBefore)
 	})
 	if isInterrupt(err) {
 		s.recoverWriter(ctx)
@@ -1377,14 +1386,14 @@ func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, created
 // reapNeverStartedRunsAttempt performs one rule-2 reaping pass. The candidate
 // scan is a plain read on the reader connection: with nothing to reap — the
 // common case — the writer connection is not touched at all.
-func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore time.Time) ([]store.RunReapOutcome, error) {
+func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]store.RunReapOutcome, error) {
 	// Bound the pass so a wedged writer connection fails the tick instead of
 	// pinning the reaper goroutine (CRI-143). Each retry attempt gets a fresh
 	// budget.
 	ctx, cancel := context.WithTimeout(ctx, reapAttemptTimeout)
 	defer cancel()
 
-	ids, err := reap.NeverStartedCandidates(ctx, s.reader, reap.SQLite, createdBefore, nil)
+	ids, err := reap.NeverStartedCandidates(ctx, s.reader, reap.SQLite, createdBefore, heartbeatBefore, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1392,17 +1401,18 @@ func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, 
 		return nil, nil
 	}
 
-	return s.reapNeverStartedRunIDs(ctx, now, createdBefore, ids)
+	return s.reapNeverStartedRunIDs(ctx, now, createdBefore, heartbeatBefore, ids)
 }
 
 // reapNeverStartedRunIDs stamps the rule-2 candidates on the serialized writer
 // pool. The candidates were picked from a reader snapshot that may already be
 // stale, so the transaction re-validates never-started reapability against
 // current data: runs that reached RunStarted or a terminal state between the
-// scan and the write are never clobbered. Classification and stamping are
-// delegated to the shared verdict stage (KB-226), which reads the candidate's
-// own record inside this transaction.
-func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore time.Time, candidates []string) ([]store.RunReapOutcome, error) {
+// scan and the write, or whose lane-busy pause now applies (KB-371), are never
+// clobbered. Classification and stamping are delegated to the shared verdict
+// stage (KB-226), which reads the candidate's own record inside this
+// transaction.
+func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time, candidates []string) ([]store.RunReapOutcome, error) {
 	// Nothing to reap: return before opening the transaction. An empty
 	// candidate list must not reach the query builders below.
 	if len(candidates) == 0 {
@@ -1416,8 +1426,9 @@ func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, creat
 
 	// Re-validate inside the write transaction against the same criteria as
 	// the scan: only still-unstarted, still-active runs older than
-	// createdBefore survive into the UPDATE.
-	ids, err := reap.NeverStartedCandidates(ctx, tx, reap.SQLite, createdBefore, candidates)
+	// createdBefore that are not paused by an occupied owner lane survive
+	// into the UPDATE.
+	ids, err := reap.NeverStartedCandidates(ctx, tx, reap.SQLite, createdBefore, heartbeatBefore, candidates)
 	if err != nil {
 		return nil, err
 	}

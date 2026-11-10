@@ -502,10 +502,15 @@ func main() {
 	// runs created more than the window ago whose started_at is still unset —
 	// CreateRun without a RunStarted — are stamped failed with reason
 	// "created_never_started" so unstartable and orphan-minted runs die by
-	// timer instead of sitting pending forever. Independent of the heartbeat
-	// reaper: the verdict is derivable from the run record alone.
+	// timer instead of sitting pending forever. Runs whose workflow
+	// assignment is queued behind a healthy sibling run on the owner agent's
+	// serial lane are exempt while the lane is busy (KB-371): reaping pauses
+	// until the heartbeat staleness — the same bound the CRI-142 reaper uses
+	// — proves the agent (and with it the sibling's execution) is gone, or
+	// the lane idles. A disabled heartbeat reaper (multiplier 0, zero
+	// staleness) disables the pause and restores timer-only semantics.
 	if *createdNeverStartedWindow > 0 {
-		log.Info("created_never_started reaper enabled", "created_never_started_window", *createdNeverStartedWindow)
+		log.Info("created_never_started reaper enabled", "created_never_started_window", *createdNeverStartedWindow, "lane_pause_heartbeat_staleness", runReapStaleness)
 		go func() {
 			t := time.NewTicker(15 * time.Second)
 			defer t.Stop()
@@ -514,7 +519,7 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					reapNeverStartedRunsOnce(context.Background(), st, log, *createdNeverStartedWindow)
+					reapNeverStartedRunsOnce(context.Background(), st, log, *createdNeverStartedWindow, runReapStaleness)
 				}
 			}
 		}()
@@ -590,11 +595,14 @@ func reapStaleRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, st
 // pending/running whose started_at is still unset and whose created_at is
 // older than window are stamped failed with reason "created_never_started",
 // unless their record ends at a human gate — those park as awaiting_human
-// (KB-226) with the reclassification reason logged. Split out of the ticker
-// goroutine so the now/createdBefore derivation is unit-testable.
-func reapNeverStartedRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, window time.Duration) {
+// (KB-226) with the reclassification reason logged. The heartbeat staleness
+// bound (same derivation as the CRI-142 run reaper) pauses reaping for work
+// queued behind a healthy sibling run on the owner agent's lane (KB-371);
+// zero staleness disables the pause. Split out of the ticker goroutine so the
+// now/createdBefore derivation is unit-testable.
+func reapNeverStartedRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, window, staleness time.Duration) {
 	now := time.Now().UTC()
-	outcomes, err := st.ReapNeverStartedRuns(ctx, now, now.Add(-window))
+	outcomes, err := st.ReapNeverStartedRuns(ctx, now, now.Add(-window), now.Add(-staleness))
 	if err != nil {
 		log.Error("created_never_started reaper", "err", err)
 		return

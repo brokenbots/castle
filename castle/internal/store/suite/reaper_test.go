@@ -583,24 +583,28 @@ func TestUpdateRun_PreservesFailureReason(t *testing.T) {
 
 // neverStartedFixture drives the KB-233 rule-2 reaper tests. createdBefore is
 // the boundary used for the reaper call: runs created before it whose
-// started_at is still NULL qualify for the created_never_started verdict.
+// started_at is still NULL qualify for the created_never_started verdict —
+// unless the KB-371 lane-busy pause applies. heartbeatBefore is the heartbeat
+// freshness bound, the same staleness the heartbeat reaper is called with.
 type neverStartedFixture struct {
 	*reapFixture
-	createdBefore time.Time
+	createdBefore   time.Time
+	heartbeatBefore time.Time
 }
 
 func newNeverStartedFixture(t *testing.T, ctx context.Context, s store.Store) *neverStartedFixture {
 	t.Helper()
 	base := newReapFixture(t, ctx, s)
 	return &neverStartedFixture{
-		reapFixture:   base,
-		createdBefore: base.now.Add(-10 * time.Minute),
+		reapFixture:     base,
+		createdBefore:   base.now.Add(-10 * time.Minute),
+		heartbeatBefore: base.staleBefore,
 	}
 }
 
 func (f *neverStartedFixture) reapNeverStarted() []store.RunReapOutcome {
 	f.t.Helper()
-	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore)
+	reaped, err := f.s.ReapNeverStartedRuns(f.ctx, f.now, f.createdBefore, f.heartbeatBefore)
 	if err != nil {
 		f.t.Fatalf("reap never-started: %v", err)
 	}
@@ -800,7 +804,7 @@ func TestReapNeverStartedRuns_RequeueResetsWindow(t *testing.T) {
 
 		// Past the fresh window with the run still unstarted, it dies by timer.
 		later := resumedAt.Add(11 * time.Minute)
-		reaped, err := s.ReapNeverStartedRuns(ctx, later, later.Add(-10*time.Minute))
+		reaped, err := s.ReapNeverStartedRuns(ctx, later, later.Add(-10*time.Minute), later.Add(-60*time.Second))
 		if err != nil {
 			t.Fatalf("reap later: %v", err)
 		}

@@ -828,16 +828,25 @@ type Store interface {
 	// ReapNeverStartedRuns stamps runs in status pending or running as failed
 	// with reason "created_never_started" (KB-233 rule 2) when started_at is
 	// still NULL and created_at is older than createdBefore: a run that was
-	// minted but never began executing. The verdict is derivable from the run
-	// record alone — created_at and started_at — never from heartbeat or
-	// assignment heuristics. Paused and stopped runs (operator-parked,
-	// CRI-207) are reaper-exempt regardless of age, and terminal runs are
-	// never rewritten. A never-started candidate whose record ends at a human
-	// gate is parked instead of failed (KB-226), like the heartbeat reaper.
-	// Each reaped run's workflow assignment is marked terminal so the dead
-	// work is never re-dispatched. Returns one RunReapOutcome per stamped
-	// run.
-	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore time.Time) ([]RunReapOutcome, error)
+	// minted but never began executing. Paused and stopped runs
+	// (operator-parked, CRI-207) are reaper-exempt regardless of age, and
+	// terminal runs are never rewritten. A never-started candidate whose
+	// record ends at a human gate is parked instead of failed (KB-226), like
+	// the heartbeat reaper. Each reaped run's workflow assignment is marked
+	// terminal so the dead work is never re-dispatched. Returns one
+	// RunReapOutcome per stamped run.
+	//
+	// The heartbeatBefore bound carries the KB-371 lane-busy pause: a
+	// candidate whose workflow assignment's owner agent is online, heartbeated
+	// after heartbeatBefore, and holds an actively executing sibling run is
+	// exempt while the lane is busy — queued work behind a healthy sibling
+	// survives the lease rotation and leases at the succession point instead
+	// of dying by timer mid-rotation. Callers pass the staleness the CRI-142
+	// heartbeat reaper derives; a disabled heartbeat reaper (zero staleness)
+	// disables the pause and restores pure timer semantics. Runs without a
+	// workflow assignment, offline owners, stale heartbeats, and idle lanes
+	// are unaffected.
+	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]RunReapOutcome, error)
 	// CancelRun stamps runID terminal as "cancelled" with the given reason
 	// (CRI-142). Terminal runs are never rewritten: an already terminal run
 	// returns ErrRunTerminal, an unknown id ErrNotFound. The cancelled run
