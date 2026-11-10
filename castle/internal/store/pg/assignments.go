@@ -666,19 +666,26 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	swept := 0
 	for _, sweep := range []struct{ runStatus, reason string }{
 		{"succeeded", store.TerminalReasonRunCompleted},
 		{"failed", store.TerminalReasonRunFailed},
 		{"cancelled", store.TerminalReasonRunCancelled},
 	} {
-		if _, err := tx.ExecContext(ctx,
+		res, err := tx.ExecContext(ctx,
 			`UPDATE workflow_assignments
 			 SET state=$1, terminal_reason=$2, updated_at=$3
 			 WHERE state='leased' AND lease_expires_at < $4
 			   AND run_id IN (SELECT id FROM runs WHERE status=$5)`,
-			store.WorkflowAssignmentStateTerminal, sweep.reason, us(now), us(now), sweep.runStatus); err != nil {
+			store.WorkflowAssignmentStateTerminal, sweep.reason, us(now), us(now), sweep.runStatus)
+		if err != nil {
 			return nil, err
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		swept += int(n)
 	}
 
 	rows, err := tx.QueryContext(ctx, `
@@ -715,6 +722,12 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	}
 
 	if len(ids) == 0 {
+		// KB-373: the terminal-run sweep above may have transitioned rows
+		// even when nothing needs requeueing; only a genuinely read-only
+		// pass rolls back.
+		if swept > 0 {
+			return nil, tx.Commit()
+		}
 		_ = tx.Rollback()
 		return nil, nil
 	}

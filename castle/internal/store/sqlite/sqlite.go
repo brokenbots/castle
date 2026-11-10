@@ -1499,6 +1499,10 @@ func (s *Store) StampRunTerminal(ctx context.Context, runID, status, failureReas
 		return nil, err
 	}
 	if n == 0 {
+		// Settle the tx before the GetRun below: the store's write pool is
+		// single-writer, so holding the transaction open while fetching the
+		// run row deadlocks it.
+		_ = tx.Rollback()
 		if _, getErr := s.GetRun(ctx, runID); getErr != nil {
 			return nil, getErr
 		}
@@ -2473,20 +2477,27 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	// rows of terminal runs, while the requeue only touches leased rows of
 	// pending runs. Terminalized rows are deliberately not returned —
 	// terminal work is never re-queued or re-dispatched.
+	swept := 0
 	for _, sweep := range []struct{ runStatus, reason string }{
 		{"succeeded", store.TerminalReasonRunCompleted},
 		{"failed", store.TerminalReasonRunFailed},
 		{"cancelled", store.TerminalReasonRunCancelled},
 	} {
-		if _, err := tx.ExecContext(ctx,
+		res, err := tx.ExecContext(ctx,
 			`UPDATE workflow_assignments
 			 SET state=?, terminal_reason=?, updated_at=?
 			 WHERE state='leased' AND lease_expires_at < ?
 			   AND run_id IN (SELECT id FROM runs WHERE status=?)`,
 			store.WorkflowAssignmentStateTerminal, sweep.reason, now.Format(store.TimestampLayout),
-			now.Format(store.TimestampLayout), sweep.runStatus); err != nil {
+			now.Format(store.TimestampLayout), sweep.runStatus)
+		if err != nil {
 			return nil, err
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		swept += int(n)
 	}
 
 	rows, err := tx.QueryContext(ctx, `
@@ -2515,6 +2526,12 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 	rows.Close()
 
 	if len(ids) == 0 {
+		// KB-373: the terminal-run sweep above may have transitioned rows
+		// even when nothing needs requeueing; only a genuinely read-only
+		// pass rolls back.
+		if swept > 0 {
+			return nil, tx.Commit()
+		}
 		_ = tx.Rollback()
 		return nil, nil
 	}

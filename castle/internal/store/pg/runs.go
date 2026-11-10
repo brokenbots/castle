@@ -427,6 +427,10 @@ func (s *Store) StampRunTerminal(ctx context.Context, runID, status, failureReas
 		return nil, err
 	}
 	if n == 0 {
+		// Settle the transaction before the GetRun below so the stamped
+		// terminal state is visible unambiguously and no connection is held
+		// while the row is fetched.
+		_ = tx.Rollback()
 		if _, getErr := s.GetRun(ctx, runID); getErr != nil {
 			return nil, getErr
 		}
