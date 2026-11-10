@@ -554,6 +554,32 @@ const RunStatusAwaitingHuman = "awaiting_human"
 // for heartbeat staleness with no human-gate ending in their record (CRI-142).
 const ReapReasonAgentHeartbeatLost = "agent heartbeat lost"
 
+// Workflow-assignment terminal reasons for run-ending cascades (KB-373):
+// the canonical terminal_reason vocabulary stamped when castle settles a run
+// terminal — at the stamp itself, or by the lease-expiry sweeper converging
+// a residual lease whose owning run already settled. The refire candidate
+// scan classifies endings by these exact strings, so they are contract.
+const (
+	TerminalReasonRunCompleted = "run completed"
+	TerminalReasonRunFailed    = "run failed"
+	TerminalReasonRunCancelled = "run cancelled"
+)
+
+// terminalReasonByRunStatus maps a settling run status to the
+// terminal_reason the assignment cascade stamps for it.
+func TerminalReasonByRunStatus(status string) string {
+	switch status {
+	case "succeeded":
+		return TerminalReasonRunCompleted
+	case "failed":
+		return TerminalReasonRunFailed
+	case "cancelled":
+		return TerminalReasonRunCancelled
+	default:
+		return ""
+	}
+}
+
 // RunReapOutcome is one deterministic reaper verdict for a candidate run
 // (KB-226): either the run was reaped terminal-failed (Parked false) or it
 // was reclassified to its real parked status instead of failing (Parked
@@ -817,6 +843,20 @@ type Store interface {
 	// returns ErrRunTerminal, an unknown id ErrNotFound. The cancelled run
 	// record is returned on success.
 	CancelRun(ctx context.Context, runID, reason string, now time.Time) (*Run, error)
+	// StampRunTerminal stamps runID's terminal transition and cascades its
+	// still queued or leased workflow assignment(s) to terminal in the SAME
+	// transaction (KB-373, CRI-142): the dispatch cascade cannot be skipped
+	// or half-applied when castle stamps a run terminal, so a settling run
+	// can never strand a live assignment row behind. status must be terminal
+	// ("succeeded", "failed" or "cancelled"); failureReason is written via
+	// COALESCE(NULLIF(?, ''), failure_reason) so an empty reason keeps the
+	// existing one; terminalReason is the assignment cascade's terminal_reason
+	// (see TerminalReasonByRunStatus). Terminal and operator-parked stopped
+	// runs are never rewritten: an already terminal or stopped run returns
+	// ErrRunTerminal with the row untouched, an unknown id ErrNotFound. The
+	// stamped run record is returned on success. (Event-driven stamps only:
+	// CancelRun and the reapers carry their own shaped verdicts.)
+	StampRunTerminal(ctx context.Context, runID, status, failureReason string, endedAt time.Time, terminalReason string) (*Run, error)
 
 	// Refire policy engine (KB-321)
 	// UpsertRefirePolicy stores the verbatim policy JSON for (projectID,
@@ -965,7 +1005,14 @@ type Store interface {
 	LeaseWorkflowAssignment(ctx context.Context, criteriaID string, agentLabels map[string]string, now time.Time, leaseDuration time.Duration) (*WorkflowAssignment, *LeaseDecision, error)
 	// ExpireWorkflowAssignmentLeases transitions leased assignments whose lease
 	// has expired and whose run is still pending back to queued, clearing their
-	// run's overseer_id. It returns the IDs of the assignments that were expired.
+	// run's overseer_id. It returns the IDs of the assignments that were
+	// requeued. The same pass consults the owning run row for terminal runs
+	// (KB-373): a leased assignment whose lease has expired and whose run
+	// settled terminal (succeeded, failed, cancelled) transitions to terminal
+	// with the run-status-mapped terminal_reason (TerminalReasonByRunStatus),
+	// so a run that settled before (or without) its dispatch cascade can
+	// never leave a live lease row behind. Terminalized rows are not
+	// returned — terminal work is never re-queued or re-dispatched.
 	ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Time) ([]string, error)
 	// ListLeasedPendingAssignmentsByCriteriaID returns assignments currently
 	// leased to criteriaID whose run has not yet started (status='pending').

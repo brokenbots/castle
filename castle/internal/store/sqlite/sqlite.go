@@ -1463,6 +1463,63 @@ func (s *Store) CancelRun(ctx context.Context, runID, reason string, now time.Ti
 	return s.GetRun(ctx, runID)
 }
 
+// StampRunTerminal stamps runID's terminal transition and cascades its still
+// queued or leased workflow assignments to terminal in the SAME transaction
+// (KB-373, CRI-142): whoever stamps the run owns its dispatch cascade, so a
+// settling run can never strand a leased assignment behind — the pre-fix two
+// write path (stamp, then a separate discarded cascade) is exactly how the
+// zombie lease rows of KB-373 were born. See the store contract for the
+// argument semantics. Terminal and operator-parked stopped runs are never
+// rewritten: the conditional UPDATE yields zero rows there and the method
+// resolves to ErrRunTerminal after a GetRun distinguishes unknown ids.
+func (s *Store) StampRunTerminal(ctx context.Context, runID, status, failureReason string, endedAt time.Time, terminalReason string) (*store.Run, error) {
+	ctx, cancel := s.opCtx(ctx)
+	defer cancel()
+	switch status {
+	case "succeeded", "failed", "cancelled":
+	default:
+		return nil, fmt.Errorf("stamp run terminal: status %q is not terminal", status)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE runs
+		 SET status=?, ended_at=?, failure_reason=COALESCE(NULLIF(?, ''), failure_reason)
+		 WHERE id=? AND status NOT IN ('succeeded', 'failed', 'cancelled', 'stopped')`,
+		status, endedAt.Format(store.TimestampLayout), failureReason, runID)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		if _, getErr := s.GetRun(ctx, runID); getErr != nil {
+			return nil, getErr
+		}
+		return nil, store.ErrRunTerminal
+	}
+	// The in-transaction cascade (KB-373): idempotent by state guard, so an
+	// already terminal assignment is left with its first terminal_reason.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workflow_assignments
+		 SET state=?, terminal_reason=?, updated_at=?
+		 WHERE run_id=? AND state IN (?, ?)`,
+		store.WorkflowAssignmentStateTerminal, terminalReason, endedAt.Format(store.TimestampLayout),
+		runID, store.WorkflowAssignmentStateQueued, store.WorkflowAssignmentStateLeased); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetRun(ctx, runID)
+}
+
 func (s *Store) AppendEvent(ctx context.Context, ev *store.Event) (uint64, bool, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()
@@ -2407,6 +2464,30 @@ func (s *Store) ExpireWorkflowAssignmentLeases(ctx context.Context, now time.Tim
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck
+
+	// KB-373: converge residual leases whose owning run settled terminal
+	// before (or without) its dispatch cascade — the zombie lease lifecycles
+	// of the original report. Disjoint from the pending-run requeue scanned
+	// below by the run-status guard on both sides, so placement inside the
+	// same pass before that scan is safe: this stage only touches leased
+	// rows of terminal runs, while the requeue only touches leased rows of
+	// pending runs. Terminalized rows are deliberately not returned —
+	// terminal work is never re-queued or re-dispatched.
+	for _, sweep := range []struct{ runStatus, reason string }{
+		{"succeeded", store.TerminalReasonRunCompleted},
+		{"failed", store.TerminalReasonRunFailed},
+		{"cancelled", store.TerminalReasonRunCancelled},
+	} {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE workflow_assignments
+			 SET state=?, terminal_reason=?, updated_at=?
+			 WHERE state='leased' AND lease_expires_at < ?
+			   AND run_id IN (SELECT id FROM runs WHERE status=?)`,
+			store.WorkflowAssignmentStateTerminal, sweep.reason, now.Format(store.TimestampLayout),
+			now.Format(store.TimestampLayout), sweep.runStatus); err != nil {
+			return nil, err
+		}
+	}
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT a.id
