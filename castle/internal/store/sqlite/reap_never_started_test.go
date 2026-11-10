@@ -14,8 +14,10 @@ import (
 // neverStartedFixture drives the KB-233 rule-2 reaper tests. createdBefore is
 // the boundary used for the reaper call: runs created before it whose
 // started_at is still NULL qualify for the created_never_started verdict —
-// unless the KB-371 lane-busy pause applies. heartbeatBefore is the heartbeat
-// freshness bound, the same staleness the heartbeat reaper is called with.
+// unless the KB-371 dispatch-eligibility pause applies (the assignment is
+// still queued or leased while dispatch to a live executor remains possible).
+// heartbeatBefore is the heartbeat freshness bound, the same staleness the
+// heartbeat reaper is called with.
 type neverStartedFixture struct {
 	reapFixture
 	createdBefore   time.Time
@@ -176,9 +178,24 @@ func TestReapNeverStartedRuns_StatusMatrix(t *testing.T) {
 // TestReapNeverStartedRuns_MarksAssignmentTerminal pins that the rule-2 reap
 // terminates the still-queued or leased workflow assignment so orphan-minted
 // work (KB-227's surviving-Job mints) can never be re-dispatched after the
-// run dies.
+// run dies. The assignment is project-scoped with only a dead member: no
+// live executor can dispatch it, so the KB-371 dispatch-eligibility pause
+// does not hold and rule 2 kills it by timer.
 func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 	f := newNeverStartedFixture(t)
+
+	if err := f.s.CreateProject(f.ctx, &store.Project{
+		ID: "proj-orphan", MembershipPolicy: store.ProjectMembershipClosed,
+		CreatedAt: f.now.Add(-10 * time.Minute), UpdatedAt: f.now.Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := f.s.AddProjectMember(f.ctx, &store.ProjectMember{
+		ProjectID: "proj-orphan", MemberID: "agent-stale", Kind: store.ProjectMemberKindAI,
+		CreatedAt: f.now.Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
 
 	// A queued assignment owned by an identity with no overseer record: the
 	// orphan-minted shape the heartbeat reaper deliberately leaves alone (no
@@ -189,6 +206,7 @@ func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 		WorkflowSource:  "workflow main {}",
 		IdempotencyKey:  "key-1",
 		State:           store.WorkflowAssignmentStateQueued,
+		ProjectID:       "proj-orphan",
 		CreatedAt:       f.createdBefore.Add(-time.Minute),
 		UpdatedAt:       f.createdBefore.Add(-time.Minute),
 	})
@@ -281,7 +299,8 @@ func TestReapNeverStartedRuns_RequeueResetsWindow(t *testing.T) {
 // twin of the CRI-143 re-validation regression: when the write-transaction
 // re-validation drops a strict subset of the scanned candidates — a run that
 // started or reached a terminal state between the reader scan and the writer
-// transaction — the surviving set is smaller and the UPDATE placeholder lists
+// transaction, or one whose assignment holds the KB-371 dispatch-eligibility
+// pause — the surviving set is smaller and the UPDATE placeholder lists
 // must be derived from the surviving ids, never from the scanned candidates.
 func TestReapNeverStartedRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 	f := newNeverStartedFixture(t)
@@ -303,13 +322,35 @@ func TestReapNeverStartedRunIDs_DropsResolvedCandidatesFromWrite(t *testing.T) {
 		t.Fatalf("cancel r-resolved: %v", err)
 	}
 
-	candidates := []string{"r-zombie-1", "r-zombie-2", "r-started", "r-resolved"}
+	// Candidate whose assignment is still dispatchable: an unscoped queued
+	// assignment (trigger-owned — no overseer record) while agent-fresh
+	// heartbeats. The write-transaction re-validation drops it the same way
+	// the scan does: the KB-371 pause must hold inside the write transaction,
+	// not only at scan time.
+	a, created, err := f.s.CreateWorkflowAssignment(f.ctx, &store.WorkflowAssignment{
+		OwnerCriteriaID: "trigger-paused",
+		WorkflowName:    "wf",
+		WorkflowSource:  "workflow main {}",
+		IdempotencyKey:  "key-paused",
+		CreatedAt:       old.Add(-time.Minute),
+		UpdatedAt:       old.Add(-time.Minute),
+	})
+	if err != nil || !created {
+		t.Fatalf("create paused assignment: %v created=%v", err, created)
+	}
+	// The assignment mints its own pending run in the past: that run is the
+	// paused candidate under the re-validation ids.
+
+	candidates := []string{"r-zombie-1", "r-zombie-2", "r-started", "r-resolved", "r-paused", a.RunID}
 	reaped, err := f.s.reapNeverStartedRunIDs(ctx, f.now, f.createdBefore, f.heartbeatBefore, candidates)
 	if err != nil {
 		t.Fatalf("reap with partially resolved candidates: %v", err)
 	}
 	if !slices.Equal(reapedIDs(reaped), []string{"r-zombie-1", "r-zombie-2"}) {
-		t.Fatalf("reaped = %v, want [r-zombie-1 r-zombie-2]", reaped)
+		t.Fatalf("reaped = %v, want [r-zombie-1 r-zombie-2] with the paused candidate dropped", reaped)
+	}
+	if r := f.getRun(t, a.RunID); r.Status != "pending" || r.FailureReason != "" || r.StartedAt != nil {
+		t.Fatalf("paused candidate clobbered: status=%q reason=%q started=%v", r.Status, r.FailureReason, r.StartedAt)
 	}
 
 	for _, id := range []string{"r-zombie-1", "r-zombie-2"} {

@@ -584,8 +584,9 @@ func TestUpdateRun_PreservesFailureReason(t *testing.T) {
 // neverStartedFixture drives the KB-233 rule-2 reaper tests. createdBefore is
 // the boundary used for the reaper call: runs created before it whose
 // started_at is still NULL qualify for the created_never_started verdict —
-// unless the KB-371 lane-busy pause applies. heartbeatBefore is the heartbeat
-// freshness bound, the same staleness the heartbeat reaper is called with.
+// unless the KB-371 dispatch-eligibility pause applies. heartbeatBefore is
+// the heartbeat freshness bound, the same staleness the heartbeat reaper is
+// called with.
 type neverStartedFixture struct {
 	*reapFixture
 	createdBefore   time.Time
@@ -720,10 +721,15 @@ func TestReapNeverStartedRuns_StatusMatrix(t *testing.T) {
 
 // TestReapNeverStartedRuns_MarksAssignmentTerminal pins that the rule-2 reap
 // terminates the still-queued or leased workflow assignment so orphan-minted
-// work can never be re-dispatched after the run dies.
+// work can never be re-dispatched after the run dies. The assignment is
+// project-scoped with only a dead member: no live executor can dispatch it,
+// so the KB-371 dispatch-eligibility pause does not hold and rule 2 kills it
+// by timer.
 func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 	runWithCtx(t, func(t *testing.T, ctx context.Context, s store.Store) {
 		f := newNeverStartedFixture(t, ctx, s)
+
+		f.newProjectWithMember("proj-orphan", "agent-stale", f.now.Add(-10*time.Minute))
 
 		// A queued assignment owned by an identity with no overseer record:
 		// the orphan-minted shape the heartbeat reaper deliberately leaves
@@ -734,6 +740,7 @@ func TestReapNeverStartedRuns_MarksAssignmentTerminal(t *testing.T) {
 			WorkflowSource:  "workflow main {}",
 			IdempotencyKey:  "key-1",
 			State:           store.WorkflowAssignmentStateQueued,
+			ProjectID:       "proj-orphan",
 			CreatedAt:       f.createdBefore.Add(-time.Minute),
 			UpdatedAt:       f.createdBefore.Add(-time.Minute),
 		})

@@ -1412,10 +1412,10 @@ func (s *Store) reapNeverStartedRunsAttempt(ctx context.Context, now time.Time, 
 // pool. The candidates were picked from a reader snapshot that may already be
 // stale, so the transaction re-validates never-started reapability against
 // current data: runs that reached RunStarted or a terminal state between the
-// scan and the write, or whose lane-busy pause now applies (KB-371), are never
-// clobbered. Classification and stamping are delegated to the shared verdict
-// stage (KB-226), which reads the candidate's own record inside this
-// transaction.
+// scan and the write, or whose dispatch-eligibility pause now applies
+// (KB-371), are never clobbered. Classification and stamping are delegated to
+// the shared verdict stage (KB-226), which reads the candidate's own record
+// inside this transaction.
 func (s *Store) reapNeverStartedRunIDs(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time, candidates []string) ([]store.RunReapOutcome, error) {
 	// Nothing to reap: return before opening the transaction. An empty
 	// candidate list must not reach the query builders below.

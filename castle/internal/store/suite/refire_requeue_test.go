@@ -30,8 +30,8 @@ func TestRefireRequeueCreatedNeverStarted(t *testing.T) {
 		// The dispatch layer never leases: the run is reaped as
 		// created_never_started (KB-233 rule 2) — the real writer, not a
 		// hand stamp. The heartbeat bound passed as `now` disables the
-		// KB-371 lane-busy pause: no heartbeat can be fresher, so the owner
-		// (no overseer row anyway) never holds a busy lane.
+		// KB-371 dispatch-eligibility pause: no heartbeat can be fresher, so the
+		// queued work reaps by timer even if its assignment were dispatchable.
 		reaped, err := s.ReapNeverStartedRuns(ctx, now, now.Add(time.Minute), now)
 		if err != nil || len(reaped) != 1 || reaped[0].RunID != a.RunID {
 			t.Fatalf("reap = %v, %v; want one created_never_started verdict for %s", reaped, err, a.RunID)

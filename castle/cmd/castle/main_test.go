@@ -162,6 +162,64 @@ func TestReapNeverStartedRunsOnce(t *testing.T) {
 	}
 }
 
+// TestReapNeverStartedRunsOnceDispatchPause pins the main.go wiring of the
+// KB-371 dispatch-eligibility pause: with the operator's heartbeat staleness
+// in force, an assignment a live executor could still take is exempt; with
+// zero staleness (heartbeat reaping disabled) the pause is disabled and the
+// same record reaps by timer.
+func TestReapNeverStartedRunsOnceDispatchPause(t *testing.T) {
+	s, err := sqlite.Open(t.TempDir() + "/castle.db")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(testWriter{}, nil))
+
+	now := time.Now().UTC()
+	old := now.Add(-15 * time.Minute)
+	if err := s.CreateOverseer(ctx, &store.Overseer{
+		ID: "agent-live", Name: "agent-live", TokenHash: "x", Status: "online",
+		CreatedAt: now, LastSeenAt: now,
+	}); err != nil {
+		t.Fatalf("create overseer: %v", err)
+	}
+	// The incident shape: a trigger-owned unscoped assignment with a minted
+	// never-started run far past the window.
+	a, created, err := s.CreateWorkflowAssignment(ctx, &store.WorkflowAssignment{
+		OwnerCriteriaID: "trigger-remote",
+		WorkflowName:    "wf",
+		WorkflowSource:  "workflow main {}",
+		IdempotencyKey:  "key-pause",
+		CreatedAt:       old,
+		UpdatedAt:       old,
+	})
+	if err != nil || !created {
+		t.Fatalf("create assignment: %v created=%v", err, created)
+	}
+
+	// In-force staleness: the pause holds, the run stays pending.
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 60*time.Second)
+	if r, err := s.GetRun(ctx, a.RunID); err != nil {
+		t.Fatalf("get paused run: %v", err)
+	} else if r.Status != "pending" || r.FailureReason != "" || r.StartedAt != nil {
+		t.Fatalf("dispatchable run reaped at 60s staleness: status=%q reason=%q", r.Status, r.FailureReason)
+	}
+
+	// Zero staleness disables the pause: the same record reaps by timer.
+	reapNeverStartedRunsOnce(ctx, s, log, 10*time.Minute, 0)
+	if r, err := s.GetRun(ctx, a.RunID); err != nil {
+		t.Fatalf("get reaped run: %v", err)
+	} else if r.Status != "failed" || r.FailureReason != "created_never_started" || r.EndedAt == nil {
+		t.Fatalf("dispatchable run not reaped at zero staleness: status=%q reason=%q", r.Status, r.FailureReason)
+	}
+	if a, err := s.GetWorkflowAssignment(ctx, a.ID); err != nil {
+		t.Fatalf("get assignment: %v", err)
+	} else if a.State != store.WorkflowAssignmentStateTerminal || a.TerminalReason != "created_never_started" {
+		t.Fatalf("assignment after zero-staleness reap = state %q reason %q, want terminal/created_never_started", a.State, a.TerminalReason)
+	}
+}
+
 type testWriter struct{}
 
 func (testWriter) Write(p []byte) (int, error) { return len(p), nil }
