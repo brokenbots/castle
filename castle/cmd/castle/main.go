@@ -503,14 +503,14 @@ func main() {
 	// CreateRun without a RunStarted — are stamped failed with reason
 	// "created_never_started" so unstartable and orphan-minted runs die by
 	// timer instead of sitting pending forever. Runs whose workflow
-	// assignment is queued behind a healthy sibling run on the owner agent's
-	// serial lane are exempt while the lane is busy (KB-371): reaping pauses
-	// until the heartbeat staleness — the same bound the CRI-142 reaper uses
-	// — proves the agent (and with it the sibling's execution) is gone, or
-	// the lane idles. A disabled heartbeat reaper (multiplier 0, zero
-	// staleness) disables the pause and restores timer-only semantics.
+	// assignment is still queued or leased while dispatch to a live executor
+	// (online, fresh heartbeat, able to take the work) remains possible are
+	// exempt (KB-371): reaping pauses until the heartbeat staleness — the
+	// same bound the CRI-142 reaper uses — proves the executor is gone. A
+	// disabled heartbeat reaper (multiplier 0, zero staleness) disables the
+	// pause and restores timer-only semantics.
 	if *createdNeverStartedWindow > 0 {
-		log.Info("created_never_started reaper enabled", "created_never_started_window", *createdNeverStartedWindow, "lane_pause_heartbeat_staleness", runReapStaleness)
+		log.Info("created_never_started reaper enabled", "created_never_started_window", *createdNeverStartedWindow, "queued_pause_heartbeat_staleness", runReapStaleness)
 		go func() {
 			t := time.NewTicker(15 * time.Second)
 			defer t.Stop()
@@ -596,9 +596,11 @@ func reapStaleRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, st
 // older than window are stamped failed with reason "created_never_started",
 // unless their record ends at a human gate — those park as awaiting_human
 // (KB-226) with the reclassification reason logged. The heartbeat staleness
-// bound (same derivation as the CRI-142 run reaper) pauses reaping for work
-// queued behind a healthy sibling run on the owner agent's lane (KB-371);
-// zero staleness disables the pause. Split out of the ticker goroutine so the
+// bound (same derivation as the CRI-142 run reaper) carries the KB-371
+// dispatch-eligibility pause: queued or leased assignments that a live
+// executor could still take are exempt, so work queued behind a busy lane
+// and through the post-completion succession gap survives; zero staleness
+// disables the pause. Split out of the ticker goroutine so the
 // now/createdBefore derivation is unit-testable.
 func reapNeverStartedRunsOnce(ctx context.Context, st store.Store, log *slog.Logger, window, staleness time.Duration) {
 	now := time.Now().UTC()

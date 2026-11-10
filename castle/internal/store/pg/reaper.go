@@ -97,9 +97,10 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 // and created_at is older than createdBefore. See the sqlite profile for the
 // full invariant commentary — the semantics are shared with the sqlite engine
 // through the reaper stage. The heartbeatBefore bound carries the KB-371
-// lane-busy pause: candidates whose assignment owner agent is online with a
-// fresh heartbeat and an actively executing sibling run are exempt (see
-// reap.NeverStartedCandidates).
+// dispatch-eligibility pause: candidates whose assignment is still queued or
+// leased while dispatch to a live executor remains possible (an online fresh
+// agent that could take the work, or the lease holder itself) are exempt
+// (see reap.NeverStartedCandidates).
 func (s *Store) ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]store.RunReapOutcome, error) {
 	ctx, cancel := s.opCtx(ctx)
 	defer cancel()

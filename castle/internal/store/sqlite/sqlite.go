@@ -1359,14 +1359,18 @@ func (s *Store) reapRunIDs(ctx context.Context, now time.Time, staleBefore time.
 // assignment is marked terminal so the dead work is never re-dispatched.
 // Returns one RunReapOutcome per stamped run.
 //
-// KB-371 lane-busy pause: a candidate is exempt while its workflow
-// assignment's owner agent holds a busy lane — the owner is an online
-// overseer heartbeating after heartbeatBefore and another of the owner's
-// runs is actively executing (started, status running). Queued work
-// behind a healthy sibling run survives the lease rotation and leases at
-// the succession point instead of dying by timer mid-rotation. The bound
-// is the staleness the CRI-142 heartbeat reaper derives; a disabled
-// heartbeat reaper (zero staleness) disables the pause.
+// KB-371 dispatch-eligibility pause: a candidate is exempt while its
+// workflow assignment is still queued or leased AND dispatch to a live
+// executor remains possible — an online overseer heartbeating after
+// heartbeatBefore that could take the work (any agent for unscoped
+// assignments, a project_members entry for scoped ones), or the lease
+// holder itself for leased ones. The lane is keyed on the executing path,
+// never on the assignment's submitter, so board-fired (trigger-identity)
+// assignments pause like every other queued run. Queued work survives both
+// busy-lane occupancy and the succession gap and leases at the designed
+// dispatch point instead of dying by timer mid-rotation. The bound is the
+// staleness the CRI-142 heartbeat reaper derives; a disabled heartbeat
+// reaper (zero staleness) disables the pause.
 //
 // Like ReapStaleAgentRuns (CRI-143), the scan runs on the dedicated reader
 // connection and the writes go through one short transaction on the serialized

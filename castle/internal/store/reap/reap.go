@@ -113,28 +113,39 @@ func StaleCandidates(ctx context.Context, runner Runner, d Dialect, staleBefore 
 // or agent parked is reaper-exempt regardless of age, because park states
 // have no live execution by design (CRI-207) and stay resumable.
 //
-// KB-371 lane-busy pause: a candidate is excluded — reaping pauses — while
-// its workflow assignment's owner agent holds a busy lane. The serial-lane
-// contract gives one assignment lane per agent replica, so a run queued
-// behind a healthy sibling run waits through the lease rotation (expired
-// leases requeue and redeliver) until the lane frees. Killing it by timer
-// mid-rotation terminalizes queued work that the dispatch design would have
-// executed at the succession point. The pause holds only while the owner has
-// an overseer row with status 'online', its last_seen_at is still fresher
-// than heartbeatBefore (the agent is alive and, with it, the sibling's
-// execution is carried forward), and another of the owner's runs is actively
-// executing (status 'running' with started_at set — a sibling that never
-// started is itself rule-2 material and must not hold the pause). The pause
-// is bounded by the owner's heartbeat freshness: a wedged sibling is freed
-// by the CRI-142 heartbeat reaper once the heartbeat goes stale, after which
-// normal timer semantics resume. Callers pass the same staleness bound the
-// heartbeat reaper derives; with run reaping disabled they pass a past or
-// present bound (no heartbeat can be fresher), which disables the pause and
-// restores pure timer semantics.
+// KB-371 dispatch-eligibility pause: a candidate is excluded — reaping
+// pauses — while its workflow assignment (1:1 via run_id) is still queued or
+// leased AND dispatch to a live executor is still possible. The lane is
+// keyed on the executing path, never on the assignment's submitter
+// (OwnerCriteriaID): board-fired assignments are submitted under trigger
+// identities that have no overseer record, so submitter keying never pauses
+// the exact population this fixes (KB-371 incidents). Concretely:
 //
-// Runs with no workflow assignment (orphan-minted, standalone), assignments
-// whose owner has no overseer record, offline owners, stale heartbeats, and
-// idle lanes are unaffected: they die by timer as before.
+//   - queued: EXISTS an online overseer whose last_seen_at is still fresher
+//     than heartbeatBefore and that could take the work — any such agent for
+//     unscoped assignments, or a project_members entry for project-scoped
+//     ones. This mirrors the lease scan's own eligibility. A queued
+//     assignment therefore waits through both busy-lane occupancy (serial
+//     lane: expired leases requeue and redeliver) and the succession gap
+//     after the sibling finishes, because until the designed dispatch
+//     grants the lease the work remains queued with a live eligible agent.
+//   - leased: EXISTS an online fresh overseer matching
+//     a.leased_criteria_id — the holder itself. A dead executor's stale
+//     lease does not stay immortal.
+//
+// Liveness is heartbeat-freshness only: a wedged-but-heartbeating sibling or
+// holder holds the pause, deliberately — queued work survives arbitrarily
+// long lane occupancy, and the CRI-142 heartbeat reaper frees it once the
+// heartbeat goes stale, after which normal timer semantics resume. No
+// current_step advancement is required for the pause to hold. Offline or
+// no-overseer-record holders, stale heartbeats, members that cannot
+// dispatch, and terminal/rejected assignments reap by timer as before.
+// Callers pass the same staleness bound the heartbeat reaper derives; with
+// run reaping disabled they pass a past or present bound (no heartbeat can
+// be fresher), which disables the pause and restores pure timer semantics.
+//
+// Runs with no workflow assignment (orphan-minted, standalone) are
+// unaffected: they die by timer as before.
 // With ids empty this is the fresh reader-scan; with ids set it is the
 // re-validation inside the write transaction: runs that reached RunStarted or
 // a terminal state between the scan and the write are never clobbered.
@@ -146,14 +157,38 @@ func NeverStartedCandidates(ctx context.Context, runner Runner, d Dialect, creat
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM workflow_assignments a
-			JOIN overseers o ON o.id = a.owner_criteria_id
-			JOIN runs lane ON lane.overseer_id = o.id
-			                AND lane.status = 'running'
-			                AND lane.started_at IS NOT NULL
 			WHERE a.run_id = r.id
-			  AND o.status = 'online'
-			  AND o.last_seen_at > ` + d.P(2) + `
-			  AND lane.id <> r.id
+			  AND a.state IN ('queued', 'leased')
+			  AND (
+				(
+					a.state = 'queued'
+					AND EXISTS (
+						SELECT 1
+						FROM overseers o
+						WHERE o.status = 'online'
+						  AND o.last_seen_at > ` + d.P(2) + `
+						  AND (
+							COALESCE(a.project_id, '') = ''
+							OR EXISTS (
+								SELECT 1
+								FROM project_members pm
+								WHERE pm.project_id = a.project_id
+								  AND pm.member_id = o.id
+							)
+						  )
+					)
+				)
+				OR (
+					a.state = 'leased'
+					AND EXISTS (
+						SELECT 1
+						FROM overseers o
+						WHERE o.id = a.leased_criteria_id
+						  AND o.status = 'online'
+						  AND o.last_seen_at > ` + d.P(2) + `
+					)
+				)
+			  )
 		  )`
 	args := []any{d.TS(createdBefore), d.TS(heartbeatBefore)}
 	if len(ids) > 0 {

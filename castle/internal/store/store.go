@@ -836,16 +836,21 @@ type Store interface {
 	// terminal so the dead work is never re-dispatched. Returns one
 	// RunReapOutcome per stamped run.
 	//
-	// The heartbeatBefore bound carries the KB-371 lane-busy pause: a
-	// candidate whose workflow assignment's owner agent is online, heartbeated
-	// after heartbeatBefore, and holds an actively executing sibling run is
-	// exempt while the lane is busy — queued work behind a healthy sibling
-	// survives the lease rotation and leases at the succession point instead
-	// of dying by timer mid-rotation. Callers pass the staleness the CRI-142
-	// heartbeat reaper derives; a disabled heartbeat reaper (zero staleness)
-	// disables the pause and restores pure timer semantics. Runs without a
-	// workflow assignment, offline owners, stale heartbeats, and idle lanes
-	// are unaffected.
+	// The heartbeatBefore bound carries the KB-371 dispatch-eligibility
+	// pause: a candidate whose workflow assignment is still queued or leased
+	// AND whose dispatch to a live executor remains possible is exempt —
+	// an online agent heartbeating after heartbeatBefore that could take the
+	// work (any agent for unscoped assignments, a project member for scoped
+	// ones), or the lease holder itself for leased ones. The lane is keyed
+	// on the executing path, never on the assignment's submitter, so
+	// board-fired (trigger-identity) assignments pause like every other
+	// queued run: queued work survives busy-lane occupancy and the
+	// succession gap instead of dying by timer mid-rotation. Callers pass
+	// the staleness the CRI-142 heartbeat reaper derives; a disabled
+	// heartbeat reaper (zero staleness) disables the pause and restores pure
+	// timer semantics. Runs without a workflow assignment, offline or stale
+	// executors, undispatchable membership, and terminal or rejected
+	// assignments are unaffected.
 	ReapNeverStartedRuns(ctx context.Context, now time.Time, createdBefore, heartbeatBefore time.Time) ([]RunReapOutcome, error)
 	// CancelRun stamps runID terminal as "cancelled" with the given reason
 	// (CRI-142). Terminal runs are never rewritten: an already terminal run
