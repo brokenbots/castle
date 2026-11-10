@@ -107,6 +107,22 @@ func TestMigrate_AssignmentQueueSchema(t *testing.T) {
 	if idempCount != 1 {
 		t.Fatalf("expected idempotency unique index, got count=%d", idempCount)
 	}
+
+	// 0026's lane-evidence indexes back the never-started reaper's
+	// leased_criteria_id sibling arms and lease-anchor predicate.
+	for _, idx := range []string{
+		"idx_workflow_assignments_leased_criteria_id",
+		"idx_workflow_assignment_leases_criteria_expires",
+	} {
+		var cnt int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, idx).Scan(&cnt); err != nil {
+			t.Fatalf("query index %s: %v", idx, err)
+		}
+		if cnt != 1 {
+			t.Fatalf("expected index %s after migration, got count=%d", idx, cnt)
+		}
+	}
 }
 
 func TestMigrate_AlreadyApplied_NoOp(t *testing.T) {
